@@ -52,7 +52,7 @@ import {
   SWAP_STORAGE_VERSION,
   type SwapStorage,
   type WalletStorage,
-} from "./storage";
+} from "./storage/index.js";
 
 // Re-export types from create module for backwards compatibility
 export type {

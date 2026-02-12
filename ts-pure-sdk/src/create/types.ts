@@ -11,7 +11,7 @@ import type {
   OnchainToEvmSwapResponse,
   TokenId,
 } from "../api/client.js";
-import type { SwapParams } from "../signer";
+import type { SwapParams } from "../signer/index.js";
 
 /** Supported EVM chains for swaps */
 export type EvmChain = "polygon" | "arbitrum" | "ethereum" | string;

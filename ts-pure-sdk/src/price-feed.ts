@@ -20,7 +20,7 @@
  * ```
  */
 
-import type { TokenId } from "./api/client";
+import type { TokenId } from "./api/client.js";
 
 /**
  * Price tiers for different quote asset amounts.
