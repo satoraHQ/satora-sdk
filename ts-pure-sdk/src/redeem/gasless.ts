@@ -9,7 +9,7 @@ import type {
   ArkadeToEvmSwapResponse,
   LightningToEvmSwapResponse,
 } from "../api/client.js";
-import { buildRedeemDigest, signEvmDigest } from "../evm";
+import { buildRedeemDigest, signEvmDigest } from "../evm/index.js";
 import type { ClaimGaslessResult } from "./types.js";
 
 /** Swap types that support gasless claiming */

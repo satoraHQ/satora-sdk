@@ -84,7 +84,7 @@ export {
   calculateSourceAmount,
   calculateTargetAmount,
   computeExchangeRate,
-} from "./price-calculations";
+} from "./price-calculations.js";
 // Redeem module (Arkade claim)
 export {
   type ArkadeClaimParams,

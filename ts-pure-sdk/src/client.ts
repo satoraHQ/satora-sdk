@@ -38,10 +38,10 @@ import {
   type EvmToLightningSwapGenericResult,
   type LightningToEvmSwapGenericOptions,
   type LightningToEvmSwapGenericResult,
-} from "./create";
+} from "./create/index.js";
 import { delegateClaim, delegateRefund } from "./delegate.js";
 import { broadcastTransaction, findOutputByAddress } from "./esplora.js";
-import { encodeApproveCallData, encodeHtlcErc20RefundCallData } from "./evm";
+import { encodeApproveCallData, encodeHtlcErc20RefundCallData } from "./evm/index.js";
 import {
   buildArkadeClaim,
   type ClaimGaslessResult,
@@ -55,7 +55,7 @@ import {
   buildOnchainClaimTransaction,
   buildOnchainRefundTransaction,
   verifyHtlcAddress,
-} from "./refund";
+} from "./refund/index.js";
 import {
   bytesToHex,
   hexToBytes,
@@ -67,7 +67,7 @@ import {
   SWAP_STORAGE_VERSION,
   type SwapStorage,
   type WalletStorage,
-} from "./storage";
+} from "./storage/index.js";
 import { isArkade, isBtcOnchain, isEvmToken, isLightning } from "./tokens.js";
 
 // Re-export types from create module for backwards compatibility
@@ -92,7 +92,7 @@ export type {
   EvmToLightningSwapOptions,
 } from "./create/index.js";
 
-import type { BitcoinToEvmSwapResponse } from "./create";
+import type { BitcoinToEvmSwapResponse } from "./create/index.js";
 
 // Re-export coordinator utilities for Arkade-to-EVM redeemAndExecute flow
 export {
