@@ -127,6 +127,13 @@ export {
   calculateTargetAmount,
   computeExchangeRate,
 } from "./price-calculations";
+// Escrow signing utilities
+export {
+  type SignedEscrowTx,
+  getArkTxid,
+  signEscrowArkTx,
+  signEscrowCheckpoints,
+} from "./escrow/index.js";
 // Redeem module (Arkade claim)
 export {
   type ArkadeClaimParams,
