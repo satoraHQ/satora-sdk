@@ -25,6 +25,7 @@
   ],
   "scripts": {
     "generate:api": "openapi-typescript openapi.json -o src/generated/api.ts",
+    "prepare": "tsc -p tsconfig.build.json",
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest",
     "test:run": "vitest run",
