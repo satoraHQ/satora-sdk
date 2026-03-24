@@ -9,7 +9,7 @@
  * @see https://github.com/ArkEscrow/ark-escrow for the full protocol.
  */
 
-import { Transaction } from "@arkade-os/sdk";
+import { SingleKey, Transaction } from "@arkade-os/sdk";
 import { hex } from "@scure/base";
 
 // -- Base64 helpers (browser-safe, no Buffer dependency) --
@@ -82,6 +82,58 @@ export function signEscrowCheckpoints(
     tx.signIdx(sk, 0);
     return b64Encode(tx.toPSBT());
   });
+}
+
+/** Result of signing delegate escrow PSBTs. */
+export interface SignedEscrowDelegate {
+  /** The signed intent proof PSBT as a base64 string. */
+  signedIntentProof: string;
+  /** The signed forfeit PSBTs as base64 strings. */
+  signedForfeitPsbts: string[];
+}
+
+/**
+ * Sign delegate escrow PSBTs (intent proof + forfeits).
+ *
+ * When the escrow VTXO is recoverable, the arbiter prepares delegate PSBTs
+ * instead of the normal offchain PSBTs. The intent proof has one "toSpend"
+ * reference input at index 0 (not signed) plus real VTXO inputs at index 1+.
+ * Forfeit PSBTs have a single input each at index 0.
+ *
+ * The PSBTs already contain the correct sighash types — the signer just adds
+ * their tapscript Schnorr signature.
+ *
+ * @param intentProofB64 - The intent proof PSBT (base64, from the arbiter).
+ * @param forfeitPsbtsB64 - Forfeit PSBTs (base64, one per VTXO).
+ * @param secretKey - The signer's secret key (32 bytes or 64-char hex).
+ * @returns Signed intent proof + signed forfeit PSBTs.
+ */
+export async function signEscrowDelegate(
+  intentProofB64: string,
+  forfeitPsbtsB64: string[],
+  secretKey: Uint8Array | string,
+): Promise<SignedEscrowDelegate> {
+  const sk =
+    typeof secretKey === "string" ? secretKey : hex.encode(secretKey);
+  const signer = SingleKey.fromHex(sk);
+
+  // Sign intent proof — SingleKey.sign handles per-input sighash types
+  // (input 0 is the toSpend ref, inputs 1+ are VTXOs with SIGHASH_ALL)
+  const intent = Transaction.fromPSBT(b64Decode(intentProofB64));
+  const signedIntent = await signer.sign(intent);
+
+  // Sign forfeits — each has a single VTXO input with SIGHASH_ALL|ANYONECANPAY
+  const signedForfeits: string[] = [];
+  for (const b64 of forfeitPsbtsB64) {
+    const forfeit = Transaction.fromPSBT(b64Decode(b64));
+    const signed = await signer.sign(forfeit);
+    signedForfeits.push(b64Encode(signed.toPSBT()));
+  }
+
+  return {
+    signedIntentProof: b64Encode(signedIntent.toPSBT()),
+    signedForfeitPsbts: signedForfeits,
+  };
 }
 
 /**

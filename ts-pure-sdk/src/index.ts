@@ -130,9 +130,11 @@ export {
 // Escrow signing utilities
 export {
   type SignedEscrowTx,
+  type SignedEscrowDelegate,
   getArkTxid,
   signEscrowArkTx,
   signEscrowCheckpoints,
+  signEscrowDelegate,
 } from "./escrow/index.js";
 // Redeem module (Arkade claim)
 export {
