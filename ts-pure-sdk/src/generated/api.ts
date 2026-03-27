@@ -95,6 +95,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/swap/arkade-lightning/{id}/collab-refund": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Collaboratively refund an Arkade-to-Lightning VHTLC.
+         * @description The client builds and partially signs the refund transaction, then POSTs it
+         *     here. The server obtains the receiver cosignature and returns the result.
+         *     Only allowed when the swap is in `ServerWontFund` or `ClientInvalidFunded`
+         *     state.
+         *
+         *     After receiving the response the client must:
+         *     1. Submit the cosigned PSBTs to the Arkade server for the server signature
+         *     2. Merge all checkpoint signatures and sign as sender
+         *     3. Finalize the transaction with the Arkade server
+         */
+        post: operations["collab_refund_arkade_to_lightning"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/swap/{id}/collab-refund-evm": {
         parameters: {
             query?: never;
@@ -959,6 +987,20 @@ export interface components {
             vhtlc_refund_locktime: number;
             /** @description WBTC token contract address on the target EVM chain (the token locked in the HTLC). */
             wbtc_address: string;
+        };
+        /** @description Request for a collaborative VHTLC refund. */
+        ArkadeToLightningCollabRefundRequest: {
+            /** @description Base64-encoded ark transaction PSBT, partially signed by the sender (client). */
+            ark_tx: string;
+            /** @description Base64-encoded checkpoint transaction PSBT (unsigned). */
+            checkpoint: string;
+        };
+        /** @description Response with cosigned PSBTs for a collaborative refund. */
+        ArkadeToLightningCollabRefundResponse: {
+            /** @description Base64-encoded ark transaction PSBT with receiver cosignature added. */
+            ark_tx: string;
+            /** @description Base64-encoded checkpoint PSBT with receiver cosignature added. */
+            checkpoint: string;
         };
         /**
          * @description Request for creating an Arkade-to-Lightning swap.
@@ -2391,7 +2433,7 @@ export interface components {
          *     - `ClientRefundedServerFunded` is an error state that should never occur
          * @enum {string}
          */
-        SwapStatus: "pending" | "clientfundingseen" | "clientfunded" | "clientrefunded" | "serverfunded" | "clientredeeming" | "clientredeemed" | "serverredeemed" | "clientfundedserverrefunded" | "clientrefundedserverfunded" | "clientrefundedserverrefunded" | "expired" | "clientinvalidfunded" | "clientfundedtoolate" | "clientredeemedandclientrefunded";
+        SwapStatus: "pending" | "clientfundingseen" | "clientfunded" | "clientrefunded" | "serverfunded" | "clientredeeming" | "clientredeemed" | "serverredeemed" | "clientfundedserverrefunded" | "clientrefundedserverfunded" | "clientrefundedserverrefunded" | "expired" | "clientinvalidfunded" | "clientfundedtoolate" | "serverwontfund" | "clientredeemedandclientrefunded";
         /** @description Token identifier. Known values: btc, 0x123456 */
         TokenId: "btc" | string;
         TokenInfo: {
@@ -2670,6 +2712,69 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CollabRefundDelegateResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Refund not allowed in current swap state */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Swap not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    collab_refund_arkade_to_lightning: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Swap ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ArkadeToLightningCollabRefundRequest"];
+            };
+        };
+        responses: {
+            /** @description Cosigned PSBTs */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArkadeToLightningCollabRefundResponse"];
                 };
             };
             /** @description Bad request */

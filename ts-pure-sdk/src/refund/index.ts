@@ -3,7 +3,7 @@
  *
  * Provides refund transaction building for different swap types:
  * - On-chain Bitcoin HTLC refunds (BTC → EVM swaps)
- * - Arkade off-chain VHTLC refunds (Arkade → EVM swaps)
+ * - Arkade off-chain VHTLC refunds (Arkade → EVM / Arkade → Lightning)
  */
 
 export {
@@ -12,11 +12,16 @@ export {
   buildArkadeRefund,
 } from "./arkade.js";
 export {
-  type CollabRefundParams,
-  type CollabRefundResult,
-  collabRefundDelegate,
-  collabRefundOffchain,
-} from "./collab.js";
+  type CollabRefundArkadeToEvmParams,
+  type CollabRefundArkadeToEvmResult,
+  collabRefundArkadeToEvmDelegate,
+  collabRefundArkadeToEvmOffchain,
+} from "./collab-arkade-evm.js";
+export {
+  type CollabRefundArkadeToLightningParams,
+  type CollabRefundArkadeToLightningResult,
+  collabRefundArkadeToLightningOffchain,
+} from "./collab-arkade-lightning.js";
 export {
   type BitcoinNetwork,
   buildOnchainClaimTransaction,

@@ -253,6 +253,88 @@
         }
       }
     },
+    "/api/swap/arkade-lightning/{id}/collab-refund": {
+      "post": {
+        "tags": ["swap-btc-arkade"],
+        "summary": "Collaboratively refund an Arkade-to-Lightning VHTLC.",
+        "description": "The client builds and partially signs the refund transaction, then POSTs it\nhere. The server obtains the receiver cosignature and returns the result.\nOnly allowed when the swap is in `ServerWontFund` or `ClientInvalidFunded`\nstate.\n\nAfter receiving the response the client must:\n1. Submit the cosigned PSBTs to the Arkade server for the server signature\n2. Merge all checkpoint signatures and sign as sender\n3. Finalize the transaction with the Arkade server",
+        "operationId": "collab_refund_arkade_to_lightning",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Swap ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArkadeToLightningCollabRefundRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Cosigned PSBTs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArkadeToLightningCollabRefundResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refund not allowed in current swap state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Swap not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/swap/{id}/collab-refund-evm": {
       "post": {
         "tags": ["swap-evm-btc"],
@@ -2116,6 +2198,36 @@
           "wbtc_address": {
             "type": "string",
             "description": "WBTC token contract address on the target EVM chain (the token locked in the HTLC)."
+          }
+        }
+      },
+      "ArkadeToLightningCollabRefundRequest": {
+        "type": "object",
+        "description": "Request for a collaborative VHTLC refund.",
+        "required": ["ark_tx", "checkpoint"],
+        "properties": {
+          "ark_tx": {
+            "type": "string",
+            "description": "Base64-encoded ark transaction PSBT, partially signed by the sender (client)."
+          },
+          "checkpoint": {
+            "type": "string",
+            "description": "Base64-encoded checkpoint transaction PSBT (unsigned)."
+          }
+        }
+      },
+      "ArkadeToLightningCollabRefundResponse": {
+        "type": "object",
+        "description": "Response with cosigned PSBTs for a collaborative refund.",
+        "required": ["ark_tx", "checkpoint"],
+        "properties": {
+          "ark_tx": {
+            "type": "string",
+            "description": "Base64-encoded ark transaction PSBT with receiver cosignature added."
+          },
+          "checkpoint": {
+            "type": "string",
+            "description": "Base64-encoded checkpoint PSBT with receiver cosignature added."
           }
         }
       },
@@ -4830,6 +4942,7 @@
           "expired",
           "clientinvalidfunded",
           "clientfundedtoolate",
+          "serverwontfund",
           "clientredeemedandclientrefunded"
         ]
       },

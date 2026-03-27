@@ -116,7 +116,7 @@ function formatApiError(error: unknown): string {
 }
 
 /** Parameters for collaborative refund. */
-interface BaseCollabRefundParams {
+interface BaseCollabRefundArkadeToEvmParams {
   userSecretKey: string;
   userPubKey: string;
   lendaswapPubKey: string;
@@ -134,9 +134,9 @@ interface BaseCollabRefundParams {
   apiClient: ApiClient;
 }
 
-export type CollabRefundParams = BaseCollabRefundParams;
+export type CollabRefundArkadeToEvmParams = BaseCollabRefundArkadeToEvmParams;
 
-export interface CollabRefundResult {
+export interface CollabRefundArkadeToEvmResult {
   txId: string;
   refundAmount: bigint;
 }
@@ -144,7 +144,7 @@ export interface CollabRefundResult {
 /**
  * Build the VHTLC script and verify the address matches.
  */
-function buildRefundScriptVhtlc(params: BaseCollabRefundParams) {
+function buildRefundScriptVhtlc(params: BaseCollabRefundArkadeToEvmParams) {
   const userPkBytes = parseXOnlyPubKey(params.userPubKey);
   const lendaswapPkBytes = parseXOnlyPubKey(params.lendaswapPubKey);
   const serverPkBytes = parseXOnlyPubKey(params.arkadeServerPubKey);
@@ -183,9 +183,9 @@ function buildRefundScriptVhtlc(params: BaseCollabRefundParams) {
  * The client signs as sender, POSTs to `/collab-refund` for lendaswap's
  * receiver signature, then submits to Arkade for the server signature.
  */
-export async function collabRefundOffchain(
-  params: BaseCollabRefundParams,
-): Promise<CollabRefundResult> {
+export async function collabRefundArkadeToEvmOffchain(
+  params: BaseCollabRefundArkadeToEvmParams,
+): Promise<CollabRefundArkadeToEvmResult> {
   const { vhtlc, networkName } = buildRefundScriptVhtlc(params);
 
   const serverUrl = params.arkadeServerUrl ?? DEFAULT_ARKADE_URLS[networkName];
@@ -341,8 +341,8 @@ export async function collabRefundOffchain(
  * POSTs to `/collab-refund-delegate` for receiver cosigning, then settles
  * via `/delegate/settle`.
  */
-export async function collabRefundDelegate(
-  params: BaseCollabRefundParams,
+export async function collabRefundArkadeToEvmDelegate(
+  params: BaseCollabRefundArkadeToEvmParams,
 ): Promise<{ commitmentTxid: string }> {
   const { vhtlc, networkName } = buildRefundScriptVhtlc(params);
 

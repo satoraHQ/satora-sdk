@@ -103,8 +103,9 @@ import {
   buildArkadeRefund,
   buildOnchainClaimTransaction,
   buildOnchainRefundTransaction,
-  collabRefundDelegate,
-  collabRefundOffchain,
+  collabRefundArkadeToEvmDelegate,
+  collabRefundArkadeToEvmOffchain,
+  collabRefundArkadeToLightningOffchain,
   verifyHtlcAddress,
 } from "./refund/index.js";
 import {
@@ -1982,6 +1983,15 @@ export class Client {
       return this.#buildEvmToLightningRefund(id, swap, settlement);
     }
 
+    // Arkade-to-Lightning: collaborative refund or locktime refund
+    if (direction === "arkade_to_lightning") {
+      return this.#buildArkadeToLightningRefund(
+        id,
+        swap,
+        options as ArkadeRefundOptions,
+      );
+    }
+
     return {
       success: false,
       message: `Refund not supported for direction: ${direction}.`,
@@ -2590,7 +2600,7 @@ export class Client {
 
     try {
       if (vtxoStatus === "spendable") {
-        const result = await collabRefundOffchain(collabParams);
+        const result = await collabRefundArkadeToEvmOffchain(collabParams);
         return {
           success: true,
           message:
@@ -2601,7 +2611,7 @@ export class Client {
         };
       }
       // recoverable or mixed → collab delegate
-      const result = await collabRefundDelegate(collabParams);
+      const result = await collabRefundArkadeToEvmDelegate(collabParams);
       return {
         success: true,
         message:
@@ -2638,6 +2648,176 @@ export class Client {
     }
 
     // recoverable or mixed → delegate
+    return this.#refundArkadeDelegate(refundParams, options);
+  }
+
+  /**
+   * Refund an Arkade-to-Lightning swap.
+   *
+   * Two paths:
+   * 1. **Collaborative refund** (instant) — available when status is `serverwontfund` or `clientinvalidfunded`
+   * 2. **Locktime refund** (after CLTV expiry) — fallback when the receiver doesn't cooperate
+   *
+   * For retrying with a new invoice, use {@link retryArkadeToLightningSwap} instead.
+   * @internal
+   */
+  async #buildArkadeToLightningRefund(
+    id: string,
+    swap: GetSwapResponse,
+    options?: ArkadeRefundOptions,
+  ): Promise<RefundResult> {
+    if (!options?.destinationAddress) {
+      return {
+        success: false,
+        message:
+          "Destination address is required for Arkade refunds. " +
+          'Provide it via the options parameter: { destinationAddress: "ark1..." }',
+      };
+    }
+
+    if (!this.#swapStorage) {
+      return {
+        success: false,
+        message:
+          "Swap storage is not configured. Cannot retrieve the secret key needed for refund.",
+      };
+    }
+
+    const storedSwap = await this.#swapStorage.get(id);
+    if (!storedSwap) {
+      return {
+        success: false,
+        message: `Swap ${id} not found in local storage. The secret key is required to sign the refund transaction.`,
+      };
+    }
+
+    if (swap.direction !== "arkade_to_lightning") {
+      return {
+        success: false,
+        message: `Expected arkade_to_lightning swap, got ${swap.direction}`,
+      };
+    }
+
+    const s = swap as ArkadeToLightningSwapResponse & {
+      direction: "arkade_to_lightning";
+    };
+
+    // Collaborative refund is available when the Lightning payment failed (serverwontfund)
+    // or the lockup amount was wrong (clientinvalidfunded).
+    const refundableStatuses = ["serverwontfund", "clientinvalidfunded"];
+    if (!refundableStatuses.includes(s.status)) {
+      return {
+        success: false,
+        message:
+          `Refund is only available when swap status is serverwontfund or clientinvalidfunded ` +
+          `(current: ${s.status}). ` +
+          (s.status === "serverredeemed"
+            ? "This swap completed successfully."
+            : "The swap may still be in progress."),
+      };
+    }
+
+    const fullPubKey = storedSwap.publicKey;
+    const userPubKey =
+      fullPubKey.length === 66 ? fullPubKey.slice(2) : fullPubKey;
+
+    const hashLock = s.hash_lock.startsWith("0x")
+      ? s.hash_lock.slice(2)
+      : s.hash_lock;
+
+    // Try collaborative refund first (instant)
+    try {
+      const result = await collabRefundArkadeToLightningOffchain({
+        userSecretKey: storedSwap.secretKey,
+        userPubKey,
+        receiverPubKey: s.receiver_pk,
+        arkadeServerPubKey: s.arkade_server_pk,
+        hashLock,
+        vhtlcAddress: s.arkade_vhtlc_address,
+        refundLocktime: s.vhtlc_refund_locktime,
+        unilateralClaimDelay: s.unilateral_claim_delay,
+        unilateralRefundDelay: s.unilateral_refund_delay,
+        unilateralRefundWithoutReceiverDelay:
+          s.unilateral_refund_without_receiver_delay,
+        destinationAddress: options.destinationAddress,
+        network: s.network,
+        arkadeServerUrl:
+          options.arkadeServerUrl ?? this.#config.arkadeServerUrl,
+        swapId: id,
+        apiClient: this.#apiClient,
+      });
+
+      return {
+        success: true,
+        message:
+          "Arkade-to-Lightning refund executed via collaborative refund!",
+        txId: result.txId,
+        refundAmount: result.refundAmount,
+        broadcast: true,
+      };
+    } catch (collabError) {
+      const collabMsg =
+        collabError instanceof Error
+          ? collabError.message
+          : String(collabError);
+      console.warn(
+        `collaborative refund failed (${collabMsg}), checking locktime fallback`,
+      );
+    }
+
+    // Fallback: non-collaborative refund (requires locktime to have expired)
+    const now = Math.floor(Date.now() / 1000);
+    if (now < s.vhtlc_refund_locktime) {
+      const remainingSeconds = s.vhtlc_refund_locktime - now;
+      const remainingMinutes = Math.ceil(remainingSeconds / 60);
+      return {
+        success: false,
+        message:
+          `collaborative refund failed and non-collaborative refund ` +
+          `is not yet available. The VHTLC locktime expires in ${remainingMinutes} minutes ` +
+          `(at ${new Date(s.vhtlc_refund_locktime * 1000).toISOString()}). ` +
+          `Try again after the locktime expires, or use retryArkadeToLightningSwap() to ` +
+          `retry with a new Lightning invoice.`,
+      };
+    }
+
+    // Locktime expired — use refund_without_receiver path (2-of-2: sender + server)
+    // This reuses the existing Arkade refund logic — lendaswapPubKey is set to
+    // the receiver key from this swap's VHTLC script.
+    const refundParams = {
+      userSecretKey: storedSwap.secretKey,
+      userPubKey,
+      lendaswapPubKey: s.receiver_pk,
+      arkadeServerPubKey: s.arkade_server_pk,
+      hashLock,
+      vhtlcAddress: s.arkade_vhtlc_address,
+      refundLocktime: s.vhtlc_refund_locktime,
+      unilateralClaimDelay: s.unilateral_claim_delay,
+      unilateralRefundDelay: s.unilateral_refund_delay,
+      unilateralRefundWithoutReceiverDelay:
+        s.unilateral_refund_without_receiver_delay,
+      destinationAddress: options.destinationAddress,
+      network: s.network,
+    };
+
+    // Query VTXO status to determine refund method
+    const amounts = await this.amountsForSwap(id);
+    const vtxoStatus = amounts.vtxoStatus;
+
+    if (vtxoStatus === "not_funded" || vtxoStatus === "spent") {
+      return {
+        success: false,
+        message:
+          vtxoStatus === "not_funded"
+            ? "No VTXOs found at the VHTLC address."
+            : "All VTXOs have already been spent.",
+      };
+    }
+
+    if (vtxoStatus === "spendable") {
+      return this.#refundArkadeOffchain(refundParams, options);
+    }
+
     return this.#refundArkadeDelegate(refundParams, options);
   }
 
@@ -3695,7 +3875,7 @@ export class Client {
    * Creates a new Lightning to Arkade swap.
    *
    * The user pays a Lightning invoice and receives Arkade VTXOs
-   * after Boltz funds the Arkade VHTLC.
+   * after the server funds the Arkade VHTLC.
    *
    * @param options - The swap options.
    * @returns The swap response and parameters for storage.
@@ -3724,7 +3904,7 @@ export class Client {
    * Creates a new Arkade to Lightning swap.
    *
    * The user sends Arkade VTXOs and a Lightning invoice gets paid
-   * via a Boltz submarine swap.
+   * via the Lendaswap server.
    *
    * @param options - The swap options.
    * @returns The swap response and parameters for storage.
@@ -3743,6 +3923,236 @@ export class Client {
     options: ArkadeToLightningSwapOptions,
   ): Promise<ArkadeToLightningSwapResult> {
     return createArkadeToLightningSwap(options, this.#getCreateContext());
+  }
+
+  // =========================================================================
+  // Arkade-to-Lightning: Fee Estimation & Retry
+  // =========================================================================
+
+  /**
+   * Calculate the correct Lightning invoice amount for an Arkade→Lightning swap.
+   *
+   * Given the source amount in sats (what will be locked in the VHTLC), returns
+   * the target amount that the Lightning invoice should be for (after fees
+   * are deducted).
+   *
+   * Useful for:
+   * - Knowing what invoice amount to generate before creating a swap
+   * - Retrying a failed swap: the user's funds are locked in the old VHTLC at
+   *   `sourceAmountSats`, and the new invoice must match the expected target amount
+   *
+   * @param sourceAmountSats - Amount in sats that will fund the VHTLC
+   * @returns Quote with target amount, fee breakdown, and exchange rate
+   * @throws Error if the quote request fails or the amount is out of range
+   *
+   * @example
+   * ```ts
+   * const quote = await client.getArkadeToLightningQuote(100000);
+   * console.log(`Invoice should be for ${quote.target_amount} sats`);
+   * console.log(`Fees: ${quote.fee} sats`);
+   * ```
+   */
+  async getArkadeToLightningQuote(
+    sourceAmountSats: number,
+  ): Promise<QuoteResponse> {
+    const { data, error } = await this.#apiClient.GET("/quote", {
+      params: {
+        query: {
+          source_chain: "Arkade",
+          source_token: "btc",
+          target_chain: "Lightning",
+          target_token: "btc",
+          source_amount: sourceAmountSats,
+        },
+      },
+    });
+
+    if (error) {
+      throw new Error(
+        `Failed to get Arkade→Lightning quote: ${typeof error === "string" ? error : JSON.stringify(error)}`,
+      );
+    }
+    if (!data) {
+      throw new Error("No quote data returned");
+    }
+    return data;
+  }
+
+  /**
+   * Retry a failed Arkade→Lightning swap with a new Lightning invoice or LNURL.
+   *
+   * When an Arkade→Lightning swap fails (status `serverwontfund` or `clientinvalidfunded`),
+   * this method:
+   * 1. Creates a new Arkade→Lightning swap with the new invoice/LNURL
+   * 2. Collaboratively refunds the old VHTLC into the new swap's VHTLC
+   *
+   * The refund uses the collaborative `refund` script leaf (3-of-3: sender + receiver + Arkade),
+   * which is instant (no locktime wait). The receiver cooperates because the swap is in
+   * `invoice.failedToPay` state.
+   *
+   * **Invoice amount**: The new invoice must match the expected target amount for the
+   * source amount locked in the old VHTLC. Use {@link getArkadeToLightningQuote} to
+   * calculate the correct invoice amount, or use `lightningAddress` (LNURL) which
+   * handles amount negotiation automatically.
+   *
+   * @param swapId - ID of the failed swap (must be in `serverwontfund` or `clientinvalidfunded` status)
+   * @param options - New invoice or Lightning address for the retry
+   * @returns The new swap response and the refund transaction ID
+   * @throws Error if the swap is not in the right state, amount mismatch, or server refuses
+   *
+   * @example
+   * ```ts
+   * // With LNURL (recommended — handles amount automatically):
+   * const result = await client.retryArkadeToLightningSwap(swapId, {
+   *   lightningAddress: "user@speed.app",
+   * });
+   *
+   * // With invoice (must match expected amount):
+   * const quote = await client.getArkadeToLightningQuote(oldSwap.boltz_amount_sats);
+   * // Generate invoice for quote.target_amount sats, then:
+   * const result = await client.retryArkadeToLightningSwap(swapId, {
+   *   lightningInvoice: "lnbc...",
+   * });
+   * ```
+   */
+  async retryArkadeToLightningSwap(
+    swapId: string,
+    options: {
+      /** BOLT11 Lightning invoice. Must be for the correct amount (use getArkadeToLightningQuote). */
+      lightningInvoice?: string;
+      /** Lightning address (LNURL). Amount is negotiated automatically. */
+      lightningAddress?: string;
+    },
+  ): Promise<{
+    /** The new swap */
+    newSwap: ArkadeToLightningSwapResponse;
+    /** Transaction ID of the collaborative refund from old → new VHTLC */
+    refundTxId: string;
+    /** Amount refunded in sats */
+    refundAmount: bigint;
+  }> {
+    if (!options.lightningInvoice && !options.lightningAddress) {
+      throw new Error(
+        "Provide either lightningInvoice or lightningAddress for retry",
+      );
+    }
+    if (options.lightningInvoice && options.lightningAddress) {
+      throw new Error(
+        "Provide either lightningInvoice or lightningAddress, not both",
+      );
+    }
+
+    // 1. Validate the old swap is in a retryable state
+    const oldSwap = (await this.getSwap(swapId, {
+      updateStorage: true,
+    })) as ArkadeToLightningSwapResponse & {
+      direction: "arkade_to_lightning";
+    };
+
+    if (oldSwap.direction !== "arkade_to_lightning") {
+      throw new Error(
+        `Expected arkade_to_lightning swap, got ${oldSwap.direction}`,
+      );
+    }
+
+    const retryableStatuses = ["serverwontfund", "clientinvalidfunded"];
+    if (!retryableStatuses.includes(oldSwap.status)) {
+      throw new Error(
+        `Swap must be in serverwontfund or clientinvalidfunded status to retry ` +
+          `(current: ${oldSwap.status}). ` +
+          (oldSwap.status === "serverredeemed"
+            ? "This swap completed successfully — no retry needed."
+            : oldSwap.status === "clientrefunded"
+              ? "This swap was already refunded."
+              : "The swap may still be in progress."),
+      );
+    }
+
+    // 2. Get the source amount locked in the old VHTLC
+    const sourceAmountSats = oldSwap.boltz_amount_sats;
+
+    // 3. Build create-swap options
+    const createOptions: ArkadeToLightningSwapOptions = {};
+
+    if (options.lightningAddress) {
+      // LNURL: use the quote to determine the right amount
+      const quote = await this.getArkadeToLightningQuote(sourceAmountSats);
+      createOptions.lightningAddress = options.lightningAddress;
+      createOptions.amountSats = Number(quote.target_amount);
+    } else if (options.lightningInvoice) {
+      createOptions.lightningInvoice = options.lightningInvoice;
+    }
+
+    // 4. Create the new swap
+    const newSwapResult = await this.createArkadeToLightningSwap(createOptions);
+    const newSwap = newSwapResult.response;
+
+    // 5. Verify the new swap's expected funding amount matches our old VHTLC
+    const newExpectedAmount = newSwap.boltz_amount_sats;
+    if (newExpectedAmount > sourceAmountSats) {
+      throw new Error(
+        `Amount mismatch: new swap expects ${newExpectedAmount} sats in VHTLC ` +
+          `but old VHTLC only has ${sourceAmountSats} sats. ` +
+          `The invoice amount may be too high — use getArkadeToLightningQuote(${sourceAmountSats}) ` +
+          `to calculate the correct invoice amount.`,
+      );
+    }
+
+    // 6. Collaborative refund: old VHTLC → new VHTLC address
+    if (!this.#swapStorage) {
+      throw new Error(
+        "Swap storage not configured. Cannot retrieve keys needed for refund.",
+      );
+    }
+
+    const storedSwap = await this.#swapStorage.get(swapId);
+    if (!storedSwap) {
+      throw new Error(
+        `Swap ${swapId} not found in local storage. ` +
+          `The secret key is required to sign the collaborative refund.`,
+      );
+    }
+
+    const fullPubKey = storedSwap.publicKey;
+    const userPubKey =
+      fullPubKey.length === 66 ? fullPubKey.slice(2) : fullPubKey;
+
+    const hashLock = oldSwap.hash_lock.startsWith("0x")
+      ? oldSwap.hash_lock.slice(2)
+      : oldSwap.hash_lock;
+
+    // Collaborative refund: old VHTLC → new VHTLC address
+    console.log("[retry] Starting collaborative refund", {
+      oldSwapId: swapId,
+      newSwapId: newSwap.id,
+      sourceAmount: sourceAmountSats,
+      network: oldSwap.network,
+    });
+
+    const refundResult = await collabRefundArkadeToLightningOffchain({
+      userSecretKey: storedSwap.secretKey,
+      userPubKey,
+      receiverPubKey: oldSwap.receiver_pk,
+      arkadeServerPubKey: oldSwap.arkade_server_pk,
+      hashLock,
+      vhtlcAddress: oldSwap.arkade_vhtlc_address,
+      refundLocktime: oldSwap.vhtlc_refund_locktime,
+      unilateralClaimDelay: oldSwap.unilateral_claim_delay,
+      unilateralRefundDelay: oldSwap.unilateral_refund_delay,
+      unilateralRefundWithoutReceiverDelay:
+        oldSwap.unilateral_refund_without_receiver_delay,
+      destinationAddress: newSwap.arkade_vhtlc_address,
+      network: oldSwap.network,
+      arkadeServerUrl: this.#config.arkadeServerUrl,
+      swapId,
+      apiClient: this.#apiClient,
+    });
+
+    return {
+      newSwap,
+      refundTxId: refundResult.txId,
+      refundAmount: refundResult.refundAmount,
+    };
   }
 
   // =========================================================================
