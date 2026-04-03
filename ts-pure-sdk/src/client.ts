@@ -2727,6 +2727,7 @@ export class Client {
 
     // Try collaborative refund first (instant)
     try {
+      // TODO: Add collabRefundArkadeToLightningDelegate
       const result = await collabRefundArkadeToLightningOffchain({
         userSecretKey: storedSwap.secretKey,
         userPubKey,
@@ -2766,6 +2767,7 @@ export class Client {
     }
 
     // Fallback: non-collaborative refund (requires locktime to have expired)
+    // TODO: Should use Bitcoin's MTP.
     const now = Math.floor(Date.now() / 1000);
     if (now < s.vhtlc_refund_locktime) {
       const remainingSeconds = s.vhtlc_refund_locktime - now;
@@ -2784,6 +2786,7 @@ export class Client {
     // Locktime expired — use refund_without_receiver path (2-of-2: sender + server)
     // This reuses the existing Arkade refund logic — lendaswapPubKey is set to
     // the receiver key from this swap's VHTLC script.
+    // TODO: Not yet e2e-tested!
     const refundParams = {
       userSecretKey: storedSwap.secretKey,
       userPubKey,
