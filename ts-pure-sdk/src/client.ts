@@ -4092,12 +4092,17 @@ export class Client {
 
     // 5. Verify the new swap's expected funding amount matches our old VHTLC
     const newExpectedAmount = newSwap.boltz_amount_sats;
-    if (newExpectedAmount > sourceAmountSats) {
+    if (newExpectedAmount !== sourceAmountSats) {
+      const mismatchHint =
+        newExpectedAmount > sourceAmountSats
+          ? "The invoice amount may be too high"
+          : "The invoice amount may be too low";
+
       throw new Error(
         `Amount mismatch: new swap expects ${newExpectedAmount} sats in VHTLC ` +
-          `but old VHTLC only has ${sourceAmountSats} sats. ` +
-          `The invoice amount may be too high — use getArkadeToLightningQuote(${sourceAmountSats}) ` +
-          `to calculate the correct invoice amount.`,
+          `but old VHTLC has ${sourceAmountSats} sats. ` +
+          `${mismatchHint} — use getArkadeToLightningQuote(${sourceAmountSats}) ` +
+          `to calculate the correct invoice amount before retrying.`,
       );
     }
 
