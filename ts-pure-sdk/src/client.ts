@@ -2702,21 +2702,6 @@ export class Client {
       direction: "arkade_to_lightning";
     };
 
-    // Collaborative refund is available when the Lightning payment failed (serverwontfund)
-    // or the lockup amount was wrong (clientinvalidfunded).
-    const refundableStatuses = ["serverwontfund", "clientinvalidfunded"];
-    if (!refundableStatuses.includes(s.status)) {
-      return {
-        success: false,
-        message:
-          `Refund is only available when swap status is serverwontfund or clientinvalidfunded ` +
-          `(current: ${s.status}). ` +
-          (s.status === "serverredeemed"
-            ? "This swap completed successfully."
-            : "The swap may still be in progress."),
-      };
-    }
-
     const fullPubKey = storedSwap.publicKey;
     const userPubKey =
       fullPubKey.length === 66 ? fullPubKey.slice(2) : fullPubKey;
