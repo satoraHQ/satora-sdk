@@ -19,7 +19,6 @@ import {
   CSVMultisigTapscript,
   type IndexerProvider,
   Intent,
-  type NetworkName,
   networks,
   RestArkProvider,
   RestIndexerProvider,
@@ -34,40 +33,15 @@ import { base64, hex } from "@scure/base";
 import { Address, OutScript, SigHash } from "@scure/btc-signer";
 
 import type { ApiClient } from "../api/client.js";
+import {
+  getNetworkHrp,
+  getNetworkName,
+  resolveArkadeServerUrlByName,
+} from "../arkade-network.js";
 
 // P2A is the zero-value anchor output (OP_1 0x4e73)
 const P2A_SCRIPT = new Uint8Array([0x51, 0x02, 0x4e, 0x73]);
 const P2A = { script: P2A_SCRIPT, amount: 0n };
-
-/** Default Arkade server URL by network */
-const DEFAULT_ARKADE_URLS: Record<string, string> = {
-  bitcoin: "https://arkade.computer",
-  mainnet: "https://arkade.computer",
-  signet: "https://mutinynet.arkade.sh",
-  mutinynet: "https://mutinynet.arkade.sh",
-};
-
-function getNetworkName(network: string): NetworkName {
-  switch (network.toLowerCase()) {
-    case "mainnet":
-    case "bitcoin":
-      return "bitcoin";
-    case "testnet":
-      return "testnet";
-    case "signet":
-      return "signet";
-    case "mutinynet":
-      return "mutinynet";
-    case "regtest":
-      return "regtest";
-    default:
-      throw new Error(`Unknown network: ${network}`);
-  }
-}
-
-function getNetworkHrp(networkName: NetworkName): string {
-  return networks[networkName].hrp;
-}
 
 function secondsToTimelock(
   seconds: number,
@@ -188,12 +162,10 @@ export async function collabRefundArkadeToEvmOffchain(
 ): Promise<CollabRefundArkadeToEvmResult> {
   const { vhtlc, networkName } = buildRefundScriptVhtlc(params);
 
-  const serverUrl = params.arkadeServerUrl ?? DEFAULT_ARKADE_URLS[networkName];
-  if (!serverUrl) {
-    throw new Error(
-      `No Arkade server URL configured for network: ${networkName}`,
-    );
-  }
+  const serverUrl = resolveArkadeServerUrlByName(
+    networkName,
+    params.arkadeServerUrl,
+  );
 
   const arkProvider: ArkProvider = new RestArkProvider(serverUrl);
   const indexerProvider: IndexerProvider = new RestIndexerProvider(serverUrl);
@@ -346,10 +318,10 @@ export async function collabRefundArkadeToEvmDelegate(
 ): Promise<{ commitmentTxid: string }> {
   const { vhtlc, networkName } = buildRefundScriptVhtlc(params);
 
-  const serverUrl = params.arkadeServerUrl ?? DEFAULT_ARKADE_URLS[networkName];
-  if (!serverUrl) {
-    throw new Error(`No Arkade server URL for network: ${networkName}`);
-  }
+  const serverUrl = resolveArkadeServerUrlByName(
+    networkName,
+    params.arkadeServerUrl,
+  );
 
   const arkProvider: ArkProvider = new RestArkProvider(serverUrl);
   const indexerProvider: IndexerProvider = new RestIndexerProvider(serverUrl);

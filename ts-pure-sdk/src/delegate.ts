@@ -35,35 +35,11 @@ import { ripemd160 } from "@noble/hashes/legacy.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { base64, hex } from "@scure/base";
 
-/** Default Arkade server URL by network */
-const DEFAULT_ARKADE_URLS: Record<string, string> = {
-  bitcoin: "https://arkade.computer",
-  mainnet: "https://arkade.computer",
-  signet: "https://mutinynet.arkade.sh",
-  mutinynet: "https://mutinynet.arkade.sh",
-};
-
-function getNetworkName(network: string): NetworkName {
-  switch (network.toLowerCase()) {
-    case "mainnet":
-    case "bitcoin":
-      return "bitcoin";
-    case "testnet":
-      return "testnet";
-    case "signet":
-      return "signet";
-    case "mutinynet":
-      return "mutinynet";
-    case "regtest":
-      return "regtest";
-    default:
-      throw new Error(`Unknown network: ${network}`);
-  }
-}
-
-function getNetworkHrp(networkName: NetworkName): string {
-  return networks[networkName].hrp;
-}
+import {
+  getNetworkHrp,
+  getNetworkName,
+  resolveArkadeServerUrlByName,
+} from "./arkade-network.js";
 
 function secondsToTimelock(
   seconds: number,
@@ -286,10 +262,7 @@ async function settleDelegate(
     arkadeServerUrl,
   } = opts;
 
-  const serverUrl = arkadeServerUrl ?? DEFAULT_ARKADE_URLS[networkName];
-  if (!serverUrl) {
-    throw new Error(`No Arkade server URL for network: ${networkName}`);
-  }
+  const serverUrl = resolveArkadeServerUrlByName(networkName, arkadeServerUrl);
 
   const arkProvider: ArkProvider = new RestArkProvider(serverUrl);
   const indexerProvider: IndexerProvider = new RestIndexerProvider(serverUrl);

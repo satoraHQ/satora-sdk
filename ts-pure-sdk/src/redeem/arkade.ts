@@ -17,8 +17,6 @@ import {
   CSVMultisigTapscript,
   type IndexerProvider,
   Intent,
-  type NetworkName,
-  networks,
   RestArkProvider,
   RestIndexerProvider,
   type SignedIntent,
@@ -33,13 +31,11 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { base64, hex } from "@scure/base";
 import { SigHash } from "@scure/btc-signer";
 
-/** Default Arkade server URL by network */
-const DEFAULT_ARKADE_URLS: Record<string, string> = {
-  bitcoin: "https://arkade.computer",
-  mainnet: "https://arkade.computer",
-  signet: "https://mutinynet.arkade.sh",
-  mutinynet: "https://mutinynet.arkade.sh",
-};
+import {
+  getNetworkHrp,
+  getNetworkName,
+  resolveArkadeServerUrlByName,
+} from "../arkade-network.js";
 
 /** Parameters needed to build an Arkade claim */
 export interface ArkadeClaimParams {
@@ -79,35 +75,6 @@ export interface ArkadeClaimResult {
   txId: string;
   /** Amount claimed in satoshis */
   claimAmount: bigint;
-}
-
-/**
- * Maps network strings from the API to Arkade NetworkName.
- */
-function getNetworkName(network: string): NetworkName {
-  switch (network.toLowerCase()) {
-    case "mainnet":
-    case "bitcoin":
-      return "bitcoin";
-    case "testnet":
-      return "testnet";
-    case "signet":
-      return "signet";
-    case "mutinynet":
-      return "mutinynet";
-    case "regtest":
-      return "regtest";
-    default:
-      throw new Error(`Unknown network: ${network}`);
-  }
-}
-
-/**
- * Get network HRP prefix for Ark addresses.
- */
-function getNetworkHrp(networkName: NetworkName): string {
-  const network = networks[networkName];
-  return network.hrp;
 }
 
 /**
@@ -207,12 +174,7 @@ export async function buildArkadeClaim(
 
   // Determine Arkade server URL
   const networkName = getNetworkName(network);
-  const serverUrl = arkadeServerUrl ?? DEFAULT_ARKADE_URLS[networkName];
-  if (!serverUrl) {
-    throw new Error(
-      `No Arkade server URL configured for network: ${networkName}`,
-    );
-  }
+  const serverUrl = resolveArkadeServerUrlByName(networkName, arkadeServerUrl);
 
   // Create Arkade providers
   const arkProvider: ArkProvider = new RestArkProvider(serverUrl);
@@ -418,12 +380,7 @@ export async function continueArkadeClaim(
 
   // Determine Arkade server URL
   const networkName = getNetworkName(network);
-  const serverUrl = arkadeServerUrl ?? DEFAULT_ARKADE_URLS[networkName];
-  if (!serverUrl) {
-    throw new Error(
-      `No Arkade server URL configured for network: ${networkName}`,
-    );
-  }
+  const serverUrl = resolveArkadeServerUrlByName(networkName, arkadeServerUrl);
 
   // Create Arkade providers
   const arkProvider: ArkProvider = new RestArkProvider(serverUrl);

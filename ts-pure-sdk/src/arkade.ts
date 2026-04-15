@@ -11,11 +11,7 @@ import {
 } from "@arkade-os/sdk";
 import { hex } from "@scure/base";
 
-/** Default Arkade server URLs by network */
-const DEFAULT_ARKADE_URLS: Record<string, string> = {
-  bitcoin: "https://arkade.computer",
-  signet: "https://signet.arkade.computer",
-};
+import { resolveArkadeServerUrl } from "./arkade-network.js";
 
 /** Overall VTXO lifecycle status */
 export type VtxoStatus =
@@ -64,10 +60,7 @@ export async function getVhtlcAmounts(
   const pkScript = hex.encode(decoded.pkScript);
 
   // Determine Arkade server URL: explicit override > network default
-  const serverUrl = arkadeServerUrl ?? DEFAULT_ARKADE_URLS[network];
-  if (!serverUrl) {
-    throw new Error(`Unknown network for Arkade: ${network}`);
-  }
+  const serverUrl = resolveArkadeServerUrl(network, arkadeServerUrl);
 
   const indexerProvider: IndexerProvider = new RestIndexerProvider(serverUrl);
 

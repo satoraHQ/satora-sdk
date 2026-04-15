@@ -14,8 +14,6 @@ import {
   buildOffchainTx,
   CSVMultisigTapscript,
   type IndexerProvider,
-  type NetworkName,
-  networks,
   RestArkProvider,
   RestIndexerProvider,
   SingleKey,
@@ -25,13 +23,11 @@ import {
 import { ripemd160 } from "@noble/hashes/legacy.js";
 import { base64, hex } from "@scure/base";
 
-/** Default Arkade server URL by network */
-const DEFAULT_ARKADE_URLS: Record<string, string> = {
-  bitcoin: "https://arkade.computer",
-  mainnet: "https://arkade.computer",
-  signet: "https://mutinynet.arkade.sh",
-  mutinynet: "https://mutinynet.arkade.sh",
-};
+import {
+  getNetworkHrp,
+  getNetworkName,
+  resolveArkadeServerUrlByName,
+} from "../arkade-network.js";
 
 /** Parameters needed to build an Arkade refund */
 export interface ArkadeRefundParams {
@@ -69,35 +65,6 @@ export interface ArkadeRefundResult {
   txId: string;
   /** Amount refunded in satoshis */
   refundAmount: bigint;
-}
-
-/**
- * Maps network strings from the API to Arkade NetworkName.
- */
-function getNetworkName(network: string): NetworkName {
-  switch (network.toLowerCase()) {
-    case "mainnet":
-    case "bitcoin":
-      return "bitcoin";
-    case "testnet":
-      return "testnet";
-    case "signet":
-      return "signet";
-    case "mutinynet":
-      return "mutinynet";
-    case "regtest":
-      return "regtest";
-    default:
-      throw new Error(`Unknown network: ${network}`);
-  }
-}
-
-/**
- * Get network HRP prefix for Ark addresses.
- */
-function getNetworkHrp(networkName: NetworkName): string {
-  const network = networks[networkName];
-  return network.hrp;
 }
 
 /**
@@ -192,12 +159,7 @@ export async function buildArkadeRefund(
 
   // Determine Arkade server URL
   const networkName = getNetworkName(network);
-  const serverUrl = arkadeServerUrl ?? DEFAULT_ARKADE_URLS[networkName];
-  if (!serverUrl) {
-    throw new Error(
-      `No Arkade server URL configured for network: ${networkName}`,
-    );
-  }
+  const serverUrl = resolveArkadeServerUrlByName(networkName, arkadeServerUrl);
 
   // Create Arkade providers
   const arkProvider: ArkProvider = new RestArkProvider(serverUrl);
