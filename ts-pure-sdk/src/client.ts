@@ -17,6 +17,18 @@ import {
 } from "./api/client.js";
 import { getVhtlcAmounts, type VhtlcAmounts } from "./arkade.js";
 import { USDC_ADDRESSES } from "./cctp/constants.js";
+import { computeCctpFastFee, getCachedCctpFee } from "./cctp/fee.js";
+import {
+  cctpMetaForChainId,
+  isCctpOnlySource,
+} from "./cctp-inbound/chainMap.js";
+import { CctpInboundClient } from "./cctp-inbound/client.js";
+import type {
+  CctpFundSwapResult,
+  CctpProgressStep,
+} from "./cctp-inbound/fundSwap.js";
+import type { AaConfig } from "./cctp-inbound/types.js";
+
 import {
   type ArkadeToEvmSwapOptions,
   type ArkadeToEvmSwapResult,
@@ -393,6 +405,12 @@ export interface ClientConfig {
   esploraUrl?: string;
   /** Optional Arkade server URL (e.g. "https://arkade.computer"). Falls back to network-based defaults. */
   arkadeServerUrl?: string;
+  /**
+   * Optional account-abstraction config (bundler + Gas Manager policy).
+   * Required when using the CCTP-inbound flow; a clear error is thrown
+   * on first CCTP API call if omitted.
+   */
+  aa?: AaConfig;
 }
 
 /**
@@ -433,6 +451,7 @@ export class ClientBuilder {
   #swapStorage?: SwapStorage;
   #mnemonic?: string;
   #xprv?: string;
+  #aa?: AaConfig;
 
   /**
    * Sets the base URL for the API.
@@ -560,6 +579,24 @@ export class ClientBuilder {
   }
 
   /**
+   * Sets the account-abstraction config (bundler + Gas Manager policy).
+   *
+   * Required when using the CCTP-inbound swap flow (any non-Arbitrum
+   * EVM chain as the source). The settlement UserOp — `receiveMessage`
+   * + `USDC.approve(Permit2)` + `executeAndCreateWithPermit2` — is
+   * submitted via the Kernel smart account owned by the consumer's
+   * connected wallet, sponsored by the Gas Manager so users need no
+   * ETH on Arbitrum.
+   *
+   * @param aa - Bundler URL + paymaster policy id.
+   * @returns The builder instance for chaining.
+   */
+  withAa(aa: AaConfig): this {
+    this.#aa = aa;
+    return this;
+  }
+
+  /**
    * Builds and returns a fully initialized Client instance.
    *
    * Initialization order:
@@ -616,6 +653,7 @@ export class ClientBuilder {
         defaultHeaders: this.#defaultHeaders,
         esploraUrl: this.#esploraUrl?.replace(/\/+$/, ""),
         arkadeServerUrl: this.#arkadeServerUrl?.replace(/\/+$/, ""),
+        aa: this.#aa,
       },
       signer,
       this.#signerStorage,
@@ -655,6 +693,7 @@ export class Client {
   readonly #signerStorage?: WalletStorage;
   readonly #swapStorage?: SwapStorage;
   #statusWatcher: SwapStatusWatcher | null = null;
+  #cctpInbound: CctpInboundClient | null = null;
 
   /**
    * Creates a new Client instance.
@@ -727,6 +766,30 @@ export class Client {
   /** The base URL of the API. */
   get baseUrl(): string {
     return this.#config.baseUrl;
+  }
+
+  /**
+   * Namespace for CCTP-inbound swap primitives (source-chain burn,
+   * IRIS attestation, settlement UserOp). Requires `withAa(...)` on
+   * the builder — throws with a clear error otherwise.
+   *
+   * For simple integrations prefer `Client.fundSwap(swapId, signer)`
+   * which auto-dispatches to the CCTP path when needed; drop down to
+   * `client.cctpInbound.*` when you need step-by-step progress control.
+   */
+  get cctpInbound(): CctpInboundClient {
+    if (!this.#cctpInbound) {
+      if (!this.#config.aa) {
+        throw new Error(
+          "CCTP-inbound flow requires AA config. Call `.withAa({ bundlerUrl, paymasterPolicyId })` on the ClientBuilder before `.build()`.",
+        );
+      }
+      this.#cctpInbound = new CctpInboundClient({
+        apiClient: this.#apiClient,
+        aa: this.#config.aa,
+      });
+    }
+    return this.#cctpInbound;
   }
 
   /** The swap storage, if configured. */
@@ -1010,16 +1073,44 @@ export class Client {
         : USDC_ADDRESSES.Arbitrum;
     }
 
+    // CCTP-only source (USDC on Optimism / Base / Linea / …): the quote
+    // endpoint expects the source chain/token the DEX actually runs on
+    // (Arbitrum + native USDC), plus `bridge_source_chain` + address so
+    // the backend can apply the CCTPv2 fast-transfer fee. All gross-vs-net
+    // math happens server-side.
+    let sourceChain = params.sourceChain;
+    let sourceToken = params.sourceToken;
+    let bridgeSourceChain: string | undefined;
+    let bridgeSourceTokenAddress: string | undefined;
+    const parsedSourceChainId = Number.parseInt(params.sourceChain, 10);
+    if (
+      !Number.isNaN(parsedSourceChainId) &&
+      isCctpOnlySource(parsedSourceChainId)
+    ) {
+      const source = cctpMetaForChainId(parsedSourceChainId);
+      if (params.sourceToken.toLowerCase() !== source.usdc.toLowerCase()) {
+        throw new Error(
+          `Quote on ${source.name} requires native USDC (${source.usdc}); got ${params.sourceToken}. Only USDC is bridgeable via CCTP.`,
+        );
+      }
+      bridgeSourceChain = source.name;
+      bridgeSourceTokenAddress = source.usdc;
+      sourceChain = "42161" as Chain;
+      sourceToken = USDC_ADDRESSES.Arbitrum;
+    }
+
     const { data, error } = await this.#apiClient.GET("/quote", {
       params: {
         query: {
-          source_chain: params.sourceChain,
-          source_token: params.sourceToken,
+          source_chain: sourceChain,
+          source_token: sourceToken,
           target_chain: targetChain,
           target_token: targetToken,
           source_amount: params.sourceAmount,
           target_amount: params.targetAmount,
           bridge_target_chain: bridgeTargetChain,
+          bridge_source_chain: bridgeSourceChain,
+          bridge_source_token_address: bridgeSourceTokenAddress,
           ref: params.referralCode,
         },
       },
@@ -1030,6 +1121,7 @@ export class Client {
     if (!data) {
       throw new Error("No quote data returned");
     }
+
     return data;
   }
 
@@ -3225,7 +3317,8 @@ export class Client {
         ? { chain: tgt.chain, token_id: tgt.token_id }
         : { chain: tgt.chain, token_id: tgt.tokenId };
 
-    const sourceChain = sourceAsset.chain;
+    let sourceChain = sourceAsset.chain;
+    let sourceTokenId = sourceAsset.token_id;
     let targetChain = targetAsset.chain;
     let tokenAddress = targetAsset.token_id;
 
@@ -3251,6 +3344,32 @@ export class Client {
           ? USDT0_ADDRESSES.Arbitrum
           : USDC_ADDRESSES.Arbitrum;
       }
+    }
+
+    // Mirror of the outbound remap for CCTP-inbound sources: when the user
+    // provides USDC on a chain the backend doesn't accept as a direct swap
+    // source (Optimism, Base, Linea, …), rewrite to Arbitrum USDC and
+    // populate `inboundBridgeParams` so the backend accounts for the
+    // CCTPv2 fast-transfer fee at quote + UserOp-calldata time.
+    let inboundBridgeParams = options.inboundBridgeParams;
+    const parsedSourceChainId = Number.parseInt(sourceChain, 10);
+    if (
+      !inboundBridgeParams &&
+      !Number.isNaN(parsedSourceChainId) &&
+      isCctpOnlySource(parsedSourceChainId)
+    ) {
+      const source = cctpMetaForChainId(parsedSourceChainId);
+      if (sourceTokenId.toLowerCase() !== source.usdc.toLowerCase()) {
+        throw new Error(
+          `createSwap on ${source.name} requires native USDC (${source.usdc}); got ${sourceTokenId}. Only USDC is bridgeable via CCTP.`,
+        );
+      }
+      inboundBridgeParams = {
+        sourceChain: source.name,
+        sourceTokenAddress: source.usdc,
+      };
+      sourceChain = "42161";
+      sourceTokenId = USDC_ADDRESSES.Arbitrum;
     }
 
     // Arkade → EVM
@@ -3367,7 +3486,7 @@ export class Client {
       }
       return this.createEvmToArkadeSwapGeneric({
         targetAddress: options.targetAddress,
-        tokenAddress: sourceAsset.token_id,
+        tokenAddress: sourceTokenId,
         evmChainId: Number(sourceChain),
         userAddress: options.userAddress ?? "",
         sourceAmount: options.sourceAmount
@@ -3376,6 +3495,7 @@ export class Client {
         targetAmount: options.targetAmount,
         referralCode: options.referralCode,
         gasless: options.gasless,
+        inboundBridgeParams,
       });
     }
 
@@ -3387,7 +3507,7 @@ export class Client {
         );
       }
       return this.createEvmToBitcoinSwap({
-        tokenAddress: sourceAsset.token_id,
+        tokenAddress: sourceTokenId,
         evmChainId: Number(sourceChain),
         userAddress: options.userAddress ?? "",
         targetAddress: options.targetAddress,
@@ -3397,6 +3517,7 @@ export class Client {
         targetAmount: options.targetAmount,
         referralCode: options.referralCode,
         gasless: options.gasless,
+        inboundBridgeParams,
       });
     }
 
@@ -3431,10 +3552,11 @@ export class Client {
             : { lnurl: options.targetAddress }),
           amountSats: options.targetAmount,
           evmChainId: Number(sourceChain),
-          tokenAddress: sourceAsset.token_id,
+          tokenAddress: sourceTokenId,
           userAddress: options.userAddress ?? "",
           referralCode: options.referralCode,
           gasless: options.gasless,
+          inboundBridgeParams,
         });
       }
 
@@ -3453,10 +3575,11 @@ export class Client {
       return this.createEvmToLightningSwapGeneric({
         lightningInvoice: options.targetAddress,
         evmChainId: Number(sourceChain),
-        tokenAddress: sourceAsset.token_id,
+        tokenAddress: sourceTokenId,
         userAddress: options.userAddress ?? "",
         referralCode: options.referralCode,
         gasless: options.gasless,
+        inboundBridgeParams,
       });
     }
 
@@ -4030,7 +4153,16 @@ export class Client {
    *
    * @param swapId - The UUID of the swap
    * @param signer - An {@link EvmSigner} wrapping the user's wallet
-   * @returns The funding transaction hash
+   * @param options - Optional CCTP-path tuning: `maxFee` caps the
+   *                  CCTP fast-transfer fee (defaults to the
+   *                  IRIS-quoted value); `onProgress` receives
+   *                  per-phase updates during the CCTP flow;
+   *                  `signal` aborts the attestation wait. All
+   *                  three are ignored when the swap takes the
+   *                  direct-Permit2 path.
+   * @returns The funding transaction hash, plus an optional `cctp`
+   *          object with `burnTxHash`, `userOpHash`, and
+   *          `smartAccountAddress` when the CCTP path ran.
    *
    * @example
    * ```ts
@@ -4051,7 +4183,95 @@ export class Client {
   async fundSwap(
     swapId: string,
     signer: EvmSigner,
-  ): Promise<{ txHash: string }> {
+    options?: {
+      /** CCTP fast-transfer fee cap in USDC units. Only consulted on
+       *  the CCTP path; defaults to the IRIS-quoted fee. */
+      maxFee?: bigint;
+      /** Progress callback for the CCTP flow. Ignored on direct path. */
+      onProgress?: (step: CctpProgressStep) => void;
+      /** Abort signal — cancels the CCTP attestation wait. */
+      signal?: AbortSignal;
+    },
+  ): Promise<{ txHash: string; cctp?: CctpFundSwapResult }> {
+    // Dispatch the CCTP-inbound path only for chains the backend does
+    // NOT accept as a direct swap source (Optimism, Base, Linea, …).
+    // Ethereum / Polygon / Arbitrum fund via Permit2 on the source
+    // chain even though they're CCTP-supported. Source asset must be
+    // native USDC for the chain — otherwise CCTP isn't viable and we
+    // surface a clear error instead of silently burning the wrong
+    // token through TokenMessenger.
+    if (isCctpOnlySource(signer.chainId)) {
+      const stored = await this.#swapStorage?.get(swapId);
+      const swapResponse =
+        stored?.response ??
+        (await this.getSwap(swapId, { updateStorage: true }));
+      const source = cctpMetaForChainId(signer.chainId);
+
+      // CCTP-inbound swaps are stored against post-hop Arbitrum USDC
+      // (`source_token` reports the Arbitrum address), so we validate
+      // against the `bridge_source_*` fields the backend sets when the
+      // swap was created through the CCTP path. If those are missing
+      // the swap wasn't created for a CCTP-inbound flow — reject rather
+      // than silently burn USDC through the TokenMessenger.
+      const bridgeSourceChain = (
+        swapResponse as { bridge_source_chain?: string }
+      ).bridge_source_chain;
+      const bridgeSourceToken = (
+        swapResponse as { bridge_source_token_address?: string }
+      ).bridge_source_token_address;
+      if (!bridgeSourceChain || !bridgeSourceToken) {
+        throw new Error(
+          `fundSwap on chain ${signer.chainId} expects a CCTP-inbound swap but the swap has no bridge_source_chain set. ` +
+            `Was the swap created against native USDC on a CCTP-only chain?`,
+        );
+      }
+      if (bridgeSourceChain !== source.name) {
+        throw new Error(
+          `fundSwap signer is on ${source.name} but the swap was created for bridge source ${bridgeSourceChain}.`,
+        );
+      }
+      if (bridgeSourceToken.toLowerCase() !== source.usdc.toLowerCase()) {
+        throw new Error(
+          `fundSwap on ${source.name} requires native USDC (${source.usdc}), but swap's bridge_source_token_address is ${bridgeSourceToken}. ` +
+            `Only native USDC is bridgeable via CCTP.`,
+        );
+      }
+
+      const rawAmount = (swapResponse as { source_amount?: number | string })
+        .source_amount;
+      if (rawAmount === undefined) {
+        throw new Error(
+          `Swap ${swapId} has no source_amount — cannot route CCTP fund.`,
+        );
+      }
+      const amount = BigInt(rawAmount);
+
+      const destination = cctpMetaForChainId(42161);
+      const maxFee =
+        options?.maxFee ??
+        computeCctpFastFee(
+          await getCachedCctpFee({
+            sourceDomain: source.domain,
+            destinationDomain: destination.domain,
+          }),
+          amount,
+        );
+
+      const cctp = await this.cctpInbound.fundSwap({
+        swapId,
+        signer,
+        amount,
+        maxFee,
+        onProgress: options?.onProgress,
+        signal: options?.signal,
+      });
+      return { txHash: cctp.transactionHash ?? cctp.userOpHash, cctp };
+    }
+
+    // Direct Permit2 path — Ethereum, Polygon, Arbitrum, or any other
+    // chain `signer.chainId` specifies. Unchanged from the original
+    // behaviour.
+
     // 1. Fetch Permit2 funding params
     const funding = await this.getPermit2FundingParamsUnsigned(
       swapId,

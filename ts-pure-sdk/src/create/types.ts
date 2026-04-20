@@ -33,6 +33,22 @@ export interface UsdcBridgeParams {
   targetTokenAddress: string;
 }
 
+/**
+ * Parameters describing a CCTP inbound bridge on an EVM→* swap.
+ *
+ * Set when the user's source USDC originates on a CCTP chain that the
+ * backend doesn't operate natively on (Optimism, Base, Linea, …). The
+ * swap is created against Arbitrum-native USDC; the SDK surfaces this
+ * metadata so the backend can account for the CCTPv2 fast-transfer fee
+ * that's deducted on the burn.
+ */
+export interface UsdcInboundBridgeParams {
+  /** CCTP source chain name (e.g., "Optimism", "Base"). */
+  sourceChain: string;
+  /** Native USDC contract address on the source chain. */
+  sourceTokenAddress: string;
+}
+
 /** Options for creating an Arkade or Lightning to EVM swap */
 export interface BtcToEvmSwapOptions {
   /** Target EVM address to receive tokens */
@@ -187,6 +203,8 @@ export interface EvmToLightningSwapGenericOptions {
   referralCode?: string;
   /** Use gasless relay. When true, userAddress is auto-derived from the swap's secretKey. */
   gasless?: boolean;
+  /** Optional: when set, source USDC originates on another CCTP chain and hops to Arbitrum via CCTPv2. */
+  inboundBridgeParams?: UsdcInboundBridgeParams;
 }
 
 /** Result of creating an EVM-to-Lightning swap via the generic endpoint */
@@ -215,6 +233,8 @@ export interface EvmToArkadeSwapGenericOptions {
   referralCode?: string;
   /** Use gasless relay. When true, userAddress is auto-derived from the swap's secretKey. */
   gasless?: boolean;
+  /** Optional: when set, source USDC originates on another CCTP chain and hops to Arbitrum via CCTPv2. */
+  inboundBridgeParams?: UsdcInboundBridgeParams;
 }
 
 /** Result of creating an EVM-to-Arkade swap via the generic endpoint */
@@ -243,6 +263,8 @@ export interface EvmToBitcoinSwapOptions {
   referralCode?: string;
   /** Use gasless relay. When true, userAddress is auto-derived from the swap's secretKey. */
   gasless?: boolean;
+  /** Optional: when set, source USDC originates on another CCTP chain and hops to Arbitrum via CCTPv2. */
+  inboundBridgeParams?: UsdcInboundBridgeParams;
 }
 
 /** Result of creating an EVM-to-Bitcoin (on-chain) swap */
@@ -329,6 +351,8 @@ export interface CreateSwapOptions {
   gasless?: boolean;
   /** Optional: when set, USDC is bridged via CCTP to the destination chain after the DEX swap. */
   bridgeParams?: UsdcBridgeParams;
+  /** Optional: when set, source USDC originates on another CCTP chain and hops to Arbitrum via CCTPv2. Auto-populated when the source chain is CCTP-only. */
+  inboundBridgeParams?: UsdcInboundBridgeParams;
 }
 
 /** Options for creating a Lightning-to-Arkade swap */

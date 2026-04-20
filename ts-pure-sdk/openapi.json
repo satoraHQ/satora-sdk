@@ -6,7 +6,7 @@
     "license": {
       "name": ""
     },
-    "version": "0.2.20"
+    "version": "0.2.24"
   },
   "paths": {
     "/api/delegate/cosigner-pk": {
@@ -716,6 +716,15 @@
             "name": "bridge_target_chain",
             "in": "query",
             "description": "Optional: CCTP bridge destination chain (e.g., \"Base\", \"Optimism\").\nWhen set, the CCTP forwarding fee is deducted from the target amount.",
+            "required": false,
+            "schema": {
+              "type": ["string", "null"]
+            }
+          },
+          {
+            "name": "bridge_source_chain",
+            "in": "query",
+            "description": "Optional: CCTP bridge source chain (e.g., \"Optimism\", \"Base\"). Set when\nthe user's source USDC originates on another CCTP chain and hops to\nArbitrum via CCTPv2 before the HTLC is created. The quote internally\nruns the DEX calculation on Arbitrum-native USDC and accounts for the\nfast-transfer fee deducted on the burn.",
             "required": false,
             "schema": {
               "type": ["string", "null"]
@@ -1737,6 +1746,57 @@
         }
       }
     },
+    "/swap/{id}/swap-and-lock-calldata-userop": {
+      "get": {
+        "tags": ["swap-and-lock-calldata-userop"],
+        "summary": "Returns data for funding an EVM-to-BTC swap via a user's 4337 smart\naccount. The client composes a UserOperation that executes receiveMessage\n(for CCTP-inbound) + USDC.approve(Permit2, max) + executeAndCreateWithPermit2\natomically — `destinationCaller` on the source-chain burn is the smart\naccount address, so CCTPv2's receiveMessage gating is pinned to it.",
+        "operationId": "get_coordinator_funding_calldata_userop",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Swap ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "UserOp funding data",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UseropFundingCalldataResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/tokens": {
       "get": {
         "tags": ["tokens"],
@@ -1813,6 +1873,29 @@
   },
   "components": {
     "schemas": {
+      "AaConfig": {
+        "type": "object",
+        "description": "ERC-4337 / Kernel specific addresses the client uses to derive its\nsmart-account sender + compose `initCode`.",
+        "required": ["entry_point", "account_factory", "account_impl", "salt"],
+        "properties": {
+          "account_factory": {
+            "type": "string",
+            "description": "Kernel (ZeroDev) factory address on this chain."
+          },
+          "account_impl": {
+            "type": "string",
+            "description": "Kernel implementation the factory deploys."
+          },
+          "entry_point": {
+            "type": "string",
+            "description": "Canonical EntryPoint v0.7 deployment."
+          },
+          "salt": {
+            "type": "string",
+            "description": "Salt used when deriving the smart-account address. Pinned to \"0\"\nso each user has exactly one smart account per signing key."
+          }
+        }
+      },
       "ArkadeToEvmSwapRequest": {
         "type": "object",
         "description": "Chain-agnostic request for Arkade-to-EVM swaps.\n\nThe caller specifies the target chain via `evm_chain_id` and the token\nvia its ERC-20 contract `token_address`. This endpoint supports any token\nreachable through 1inch aggregation (which covers Uniswap, Curve, etc.).",
@@ -2614,7 +2697,7 @@
       },
       "CallJson": {
         "type": "object",
-        "description": "A single call in the coordinator's Call[] array.",
+        "description": "A single call in the coordinator's Call[] array, serialized as JSON.",
         "required": ["target", "value", "call_data"],
         "properties": {
           "call_data": {
@@ -3135,6 +3218,14 @@
             "description": "Desired BTC output in sats (mutually exclusive with `amount_in`).",
             "minimum": 0
           },
+          "bridge_source_chain": {
+            "type": ["string", "null"],
+            "description": "Optional: CCTP bridge source chain (e.g., \"Ethereum\", \"Optimism\"). When set,\nthe user's source USDC originates on this chain and hops through CCTPv2 to\nArbitrum before the HTLC is created. The backend pads `deposit_amount` by\nthe fast-transfer fee at UserOp-calldata time."
+          },
+          "bridge_source_token_address": {
+            "type": ["string", "null"],
+            "description": "Optional: USDC address on the bridge source chain."
+          },
           "evm_chain_id": {
             "type": "integer",
             "format": "int64",
@@ -3210,6 +3301,14 @@
         "properties": {
           "arkade_server_pk": {
             "type": "string"
+          },
+          "bridge_source_chain": {
+            "type": ["string", "null"],
+            "description": "CCTP bridge source chain. Set when the source USDC originated on\nanother CCTP chain and hopped to Arbitrum via CCTPv2 before the\nHTLC was created. `source_token` still reports the post-hop\nArbitrum USDC; this field tells the SDK what chain the user is\nexpected to burn from."
+          },
+          "bridge_source_token_address": {
+            "type": ["string", "null"],
+            "description": "Native USDC address on the bridge source chain."
           },
           "btc_claim_txid": {
             "type": ["string", "null"]
@@ -3336,6 +3435,14 @@
             "description": "Desired BTC output in sats (mutually exclusive with `amount_in`).",
             "minimum": 0
           },
+          "bridge_source_chain": {
+            "type": ["string", "null"],
+            "description": "Optional: CCTP bridge source chain (e.g., \"Ethereum\", \"Optimism\"). When set,\nthe user's source USDC originates on this chain and hops through CCTPv2 to\nArbitrum before the HTLC is created. The backend pads `deposit_amount` by\nthe fast-transfer fee at UserOp-calldata time."
+          },
+          "bridge_source_token_address": {
+            "type": ["string", "null"],
+            "description": "Optional: USDC address on the bridge source chain."
+          },
           "claim_pk": {
             "type": "string",
             "description": "User's BTC public key for claiming BTC from the on-chain Taproot HTLC."
@@ -3406,6 +3513,14 @@
           "gasless"
         ],
         "properties": {
+          "bridge_source_chain": {
+            "type": ["string", "null"],
+            "description": "CCTP bridge source chain. Set when the source USDC originated on\nanother CCTP chain and hopped to Arbitrum via CCTPv2 before the\nHTLC was created. `source_token` still reports the post-hop\nArbitrum USDC; this field tells the SDK what chain the user is\nexpected to burn from."
+          },
+          "bridge_source_token_address": {
+            "type": ["string", "null"],
+            "description": "Native USDC address on the bridge source chain."
+          },
           "btc_claim_txid": {
             "type": ["string", "null"]
           },
@@ -3538,6 +3653,14 @@
             "description": "Amount in satoshis the recipient should receive on Lightning.\nRequired when `lightning_address` or `lnurl` is provided; ignored when\n`lightning_invoice` is provided (amount is read from the invoice).",
             "minimum": 0
           },
+          "bridge_source_chain": {
+            "type": ["string", "null"],
+            "description": "Optional: CCTP bridge source chain (e.g., \"Ethereum\", \"Optimism\"). When set,\nthe user's source USDC originates on this chain and hops through CCTPv2 to\nArbitrum before the HTLC is created. The backend pads `deposit_amount` by\nthe fast-transfer fee at UserOp-calldata time."
+          },
+          "bridge_source_token_address": {
+            "type": ["string", "null"],
+            "description": "Optional: USDC address on the bridge source chain."
+          },
           "evm_chain_id": {
             "type": "integer",
             "format": "int64",
@@ -3613,6 +3736,14 @@
         "properties": {
           "arkade_server_pk": {
             "type": "string"
+          },
+          "bridge_source_chain": {
+            "type": ["string", "null"],
+            "description": "CCTP bridge source chain. Set when the source USDC originated on\nanother CCTP chain and hopped to Arbitrum via CCTPv2 before the\nHTLC was created. `source_token` still reports the post-hop\nArbitrum USDC; this field tells the SDK what chain the user is\nexpected to burn from."
+          },
+          "bridge_source_token_address": {
+            "type": ["string", "null"],
+            "description": "Native USDC address on the bridge source chain."
           },
           "chain": {
             "type": "string"
@@ -4752,6 +4883,69 @@
             "items": {
               "$ref": "#/components/schemas/TokenInfo"
             }
+          }
+        }
+      },
+      "UseropFundingCalldataResponse": {
+        "type": "object",
+        "description": "Response: same HTLC + DEX payload the Permit2 endpoint returns, plus\nan `aa` object with the addresses a 4337 client needs.",
+        "required": [
+          "coordinator_address",
+          "permit2_address",
+          "source_token_address",
+          "source_amount",
+          "lock_token_address",
+          "preimage_hash",
+          "claim_address",
+          "timelock",
+          "calls",
+          "calls_hash",
+          "aa"
+        ],
+        "properties": {
+          "aa": {
+            "$ref": "#/components/schemas/AaConfig",
+            "description": "4337 / Kernel addresses."
+          },
+          "calls": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CallJson"
+            }
+          },
+          "calls_hash": {
+            "type": "string"
+          },
+          "claim_address": {
+            "type": "string"
+          },
+          "coordinator_address": {
+            "type": "string"
+          },
+          "lock_token_address": {
+            "type": "string"
+          },
+          "permit2_address": {
+            "type": "string"
+          },
+          "preimage_hash": {
+            "type": "string"
+          },
+          "relay_fee": {
+            "type": ["string", "null"]
+          },
+          "source_amount": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "source_token_address": {
+            "type": "string"
+          },
+          "timelock": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },

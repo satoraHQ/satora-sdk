@@ -32,7 +32,14 @@ export {
   USAT_ADDRESSES,
   USDC_ADDRESSES,
 } from "./constants.js";
-
+export {
+  computeCctpFastFee,
+  type FetchCctpFeeOptions,
+  fetchCctpFee,
+  getCachedCctpFee,
+  type IrisFeeEntry,
+  type IrisForwardFeeTiers,
+} from "./fee.js";
 export type {
   AttestationResponse,
   AttestationStatus,

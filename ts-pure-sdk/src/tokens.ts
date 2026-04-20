@@ -216,6 +216,28 @@ export function isBridgeOnlyChain(chain: string): boolean {
   return isEvmToken(chain) && !isSourceEvmChain(chain);
 }
 
+/**
+ * Returns true if the token is USDC on a CCTPv2-supported chain.
+ *
+ * Used to decide whether a token can act as the *source* of a swap via
+ * bridge-kit (any CCTP chain → Arbitrum → BTC): we bridge the user's USDC
+ * into Arbitrum first, then run the existing Arbitrum USDC → BTC swap.
+ */
+export function isCctpUsdc(token: {
+  chain: string;
+  symbol: string;
+  token_id?: string;
+}): boolean {
+  if (token.symbol.toUpperCase() !== "USDC") return false;
+  const tokenChainLower = token.chain.toLowerCase();
+  for (const chainName of Object.keys(CCTP_DOMAINS)) {
+    if (tokenChainLower === chainName.toLowerCase()) return true;
+    const chainId = ALL_EVM_CHAIN_IDS[chainName];
+    if (chainId && token.chain === chainId) return true;
+  }
+  return false;
+}
+
 /** Returns true if the chain is Ethereum. */
 export function isEthereumToken(c: string): boolean {
   return c.toLowerCase() === "ethereum" || c === "1";

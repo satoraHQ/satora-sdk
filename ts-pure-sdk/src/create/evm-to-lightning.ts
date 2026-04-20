@@ -75,6 +75,9 @@ export async function createEvmToLightningSwapGeneric(
       token_address: options.tokenAddress,
       user_address: userAddress,
       user_id: userId,
+      bridge_source_chain: options.inboundBridgeParams?.sourceChain,
+      bridge_source_token_address:
+        options.inboundBridgeParams?.sourceTokenAddress,
     },
   });
 

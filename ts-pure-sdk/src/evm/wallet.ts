@@ -53,6 +53,21 @@ export interface EvmSigner {
   signTypedData(typedData: EIP712TypedData): Promise<string>;
 
   /**
+   * Sign a raw message hash (personal_sign style).
+   *
+   * **Required for the CCTP-inbound flow** — Kernel's ECDSA validator
+   * signs the UserOp hash via `signMessage({ raw })` on the owner.
+   * The direct-Permit2 path does not call this, so existing consumers
+   * can leave it unimplemented.
+   *
+   * For wagmi/Privy/viem consumers this is a one-liner:
+   * `(m) => walletClient.signMessage({ account, message: m })`.
+   *
+   * Must return the 65-byte hex signature (0x-prefixed).
+   */
+  signMessage?(message: { raw: string }): Promise<string>;
+
+  /**
    * Send a raw transaction and return the transaction hash (0x-prefixed).
    *
    * @param tx.to - Target contract address (0x-prefixed)
