@@ -79,10 +79,14 @@ export async function createEvmToLightningSwapGeneric(
   });
 
   if (error) {
-    if (isDuplicateInvoiceError(error.error)) {
-      throw new DuplicateInvoiceError(error.error);
+    const message =
+      typeof error === "string" ? error : JSON.stringify(error, null, 2);
+
+    if (isDuplicateInvoiceError(message)) {
+      throw new DuplicateInvoiceError(message);
     }
-    throw new Error(`Failed to create swap: ${error}`);
+
+    throw new Error(`Failed to create swap: ${message}`);
   }
   if (!data) {
     throw new Error("No swap data returned");
