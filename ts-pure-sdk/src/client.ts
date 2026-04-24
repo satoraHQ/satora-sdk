@@ -4019,6 +4019,12 @@ export class Client {
     /** Amount refunded in sats */
     refundAmount: bigint;
   }> {
+    if (!this.#swapStorage) {
+      throw new Error(
+        "Swap storage not configured. Cannot retrieve keys needed for refund.",
+      );
+    }
+
     if (!options.lightningInvoice && !options.lightningAddress) {
       throw new Error(
         "Provide either lightningInvoice or lightningAddress for retry",
@@ -4086,13 +4092,6 @@ export class Client {
           `but old VHTLC has ${sourceAmountSats} sats. ` +
           `${mismatchHint} — use getArkadeToLightningQuote(${sourceAmountSats}) ` +
           `to calculate the correct invoice amount before retrying.`,
-      );
-    }
-
-    // 6. Collaborative refund: old VHTLC → new VHTLC address
-    if (!this.#swapStorage) {
-      throw new Error(
-        "Swap storage not configured. Cannot retrieve keys needed for refund.",
       );
     }
 
