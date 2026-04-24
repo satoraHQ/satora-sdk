@@ -30,6 +30,9 @@
             "forceJsExtensions": true
           }
         }
+      },
+      "nursery": {
+        "useExhaustiveSwitchCases": "error"
       }
     }
   },
