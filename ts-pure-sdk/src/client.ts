@@ -4031,11 +4031,9 @@ export class Client {
     }
 
     // 1. Validate the old swap is in a retryable state
-    const oldSwap = (await this.getSwap(swapId, {
+    const oldSwap = await this.getSwap(swapId, {
       updateStorage: true,
-    })) as ArkadeToLightningSwapResponse & {
-      direction: "arkade_to_lightning";
-    };
+    });
 
     if (oldSwap.direction !== "arkade_to_lightning") {
       throw new Error(
