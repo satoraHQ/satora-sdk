@@ -15,9 +15,10 @@
  */
 
 import type { Address, Chain, Hex } from "viem";
-import { createPublicClient, erc20Abi, http } from "viem";
+import { createPublicClient, http } from "viem";
 import { arbitrum } from "viem/chains";
 import type { ApiClient } from "../api/client.js";
+import { MESSAGE_TRANSMITTER_V2 } from "../cctp/constants.js";
 import type { EvmSigner } from "../evm/wallet.js";
 import { simulateBatchCalls } from "./preflight.js";
 import { createSwapSmartAccountClient } from "./smartAccount.js";
@@ -26,6 +27,35 @@ import {
   buildCctpInboundBatch,
   type UseropCalldataResponse,
 } from "./userOp.js";
+
+/**
+ * CCTPv2 burn/mint message layout (see Circle's `MessageTransmitterV2`):
+ *
+ *   offset  size  field
+ *   0       4     version
+ *   4       4     sourceDomain
+ *   8       4     destinationDomain
+ *   12      32    nonce            <-- what we extract
+ *   44      32    sender
+ *   ...
+ *
+ * Hex-string offsets include the "0x" prefix and 2 chars per byte, so the
+ * nonce sits at chars [26, 90).
+ */
+function extractNonce(cctpMessage: Hex): Hex {
+  return `0x${cctpMessage.slice(26, 26 + 64)}` as Hex;
+}
+
+/** `MessageTransmitterV2.usedNonces(bytes32)` — returns 0 if unused. */
+const USED_NONCES_ABI = [
+  {
+    type: "function",
+    name: "usedNonces",
+    stateMutability: "view",
+    inputs: [{ name: "nonce", type: "bytes32" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+] as const;
 
 export interface SubmitUserOpParams {
   /** Swap ID assigned by the backend at create time. */
@@ -120,20 +150,28 @@ export async function submitCctpInboundUserOp(
     accountAddress,
   } = await createSwapSmartAccountClient({ signer, aa, chain });
 
-  // 3. Check if USDC already landed at the smart account — happens on
-  //    retries or when a third-party relayer front-ran `receiveMessage`.
+  // 3. Decide whether to include `receiveMessage` in the batch, based on
+  //    whether *this specific burn's nonce* has already been consumed by
+  //    MessageTransmitter. A prior balance-based heuristic here was
+  //    unsafe: any USDC that happened to be at the smart-account address
+  //    (residual from a partial prior attempt, a direct transfer, …) made
+  //    it skip `receiveMessage` even if the current burn was still
+  //    unminted, stranding the fresh funds. Nonce consumption is the
+  //    authoritative signal — `MessageTransmitter.usedNonces(nonce)`
+  //    returns non-zero iff the mint for *this* message has landed.
   //    Reuses the bundler URL as the node RPC (Alchemy serves both).
   const publicClient = createPublicClient({
     chain,
     transport: http(aa.bundlerUrl),
   });
-  const usdcBalance = (await publicClient.readContract({
-    address: server.source_token_address as `0x${string}`,
-    abi: erc20Abi,
-    functionName: "balanceOf",
-    args: [accountAddress],
+  const nonce = extractNonce(cctpMessage);
+  const usedNonce = (await publicClient.readContract({
+    address: MESSAGE_TRANSMITTER_V2 as `0x${string}`,
+    abi: USED_NONCES_ABI,
+    functionName: "usedNonces",
+    args: [nonce],
   })) as bigint;
-  const skipReceiveMessage = usdcBalance >= BigInt(server.source_amount);
+  const skipReceiveMessage = usedNonce !== 0n;
 
   // 4. Compose the 3-call batch (receiveMessage + approve + HTLC create).
   const { calls } = await buildCctpInboundBatch({
