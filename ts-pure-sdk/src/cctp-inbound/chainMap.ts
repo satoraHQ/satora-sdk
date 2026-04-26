@@ -29,7 +29,8 @@ export const CHAIN_ID_TO_CCTP_NAME: Record<number, CctpChainName> = {
   480: "World Chain",
   57073: "Ink",
   999: "HyperEVM",
-  // Testnets / niche chains (Monad, Solana) can land later.
+  10143: "Monad",
+  // Solana lands later (non-EVM, needs a different signer path).
 };
 
 /**
