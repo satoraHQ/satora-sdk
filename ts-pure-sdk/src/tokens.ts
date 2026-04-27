@@ -140,7 +140,7 @@ const ALL_EVM_CHAIN_IDS: Record<string, string> = {
   Ink: "57073",
   Sei: "1329",
   HyperEVM: "999",
-  Monad: "10143",
+  Monad: "143",
   // USDT0-only chains
   Berachain: "80094",
   "Conflux eSpace": "1030",

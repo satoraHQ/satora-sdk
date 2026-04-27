@@ -45,7 +45,7 @@ export const CHAIN_ID_TO_CCTP_NAME: Record<number, CctpChainName> = {
   480: "World Chain",
   57073: "Ink",
   999: "HyperEVM",
-  10143: "Monad",
+  143: "Monad",
   // Solana lands later (non-EVM, needs a different signer path).
 };
 
@@ -122,7 +122,7 @@ export const CCTP_VIEM_CHAINS: Record<number, Chain> = {
   480: worldchain,
   57073: ink,
   999: hyperEvm,
-  10143: monad,
+  143: monad,
 };
 
 /** Look up the viem `Chain` for a CCTP source chain id, or `undefined`. */
