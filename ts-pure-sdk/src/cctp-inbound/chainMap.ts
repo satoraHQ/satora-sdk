@@ -7,7 +7,23 @@
  * doesn't need a redundant "sourceChain" string.
  */
 
-import type { Hex } from "viem";
+import type { Chain, Hex } from "viem";
+import {
+  arbitrum,
+  avalanche,
+  base,
+  hyperEvm,
+  ink,
+  linea,
+  mainnet,
+  monad,
+  optimism,
+  polygon,
+  sei,
+  sonic,
+  unichain,
+  worldchain,
+} from "viem/chains";
 import {
   CCTP_DOMAINS,
   type CctpChainName,
@@ -82,4 +98,42 @@ export function cctpMetaForChainId(chainId: number): {
     domain: CCTP_DOMAINS[name],
     usdc: usdc as Hex,
   };
+}
+
+/**
+ * Map of CCTP source chain id → viem `Chain` object. Mirrors
+ * [`CHAIN_ID_TO_CCTP_NAME`] — keep them in lockstep when adding chains.
+ *
+ * Exposed so browser consumers (wagmi, viem clients) don't have to maintain
+ * their own parallel mapping; tree-shakable so non-browser consumers don't
+ * pay the bundle cost.
+ */
+export const CCTP_VIEM_CHAINS: Record<number, Chain> = {
+  1: mainnet,
+  10: optimism,
+  130: unichain,
+  137: polygon,
+  146: sonic,
+  1329: sei,
+  8453: base,
+  42161: arbitrum,
+  43114: avalanche,
+  59144: linea,
+  480: worldchain,
+  57073: ink,
+  999: hyperEvm,
+  10143: monad,
+};
+
+/** Look up the viem `Chain` for a CCTP source chain id, or `undefined`. */
+export function getCctpViemChain(chainId: number): Chain | undefined {
+  return CCTP_VIEM_CHAINS[chainId];
+}
+
+/** Look up the viem `Chain` for a CCTP source chain name, or `undefined`. */
+export function getCctpViemChainByName(name: string): Chain | undefined {
+  for (const [chainId, chainName] of Object.entries(CHAIN_ID_TO_CCTP_NAME)) {
+    if (chainName === name) return CCTP_VIEM_CHAINS[Number(chainId)];
+  }
+  return undefined;
 }

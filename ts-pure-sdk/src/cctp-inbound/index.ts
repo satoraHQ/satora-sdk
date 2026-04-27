@@ -29,6 +29,15 @@ export {
   type DepositForBurnParams,
   encodeDepositForBurn,
 } from "./burn.js";
+export {
+  CCTP_VIEM_CHAINS,
+  CHAIN_ID_TO_CCTP_NAME,
+  cctpMetaForChainId,
+  DIRECT_SOURCE_CHAIN_IDS,
+  getCctpViemChain,
+  getCctpViemChainByName,
+  isCctpOnlySource,
+} from "./chainMap.js";
 export type { CctpInboundClientConfig } from "./client.js";
 export { CctpInboundClient } from "./client.js";
 export {
