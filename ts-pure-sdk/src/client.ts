@@ -322,6 +322,14 @@ export interface ArkadeClaimOptions {
   destinationAddress: string;
   /** Arkade server URL (optional, uses default based on network) */
   arkadeServerUrl?: string;
+  /**
+   * If the VTXO has not been indexed yet (status `not_funded`), keep
+   * polling for up to this many milliseconds before giving up. The
+   * server-funded WS update can race ahead of the Arkade indexer; a
+   * short wait absorbs that lag without surfacing a transient error.
+   * Set to `0` to fail immediately. Default: 30_000.
+   */
+  waitForVtxoMs?: number;
 }
 
 /** Options for claiming a swap */
@@ -1654,9 +1662,12 @@ export class Client {
     // Extract common VHTLC parameters
     const claimParams = this.#extractArkadeClaimParams(id, storedSwap);
 
-    // Query VTXO status to determine claim method
-    const amounts = await this.amountsForSwap(id);
-    const vtxoStatus = amounts.vtxoStatus;
+    // Query VTXO status to determine claim method, polling briefly while
+    // the Arkade indexer catches up if the funding tx hasn't been seen yet.
+    const vtxoStatus = await this.#waitForVtxoStatus(
+      id,
+      options.waitForVtxoMs ?? 30_000,
+    );
 
     if (vtxoStatus === "not_funded" || vtxoStatus === "spent") {
       return {
@@ -1677,6 +1688,33 @@ export class Client {
 
     // recoverable or mixed → delegate
     return this.#claimArkadeDelegate(id, claimParams, options);
+  }
+
+  /**
+   * Poll `amountsForSwap` until the VTXO status leaves `not_funded` or
+   * the timeout elapses. Returns the most recent status observed.
+   *
+   * Uses an exponential-ish backoff capped at 2s between probes so the
+   * usual case (indexer catches up within a few seconds) feels snappy
+   * without hammering the server.
+   */
+  async #waitForVtxoStatus(
+    id: string,
+    timeoutMs: number,
+  ): Promise<VhtlcAmounts["vtxoStatus"]> {
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    let delayMs = 500;
+    // First probe is immediate; subsequent probes back off.
+    while (true) {
+      const amounts = await this.amountsForSwap(id);
+      if (amounts.vtxoStatus !== "not_funded") return amounts.vtxoStatus;
+      if (Date.now() >= deadline) return amounts.vtxoStatus;
+      const remaining = deadline - Date.now();
+      const sleepMs = Math.min(delayMs, remaining);
+      if (sleepMs <= 0) return amounts.vtxoStatus;
+      await new Promise((resolve) => setTimeout(resolve, sleepMs));
+      delayMs = Math.min(delayMs * 2, 2_000);
+    }
   }
 
   /**
