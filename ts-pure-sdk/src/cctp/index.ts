@@ -54,5 +54,7 @@ export {
   addressToBytes32,
   bytes32ToAddress,
   getDomain,
+  isValidSolanaAddress,
   needsBridge,
+  solanaAddressToBytes32,
 } from "./utils.js";

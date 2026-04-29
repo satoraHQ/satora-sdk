@@ -213,7 +213,17 @@ export function isSourceEvmChain(chain: string): boolean {
 
 /** Returns true if the chain is a bridge-only destination (no HTLC contracts). */
 export function isBridgeOnlyChain(chain: string): boolean {
+  if (isSolanaToken(chain)) return true;
   return isEvmToken(chain) && !isSourceEvmChain(chain);
+}
+
+/**
+ * Returns true if the chain is Solana. Solana is a CCTP-only destination —
+ * funds reach it via Circle's Forwarding Service after an Arbitrum-side
+ * burn, never as a swap source/target chain in its own right.
+ */
+export function isSolanaToken(chain: string): boolean {
+  return chain.toLowerCase() === "solana";
 }
 
 /**
@@ -282,6 +292,10 @@ export function toChain(str: string): Chain {
   if (c === "lightning") return "Lightning";
   if (c === "arkade") return "Arkade";
   if (c === "bitcoin") return "Bitcoin";
+  // Solana is a CCTP destination only — not a first-class Chain in the
+  // backend's union, so we cast through. Frontends use the literal "Solana"
+  // string for icons / dropdown filters.
+  if (c === "solana") return "Solana" as Chain;
   // Check new chains by name
   for (const [name, id] of Object.entries(ALL_EVM_CHAIN_IDS)) {
     if (c === name.toLowerCase() || c === id) return id as Chain;
@@ -323,19 +337,22 @@ export function getCctpBridgeTokens(): TokenInfo[] {
   for (const chainName of Object.keys(CCTP_DOMAINS)) {
     // Skip source chains (backend already provides their USDC tokens)
     if (sourceChainNames.has(chainName)) continue;
-    // Skip non-EVM chains
-    if (chainName === "Solana") continue;
 
     const usdcAddress = USDC_ADDRESSES[chainName];
-    const chainId = ALL_EVM_CHAIN_IDS[chainName];
-    if (!usdcAddress || !chainId) continue;
+    if (!usdcAddress) continue;
+
+    // Solana has no EVM chain id — use the literal "Solana" string as the
+    // chain identifier (matches the backend's `bridge_target_chain` value).
+    const chainIdentifier =
+      chainName === "Solana" ? "Solana" : ALL_EVM_CHAIN_IDS[chainName];
+    if (!chainIdentifier) continue;
 
     tokens.push({
       token_id: usdcAddress as TokenId,
       symbol: "USDC",
       name: `USD Coin (${chainName})`,
       decimals: 6,
-      chain: chainId as Chain,
+      chain: chainIdentifier as Chain,
     });
   }
 

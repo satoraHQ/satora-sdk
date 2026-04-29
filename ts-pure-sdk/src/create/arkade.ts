@@ -58,26 +58,36 @@ export async function createArkadeToEvmSwapGeneric(
     // Target address is where tokens are swept after the claim (user's final destination).
     // This is required and stored on the server for use during redemption.
 
+    // See `createBitcoinToEvmSwap` for the typed-base cast pattern —
+    // `bridge_recipient_setup` isn't in the OpenAPI body type yet.
+    const baseBody = {
+      hash_lock: hashLock,
+      refund_pk: refundPk,
+      user_id: userId,
+      claiming_address: claimingAddress,
+      target_address: options.targetAddress,
+      token_address: options.tokenAddress,
+      evm_chain_id: options.evmChainId,
+      amount_in: options.sourceAmount
+        ? Number(options.sourceAmount)
+        : undefined,
+      amount_out: options.targetAmount
+        ? Number(options.targetAmount)
+        : undefined,
+      referral_code: options.referralCode,
+      gasless: options.gasless ?? true,
+      bridge_target_chain: options.bridgeParams?.targetChain,
+      bridge_target_token_address: options.bridgeParams?.targetTokenAddress,
+    };
+    const body =
+      options.bridgeParams?.recipientSetup !== undefined
+        ? ({
+            ...baseBody,
+            bridge_recipient_setup: options.bridgeParams.recipientSetup,
+          } as typeof baseBody)
+        : baseBody;
     const { data, error } = await ctx.apiClient.POST("/swap/arkade/evm", {
-      body: {
-        hash_lock: hashLock,
-        refund_pk: refundPk,
-        user_id: userId,
-        claiming_address: claimingAddress,
-        target_address: options.targetAddress,
-        token_address: options.tokenAddress,
-        evm_chain_id: options.evmChainId,
-        amount_in: options.sourceAmount
-          ? Number(options.sourceAmount)
-          : undefined,
-        amount_out: options.targetAmount
-          ? Number(options.targetAmount)
-          : undefined,
-        referral_code: options.referralCode,
-        gasless: options.gasless ?? true,
-        bridge_target_chain: options.bridgeParams?.targetChain,
-        bridge_target_token_address: options.bridgeParams?.targetTokenAddress,
-      },
+      body,
     });
 
     if (error) {

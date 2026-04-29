@@ -34,6 +34,22 @@ export interface GaslessClaimParams {
   /** keccak256(abi.encode(calls)) from the redeem-and-swap-calldata endpoint.
    *  Required for non-WBTC targets (when dexCalldata is provided). */
   callsHash: string;
+  /**
+   * Optional non-EVM bridge recipient (e.g. a Solana base58 SPL pubkey).
+   * Required when the swap's `bridge_target_chain` is non-EVM. Must
+   * match the value passed to `redeem-and-swap-calldata` so the
+   * rebuilt server-side `calls_hash` matches the EIP-712 signature.
+   *
+   * For Solana: this is the recipient's USDC ATA, not the wallet pubkey.
+   */
+  bridgeRecipient?: string;
+  /**
+   * Optional Solana wallet pubkey, supplied alongside `bridgeRecipient`
+   * when the recipient's USDC ATA does not yet exist. Triggers the
+   * extended 65-byte forwarding hookData. Must mirror what was passed
+   * to the calldata-fetch endpoint so the rebuilt `calls_hash` matches.
+   */
+  bridgeRecipientWallet?: string;
 }
 
 /**
@@ -57,6 +73,8 @@ export async function claimViaGasless(
     destination,
     dexCalldata,
     callsHash,
+    bridgeRecipient,
+    bridgeRecipientWallet,
   } = params;
 
   const secretHex = preimage.startsWith("0x") ? preimage : `0x${preimage}`;
@@ -104,6 +122,8 @@ export async function claimViaGasless(
       r: sig.r,
       s: sig.s,
       dex_calldata: needsDexSwap ? dexCalldata : undefined,
+      bridge_recipient: bridgeRecipient,
+      bridge_recipient_wallet: bridgeRecipientWallet,
     }),
   });
 

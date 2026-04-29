@@ -52,22 +52,33 @@ export async function createBitcoinToEvmSwap(
     // reused across swaps so a single Permit2 approval suffices.
     const claimingAddress = ctx.evmAddress;
 
+    // `bridge_recipient_setup` isn't in the auto-generated OpenAPI body
+    // type yet — backend accepts it as an optional field, so we attach
+    // it via a typed-base + extra-fields cast.
+    const baseBody = {
+      hash_lock: hashLock,
+      refund_pk: refundPk,
+      user_id: userId,
+      claiming_address: claimingAddress,
+      target_address: options.targetAddress,
+      token_address: options.tokenAddress,
+      evm_chain_id: options.evmChainId,
+      amount_in: options.sourceAmount,
+      amount_out: options.targetAmount,
+      referral_code: options.referralCode,
+      gasless: options.gasless ?? true,
+      bridge_target_chain: options.bridgeParams?.targetChain,
+      bridge_target_token_address: options.bridgeParams?.targetTokenAddress,
+    };
+    const body =
+      options.bridgeParams?.recipientSetup !== undefined
+        ? ({
+            ...baseBody,
+            bridge_recipient_setup: options.bridgeParams.recipientSetup,
+          } as typeof baseBody)
+        : baseBody;
     const { data, error } = await ctx.apiClient.POST("/swap/bitcoin/evm", {
-      body: {
-        hash_lock: hashLock,
-        refund_pk: refundPk,
-        user_id: userId,
-        claiming_address: claimingAddress,
-        target_address: options.targetAddress,
-        token_address: options.tokenAddress,
-        evm_chain_id: options.evmChainId,
-        amount_in: options.sourceAmount,
-        amount_out: options.targetAmount,
-        referral_code: options.referralCode,
-        gasless: options.gasless ?? true,
-        bridge_target_chain: options.bridgeParams?.targetChain,
-        bridge_target_token_address: options.bridgeParams?.targetTokenAddress,
-      },
+      body,
     });
 
     if (error) {

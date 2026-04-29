@@ -36,22 +36,32 @@ export async function createLightningToEvmSwapGeneric(
 
     const claimingAddress = ctx.evmAddress;
 
+    // See `createBitcoinToEvmSwap` for the typed-base cast pattern —
+    // `bridge_recipient_setup` isn't in the OpenAPI body type yet.
+    const baseBody = {
+      hash_lock: hashLock,
+      refund_pk: refundPk,
+      user_id: userId,
+      claiming_address: claimingAddress,
+      target_address: options.targetAddress,
+      evm_chain_id: options.evmChainId,
+      token_address: options.tokenAddress,
+      amount_in: options.amountIn,
+      amount_out: options.amountOut,
+      referral_code: options.referralCode,
+      gasless: options.gasless ?? true,
+      bridge_target_chain: options.bridgeParams?.targetChain,
+      bridge_target_token_address: options.bridgeParams?.targetTokenAddress,
+    };
+    const body =
+      options.bridgeParams?.recipientSetup !== undefined
+        ? ({
+            ...baseBody,
+            bridge_recipient_setup: options.bridgeParams.recipientSetup,
+          } as typeof baseBody)
+        : baseBody;
     const { data, error } = await ctx.apiClient.POST("/swap/lightning/evm", {
-      body: {
-        hash_lock: hashLock,
-        refund_pk: refundPk,
-        user_id: userId,
-        claiming_address: claimingAddress,
-        target_address: options.targetAddress,
-        evm_chain_id: options.evmChainId,
-        token_address: options.tokenAddress,
-        amount_in: options.amountIn,
-        amount_out: options.amountOut,
-        referral_code: options.referralCode,
-        gasless: options.gasless ?? true,
-        bridge_target_chain: options.bridgeParams?.targetChain,
-        bridge_target_token_address: options.bridgeParams?.targetTokenAddress,
-      },
+      body,
     });
 
     if (error) {

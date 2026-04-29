@@ -314,6 +314,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Probe every external dependency and return their aggregated health.
+         * @description Returns 200 when every service is healthy, 503 otherwise — the body
+         *     carries the per-service breakdown either way so callers can distinguish
+         *     which dependency is down.
+         */
+        get: operations["get_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/support-agents": {
         parameters: {
             query?: never;
@@ -906,6 +928,11 @@ export interface components {
              */
             amount_out?: number | null;
             /**
+             * @description Optional: ATA-existence hint for non-EVM CCTP destinations
+             *     (Solana). See `BitcoinToEvmSwapRequest::bridge_recipient_setup`.
+             */
+            bridge_recipient_setup?: boolean | null;
+            /**
              * @description Optional: CCTP bridge destination chain (e.g., "Ethereum", "Arbitrum"). When set,
              *     USDC will be bridged to this chain after the DEX swap.
              */
@@ -1141,6 +1168,15 @@ export interface components {
              *     USDC).
              */
             amount_out?: number | null;
+            /**
+             * @description Optional: ATA-existence hint for non-EVM CCTP destinations
+             *     (Solana). `true` = recipient has no USDC ATA yet, `false` =
+             *     recipient already holds USDC. Drives the bridge-fee variant
+             *     used when inflating the DEX target — must match the value
+             *     later passed to `redeem-and-swap-calldata` so the burn doesn't
+             *     underflow. Omit to fall back to the conservative default.
+             */
+            bridge_recipient_setup?: boolean | null;
             /**
              * @description Optional: CCTP bridge destination chain (e.g., "Ethereum", "Arbitrum"). When set,
              *     USDC will be bridged to this chain after the DEX swap.
@@ -1393,6 +1429,22 @@ export interface components {
          *     ```
          */
         ClaimGaslessRequest: {
+            /**
+             * @description Optional non-EVM bridge recipient (e.g. a Solana base58 SPL pubkey).
+             *     Used as CCTP `mintRecipient` when `bridge_target_chain` is non-EVM;
+             *     must match the value passed to `redeem-and-swap-calldata` so the
+             *     rebuilt `calls_hash` matches the EIP-712 signature.
+             *
+             *     For Solana: this is the recipient's USDC ATA, not their wallet.
+             */
+            bridge_recipient?: string | null;
+            /**
+             * @description Optional Solana wallet pubkey, supplied alongside `bridge_recipient`
+             *     when the recipient's USDC ATA does not yet exist. Triggers the
+             *     extended 65-byte forwarding hookData. Must mirror what was passed to
+             *     `redeem-and-swap-calldata` so the rebuilt `calls_hash` matches.
+             */
+            bridge_recipient_wallet?: string | null;
             /** @description EVM address where tokens should be sent */
             destination: string;
             dex_calldata?: null | components["schemas"]["DexCalldata"];
@@ -2124,6 +2176,11 @@ export interface components {
              */
             amount_out?: number | null;
             /**
+             * @description Optional: ATA-existence hint for non-EVM CCTP destinations
+             *     (Solana). See `BitcoinToEvmSwapRequest::bridge_recipient_setup`.
+             */
+            bridge_recipient_setup?: boolean | null;
+            /**
              * @description Optional: CCTP bridge destination chain (e.g., "Ethereum", "Arbitrum"). When set,
              *     USDC will be bridged to this chain after the DEX swap.
              */
@@ -2338,6 +2395,36 @@ export interface components {
          * @enum {string}
          */
         RefundMode: "direct" | "swap-back";
+        /**
+         * @description Per-service health datapoint.
+         *
+         *     Failures intentionally do not include the underlying error: transport
+         *     errors from RPC clients can echo back full URLs (with embedded API keys)
+         *     and other internal topology. Detailed errors are logged server-side; the
+         *     public response only carries a sanitized `"unavailable"` marker.
+         */
+        ServiceStatus: {
+            /**
+             * Format: int64
+             * @description Tip / block height for chain-backed services (Bitcoin and EVMs).
+             */
+            block_height?: number | null;
+            /**
+             * Format: int64
+             * @description Tip block timestamp (Unix seconds) for chain-backed services.
+             */
+            block_time?: number | null;
+            error?: string | null;
+            healthy: boolean;
+        };
+        ServicesStatus: {
+            arbitrum: components["schemas"]["ServiceStatus"];
+            arkade: components["schemas"]["ServiceStatus"];
+            bitcoin: components["schemas"]["ServiceStatus"];
+            ethereum: components["schemas"]["ServiceStatus"];
+            lightning: components["schemas"]["ServiceStatus"];
+            polygon: components["schemas"]["ServiceStatus"];
+        };
         SettleDelegateRequest: {
             /** @description Hex-encoded compressed cosigner public key (must match our static key). */
             cosigner_pk: string;
@@ -2358,6 +2445,12 @@ export interface components {
         SettleDelegateResponse: {
             /** @description Commitment transaction ID from the batch settlement. */
             commitment_txid: string;
+        };
+        /** @description Aggregated health of every external dependency. */
+        StatusResponse: {
+            /** @description True if every probed service is healthy. */
+            healthy: boolean;
+            services: components["schemas"]["ServicesStatus"];
         };
         SupportAgentInfo: {
             npub: string;
@@ -3177,6 +3270,15 @@ export interface operations {
                  *     fast-transfer fee deducted on the burn.
                  */
                 bridge_source_chain?: string | null;
+                /**
+                 * @description Optional: `true` when the recipient's USDC token account on the
+                 *     destination chain does NOT yet exist and Circle's forwarder needs
+                 *     to create it (only meaningful for non-EVM destinations like
+                 *     Solana — adds ~$0.05 of ATA rent to `forwardFee`). `false`
+                 *     confirms the recipient already holds USDC. Omit to fall back to
+                 *     the conservative default (assumed-true for non-EVM).
+                 */
+                bridge_recipient_setup?: boolean | null;
                 /** @description Optional referral code for tracking. */
                 ref?: string | null;
             };
@@ -3202,6 +3304,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description All external dependencies are healthy */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StatusResponse"];
+                };
+            };
+            /** @description At least one external dependency is unhealthy */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StatusResponse"];
                 };
             };
         };

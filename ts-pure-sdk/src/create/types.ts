@@ -31,6 +31,15 @@ export interface UsdcBridgeParams {
   targetChain: string;
   /** Native USDC contract address on the destination chain. */
   targetTokenAddress: string;
+  /**
+   * Optional ATA-existence hint for non-EVM destinations (Solana).
+   * `true` = recipient has no USDC ATA yet, `false` = recipient already
+   * holds USDC. Must match the value passed to the calldata-fetch and
+   * claim-gasless endpoints so the rebuilt `calls_hash` matches the
+   * EIP-712 signature. Omit to let the backend fall back to its
+   * conservative default (assumed-true for non-EVM).
+   */
+  recipientSetup?: boolean;
 }
 
 /**
@@ -351,6 +360,14 @@ export interface CreateSwapOptions {
   gasless?: boolean;
   /** Optional: when set, USDC is bridged via CCTP to the destination chain after the DEX swap. */
   bridgeParams?: UsdcBridgeParams;
+  /**
+   * Optional: ATA-existence hint for non-EVM CCTP destinations (Solana).
+   * `true` when the recipient's USDC associated token account doesn't
+   * exist yet, `false` when it does. Forwarded into the auto-built
+   * `bridgeParams.recipientSetup` for bridge-only target chains, and
+   * passed straight through to the `/swap/*` endpoint.
+   */
+  bridgeRecipientSetup?: boolean;
   /** Optional: when set, source USDC originates on another CCTP chain and hops to Arbitrum via CCTPv2. Auto-populated when the source chain is CCTP-only. */
   inboundBridgeParams?: UsdcInboundBridgeParams;
 }

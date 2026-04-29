@@ -2,6 +2,7 @@
  * CCTP utility functions.
  */
 
+import { base58 } from "@scure/base";
 import { CCTP_DOMAINS, type CctpChainName } from "./constants.js";
 
 /**
@@ -54,4 +55,44 @@ export function needsBridge(sourceChain: string, targetChain: string): boolean {
   const sourceDomain = getDomain(sourceChain);
   const targetDomain = getDomain(targetChain);
   return sourceDomain !== undefined && targetDomain !== undefined;
+}
+
+/**
+ * Validate a Solana address. Solana pubkeys are base58-encoded 32-byte
+ * values, typically 32-44 base58 characters. Cheap structural check —
+ * does not verify on-curve / system-program semantics.
+ */
+export function isValidSolanaAddress(address: string): boolean {
+  if (!address) return false;
+  if (address.length < 32 || address.length > 44) return false;
+  // Disallow base58-illegal characters early so we don't rely on the
+  // decode throwing for obvious junk.
+  if (!/^[1-9A-HJ-NP-Za-km-z]+$/.test(address)) return false;
+  try {
+    return base58.decode(address).length === 32;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Decode a base58-encoded Solana pubkey into CCTP's 32-byte recipient
+ * format. Solana pubkeys are natively 32 bytes — no padding needed.
+ *
+ * Returns a `0x`-prefixed 64-character hex string (the bytes32 form
+ * accepted by Circle's TokenMessenger `mintRecipient` field), so the
+ * shape matches `addressToBytes32` for EVM addresses.
+ */
+export function solanaAddressToBytes32(address: string): string {
+  const decoded = base58.decode(address);
+  if (decoded.length !== 32) {
+    throw new Error(
+      `Solana pubkey must decode to 32 bytes, got ${decoded.length} for ${address}`,
+    );
+  }
+  let hex = "0x";
+  for (const byte of decoded) {
+    hex += byte.toString(16).padStart(2, "0");
+  }
+  return hex;
 }

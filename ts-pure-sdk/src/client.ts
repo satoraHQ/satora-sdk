@@ -343,6 +343,24 @@ export interface ClaimOptions {
   destinationAddress?: string;
   /** Fee rate in sat/vB for on-chain Bitcoin claims (default: 2) */
   feeRateSatPerVb?: number;
+  /**
+   * Optional non-EVM bridge recipient (e.g. a Solana base58 SPL pubkey).
+   * Required when the swap's `bridge_target_chain` is non-EVM, since the
+   * EIP-712 `destination` field can only carry an EVM address. Forwarded
+   * to both `redeem-and-swap-calldata` and `claim-gasless` so the rebuilt
+   * `calls_hash` matches.
+   *
+   * For Solana: this is the recipient's USDC **associated token account
+   * (ATA)** — derive it from the wallet pubkey before passing.
+   */
+  bridgeRecipient?: string;
+  /**
+   * Optional Solana wallet pubkey, supplied alongside `bridgeRecipient`
+   * when the recipient's USDC ATA does **not** yet exist. Triggers the
+   * extended 65-byte forwarding hookData so Circle creates the ATA at
+   * mint time. Omit when the ATA already exists.
+   */
+  bridgeRecipientWallet?: string;
 }
 
 /** Result of getting EVM funding call data */
@@ -1061,6 +1079,13 @@ export class Client {
     sourceAmount?: number;
     targetAmount?: number;
     referralCode?: string;
+    /**
+     * Optional ATA-existence hint for non-EVM CCTP destinations
+     * (Solana). `true` = recipient has no USDC ATA yet, `false` =
+     * recipient already holds USDC. Omit to let the backend fall back
+     * to its conservative default.
+     */
+    bridgeRecipientSetup?: boolean;
   }): Promise<QuoteResponse> {
     // If the target is a bridge-only chain (e.g. USDC on Base), remap the
     // quote request to the token on Arbitrum (source chain the backend knows).
@@ -1108,21 +1133,30 @@ export class Client {
       sourceToken = USDC_ADDRESSES.Arbitrum;
     }
 
+    // `bridge_recipient_setup` isn't in the auto-generated OpenAPI types
+    // yet — the backend accepts it as an optional query param, so we
+    // attach it via an extra-fields cast without widening the rest.
+    const baseQuery = {
+      source_chain: sourceChain,
+      source_token: sourceToken,
+      target_chain: targetChain,
+      target_token: targetToken,
+      source_amount: params.sourceAmount,
+      target_amount: params.targetAmount,
+      bridge_target_chain: bridgeTargetChain,
+      bridge_source_chain: bridgeSourceChain,
+      bridge_source_token_address: bridgeSourceTokenAddress,
+      ref: params.referralCode,
+    };
+    const query =
+      params.bridgeRecipientSetup !== undefined
+        ? ({
+            ...baseQuery,
+            bridge_recipient_setup: params.bridgeRecipientSetup,
+          } as typeof baseQuery)
+        : baseQuery;
     const { data, error } = await this.#apiClient.GET("/quote", {
-      params: {
-        query: {
-          source_chain: sourceChain,
-          source_token: sourceToken,
-          target_chain: targetChain,
-          target_token: targetToken,
-          source_amount: params.sourceAmount,
-          target_amount: params.targetAmount,
-          bridge_target_chain: bridgeTargetChain,
-          bridge_source_chain: bridgeSourceChain,
-          bridge_source_token_address: bridgeSourceTokenAddress,
-          ref: params.referralCode,
-        },
-      },
+      params: { query },
     });
     if (error) {
       throw new Error(`Failed to get quote: ${JSON.stringify(error)}`);
@@ -1399,9 +1433,18 @@ export class Client {
       ) & {
         direction: string;
       };
-      // Use the stored target address - this was set when the swap was created
-      const destination =
-        evmSwap.target_evm_address ?? evmSwap.client_evm_address;
+      // For Solana bridge targets the stored `target_evm_address` actually
+      // holds a base58 SPL pubkey, which can't satisfy the EIP-712
+      // `address destination` field. Fall back to `client_evm_address`
+      // (the user's EVM-side wallet at swap creation, used for refunds);
+      // the actual Solana destination rides on `bridgeRecipient`.
+      const bridgeTargetChain = (evmSwap as { bridge_target_chain?: string })
+        .bridge_target_chain;
+      const isSolanaBridge = bridgeTargetChain === "Solana";
+
+      const destination = isSolanaBridge
+        ? evmSwap.client_evm_address
+        : (evmSwap.target_evm_address ?? evmSwap.client_evm_address);
 
       if (!destination) {
         return {
@@ -1411,7 +1454,18 @@ export class Client {
             "This swap may have been created before target address storage was implemented.",
         };
       }
-      const gaslessResult = await this.claimViaGasless(id, destination);
+      if (isSolanaBridge && !options?.bridgeRecipient) {
+        return {
+          success: false,
+          message:
+            "Solana bridge claim requires `bridgeRecipient` (the recipient's USDC ATA) " +
+            "in claim options. Derive it via `deriveSolanaUsdcAta` before calling claim.",
+        };
+      }
+      const gaslessResult = await this.claimViaGasless(id, destination, {
+        bridgeRecipient: options?.bridgeRecipient,
+        bridgeRecipientWallet: options?.bridgeRecipientWallet,
+      });
       return {
         success: true,
         message: gaslessResult.message,
@@ -1502,7 +1556,15 @@ export class Client {
   async claimViaGasless(
     id: string,
     destination: string,
-    { slippage = 1.0 }: { slippage?: number } = {},
+    {
+      slippage = 1.0,
+      bridgeRecipient,
+      bridgeRecipientWallet,
+    }: {
+      slippage?: number;
+      bridgeRecipient?: string;
+      bridgeRecipientWallet?: string;
+    } = {},
   ): Promise<ClaimGaslessResult> {
     if (!this.#swapStorage) {
       throw new Error(
@@ -1534,12 +1596,27 @@ export class Client {
 
     // Always fetch redeem calldata from the server to get calls_hash.
     // For non-WBTC targets this also returns DEX calldata.
+    // bridge_recipient is forwarded for non-EVM bridge targets (e.g.
+    // Solana) so the server's calls_hash matches what claim-gasless
+    // will rebuild below.
     const calldataResponse = await this.#apiClient.GET(
       "/swap/{id}/redeem-and-swap-calldata",
       {
         params: {
           path: { id },
-          query: { destination, slippage },
+          query: {
+            destination,
+            slippage,
+            ...(bridgeRecipient ? { bridge_recipient: bridgeRecipient } : {}),
+            ...(bridgeRecipientWallet
+              ? { bridge_recipient_wallet: bridgeRecipientWallet }
+              : {}),
+          } as {
+            destination: string;
+            slippage?: number;
+            bridge_recipient?: string;
+            bridge_recipient_wallet?: string;
+          },
         },
       },
     );
@@ -1580,6 +1657,8 @@ export class Client {
       destination,
       dexCalldata,
       callsHash,
+      bridgeRecipient,
+      bridgeRecipientWallet,
     });
   }
 
@@ -3544,12 +3623,24 @@ export class Client {
           targetTokenAddress: isUsdt0
             ? USDT0_ADDRESSES[chainName]
             : USDC_ADDRESSES[chainName],
+          recipientSetup: options.bridgeRecipientSetup,
         };
         targetChain = "42161"; // Arbitrum
         tokenAddress = isUsdt0
           ? USDT0_ADDRESSES.Arbitrum
           : USDC_ADDRESSES.Arbitrum;
       }
+    } else if (
+      bridgeParams &&
+      options.bridgeRecipientSetup !== undefined &&
+      bridgeParams.recipientSetup === undefined
+    ) {
+      // Caller supplied `bridgeParams` without a `recipientSetup` but
+      // also passed the top-level hint — fold the hint in.
+      bridgeParams = {
+        ...bridgeParams,
+        recipientSetup: options.bridgeRecipientSetup,
+      };
     }
 
     // Mirror of the outbound remap for CCTP-inbound sources: when the user

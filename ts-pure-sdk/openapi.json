@@ -6,7 +6,7 @@
     "license": {
       "name": ""
     },
-    "version": "0.2.24"
+    "version": "0.2.25"
   },
   "paths": {
     "/api/delegate/cosigner-pk": {
@@ -813,6 +813,15 @@
             }
           },
           {
+            "name": "bridge_recipient_setup",
+            "in": "query",
+            "description": "Optional: `true` when the recipient's USDC token account on the\ndestination chain does NOT yet exist and Circle's forwarder needs\nto create it (only meaningful for non-EVM destinations like\nSolana — adds ~$0.05 of ATA rent to `forwardFee`). `false`\nconfirms the recipient already holds USDC. Omit to fall back to\nthe conservative default (assumed-true for non-EVM).",
+            "required": false,
+            "schema": {
+              "type": ["boolean", "null"]
+            }
+          },
+          {
             "name": "ref",
             "in": "query",
             "description": "Optional referral code for tracking.",
@@ -839,6 +848,36 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/status": {
+      "get": {
+        "tags": ["status"],
+        "summary": "Probe every external dependency and return their aggregated health.",
+        "description": "Returns 200 when every service is healthy, 503 otherwise — the body\ncarries the per-service breakdown either way so callers can distinguish\nwhich dependency is down.",
+        "operationId": "get_status",
+        "responses": {
+          "200": {
+            "description": "All external dependencies are healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "At least one external dependency is unhealthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
                 }
               }
             }
@@ -2003,6 +2042,10 @@
             "description": "How much target token the user wants to receive (mutually exclusive with `amount_in`).\nValue is in the target token's smallest unit (e.g. for USDC with 6 decimals, 1000000 = 1\nUSDC).",
             "minimum": 0
           },
+          "bridge_recipient_setup": {
+            "type": ["boolean", "null"],
+            "description": "Optional: ATA-existence hint for non-EVM CCTP destinations\n(Solana). See `BitcoinToEvmSwapRequest::bridge_recipient_setup`."
+          },
           "bridge_target_chain": {
             "type": ["string", "null"],
             "description": "Optional: CCTP bridge destination chain (e.g., \"Ethereum\", \"Arbitrum\"). When set,\nUSDC will be bridged to this chain after the DEX swap."
@@ -2461,6 +2504,10 @@
             "description": "How much target token the user wants to receive (mutually exclusive with `amount_in`).\nValue is in the target token's smallest unit (e.g. for USDC with 6 decimals, 1000000 = 1\nUSDC).",
             "minimum": 0
           },
+          "bridge_recipient_setup": {
+            "type": ["boolean", "null"],
+            "description": "Optional: ATA-existence hint for non-EVM CCTP destinations\n(Solana). `true` = recipient has no USDC ATA yet, `false` =\nrecipient already holds USDC. Drives the bridge-fee variant\nused when inflating the DEX target — must match the value\nlater passed to `redeem-and-swap-calldata` so the burn doesn't\nunderflow. Omit to fall back to the conservative default."
+          },
           "bridge_target_chain": {
             "type": ["string", "null"],
             "description": "Optional: CCTP bridge destination chain (e.g., \"Ethereum\", \"Arbitrum\"). When set,\nUSDC will be bridged to this chain after the DEX swap."
@@ -2833,6 +2880,14 @@
         "description": "Request body for `POST /swap/{id}/claim-gasless`.\n\nThe client provides the HTLC preimage (secret) and an EIP-712 signature\nauthorising the server to call `redeemAndExecute` on the coordinator\ncontract on the client's behalf.\n\n# Examples\n\nMinimal request (WBTC-direct target, no DEX swap):\n\n```\nlet request = serde_json::json!({\n    \"secret\": \"0x0101010101010101010101010101010101010101010101010101010101010101\",\n    \"destination\": \"0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045\",\n    \"v\": 27,\n    \"r\": \"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n    \"s\": \"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"\n});\n```\n\nRequest with DEX calldata (non-WBTC target, e.g. USDC):\n\n```\nlet request = serde_json::json!({\n    \"secret\": \"0x0101010101010101010101010101010101010101010101010101010101010101\",\n    \"destination\": \"0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045\",\n    \"v\": 28,\n    \"r\": \"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n    \"s\": \"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n    \"dex_calldata\": {\n        \"to\": \"0x1111111254EEB25477B68fb85Ed929f73A960582\",\n        \"data\": \"0xabcdef0123456789\",\n        \"value\": \"0\"\n    }\n});\n```",
         "required": ["secret", "destination", "v", "r", "s"],
         "properties": {
+          "bridge_recipient": {
+            "type": ["string", "null"],
+            "description": "Optional non-EVM bridge recipient (e.g. a Solana base58 SPL pubkey).\nUsed as CCTP `mintRecipient` when `bridge_target_chain` is non-EVM;\nmust match the value passed to `redeem-and-swap-calldata` so the\nrebuilt `calls_hash` matches the EIP-712 signature.\n\nFor Solana: this is the recipient's USDC ATA, not their wallet."
+          },
+          "bridge_recipient_wallet": {
+            "type": ["string", "null"],
+            "description": "Optional Solana wallet pubkey, supplied alongside `bridge_recipient`\nwhen the recipient's USDC ATA does not yet exist. Triggers the\nextended 65-byte forwarding hookData. Must mirror what was passed to\n`redeem-and-swap-calldata` so the rebuilt `calls_hash` matches."
+          },
           "destination": {
             "type": "string",
             "description": "EVM address where tokens should be sent"
@@ -4405,6 +4460,10 @@
             "description": "How much target token the user wants to receive (mutually exclusive with `amount_in`).\nValue is in the target token's smallest unit (e.g. for USDC with 6 decimals, 1000000 = 1\nUSDC).",
             "minimum": 0
           },
+          "bridge_recipient_setup": {
+            "type": ["boolean", "null"],
+            "description": "Optional: ATA-existence hint for non-EVM CCTP destinations\n(Solana). See `BitcoinToEvmSwapRequest::bridge_recipient_setup`."
+          },
           "bridge_target_chain": {
             "type": ["string", "null"],
             "description": "Optional: CCTP bridge destination chain (e.g., \"Ethereum\", \"Arbitrum\"). When set,\nUSDC will be bridged to this chain after the DEX swap."
@@ -4806,6 +4865,62 @@
         "description": "Settlement mode for collaborative refund.",
         "enum": ["direct", "swap-back"]
       },
+      "ServiceStatus": {
+        "type": "object",
+        "description": "Per-service health datapoint.\n\nFailures intentionally do not include the underlying error: transport\nerrors from RPC clients can echo back full URLs (with embedded API keys)\nand other internal topology. Detailed errors are logged server-side; the\npublic response only carries a sanitized `\"unavailable\"` marker.",
+        "required": ["healthy"],
+        "properties": {
+          "block_height": {
+            "type": ["integer", "null"],
+            "format": "int64",
+            "description": "Tip / block height for chain-backed services (Bitcoin and EVMs).",
+            "minimum": 0
+          },
+          "block_time": {
+            "type": ["integer", "null"],
+            "format": "int64",
+            "description": "Tip block timestamp (Unix seconds) for chain-backed services.",
+            "minimum": 0
+          },
+          "error": {
+            "type": ["string", "null"]
+          },
+          "healthy": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ServicesStatus": {
+        "type": "object",
+        "required": [
+          "arkade",
+          "lightning",
+          "bitcoin",
+          "polygon",
+          "ethereum",
+          "arbitrum"
+        ],
+        "properties": {
+          "arbitrum": {
+            "$ref": "#/components/schemas/ServiceStatus"
+          },
+          "arkade": {
+            "$ref": "#/components/schemas/ServiceStatus"
+          },
+          "bitcoin": {
+            "$ref": "#/components/schemas/ServiceStatus"
+          },
+          "ethereum": {
+            "$ref": "#/components/schemas/ServiceStatus"
+          },
+          "lightning": {
+            "$ref": "#/components/schemas/ServiceStatus"
+          },
+          "polygon": {
+            "$ref": "#/components/schemas/ServiceStatus"
+          }
+        }
+      },
       "SettleDelegateRequest": {
         "type": "object",
         "required": [
@@ -4851,6 +4966,20 @@
           "commitment_txid": {
             "type": "string",
             "description": "Commitment transaction ID from the batch settlement."
+          }
+        }
+      },
+      "StatusResponse": {
+        "type": "object",
+        "description": "Aggregated health of every external dependency.",
+        "required": ["healthy", "services"],
+        "properties": {
+          "healthy": {
+            "type": "boolean",
+            "description": "True if every probed service is healthy."
+          },
+          "services": {
+            "$ref": "#/components/schemas/ServicesStatus"
           }
         }
       },
@@ -5239,6 +5368,10 @@
     {
       "name": "health",
       "description": "Health check endpoint."
+    },
+    {
+      "name": "status",
+      "description": "Aggregated health of external dependencies."
     },
     {
       "name": "mtp",

@@ -57,6 +57,10 @@ export const USDC_ADDRESSES: Record<string, string> = {
   Sei: "0xe15fC38F6D8c56aF07bbCBe3BAf5708A2Bf42392",
   HyperEVM: "0xb88339CB7199b77E23DB6E890353E22632Ba630f",
   Monad: "0x754704Bc059F8C67012fEd69BC8A327a5aafb603",
+  // Solana's USDC is an SPL mint, encoded as a base58 pubkey rather than
+  // an EVM `0x...` hex address. Callers that parse the value with viem's
+  // `getAddress` / `Address.from_str` must guard against this entry.
+  Solana: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
 };
 
 export const EURC_ADDRESSES: Record<string, string> = {
