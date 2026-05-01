@@ -928,10 +928,10 @@ export interface components {
              */
             amount_out?: number | null;
             /**
-             * @description Optional: ATA-existence hint for non-EVM CCTP destinations
-             *     (Solana). See `BitcoinToEvmSwapRequest::bridge_recipient_setup`.
+             * @description ATA-existence flag for non-EVM CCTP destinations (Solana).
+             *     See `BitcoinToEvmSwapRequest::bridge_recipient_setup`.
              */
-            bridge_recipient_setup?: boolean | null;
+            bridge_recipient_setup?: boolean;
             /**
              * @description Optional: CCTP bridge destination chain (e.g., "Ethereum", "Arbitrum"). When set,
              *     USDC will be bridged to this chain after the DEX swap.
@@ -1169,14 +1169,16 @@ export interface components {
              */
             amount_out?: number | null;
             /**
-             * @description Optional: ATA-existence hint for non-EVM CCTP destinations
-             *     (Solana). `true` = recipient has no USDC ATA yet, `false` =
-             *     recipient already holds USDC. Drives the bridge-fee variant
-             *     used when inflating the DEX target — must match the value
-             *     later passed to `redeem-and-swap-calldata` so the burn doesn't
-             *     underflow. Omit to fall back to the conservative default.
+             * @description ATA-existence flag for non-EVM CCTP destinations (Solana).
+             *     `true` = recipient has no USDC ATA yet (Circle's forwarder
+             *     creates one, paid out of the burn). `false` (default) = recipient
+             *     already holds USDC, or destination is EVM. Drives the bridge-fee
+             *     variant used when inflating the DEX target and must match the
+             *     value later passed to `redeem-and-swap-calldata` so the burn
+             *     doesn't underflow. Solana callers are responsible for probing
+             *     the destination chain and setting this correctly.
              */
-            bridge_recipient_setup?: boolean | null;
+            bridge_recipient_setup?: boolean;
             /**
              * @description Optional: CCTP bridge destination chain (e.g., "Ethereum", "Arbitrum"). When set,
              *     USDC will be bridged to this chain after the DEX swap.
@@ -2176,10 +2178,10 @@ export interface components {
              */
             amount_out?: number | null;
             /**
-             * @description Optional: ATA-existence hint for non-EVM CCTP destinations
-             *     (Solana). See `BitcoinToEvmSwapRequest::bridge_recipient_setup`.
+             * @description ATA-existence flag for non-EVM CCTP destinations (Solana).
+             *     See `BitcoinToEvmSwapRequest::bridge_recipient_setup`.
              */
-            bridge_recipient_setup?: boolean | null;
+            bridge_recipient_setup?: boolean;
             /**
              * @description Optional: CCTP bridge destination chain (e.g., "Ethereum", "Arbitrum"). When set,
              *     USDC will be bridged to this chain after the DEX swap.
@@ -3271,14 +3273,15 @@ export interface operations {
                  */
                 bridge_source_chain?: string | null;
                 /**
-                 * @description Optional: `true` when the recipient's USDC token account on the
-                 *     destination chain does NOT yet exist and Circle's forwarder needs
-                 *     to create it (only meaningful for non-EVM destinations like
-                 *     Solana — adds ~$0.05 of ATA rent to `forwardFee`). `false`
-                 *     confirms the recipient already holds USDC. Omit to fall back to
-                 *     the conservative default (assumed-true for non-EVM).
+                 * @description `true` when the recipient's USDC token account on the destination
+                 *     chain does NOT yet exist and Circle's forwarder needs to create it
+                 *     (only meaningful for non-EVM destinations like Solana — adds
+                 *     ~$0.05 of ATA rent to `forwardFee`). `false` (default) confirms
+                 *     the recipient already holds USDC, and is correct for all EVM
+                 *     destinations. Solana callers are responsible for probing the
+                 *     destination chain and setting this correctly.
                  */
-                bridge_recipient_setup?: boolean | null;
+                bridge_recipient_setup?: boolean;
                 /** @description Optional referral code for tracking. */
                 ref?: string | null;
             };

@@ -815,10 +815,10 @@
           {
             "name": "bridge_recipient_setup",
             "in": "query",
-            "description": "Optional: `true` when the recipient's USDC token account on the\ndestination chain does NOT yet exist and Circle's forwarder needs\nto create it (only meaningful for non-EVM destinations like\nSolana — adds ~$0.05 of ATA rent to `forwardFee`). `false`\nconfirms the recipient already holds USDC. Omit to fall back to\nthe conservative default (assumed-true for non-EVM).",
+            "description": "`true` when the recipient's USDC token account on the destination\nchain does NOT yet exist and Circle's forwarder needs to create it\n(only meaningful for non-EVM destinations like Solana — adds\n~$0.05 of ATA rent to `forwardFee`). `false` (default) confirms\nthe recipient already holds USDC, and is correct for all EVM\ndestinations. Solana callers are responsible for probing the\ndestination chain and setting this correctly.",
             "required": false,
             "schema": {
-              "type": ["boolean", "null"]
+              "type": "boolean"
             }
           },
           {
@@ -2043,8 +2043,8 @@
             "minimum": 0
           },
           "bridge_recipient_setup": {
-            "type": ["boolean", "null"],
-            "description": "Optional: ATA-existence hint for non-EVM CCTP destinations\n(Solana). See `BitcoinToEvmSwapRequest::bridge_recipient_setup`."
+            "type": "boolean",
+            "description": "ATA-existence flag for non-EVM CCTP destinations (Solana).\nSee `BitcoinToEvmSwapRequest::bridge_recipient_setup`."
           },
           "bridge_target_chain": {
             "type": ["string", "null"],
@@ -2505,8 +2505,8 @@
             "minimum": 0
           },
           "bridge_recipient_setup": {
-            "type": ["boolean", "null"],
-            "description": "Optional: ATA-existence hint for non-EVM CCTP destinations\n(Solana). `true` = recipient has no USDC ATA yet, `false` =\nrecipient already holds USDC. Drives the bridge-fee variant\nused when inflating the DEX target — must match the value\nlater passed to `redeem-and-swap-calldata` so the burn doesn't\nunderflow. Omit to fall back to the conservative default."
+            "type": "boolean",
+            "description": "ATA-existence flag for non-EVM CCTP destinations (Solana).\n`true` = recipient has no USDC ATA yet (Circle's forwarder\ncreates one, paid out of the burn). `false` (default) = recipient\nalready holds USDC, or destination is EVM. Drives the bridge-fee\nvariant used when inflating the DEX target and must match the\nvalue later passed to `redeem-and-swap-calldata` so the burn\ndoesn't underflow. Solana callers are responsible for probing\nthe destination chain and setting this correctly."
           },
           "bridge_target_chain": {
             "type": ["string", "null"],
@@ -4461,8 +4461,8 @@
             "minimum": 0
           },
           "bridge_recipient_setup": {
-            "type": ["boolean", "null"],
-            "description": "Optional: ATA-existence hint for non-EVM CCTP destinations\n(Solana). See `BitcoinToEvmSwapRequest::bridge_recipient_setup`."
+            "type": "boolean",
+            "description": "ATA-existence flag for non-EVM CCTP destinations (Solana).\nSee `BitcoinToEvmSwapRequest::bridge_recipient_setup`."
           },
           "bridge_target_chain": {
             "type": ["string", "null"],
