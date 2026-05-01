@@ -1133,10 +1133,7 @@ export class Client {
       sourceToken = USDC_ADDRESSES.Arbitrum;
     }
 
-    // `bridge_recipient_setup` isn't in the auto-generated OpenAPI types
-    // yet — the backend accepts it as an optional query param, so we
-    // attach it via an extra-fields cast without widening the rest.
-    const baseQuery = {
+    const query = {
       source_chain: sourceChain,
       source_token: sourceToken,
       target_chain: targetChain,
@@ -1146,15 +1143,9 @@ export class Client {
       bridge_target_chain: bridgeTargetChain,
       bridge_source_chain: bridgeSourceChain,
       bridge_source_token_address: bridgeSourceTokenAddress,
+      bridge_recipient_setup: params.bridgeRecipientSetup,
       ref: params.referralCode,
     };
-    const query =
-      params.bridgeRecipientSetup !== undefined
-        ? ({
-            ...baseQuery,
-            bridge_recipient_setup: params.bridgeRecipientSetup,
-          } as typeof baseQuery)
-        : baseQuery;
     const { data, error } = await this.#apiClient.GET("/quote", {
       params: { query },
     });

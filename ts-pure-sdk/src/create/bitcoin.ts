@@ -52,10 +52,7 @@ export async function createBitcoinToEvmSwap(
     // reused across swaps so a single Permit2 approval suffices.
     const claimingAddress = ctx.evmAddress;
 
-    // `bridge_recipient_setup` isn't in the auto-generated OpenAPI body
-    // type yet — backend accepts it as an optional field, so we attach
-    // it via a typed-base + extra-fields cast.
-    const baseBody = {
+    const body = {
       hash_lock: hashLock,
       refund_pk: refundPk,
       user_id: userId,
@@ -69,14 +66,8 @@ export async function createBitcoinToEvmSwap(
       gasless: options.gasless ?? true,
       bridge_target_chain: options.bridgeParams?.targetChain,
       bridge_target_token_address: options.bridgeParams?.targetTokenAddress,
+      bridge_recipient_setup: options.bridgeParams?.recipientSetup,
     };
-    const body =
-      options.bridgeParams?.recipientSetup !== undefined
-        ? ({
-            ...baseBody,
-            bridge_recipient_setup: options.bridgeParams.recipientSetup,
-          } as typeof baseBody)
-        : baseBody;
     const { data, error } = await ctx.apiClient.POST("/swap/bitcoin/evm", {
       body,
     });

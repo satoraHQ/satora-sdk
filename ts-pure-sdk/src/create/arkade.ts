@@ -58,9 +58,7 @@ export async function createArkadeToEvmSwapGeneric(
     // Target address is where tokens are swept after the claim (user's final destination).
     // This is required and stored on the server for use during redemption.
 
-    // See `createBitcoinToEvmSwap` for the typed-base cast pattern —
-    // `bridge_recipient_setup` isn't in the OpenAPI body type yet.
-    const baseBody = {
+    const body = {
       hash_lock: hashLock,
       refund_pk: refundPk,
       user_id: userId,
@@ -78,14 +76,8 @@ export async function createArkadeToEvmSwapGeneric(
       gasless: options.gasless ?? true,
       bridge_target_chain: options.bridgeParams?.targetChain,
       bridge_target_token_address: options.bridgeParams?.targetTokenAddress,
+      bridge_recipient_setup: options.bridgeParams?.recipientSetup,
     };
-    const body =
-      options.bridgeParams?.recipientSetup !== undefined
-        ? ({
-            ...baseBody,
-            bridge_recipient_setup: options.bridgeParams.recipientSetup,
-          } as typeof baseBody)
-        : baseBody;
     const { data, error } = await ctx.apiClient.POST("/swap/arkade/evm", {
       body,
     });
