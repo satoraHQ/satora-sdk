@@ -28,6 +28,7 @@ import {
   getNetworkName,
   resolveArkadeServerUrlByName,
 } from "../arkade-network.js";
+import { createSdkLogger, type Logger, type LogLevel } from "../logging.js";
 
 /** Parameters needed to build an Arkade refund */
 export interface ArkadeRefundParams {
@@ -57,6 +58,10 @@ export interface ArkadeRefundParams {
   network: string;
   /** Arkade server URL (optional, uses default based on network) */
   arkadeServerUrl?: string;
+  /** Optional logger sink. Silent by default. */
+  logger?: Logger;
+  /** Minimum log level to emit. Defaults to `silent`. */
+  logLevel?: LogLevel;
 }
 
 /** Result of building an Arkade refund */
@@ -134,7 +139,16 @@ export async function buildArkadeRefund(
     arkadeServerUrl,
   } = params;
 
-  console.log(`Params ${JSON.stringify(params, null, 2)}`);
+  const logger = createSdkLogger(params).child({
+    module: "refund/arkade",
+    operation: "arkade.refund",
+    data: { vhtlcAddress, network, destinationAddress },
+  });
+
+  logger.info({
+    event: "arkade.refund.start",
+    message: "Starting Arkade refund",
+  });
 
   // Parse keys
   const userPkBytes = parseXOnlyPubKey(userPubKey);
@@ -207,7 +221,11 @@ export async function buildArkadeRefund(
     const { vtxos: updated } = await indexerProvider.getVtxos({
       scripts: [vhtlcPkScript],
     });
-    console.log(`Updated ${JSON.stringify(updated, null, 2)}`);
+    logger.debug({
+      event: "arkade.refund.no_spendable_vtxos",
+      message: "No spendable VTXOs found at VHTLC address",
+      data: { vtxos: updated },
+    });
     throw new Error("No spendable VTXOs found at the VHTLC address");
   }
 
@@ -252,9 +270,11 @@ export async function buildArkadeRefund(
   ];
 
   const destinationAddressPPkScript = hex.encode(destPkScript);
-  console.log(
-    `Refunding ${totalAmount} to ${destinationAddress} with script ${destinationAddressPPkScript}`,
-  );
+  logger.info({
+    event: "arkade.refund.vtxos_found",
+    message: "Found spendable VTXOs for Arkade refund",
+    data: { totalAmount, vtxoCount: vtxos.length, destinationAddressPPkScript },
+  });
 
   // Build the offchain transaction
   const { arkTx, checkpoints } = buildOffchainTx(
@@ -283,11 +303,18 @@ export async function buildArkadeRefund(
       return base64.encode(signedCheckpoint.toPSBT());
     }),
   );
-  console.log(`Finalized tx done`);
+  logger.debug({
+    event: "arkade.refund.checkpoints_signed",
+    message: "Final checkpoint transactions signed",
+  });
 
   // Finalize the transaction
   await arkProvider.finalizeTx(arkTxid, finalCheckpoints);
-  console.log(`Finalized tx submitted`, arkTxid);
+  logger.info({
+    event: "arkade.refund.finalized",
+    message: "Arkade refund finalized",
+    data: { arkTxid },
+  });
 
   return {
     txId: arkTxid,

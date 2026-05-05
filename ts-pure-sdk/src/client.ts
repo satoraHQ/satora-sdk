@@ -28,7 +28,6 @@ import type {
   CctpProgressStep,
 } from "./cctp-inbound/fundSwap.js";
 import type { AaConfig } from "./cctp-inbound/types.js";
-
 import {
   type ArkadeToEvmSwapOptions,
   type ArkadeToEvmSwapResult,
@@ -90,6 +89,12 @@ import {
   parseSignature,
   simulateTransaction,
 } from "./evm/wallet.js";
+import {
+  createSdkLogger,
+  type Logger,
+  type LogLevel,
+  type SdkLogger,
+} from "./logging.js";
 import {
   buildArkadeClaim,
   type ClaimGaslessResult,
@@ -438,6 +443,10 @@ export interface ClientConfig {
    * on first CCTP API call if omitted.
    */
   aa?: AaConfig;
+  /** Optional logger sink. The SDK is silent by default. */
+  logger?: Logger;
+  /** Minimum log level to emit. Defaults to `silent`. */
+  logLevel?: LogLevel;
 }
 
 /**
@@ -479,6 +488,8 @@ export class ClientBuilder {
   #mnemonic?: string;
   #xprv?: string;
   #aa?: AaConfig;
+  #logger?: Logger;
+  #logLevel?: LogLevel;
 
   /**
    * Sets the base URL for the API.
@@ -624,6 +635,27 @@ export class ClientBuilder {
   }
 
   /**
+   * Sets the logger sink used by the SDK.
+   *
+   * The SDK is silent by default. Pair this with `withLogLevel()` to opt in
+   * to runtime logs.
+   */
+  withLogger(logger: Logger): this {
+    this.#logger = logger;
+    return this;
+  }
+
+  /**
+   * Sets the minimum log level emitted by the SDK.
+   *
+   * Defaults to `silent`.
+   */
+  withLogLevel(logLevel: LogLevel): this {
+    this.#logLevel = logLevel;
+    return this;
+  }
+
+  /**
    * Builds and returns a fully initialized Client instance.
    *
    * Initialization order:
@@ -681,6 +713,8 @@ export class ClientBuilder {
         esploraUrl: this.#esploraUrl?.replace(/\/+$/, ""),
         arkadeServerUrl: this.#arkadeServerUrl?.replace(/\/+$/, ""),
         aa: this.#aa,
+        logger: this.#logger,
+        logLevel: this.#logLevel,
       },
       signer,
       this.#signerStorage,
@@ -721,6 +755,7 @@ export class Client {
   readonly #swapStorage?: SwapStorage;
   #statusWatcher: SwapStatusWatcher | null = null;
   #cctpInbound: CctpInboundClient | null = null;
+  readonly #logger: SdkLogger;
 
   /**
    * Creates a new Client instance.
@@ -744,6 +779,10 @@ export class Client {
     this.#signer = signer;
     this.#signerStorage = signerStorage;
     this.#swapStorage = swapStorage;
+    this.#logger = createSdkLogger({
+      logger: config.logger,
+      logLevel: config.logLevel,
+    });
   }
 
   /**
@@ -814,6 +853,8 @@ export class Client {
       this.#cctpInbound = new CctpInboundClient({
         apiClient: this.#apiClient,
         aa: this.#config.aa,
+        logger: this.#config.logger,
+        logLevel: this.#config.logLevel,
       });
     }
     return this.#cctpInbound;
@@ -1257,9 +1298,12 @@ export class Client {
    * @returns The recovered swaps stored locally.
    */
   async recoverSwaps(): Promise<StoredSwap[]> {
-    console.log(`Recovering ...`);
     const xpub = this.getUserIdXpub();
-    console.log(`Recovering ${xpub}`);
+    this.#logger.info({
+      event: "client.recover.start",
+      message: "Recovering swaps for wallet",
+      data: { xpub },
+    });
 
     const { data, error } = await this.#apiClient.POST("/swap/recover", {
       body: { xpub },
@@ -1272,7 +1316,14 @@ export class Client {
     }
 
     const storedSwaps: StoredSwap[] = [];
-    console.log(`Recovered data ${JSON.stringify(data)}`);
+    this.#logger.debug({
+      event: "client.recover.response",
+      message: "Recovered swap data from server",
+      data: {
+        recoveredSwapCount: data.swaps.length,
+        highestIndex: data.highest_index,
+      },
+    });
 
     for (const recoveredSwap of data.swaps) {
       const { index, ...response } = recoveredSwap;
@@ -1838,6 +1889,8 @@ export class Client {
         ...claimParams,
         destinationAddress: "", // not needed for continue
         arkadeServerUrl: this.#config.arkadeServerUrl,
+        logger: this.#config.logger,
+        logLevel: this.#config.logLevel,
       });
       return {
         success: true,
@@ -1957,6 +2010,8 @@ export class Client {
         destinationAddress: options.destinationAddress,
         arkadeServerUrl:
           options.arkadeServerUrl ?? this.#config.arkadeServerUrl,
+        logger: this.#config.logger,
+        logLevel: this.#config.logLevel,
       });
 
       return {
@@ -1996,6 +2051,8 @@ export class Client {
         arkadeServerUrl:
           options.arkadeServerUrl ?? this.#config.arkadeServerUrl,
         swapId,
+        logger: this.#config.logger,
+        logLevel: this.#config.logLevel,
       });
 
       return {
@@ -2704,6 +2761,8 @@ export class Client {
       swapId: id,
       apiClient: this.#apiClient,
       arkadeServerUrl: options.arkadeServerUrl ?? this.#config.arkadeServerUrl,
+      logger: this.#config.logger,
+      logLevel: this.#config.logLevel,
     };
 
     try {
@@ -2732,9 +2791,14 @@ export class Client {
         collabError instanceof Error
           ? collabError.message
           : String(collabError);
-      console.warn(
-        `Collaborative refund failed (${collabMsg}), falling back to non-collab refund`,
-      );
+      this.#logger.warn({
+        event: "arkade.refund.collab_failed",
+        message:
+          "Collaborative refund failed, falling back to non-collaborative refund",
+        swapId: id,
+        data: { reason: collabMsg },
+        error: collabError,
+      });
     }
 
     // Fallback: non-collaborative refund (requires locktime to have expired)
@@ -2839,6 +2903,8 @@ export class Client {
           options.arkadeServerUrl ?? this.#config.arkadeServerUrl,
         swapId: id,
         apiClient: this.#apiClient,
+        logger: this.#config.logger,
+        logLevel: this.#config.logLevel,
       });
 
       return {
@@ -2854,9 +2920,13 @@ export class Client {
         collabError instanceof Error
           ? collabError.message
           : String(collabError);
-      console.warn(
-        `collaborative refund failed (${collabMsg}), checking locktime fallback`,
-      );
+      this.#logger.warn({
+        event: "arkade_to_lightning.refund.collab_failed",
+        message: "Collaborative refund failed, checking locktime fallback",
+        swapId: id,
+        data: { reason: collabMsg },
+        error: collabError,
+      });
     }
 
     // Fallback: non-collaborative refund (requires locktime to have expired)
@@ -2943,6 +3013,8 @@ export class Client {
         ...params,
         arkadeServerUrl:
           options.arkadeServerUrl ?? this.#config.arkadeServerUrl,
+        logger: this.#config.logger,
+        logLevel: this.#config.logLevel,
       });
 
       return {
@@ -2988,6 +3060,8 @@ export class Client {
         lendaswapApiUrl: this.#config.baseUrl,
         arkadeServerUrl:
           options.arkadeServerUrl ?? this.#config.arkadeServerUrl,
+        logger: this.#config.logger,
+        logLevel: this.#config.logLevel,
       });
 
       return {
@@ -3516,6 +3590,8 @@ export class Client {
       baseUrl: this.#config.baseUrl,
       deriveSwapParams: () => this.deriveSwapParams(),
       evmAddress: this.getEvmAddress(),
+      logger: this.#config.logger,
+      logLevel: this.#config.logLevel,
       skipKeyIndices: async (n: number) => {
         if (this.#signerStorage) {
           const current = await this.#signerStorage.getKeyIndex();
@@ -4232,11 +4308,16 @@ export class Client {
       : oldSwap.hash_lock;
 
     // Collaborative refund: old VHTLC → new VHTLC address
-    console.log("[retry] Starting collaborative refund", {
-      oldSwapId: swapId,
-      newSwapId: newSwap.id,
-      sourceAmount: sourceAmountSats,
-      network: oldSwap.network,
+    this.#logger.info({
+      event: "arkade_to_lightning.retry.collab_refund_start",
+      message: "Starting collaborative refund before retry",
+      swapId,
+      data: {
+        oldSwapId: swapId,
+        newSwapId: newSwap.id,
+        sourceAmount: sourceAmountSats,
+        network: oldSwap.network,
+      },
     });
 
     const refundResult = await collabRefundArkadeToLightningOffchain({
@@ -4256,6 +4337,8 @@ export class Client {
       arkadeServerUrl: this.#config.arkadeServerUrl,
       swapId,
       apiClient: this.#apiClient,
+      logger: this.#config.logger,
+      logLevel: this.#config.logLevel,
     });
 
     return {

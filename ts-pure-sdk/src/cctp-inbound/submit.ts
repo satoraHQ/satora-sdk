@@ -20,6 +20,7 @@ import { arbitrum } from "viem/chains";
 import type { ApiClient } from "../api/client.js";
 import { MESSAGE_TRANSMITTER_V2 } from "../cctp/constants.js";
 import type { EvmSigner } from "../evm/wallet.js";
+import type { Logger, LogLevel } from "../logging.js";
 import { simulateBatchCalls } from "./preflight.js";
 import { createSwapSmartAccountClient } from "./smartAccount.js";
 import type { AaConfig } from "./types.js";
@@ -85,6 +86,10 @@ export interface SubmitUserOpParams {
    * simulation on `sendUserOperation` remains the authoritative check.
    */
   preflightSimulate?: boolean;
+  /** Optional logger sink. Silent by default. */
+  logger?: Logger;
+  /** Minimum log level to emit. Defaults to `silent`. */
+  logLevel?: LogLevel;
 }
 
 export interface SubmitUserOpResult {
@@ -193,6 +198,8 @@ export async function submitCctpInboundUserOp(
       calls,
       smartAccount: accountAddress,
       publicClient,
+      logger: params.logger,
+      logLevel: params.logLevel,
     });
   }
 

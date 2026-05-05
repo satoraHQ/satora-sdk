@@ -32,6 +32,7 @@ import {
   getNetworkName,
   resolveArkadeServerUrlByName,
 } from "../arkade-network.js";
+import { createSdkLogger, type Logger, type LogLevel } from "../logging.js";
 
 function secondsToTimelock(
   seconds: number,
@@ -111,6 +112,10 @@ export interface CollabRefundArkadeToLightningParams {
   swapId: string;
   /** API client for Lendaswap backend. */
   apiClient: ApiClient;
+  /** Optional logger sink. Silent by default. */
+  logger?: Logger;
+  /** Minimum log level to emit. Defaults to `silent`. */
+  logLevel?: LogLevel;
 }
 
 export interface CollabRefundArkadeToLightningResult {
@@ -128,6 +133,22 @@ export interface CollabRefundArkadeToLightningResult {
 export async function collabRefundArkadeToLightningOffchain(
   params: CollabRefundArkadeToLightningParams,
 ): Promise<CollabRefundArkadeToLightningResult> {
+  const logger = createSdkLogger(params).child({
+    module: "refund/collab-arkade-lightning",
+    operation: "arkade_to_lightning.collab_refund",
+    swapId: params.swapId,
+    data: {
+      vhtlcAddress: params.vhtlcAddress,
+      network: params.network,
+      destinationAddress: params.destinationAddress,
+    },
+  });
+
+  logger.info({
+    event: "arkade_to_lightning.collab_refund.start",
+    message: "Starting collaborative Arkade-to-Lightning refund",
+  });
+
   // 1. Build the VHTLC script and verify address
   const userPkBytes = parseXOnlyPubKey(params.userPubKey);
   const receiverPkBytes = parseXOnlyPubKey(params.receiverPubKey);
@@ -153,19 +174,23 @@ export async function collabRefundArkadeToLightningOffchain(
   const computedAddress = vhtlc.address(hrp, serverPkBytes).encode();
 
   if (computedAddress !== params.vhtlcAddress) {
-    console.error("[collab-refund] VHTLC address mismatch", {
-      sender: hex.encode(userPkBytes),
-      receiver: hex.encode(receiverPkBytes),
-      server: hex.encode(serverPkBytes),
-      preimageHash: hex.encode(preimageHashBytes),
-      refundLocktime: params.refundLocktime,
-      unilateralClaimDelay: params.unilateralClaimDelay,
-      unilateralRefundDelay: params.unilateralRefundDelay,
-      unilateralRefundWithoutReceiverDelay:
-        params.unilateralRefundWithoutReceiverDelay,
-      computedAddress,
-      expectedAddress: params.vhtlcAddress,
-      network: networkName,
+    logger.error({
+      event: "arkade_to_lightning.collab_refund.address_mismatch",
+      message: "Computed VHTLC address does not match expected address",
+      data: {
+        sender: hex.encode(userPkBytes),
+        receiver: hex.encode(receiverPkBytes),
+        server: hex.encode(serverPkBytes),
+        preimageHash: hex.encode(preimageHashBytes),
+        refundLocktime: params.refundLocktime,
+        unilateralClaimDelay: params.unilateralClaimDelay,
+        unilateralRefundDelay: params.unilateralRefundDelay,
+        unilateralRefundWithoutReceiverDelay:
+          params.unilateralRefundWithoutReceiverDelay,
+        computedAddress,
+        expectedAddress: params.vhtlcAddress,
+        network: networkName,
+      },
     });
 
     throw new Error(
@@ -186,21 +211,29 @@ export async function collabRefundArkadeToLightningOffchain(
 
   const vhtlcPkScript = hex.encode(vhtlc.pkScript);
 
-  console.log("[collab-refund] Querying VTXOs for pkScript:", vhtlcPkScript);
+  logger.debug({
+    event: "arkade_to_lightning.collab_refund.query_vtxos",
+    message: "Querying VTXOs for VHTLC script",
+    data: { vhtlcPkScript },
+  });
 
   const { vtxos } = await indexerProvider.getVtxos({
     scripts: [vhtlcPkScript],
     spendableOnly: true,
   });
 
-  console.log(
-    `[collab-refund] Found ${vtxos.length} spendable VTXOs:`,
-    vtxos.map((v) => ({
-      txid: v.txid,
-      vout: v.vout,
-      value: v.value,
-    })),
-  );
+  logger.info({
+    event: "arkade_to_lightning.collab_refund.vtxos_found",
+    message: "Found spendable VTXOs for collaborative refund",
+    data: {
+      vtxoCount: vtxos.length,
+      vtxos: vtxos.map((v) => ({
+        txid: v.txid,
+        vout: v.vout,
+        value: v.value,
+      })),
+    },
+  });
 
   if (vtxos.length === 0) {
     throw new Error(
@@ -248,21 +281,28 @@ export async function collabRefundArkadeToLightningOffchain(
     throw new Error("No checkpoint PSBTs generated");
   }
 
-  console.log("[collab-refund] Built offchain tx:", {
-    totalAmount: totalAmount.toString(),
-    numInputs: inputs.length,
-    destination: params.destinationAddress,
-    numCheckpoints: checkpoints.length,
+  logger.debug({
+    event: "arkade_to_lightning.collab_refund.offchain_tx_built",
+    message: "Built offchain transaction for collaborative refund",
+    data: {
+      totalAmount,
+      numInputs: inputs.length,
+      destination: params.destinationAddress,
+      numCheckpoints: checkpoints.length,
+    },
   });
 
   // 5. Sign ark_tx as sender
   const signer = SingleKey.fromHex(params.userSecretKey);
   const signedArkTx = await signer.sign(arkTx);
 
-  console.log("[collab-refund] Posting to collab-refund endpoint:", {
-    swapId: params.swapId,
-    arkTxPsbtLen: base64.encode(signedArkTx.toPSBT()).length,
-    checkpointPsbtLen: unsignedCheckpointPsbts[0].length,
+  logger.debug({
+    event: "arkade_to_lightning.collab_refund.post_backend",
+    message: "Posting collaborative refund transaction to backend",
+    data: {
+      arkTxPsbtLen: base64.encode(signedArkTx.toPSBT()).length,
+      checkpointPsbtLen: unsignedCheckpointPsbts[0].length,
+    },
   });
 
   // 6. POST to Lendaswap for receiver cosignature

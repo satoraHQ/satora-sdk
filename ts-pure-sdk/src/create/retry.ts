@@ -3,6 +3,7 @@
  * and error types for non-retryable duplicate conditions.
  */
 
+import { createSdkLogger } from "../logging.js";
 import type { CreateSwapContext } from "./types.js";
 
 const MAX_RETRIES = 10;
@@ -50,12 +51,21 @@ export async function retryOnHashCollision<T>(
   attempt: () => Promise<T>,
 ): Promise<T> {
   let lastError: Error | undefined;
+  const logger = createSdkLogger(ctx).child({
+    module: "create/retry",
+    operation: "create.retry_on_hash_collision",
+  });
 
   for (let i = 0; i < MAX_RETRIES; i++) {
     try {
       return await attempt();
     } catch (e) {
-      console.log(`Failed creating swap: ${e}`);
+      logger.debug({
+        event: "create.retry.attempt_failed",
+        message: "Swap creation attempt failed",
+        data: { attempt: i + 1 },
+        error: e,
+      });
 
       if (e instanceof Error && isHashCollisionError(e.message)) {
         lastError = e;

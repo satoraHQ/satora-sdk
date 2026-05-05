@@ -190,7 +190,6 @@ export function keccak256(input: string | Uint8Array): string {
  * ```
  */
 export function buildRedeemDigest(params: RedeemDigestParams): string {
-  console.log(params);
   // Domain separator
   const domainSeparator = keccak256(
     abiEncode([

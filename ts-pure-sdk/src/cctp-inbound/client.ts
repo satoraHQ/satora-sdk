@@ -23,6 +23,7 @@ import {
   fetchAttestation,
 } from "../cctp/attestation.js";
 import type { EvmSigner } from "../evm/wallet.js";
+import type { Logger, LogLevel } from "../logging.js";
 import {
   type ApproveAndBurnParams,
   type ApproveAndBurnResult,
@@ -52,15 +53,23 @@ import {
 export interface CctpInboundClientConfig {
   apiClient: ApiClient;
   aa: AaConfig;
+  /** Optional logger sink. Silent by default. */
+  logger?: Logger;
+  /** Minimum log level to emit. Defaults to `silent`. */
+  logLevel?: LogLevel;
 }
 
 export class CctpInboundClient {
   readonly #apiClient: ApiClient;
   readonly #aa: AaConfig;
+  readonly #logger?: Logger;
+  readonly #logLevel?: LogLevel;
 
   constructor(config: CctpInboundClientConfig) {
     this.#apiClient = config.apiClient;
     this.#aa = config.aa;
+    this.#logger = config.logger;
+    this.#logLevel = config.logLevel;
   }
 
   /** The AA config this client was built with. */
@@ -115,7 +124,11 @@ export class CctpInboundClient {
   submitUserOp(params: SubmitUserOpParams): Promise<SubmitUserOpResult> {
     return submitCctpInboundUserOp(
       { apiClient: this.#apiClient, aa: this.#aa },
-      params,
+      {
+        ...params,
+        logger: params.logger ?? this.#logger,
+        logLevel: params.logLevel ?? this.#logLevel,
+      },
     );
   }
 

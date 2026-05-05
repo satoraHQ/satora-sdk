@@ -15,6 +15,7 @@
  */
 
 import type { Address, PublicClient } from "viem";
+import { createSdkLogger, type Logger, type LogLevel } from "../logging.js";
 import type { BatchCall } from "./userOp.js";
 
 /**
@@ -44,6 +45,10 @@ export interface SimulateBatchCallsArgs {
   calls: BatchCall[];
   smartAccount: Address;
   publicClient: PublicClient;
+  /** Optional logger sink. Silent by default. */
+  logger?: Logger;
+  /** Minimum log level to emit. Defaults to `silent`. */
+  logLevel?: LogLevel;
 }
 
 /**
@@ -56,6 +61,11 @@ export async function simulateBatchCalls(
   args: SimulateBatchCallsArgs,
 ): Promise<void> {
   const { calls, smartAccount, publicClient } = args;
+  const logger = createSdkLogger(args).child({
+    module: "cctp-inbound/preflight",
+    operation: "cctp.preflight",
+    data: { smartAccount },
+  });
   for (let i = 0; i < calls.length; i++) {
     const call = calls[i];
     const label = `[cctp-inbound/preflight] call ${i + 1}/${calls.length} to ${call.to}`;
@@ -66,11 +76,22 @@ export async function simulateBatchCalls(
         data: call.data,
         value: call.value,
       });
-      console.log(`${label} OK`);
+      logger.debug({
+        event: "cctp.preflight.call_ok",
+        message: "CCTP preflight call succeeded",
+        data: { label, index: i, to: call.to },
+      });
     } catch (err) {
       const revertData = extractRevertData(err);
-      console.warn(`${label} reverted in pre-flight (may be OK at send)`, {
-        revertData: revertData ?? "(none)",
+      logger.warn({
+        event: "cctp.preflight.call_reverted",
+        message: "CCTP preflight call reverted; this may be OK at send time",
+        data: {
+          label,
+          index: i,
+          to: call.to,
+          revertData: revertData ?? "(none)",
+        },
         error: err,
       });
     }

@@ -36,6 +36,7 @@ import {
   getNetworkName,
   resolveArkadeServerUrlByName,
 } from "../arkade-network.js";
+import { createSdkLogger, type Logger, type LogLevel } from "../logging.js";
 
 /** Parameters needed to build an Arkade claim */
 export interface ArkadeClaimParams {
@@ -67,6 +68,10 @@ export interface ArkadeClaimParams {
   network: string;
   /** Arkade server URL (optional, uses default based on network) */
   arkadeServerUrl?: string;
+  /** Optional logger sink. Silent by default. */
+  logger?: Logger;
+  /** Minimum log level to emit. Defaults to `silent`. */
+  logLevel?: LogLevel;
 }
 
 /** Result of building an Arkade claim */
@@ -143,7 +148,16 @@ export async function buildArkadeClaim(
     arkadeServerUrl,
   } = params;
 
-  console.log(`Arkade claim params: ${JSON.stringify(params, null, 2)}`);
+  const logger = createSdkLogger(params).child({
+    module: "redeem/arkade",
+    operation: "arkade.claim",
+    data: { vhtlcAddress, network, destinationAddress },
+  });
+
+  logger.info({
+    event: "arkade.claim.start",
+    message: "Starting Arkade claim",
+  });
 
   // Parse keys
   // For claim: user is RECEIVER, lendaswap is SENDER
@@ -222,7 +236,11 @@ export async function buildArkadeClaim(
     const { vtxos: allVtxos } = await indexerProvider.getVtxos({
       scripts: [vhtlcPkScript],
     });
-    console.log(`All VTXOs at address: ${JSON.stringify(allVtxos, null, 2)}`);
+    logger.debug({
+      event: "arkade.claim.no_spendable_vtxos",
+      message: "No spendable VTXOs found at VHTLC address",
+      data: { vtxos: allVtxos },
+    });
     throw new Error("No spendable VTXOs found at the VHTLC address");
   }
 
@@ -268,7 +286,11 @@ export async function buildArkadeClaim(
     },
   ];
 
-  console.log(`Claiming ${totalAmount} sats to ${destinationAddress}`);
+  logger.info({
+    event: "arkade.claim.vtxos_found",
+    message: "Found spendable VTXOs for Arkade claim",
+    data: { totalAmount, vtxoCount: vtxos.length },
+  });
 
   // Build the offchain transaction
   const { arkTx, checkpoints } = buildOffchainTx(
@@ -307,19 +329,27 @@ export async function buildArkadeClaim(
     }),
   );
 
-  console.log(`Checkpoint transactions signed`);
+  logger.debug({
+    event: "arkade.claim.checkpoints_signed",
+    message: "Checkpoint transactions signed",
+  });
 
   // Finalize the transaction
   try {
     await arkProvider.finalizeTx(arkTxid, finalCheckpoints);
   } catch (error) {
-    console.error(
-      `Failed claiming funds. Please scream loudly, cry, and ask for help.`,
+    logger.error({
+      event: "arkade.claim.finalize_failed",
+      message: "Failed to finalize Arkade claim",
       error,
-    );
+    });
     throw error;
   }
-  console.log(`Arkade claim finalized: ${arkTxid}`);
+  logger.info({
+    event: "arkade.claim.finalized",
+    message: "Arkade claim finalized",
+    data: { arkTxid },
+  });
 
   return {
     txId: arkTxid,
@@ -347,9 +377,16 @@ export async function continueArkadeClaim(
     arkadeServerUrl,
   } = params;
 
-  console.log(
-    `Continuing Arkade claim with params: ${JSON.stringify(params, null, 2)}`,
-  );
+  const logger = createSdkLogger(params).child({
+    module: "redeem/arkade",
+    operation: "arkade.claim.continue",
+    data: { vhtlcAddress, network },
+  });
+
+  logger.info({
+    event: "arkade.claim.continue_start",
+    message: "Continuing Arkade claim",
+  });
 
   // Parse keys
   // For claim: user is RECEIVER, lendaswap is SENDER
@@ -424,7 +461,11 @@ export async function continueArkadeClaim(
     const { vtxos: allVtxos } = await indexerProvider.getVtxos({
       scripts: [vhtlcPkScript],
     });
-    console.log(`All VTXOs at address: ${JSON.stringify(allVtxos, null, 2)}`);
+    logger.debug({
+      event: "arkade.claim.no_spendable_vtxos",
+      message: "No spendable VTXOs found at VHTLC address",
+      data: { vtxos: allVtxos },
+    });
     throw new Error("No spendable VTXOs found at the VHTLC address");
   }
 
@@ -441,7 +482,11 @@ export async function continueArkadeClaim(
   // Encode the VHTLC tap tree
   const tapTree = vhtlc.encode();
 
-  console.log(`Continuing claim of ${totalAmount} sats from ${vhtlcAddress}`);
+  logger.info({
+    event: "arkade.claim.continue_vtxos_found",
+    message: "Found VTXOs for pending Arkade claim",
+    data: { totalAmount, vtxoCount: vtxos.length },
+  });
 
   // Build a GetPendingTx intent to ask Arkade for pending transactions
   const now = Math.floor(Date.now() / 1000);
@@ -501,7 +546,11 @@ export async function continueArkadeClaim(
     );
   }
 
-  console.log(`Found ${pendingTxs.length} pending transaction(s)`);
+  logger.info({
+    event: "arkade.claim.pending_txs_found",
+    message: "Found pending Arkade claim transactions",
+    data: { pendingTxCount: pendingTxs.length },
+  });
 
   // Finalize each pending transaction
   let lastResult: ArkadeClaimResult | undefined;
@@ -535,14 +584,19 @@ export async function continueArkadeClaim(
     try {
       await arkProvider.finalizeTx(arkTxid, finalCheckpoints);
     } catch (error) {
-      console.error(
-        `Failed continuing claiming funds. Please scream loudly, cry, and ask for help.`,
+      logger.error({
+        event: "arkade.claim.continue_finalize_failed",
+        message: "Failed to finalize pending Arkade claim",
         error,
-      );
+      });
       throw error;
     }
 
-    console.log(`Arkade claim finalized: ${arkTxid}`);
+    logger.info({
+      event: "arkade.claim.finalized",
+      message: "Arkade claim finalized",
+      data: { arkTxid },
+    });
 
     lastResult = {
       txId: arkTxid,

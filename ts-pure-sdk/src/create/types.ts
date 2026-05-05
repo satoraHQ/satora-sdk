@@ -16,6 +16,7 @@ import type {
   TokenId,
   TokenInfo,
 } from "../api/client.js";
+import type { Logger, LogLevel } from "../logging.js";
 import type { SwapParams } from "../signer/index.js";
 import type { Asset } from "../tokens.js";
 
@@ -442,6 +443,10 @@ export interface CreateSwapContext {
   evmAddress: string;
   /** Jump the key index forward by `n` (used to skip past reused indices). */
   skipKeyIndices?: (n: number) => Promise<void>;
+  /** Optional logger sink. Silent by default. */
+  logger?: Logger;
+  /** Minimum log level to emit. Defaults to `silent`. */
+  logLevel?: LogLevel;
   /** Function to store the swap in storage (if configured) */
   storeSwap: (
     swapId: string,

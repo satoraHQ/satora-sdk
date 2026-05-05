@@ -16,6 +16,7 @@
  */
 
 import type { TokenInfo } from "./api/client.js";
+import { createSdkLogger, type Logger, type LogLevel } from "./logging.js";
 
 const COINGECKO_API = "https://api.coingecko.com/api/v3";
 
@@ -40,6 +41,13 @@ interface CoinGeckoSimplePriceResponse {
   };
 }
 
+export interface GetUsdPricesOptions {
+  /** Optional logger sink. Silent by default. */
+  logger?: Logger;
+  /** Minimum log level to emit. Defaults to `silent`. */
+  logLevel?: LogLevel;
+}
+
 /**
  * Get the CoinGecko ID for a token by its symbol.
  *
@@ -57,7 +65,12 @@ export function getCoinGeckoId(token: TokenInfo): string | null {
  */
 export async function getUsdPrices(
   tokens: TokenInfo[],
+  options: GetUsdPricesOptions = {},
 ): Promise<{ token: TokenInfo; usdPrice: number | null }[]> {
+  const logger = createSdkLogger(options).child({
+    module: "usd-price",
+    operation: "price.fetch_usd",
+  });
   // Resolve unique CoinGecko IDs we need to fetch
   const coinGeckoIds = new Set<string>();
   for (const token of tokens) {
@@ -78,9 +91,11 @@ export async function getUsdPrices(
     const response = await fetch(`${COINGECKO_API}/simple/price?${params}`);
 
     if (!response.ok) {
-      console.error(
-        `CoinGecko API error: ${response.status} ${response.statusText}`,
-      );
+      logger.warn({
+        event: "price.coingecko.http_error",
+        message: "CoinGecko API returned an error response",
+        data: { status: response.status, statusText: response.statusText },
+      });
       return tokens.map((token) => ({ token, usdPrice: null }));
     }
 
@@ -96,7 +111,11 @@ export async function getUsdPrices(
       return { token, usdPrice: priceData.usd };
     });
   } catch (error) {
-    console.error("Failed to fetch USD prices from CoinGecko:", error);
+    logger.warn({
+      event: "price.coingecko.fetch_failed",
+      message: "Failed to fetch USD prices from CoinGecko",
+      error,
+    });
     return tokens.map((token) => ({ token, usdPrice: null }));
   }
 }

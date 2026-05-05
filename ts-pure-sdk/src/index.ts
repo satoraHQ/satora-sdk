@@ -194,6 +194,18 @@ export {
   type UnsignedPermit2FundingData,
 } from "./evm/index.js";
 export {
+  createConsoleLogger,
+  createSdkLogger,
+  type LogContext,
+  type Logger,
+  type LoggerOptions,
+  type LogLevel,
+  type LogRecord,
+  noopLogger,
+  redactLogValue,
+  SdkLogger,
+} from "./logging.js";
+export {
   calculateSourceAmount,
   calculateTargetAmount,
   computeExchangeRate,
@@ -272,7 +284,7 @@ export {
   toChain,
   toChainName,
 } from "./tokens.js";
-export { getUsdPrices } from "./usd-price.js";
+export { type GetUsdPricesOptions, getUsdPrices } from "./usd-price.js";
 // USDT0 bridge (LayerZero OFT) utilities
 export {
   getEid,

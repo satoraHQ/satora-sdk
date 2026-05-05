@@ -40,6 +40,7 @@ import {
   getNetworkName,
   resolveArkadeServerUrlByName,
 } from "./arkade-network.js";
+import { createSdkLogger, type Logger, type LogLevel } from "./logging.js";
 
 function secondsToTimelock(
   seconds: number,
@@ -78,6 +79,10 @@ export interface DelegateClaimParams {
   arkadeServerUrl?: string;
   /** Optional swap ID — enables the backend to mark swap as ClientRedeemed. */
   swapId?: string;
+  /** Optional logger sink. Silent by default. */
+  logger?: Logger;
+  /** Minimum log level to emit. Defaults to `silent`. */
+  logLevel?: LogLevel;
 }
 
 export interface DelegateRefundParams {
@@ -95,6 +100,10 @@ export interface DelegateRefundParams {
   network: string;
   lendaswapApiUrl: string;
   arkadeServerUrl?: string;
+  /** Optional logger sink. Silent by default. */
+  logger?: Logger;
+  /** Minimum log level to emit. Defaults to `silent`. */
+  logLevel?: LogLevel;
 }
 
 export interface DelegateSettleResult {
@@ -174,6 +183,8 @@ export async function delegateClaim(
     locktime: undefined,
     swapId: params.swapId,
     preimage: params.preimage,
+    logger: params.logger,
+    logLevel: params.logLevel,
   });
 }
 
@@ -225,6 +236,8 @@ export async function delegateRefund(
     lendaswapApiUrl: params.lendaswapApiUrl,
     arkadeServerUrl: params.arkadeServerUrl,
     locktime: params.refundLocktime,
+    logger: params.logger,
+    logLevel: params.logLevel,
   });
 }
 
@@ -245,6 +258,8 @@ interface SettleDelegateOpts {
   locktime: number | undefined;
   swapId?: string;
   preimage?: string;
+  logger?: Logger;
+  logLevel?: LogLevel;
 }
 
 async function settleDelegate(
@@ -261,6 +276,13 @@ async function settleDelegate(
     lendaswapApiUrl,
     arkadeServerUrl,
   } = opts;
+
+  const logger = createSdkLogger(opts).child({
+    module: "delegate",
+    operation: "delegate.settle",
+    swapId: opts.swapId,
+    data: { destinationAddress, networkName },
+  });
 
   const serverUrl = resolveArkadeServerUrlByName(networkName, arkadeServerUrl);
 
@@ -293,7 +315,11 @@ async function settleDelegate(
     throw new Error("Total VTXO amount is zero");
   }
 
-  console.log(`Found ${vtxos.length} VTXO(s) totalling ${totalAmount} sats`);
+  logger.info({
+    event: "delegate.settle.vtxos_found",
+    message: "Found settleable VTXOs for delegate settlement",
+    data: { vtxoCount: vtxos.length, totalAmount },
+  });
 
   // Parse destination (Ark address → taproot pkScript)
   const destAddr = ArkAddress.decode(destinationAddress);
