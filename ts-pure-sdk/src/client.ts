@@ -5383,33 +5383,33 @@ export class Client {
    *
    * For Arkade-destination swaps (EVM/Bitcoin/Lightning → Arkade), queries the
    * Arkade indexer for VTXOs at the `target_arkade_address` and checks if any
-   * VTXO's txid matches the swap's `btc_claim_txid`.
+   * VTXO's txid matches the Arkade txid that paid the target address.
    *
    * @param swapId - The UUID of the swap
-   * @returns `true` if the VTXO matching `btc_claim_txid` was found
+   * @returns `true` if the received Arkade VTXO was found
    */
   async hasReceivedVtxo(swapId: string): Promise<boolean> {
     const swap = await this.getSwap(swapId);
 
-    // Extract target_arkade_address and btc_claim_txid based on direction
+    // Extract target_arkade_address and the Arkade-side txid that pays it.
     let targetArkadeAddress: string | undefined;
-    let btcClaimTxid: string | null | undefined;
+    let receiveArkadeTxid: string | null | undefined;
     let network: string | undefined;
 
     if (swap.direction === "evm_to_arkade") {
       const s = swap as EvmToArkadeSwapResponse & { direction: string };
       targetArkadeAddress = s.target_arkade_address;
-      btcClaimTxid = s.btc_claim_txid;
+      receiveArkadeTxid = s.btc_claim_txid;
       network = s.network;
     } else if (swap.direction === "btc_to_arkade") {
       const s = swap as BtcToArkadeSwapResponse & { direction: string };
       targetArkadeAddress = s.target_arkade_address;
-      btcClaimTxid = s.arkade_claim_txid;
+      receiveArkadeTxid = s.arkade_claim_txid;
       network = s.network;
     } else if (swap.direction === "lightning_to_arkade") {
       const s = swap as LightningToArkadeSwapResponse & { direction: string };
       targetArkadeAddress = s.target_arkade_address;
-      btcClaimTxid = s.btc_claim_txid;
+      receiveArkadeTxid = s.arkade_claim_txid;
       network = s.network;
     } else {
       throw new Error(
@@ -5417,7 +5417,7 @@ export class Client {
       );
     }
 
-    if (!btcClaimTxid) {
+    if (!receiveArkadeTxid) {
       return false;
     }
 
@@ -5437,6 +5437,6 @@ export class Client {
       scripts: [pkScript],
     });
 
-    return vtxos.some((v) => v.txid === btcClaimTxid);
+    return vtxos.some((v) => v.txid === receiveArkadeTxid);
   }
 }
