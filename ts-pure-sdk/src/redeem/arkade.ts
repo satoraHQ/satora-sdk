@@ -113,6 +113,15 @@ function parseXOnlyPubKey(pubKeyHex: string): Uint8Array {
   );
 }
 
+function isNoPendingClaimError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.message.startsWith(
+      "No pending transactions found at the VHTLC address",
+    )
+  );
+}
+
 /**
  * Claim a VHTLC swap by revealing the preimage.
  *
@@ -158,6 +167,18 @@ export async function buildArkadeClaim(
     event: "arkade.claim.start",
     message: "Starting Arkade claim",
   });
+
+  // Arkade offchain spends are submit/finalize. If a previous attempt submitted
+  // but failed before finalization, submitting again with the same VTXOs will
+  // fail. First ask the server for an existing pending tx and finalize that.
+  try {
+    return await continueArkadeClaim(params);
+  } catch (error) {
+    if (!isNoPendingClaimError(error)) {
+      throw error;
+    }
+    console.log("No pending Arkade claim found; submitting a new claim");
+  }
 
   // Parse keys
   // For claim: user is RECEIVER, lendaswap is SENDER
