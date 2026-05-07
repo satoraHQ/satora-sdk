@@ -1790,13 +1790,22 @@ export class Client {
       options.waitForVtxoMs ?? 30_000,
     );
 
-    if (vtxoStatus === "not_funded" || vtxoStatus === "spent") {
+    if (vtxoStatus === "not_funded") {
       return {
         success: false,
-        message:
-          vtxoStatus === "not_funded"
-            ? `No VTXOs found at the VHTLC address ${claimParams.vhtlcAddress}. The swap may not have been funded yet.`
-            : "All VTXOs have already been spent.",
+        message: `No VTXOs found at the VHTLC address ${claimParams.vhtlcAddress}. The swap may not have been funded yet.`,
+      };
+    }
+
+    if (vtxoStatus === "spent") {
+      // A submitted-but-not-finalized Arkade offchain tx can make the original
+      // VHTLC inputs look spent. Try to resume that pending tx before declaring
+      // the claim already spent.
+      const continued = await this.continueArkadeClaimSwap(id);
+      if (continued.success) return continued;
+      return {
+        success: false,
+        message: "All VTXOs have already been spent.",
       };
     }
 
