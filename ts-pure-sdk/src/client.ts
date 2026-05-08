@@ -4141,7 +4141,7 @@ export class Client {
    * @example
    * ```ts
    * const quote = await client.getArkadeToLightningQuote(100000);
-   * console.log(`Invoice should be for ${quote.target_amount} sats`);
+   * console.log(`Invoice should be for ${quote.net_target_amount} sats`);
    * console.log(`Fees: ${quote.fee} sats`);
    * ```
    */
@@ -4202,7 +4202,7 @@ export class Client {
    *
    * // With invoice (must match expected amount):
    * const quote = await client.getArkadeToLightningQuote(oldSwap.boltz_amount_sats);
-   * // Generate invoice for quote.target_amount sats, then:
+   * // Generate invoice for quote.net_target_amount sats, then:
    * const result = await client.retryArkadeToLightningSwap(swapId, {
    *   lightningInvoice: "lnbc...",
    * });
@@ -4275,7 +4275,7 @@ export class Client {
       // LNURL: use the quote to determine the right amount
       const quote = await this.getArkadeToLightningQuote(sourceAmountSats);
       createOptions.lightningAddress = options.lightningAddress;
-      createOptions.amountSats = Number(quote.target_amount);
+      createOptions.amountSats = Number(quote.net_target_amount);
     } else if (options.lightningInvoice) {
       createOptions.lightningInvoice = options.lightningInvoice;
     }
