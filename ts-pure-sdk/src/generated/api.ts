@@ -567,7 +567,8 @@ export interface paths {
          * Recover swaps by deriving user_id keys from an Xpub
          * @description This endpoint allows clients to recover their swap history after importing a mnemonic. The
          *     client provides an Xpub they used to derive `user_id`s, and the server derives `user_id` keys at
-         *     m/9419/121923/<index> for indices 0-99 and searches for matching swaps.
+         *     m/9419/121923/<index> from the requested start index until the server-owned gap limit or scan
+         *     cap is reached.
          */
         post: operations["recover_swaps"];
         delete?: never;
@@ -2354,6 +2355,13 @@ export interface components {
         };
         RecoveryRequest: {
             /**
+             * Format: int32
+             * @description Derivation index to start scanning from.
+             *
+             *     If omitted, recovery starts from index 0. The server owns all scan limits.
+             */
+            start_index?: number | null;
+            /**
              * @description Extended public key derived from the user's wallet.
              *
              *     Used to derive `user_id`s for that user.
@@ -2362,12 +2370,33 @@ export interface components {
         };
         RecoveryResponse: {
             /**
+             * @description True when scanning stopped due to the recovery gap limit.
+             *
+             *     False means the server-side max scan cap was reached and callers may continue from
+             *     `scanned_until + 1` if they are performing an explicit deep recovery.
+             */
+            complete: boolean;
+            /**
              * Format: int32
              * @description The highest index used in any recovered swap.
              *
-             *     Client should set their next derivation index to this + 1.
+             *     Legacy compatibility field. Set to `0` when no swaps are found, which makes it ambiguous
+             *     with a real swap at index 0. New clients should use `next_index` instead.
              */
             highest_index: number;
+            /**
+             * Format: int32
+             * @description Derivation index clients should use for the next new swap.
+             *
+             *     Equivalent to `highest_index + 1` when swaps were found. When no swaps were found, this is
+             *     the requested start index.
+             */
+            next_index: number;
+            /**
+             * Format: int32
+             * @description Last derivation index scanned by the server.
+             */
+            scanned_until: number;
             /** @description List of recovered swaps with their derivation indices */
             swaps: components["schemas"]["RecoveredSwap"][];
         };
@@ -3864,6 +3893,15 @@ export interface operations {
             };
             /** @description Bad request - invalid xpub format */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Too many recovery requests */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
