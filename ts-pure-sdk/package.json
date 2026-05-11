@@ -93,7 +93,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/lendasat/lendaswap-sdk.git",
+    "url": "https://github.com/satoraHQ/lendaswap-sdk.git",
     "directory": "client-sdk/ts-pure-sdk"
   },
   "publishConfig": {
