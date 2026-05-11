@@ -206,6 +206,24 @@ export interface SupportAgentInfo {
   npub: string;
 }
 
+export interface RecoverSwapsOptions {
+  /** Derivation index to start scanning from. Defaults to 0 on the server. */
+  startIndex?: number;
+}
+
+export interface RecoverSwapsResult {
+  /** Recovered swaps stored locally. */
+  swaps: StoredSwap[];
+  /** Legacy compatibility field from the API. Prefer `nextIndex`. */
+  highestIndex: number;
+  /** Derivation index to use for the next new swap. */
+  nextIndex: number;
+  /** Last derivation index scanned by the server. */
+  scannedUntil: number;
+  /** True when scanning stopped due to the recovery gap limit. */
+  complete: boolean;
+}
+
 /** Result of attempting a refund */
 export interface RefundResult {
   /** Whether the refund was successful */
@@ -1292,21 +1310,23 @@ export class Client {
    * to that wallet. For each recovered swap, re-derives the keys using the
    * swap's derivation index and stores it locally.
    *
-   * After recovery, the key index is set to `highest_index + 1` so that
-   * new swaps don't reuse derivation indices.
+   * After recovery, the key index is set to `next_index` so that new swaps
+   * don't reuse derivation indices.
    *
-   * @returns The recovered swaps stored locally.
+   * @returns Recovery metadata and the recovered swaps stored locally.
    */
-  async recoverSwaps(): Promise<StoredSwap[]> {
+  async recoverSwaps(
+    options: RecoverSwapsOptions = {},
+  ): Promise<RecoverSwapsResult> {
     const xpub = this.getUserIdXpub();
     this.#logger.info({
       event: "client.recover.start",
       message: "Recovering swaps for wallet",
-      data: { xpub },
+      data: { xpub, startIndex: options.startIndex },
     });
 
     const { data, error } = await this.#apiClient.POST("/swap/recover", {
-      body: { xpub },
+      body: { xpub, start_index: options.startIndex },
     });
     if (error) {
       throw new Error(`Failed to recover swaps: ${JSON.stringify(error)}`);
@@ -1322,6 +1342,9 @@ export class Client {
       data: {
         recoveredSwapCount: data.swaps.length,
         highestIndex: data.highest_index,
+        nextIndex: data.next_index,
+        scannedUntil: data.scanned_until,
+        complete: data.complete,
       },
     });
 
@@ -1337,12 +1360,16 @@ export class Client {
       }
     }
 
-    // Update key index so new swaps don't reuse indices
-    if (data.highest_index >= 0) {
-      await this.setKeyIndex(data.highest_index + 1);
-    }
+    // Update key index so new swaps don't reuse indices.
+    await this.setKeyIndex(data.next_index);
 
-    return storedSwaps;
+    return {
+      swaps: storedSwaps,
+      highestIndex: data.highest_index,
+      nextIndex: data.next_index,
+      scannedUntil: data.scanned_until,
+      complete: data.complete,
+    };
   }
 
   /**
