@@ -8,7 +8,6 @@ use lendaswap_sdk::types::Chain;
 use lendaswap_sdk::types::QuoteAmount;
 use lendaswap_sdk::types::QuoteRequest;
 use lendaswap_sdk::types::TokenId;
-use lendaswap_sdk::types::well_known;
 use serde_json::json;
 use wiremock::Mock;
 use wiremock::MockServer;
@@ -101,9 +100,9 @@ async fn get_quote_builds_expected_query_and_parses_response() {
     let client = Client::new(&server.uri()).expect("client builds");
     let req = QuoteRequest::new(
         Chain::bitcoin(),
-        TokenId::btc(),
+        TokenId::Btc,
         Chain::polygon(),
-        well_known::usdc(lendaswap_sdk::types::KnownChain::Polygon).unwrap(),
+        TokenId::UsdcPolygon,
         QuoteAmount::Source(100_000),
     );
     let quote = client.get_quote(req).await.expect("get_quote succeeds");
@@ -150,9 +149,9 @@ async fn get_quote_with_target_amount_omits_source_amount() {
     let client = Client::new(&server.uri()).expect("client builds");
     let req = QuoteRequest::new(
         Chain::bitcoin(),
-        TokenId::btc(),
+        TokenId::Btc,
         Chain::polygon(),
-        TokenId::evm("0x3c499c542cef5e3811e1192ce70d8cc03d5c3359"),
+        TokenId::UsdcPolygon,
         QuoteAmount::Target(30_000_000_000),
     );
     client.get_quote(req).await.expect("get_quote succeeds");
@@ -189,9 +188,9 @@ async fn get_quote_sends_optional_bridge_and_referral() {
     let client = Client::new(&server.uri()).expect("client builds");
     let mut req = QuoteRequest::new(
         Chain::bitcoin(),
-        TokenId::btc(),
+        TokenId::Btc,
         Chain::polygon(),
-        TokenId::evm("0x3c499c542cef5e3811e1192ce70d8cc03d5c3359"),
+        TokenId::UsdcPolygon,
         QuoteAmount::Source(100_000),
     );
     req.bridge_target_chain = Some("Base".to_string());

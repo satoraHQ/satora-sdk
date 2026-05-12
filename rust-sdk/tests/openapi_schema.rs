@@ -120,11 +120,17 @@ fn token_id_btc_matches_spec() {
 }
 
 #[test]
-fn token_id_evm_address_matches_spec() {
+fn token_id_named_evm_variant_matches_spec() {
     let spec = load_spec();
-    let value = TokenId::Evm("0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48".to_string());
-    // An arbitrary hex address only matches the `string` arm, so strict oneOf
-    // is satisfied here.
+    // A named variant serialises to its known contract address, which only
+    // matches the `string` arm of the spec's oneOf — strict validation passes.
+    assert_matches_schema(&spec, "TokenId", &TokenId::UsdcEthereum);
+}
+
+#[test]
+fn token_id_other_address_matches_spec() {
+    let spec = load_spec();
+    let value = TokenId::Other("0xdeadbeef0000000000000000000000000000beef".to_string());
     assert_matches_schema(&spec, "TokenId", &value);
 }
 

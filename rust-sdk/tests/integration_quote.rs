@@ -22,7 +22,6 @@ use lendaswap_sdk::types::QuoteAmount;
 use lendaswap_sdk::types::QuoteRequest;
 use lendaswap_sdk::types::QuoteResponse;
 use lendaswap_sdk::types::TokenId;
-use lendaswap_sdk::types::well_known;
 
 const DEFAULT_BASE_URL: &str = "http://localhost:3333";
 
@@ -63,7 +62,7 @@ fn init_tracing() {
 
 /// The three BTC-bearing chains. Used as `source_chain` in BTC→stable
 /// matrices and as `target_chain` in stable→BTC matrices. All pair with
-/// `TokenId::btc()` — the chain distinguishes the on-ramp (on-chain BTC vs
+/// `TokenId::Btc` — the chain distinguishes the on-ramp (on-chain BTC vs
 /// Lightning vs Arkade VTXO).
 fn btc_chains() -> [KnownChain; 3] {
     [
@@ -85,7 +84,7 @@ fn evm_chains() -> [KnownChain; 3] {
 fn make_request(source_chain: Chain, target_chain: Chain, target_token: TokenId) -> QuoteRequest {
     QuoteRequest::new(
         source_chain,
-        TokenId::btc(),
+        TokenId::Btc,
         target_chain,
         target_token,
         QuoteAmount::Source(DEFAULT_SOURCE_SATS),
@@ -103,7 +102,7 @@ fn make_reverse_request(
         source_chain,
         source_token,
         target_chain,
-        TokenId::btc(),
+        TokenId::Btc,
         QuoteAmount::Source(DEFAULT_SOURCE_STABLE_RAW),
     )
 }
@@ -188,7 +187,7 @@ async fn matrix_btc_sources_to_usdc_on_evm_chains() {
     let client = client();
     for source in btc_chains() {
         for target_chain in evm_chains() {
-            let usdc = well_known::usdc(target_chain.clone())
+            let usdc = TokenId::usdc_on(target_chain.clone())
                 .unwrap_or_else(|| panic!("expected known USDC on {target_chain:?}"));
             let req = make_request(
                 Chain::Known(source.clone()),
@@ -223,7 +222,7 @@ async fn matrix_btc_sources_to_usdt_on_evm_chains() {
     let client = client();
     for source in btc_chains() {
         for target_chain in evm_chains() {
-            let usdt = well_known::usdt(target_chain.clone())
+            let usdt = TokenId::usdt_on(target_chain.clone())
                 .unwrap_or_else(|| panic!("expected known USDT on {target_chain:?}"));
             let req = make_request(
                 Chain::Known(source.clone()),
@@ -257,7 +256,7 @@ async fn matrix_usdc_on_evm_chains_to_btc_targets() {
     init_tracing();
     let client = client();
     for source_chain in evm_chains() {
-        let usdc = well_known::usdc(source_chain.clone())
+        let usdc = TokenId::usdc_on(source_chain.clone())
             .unwrap_or_else(|| panic!("expected known USDC on {source_chain:?}"));
         for target in btc_chains() {
             let req = make_reverse_request(
@@ -292,7 +291,7 @@ async fn matrix_usdt_on_evm_chains_to_btc_targets() {
     init_tracing();
     let client = client();
     for source_chain in evm_chains() {
-        let usdt = well_known::usdt(source_chain.clone())
+        let usdt = TokenId::usdt_on(source_chain.clone())
             .unwrap_or_else(|| panic!("expected known USDT on {source_chain:?}"));
         for target in btc_chains() {
             let req = make_reverse_request(
@@ -338,7 +337,7 @@ async fn matrix_lightning_arkade_cross_quotes() {
         let req = make_request(
             Chain::Known(source.clone()),
             Chain::Known(target.clone()),
-            TokenId::btc(),
+            TokenId::Btc,
         );
         let resp = client
             .get_quote(req.clone())
