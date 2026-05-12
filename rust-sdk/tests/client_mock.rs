@@ -208,6 +208,13 @@ async fn get_quote_sends_optional_bridge_and_referral() {
     assert_eq!(params_get(&params, "ref"), Some("FOO123"));
 }
 
+// NOTE: a wiremock test for the EVM->Arkade swap flow lived here previously;
+// it constructed a `CreateEvmToArkadeSwapRequest` directly. After the
+// refactor, the public method takes (source, amount, receive_to) and runs
+// signer derivation, so end-to-end testing requires the Phase-2 signer
+// crypto. The test will be reintroduced once `Signer::derive_swap_params`
+// is implemented.
+
 fn query_pairs(req: &Request) -> Vec<(String, String)> {
     req.url
         .query_pairs()

@@ -7,6 +7,8 @@
 pub mod client;
 pub mod error;
 pub mod request;
+pub mod signer;
+pub mod storage;
 pub mod types;
 
 // Internal-only: wire-format structs that public types route through via
@@ -15,7 +17,12 @@ pub mod types;
 mod wire;
 
 pub use client::Client;
+pub use client::ClientBuilder;
+pub use client::Swap;
 pub use error::Error;
 pub use error::Result;
 pub use request::Endpoint;
 pub use request::PayloadKind;
+pub use signer::Signer;
+pub use storage::InMemorySwapStorage;
+pub use storage::SwapStorage;

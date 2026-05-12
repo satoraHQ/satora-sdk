@@ -53,6 +53,17 @@ impl KnownChain {
             _ => None,
         }
     }
+
+    /// Numeric EVM chain ID. `None` for non-EVM rails (Bitcoin / Lightning /
+    /// Arkade).
+    pub fn evm_chain_id(&self) -> Option<u64> {
+        match self {
+            Self::Polygon => Some(137),
+            Self::Ethereum => Some(1),
+            Self::Arbitrum => Some(42161),
+            Self::Bitcoin | Self::Lightning | Self::Arkade => None,
+        }
+    }
 }
 
 /// A chain identifier. Either a [`KnownChain`] or an opaque wire string.
