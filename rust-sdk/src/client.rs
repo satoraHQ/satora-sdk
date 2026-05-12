@@ -46,11 +46,18 @@ impl Client {
     /// [`Endpoint`]. Builds the URL, attaches the payload (query / body /
     /// none), sends, maps non-2xx responses to [`Error::Api`], and decodes
     /// JSON into the endpoint's `Response` type.
+    #[tracing::instrument(
+        name = "send",
+        skip_all,
+        fields(method = %E::METHOD, path = E::PATH),
+    )]
     pub async fn send<E: Endpoint>(&self, req: E) -> Result<E::Response> {
         let url = self.url(E::PATH)?;
+        tracing::debug!(%url, "sending request");
         let builder = self.http.request(E::METHOD, url);
         let builder = attach_payload(builder, &req, E::PAYLOAD);
         let resp = builder.send().await?;
+        tracing::debug!(status = %resp.status(), "response received");
         let resp = check_status(resp).await?;
         Ok(resp.json::<E::Response>().await?)
     }
@@ -59,9 +66,12 @@ impl Client {
     ///
     /// Not routed through [`Self::send`] because the response is plain text
     /// rather than JSON.
+    #[tracing::instrument(name = "health", skip_all)]
     pub async fn health(&self) -> Result<String> {
         let url = self.url("health")?;
+        tracing::debug!(%url, "sending health probe");
         let resp = self.http.get(url).send().await?;
+        tracing::debug!(status = %resp.status(), "response received");
         let resp = check_status(resp).await?;
         Ok(resp.text().await?)
     }
@@ -108,6 +118,7 @@ async fn check_status(resp: reqwest::Response) -> Result<reqwest::Response> {
         Ok(body) => body.error,
         Err(_) => default_status_message(status),
     };
+    tracing::warn!(status = code, %message, "API returned non-2xx");
     Err(Error::Api {
         status: code,
         message,

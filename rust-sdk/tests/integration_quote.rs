@@ -44,6 +44,23 @@ fn client() -> Client {
     Client::new(&base_url()).expect("base URL parses")
 }
 
+/// Set up a tracing subscriber that writes to the test harness's captured
+/// output (visible with `cargo test -- --nocapture`). Idempotent — every
+/// `try_init` after the first returns Err and we ignore it, which keeps
+/// multi-test runs from fighting for the global subscriber.
+///
+/// Default filter is `lendaswap_sdk=debug,info`; override with `RUST_LOG`.
+fn init_tracing() {
+    use tracing_subscriber::EnvFilter;
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("lendaswap_sdk=debug,info")),
+        )
+        .with_test_writer()
+        .try_init();
+}
+
 /// The three BTC-bearing chains. Used as `source_chain` in BTC→stable
 /// matrices and as `target_chain` in stable→BTC matrices. All pair with
 /// `TokenId::btc()` — the chain distinguishes the on-ramp (on-chain BTC vs
@@ -167,6 +184,7 @@ fn parse_u128(field: &str, s: &str) -> u128 {
 #[tokio::test]
 #[ignore = "live: requires a running Lendaswap server (default http://localhost:3333)"]
 async fn matrix_btc_sources_to_usdc_on_evm_chains() {
+    init_tracing();
     let client = client();
     for source in btc_chains() {
         for target_chain in evm_chains() {
@@ -182,6 +200,14 @@ async fn matrix_btc_sources_to_usdc_on_evm_chains() {
                 .await
                 .unwrap_or_else(|e| panic!("quote {source:?} -> USDC@{target_chain:?}: {e:?}"));
             assert_quote_invariants(&req, &resp);
+            tracing::info!(
+                ?source,
+                ?target_chain,
+                rate = %resp.exchange_rate,
+                protocol_fee = resp.protocol_fee,
+                net_target = %resp.net_target_amount,
+                "BTC@{source:?} -> USDC@{target_chain:?}",
+            );
         }
     }
 }
@@ -193,6 +219,7 @@ async fn matrix_btc_sources_to_usdc_on_evm_chains() {
 #[tokio::test]
 #[ignore = "live: requires a running Lendaswap server (default http://localhost:3333)"]
 async fn matrix_btc_sources_to_usdt_on_evm_chains() {
+    init_tracing();
     let client = client();
     for source in btc_chains() {
         for target_chain in evm_chains() {
@@ -208,6 +235,14 @@ async fn matrix_btc_sources_to_usdt_on_evm_chains() {
                 .await
                 .unwrap_or_else(|e| panic!("quote {source:?} -> USDT@{target_chain:?}: {e:?}"));
             assert_quote_invariants(&req, &resp);
+            tracing::info!(
+                ?source,
+                ?target_chain,
+                rate = %resp.exchange_rate,
+                protocol_fee = resp.protocol_fee,
+                net_target = %resp.net_target_amount,
+                "BTC@{source:?} -> USDT@{target_chain:?}",
+            );
         }
     }
 }
@@ -219,6 +254,7 @@ async fn matrix_btc_sources_to_usdt_on_evm_chains() {
 #[tokio::test]
 #[ignore = "live: requires a running Lendaswap server (default http://localhost:3333)"]
 async fn matrix_usdc_on_evm_chains_to_btc_targets() {
+    init_tracing();
     let client = client();
     for source_chain in evm_chains() {
         let usdc = well_known::usdc(source_chain.clone())
@@ -234,6 +270,14 @@ async fn matrix_usdc_on_evm_chains_to_btc_targets() {
                 .await
                 .unwrap_or_else(|e| panic!("quote USDC@{source_chain:?} -> {target:?}: {e:?}"));
             assert_quote_invariants(&req, &resp);
+            tracing::info!(
+                ?source_chain,
+                ?target,
+                rate = %resp.exchange_rate,
+                protocol_fee = resp.protocol_fee,
+                net_target = %resp.net_target_amount,
+                "USDC@{source_chain:?} -> BTC@{target:?}",
+            );
         }
     }
 }
@@ -245,6 +289,7 @@ async fn matrix_usdc_on_evm_chains_to_btc_targets() {
 #[tokio::test]
 #[ignore = "live: requires a running Lendaswap server (default http://localhost:3333)"]
 async fn matrix_usdt_on_evm_chains_to_btc_targets() {
+    init_tracing();
     let client = client();
     for source_chain in evm_chains() {
         let usdt = well_known::usdt(source_chain.clone())
@@ -260,6 +305,14 @@ async fn matrix_usdt_on_evm_chains_to_btc_targets() {
                 .await
                 .unwrap_or_else(|e| panic!("quote USDT@{source_chain:?} -> {target:?}: {e:?}"));
             assert_quote_invariants(&req, &resp);
+            tracing::info!(
+                ?source_chain,
+                ?target,
+                rate = %resp.exchange_rate,
+                protocol_fee = resp.protocol_fee,
+                net_target = %resp.net_target_amount,
+                "USDT@{source_chain:?} -> BTC@{target:?}",
+            );
         }
     }
 }
@@ -275,6 +328,7 @@ async fn matrix_usdt_on_evm_chains_to_btc_targets() {
 #[tokio::test]
 #[ignore = "live: requires a running Lendaswap server (default http://localhost:3333)"]
 async fn matrix_lightning_arkade_cross_quotes() {
+    init_tracing();
     let client = client();
     let pairs = [
         (KnownChain::Lightning, KnownChain::Arkade),
@@ -291,5 +345,13 @@ async fn matrix_lightning_arkade_cross_quotes() {
             .await
             .unwrap_or_else(|e| panic!("quote BTC@{source:?} -> BTC@{target:?}: {e:?}"));
         assert_quote_invariants(&req, &resp);
+        tracing::info!(
+            ?source,
+            ?target,
+            rate = %resp.exchange_rate,
+            protocol_fee = resp.protocol_fee,
+            net_target = %resp.net_target_amount,
+            "BTC@{source:?} -> BTC@{target:?}",
+        );
     }
 }
