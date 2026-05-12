@@ -17,7 +17,6 @@ pub use quote::QuoteResponse;
 use serde::Deserialize;
 use serde::Serialize;
 pub use token::TokenId;
-pub use token::well_known;
 pub use version::Version;
 pub(crate) use version::VersionRequest;
 
