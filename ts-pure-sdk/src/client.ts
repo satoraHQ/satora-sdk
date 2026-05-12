@@ -1170,7 +1170,9 @@ export class Client {
     }
 
     throw new Error(
-      `Cannot sign collaborative EVM refund with an SDK-controlled key: swap depositor is ${response.client_evm_address}, but SDK-controlled addresses are ${deterministicAddress} (current gasless key) and ${swapAddress} (legacy per-swap key). Use collabRefundEvmWithSigner with the depositor wallet instead.`,
+      `Cannot sign collaborative EVM refund with an SDK-controlled key: swap depositor is ${
+        response.client_evm_address ?? "unknown"
+      }, but SDK-controlled addresses are ${deterministicAddress} (current gasless key) and ${swapAddress} (legacy per-swap key). Use collabRefundEvmWithSigner with the depositor wallet instead.`,
     );
   }
 

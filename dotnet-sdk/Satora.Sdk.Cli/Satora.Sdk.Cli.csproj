@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>Satora.Sdk.Cli</RootNamespace>
+    <AssemblyName>satora</AssemblyName>
+    <IsPackable>false</IsPackable>
+    <!-- Sample CLI: compile against the net8.0 library but run on
+         whatever runtime the developer has (.NET 8 LTS or newer). Lets
+         the demo work on machines that only have .NET 10 installed
+         without forcing them to install .NET 8 alongside. -->
+    <RollForward>LatestMajor</RollForward>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Satora.Sdk\Satora.Sdk.csproj" />
+  </ItemGroup>
+
+</Project>

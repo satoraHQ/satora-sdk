@@ -1,0 +1,996 @@
+//! HTTP client for the Lendaswap API.
+//!
+//! The public surface intentionally avoids generics and borrowed inputs so the
+//! same shape can be re-exposed over a C-ABI / `csbindgen` / `interoptopus`
+//! layer in a future crate. Generics only appear on the internal
+//! [`Client::send`] helper, which is the single chokepoint every endpoint
+//! flows through — that's where auth headers, retry, and tracing will plug in.
+//!
+//! ## Public swap surface
+//!
+//! - [`Client::create_swap`] is the generic entry point: callers describe the swap in terms of
+//!   tokens + amount + receive address; the dispatcher validates the direction and routes to a
+//!   direction-specific helper.
+//! - [`Client::create_evm_to_arkade_swap`] is the direction-specific helper for EVM stablecoin →
+//!   BTC on Arkade. It owns validation, signer derivation, and secret persistence; the wire-level
+//!   request struct is internal.
+
+use crate::error::Error;
+use crate::error::Result;
+use crate::request::Endpoint;
+use crate::request::PayloadKind;
+use crate::signer::Signer;
+use crate::storage::InMemorySwapStorage;
+use crate::storage::SwapStorage;
+use crate::types::Address;
+use crate::types::CreateEvmToArkadeSwapRequest;
+use crate::types::ErrorResponse;
+use crate::types::EvmToArkadeSwapResponse;
+use crate::types::GetSwapResponse;
+use crate::types::KnownChain;
+use crate::types::QuoteAmount;
+use crate::types::QuoteRequest;
+use crate::types::QuoteResponse;
+use crate::types::SwapStatus;
+use crate::types::TokenId;
+use crate::types::Version;
+use crate::types::VersionRequest;
+use reqwest::StatusCode;
+use serde::Serialize;
+use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
+use url::Url;
+
+/// Production Lendaswap API endpoint. Used by [`ClientBuilder`] when no
+/// `.base_url(…)` override is set, and by callers who don't care to spell
+/// the URL themselves.
+pub const DEFAULT_BASE_URL: &str = "https://api.satora.io";
+
+/// How many `key_index` values `create_evm_to_arkade_swap` will try
+/// before giving up. A recovering user's worst case is "as many swaps
+/// as I previously created" — 1000 covers every realistic wallet while
+/// staying well under any HTTP / API rate limit a user could hit
+/// during one swap creation.
+const MAX_KEY_INDEX_GRIND_ATTEMPTS: u32 = 1000;
+
+/// Detect the backend's "this preimage hash already exists" rejection.
+/// Anchored on HTTP 409 + a substring match (case-insensitive) on
+/// "preimage" so unrelated 409s (e.g. some future "duplicate referral")
+/// don't make us grind forever.
+fn is_preimage_collision(err: &Error) -> bool {
+    matches!(
+        err,
+        Error::Api { status: 409, message }
+            if message.to_ascii_lowercase().contains("preimage")
+    )
+}
+
+#[derive(Clone)]
+pub struct Client {
+    pub(crate) http: reqwest::Client,
+    pub(crate) base_url: Url,
+    /// Optional: only required by [`Self::create_swap`]. Constructors that
+    /// don't set it leave this `None`, and `create_swap` returns
+    /// [`Error::InvalidSigner`].
+    pub(crate) signer: Option<Signer>,
+    pub(crate) storage: Arc<dyn SwapStorage>,
+    /// Optional referral code attached to every swap this client creates.
+    /// Set via [`ClientBuilder::referral_code`].
+    pub(crate) referral_code: Option<String>,
+    /// Optional Arkade-side config. Required by every method that talks
+    /// to arkd (`claim`, `arkade_balance`, `arkade_settle`,
+    /// `arkade_offchain_address`, and `create_swap` with `receive_to =
+    /// None`).
+    pub(crate) arkade_config: Option<crate::arkade::ArkadeConfig>,
+    /// Cached, lazily-initialised Arkade wallet. Held on the Client so
+    /// stateful bits — saved boarding-output descriptors (`new_boarding_output`
+    /// writes to a per-wallet in-memory DB), the BDK chain index, and
+    /// the gRPC connection — survive across Client method calls.
+    /// Without this, a `boarding_address` call and a follow-up
+    /// `settle` would each construct a fresh wallet with an empty
+    /// DB, so settle would never see the boarding output the user
+    /// just funded.
+    pub(crate) arkade_wallet: Arc<tokio::sync::OnceCell<crate::arkade::ArkadeWallet>>,
+}
+
+impl std::fmt::Debug for Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Client")
+            .field("base_url", &self.base_url)
+            .field("signer", &self.signer)
+            .field("storage", &"<dyn SwapStorage>")
+            .finish()
+    }
+}
+
+impl Client {
+    /// Construct a basic client targeting `base_url`. The resulting client
+    /// has no signer attached — low-level methods (`version`, `health`,
+    /// `get_quote`, `create_evm_to_arkade_swap`) work, but `create_swap`
+    /// will return [`Error::InvalidSigner`]. Use [`Self::builder`] for the
+    /// high-level path.
+    pub fn new(base_url: &str) -> Result<Self> {
+        crate::crypto_init::ensure_default_provider_installed();
+        let base_url = Url::parse(base_url)?;
+        Ok(Self {
+            http: reqwest::Client::new(),
+            base_url,
+            signer: None,
+            storage: Arc::new(InMemorySwapStorage::new()),
+            referral_code: None,
+            arkade_config: None,
+            arkade_wallet: Arc::new(tokio::sync::OnceCell::new()),
+        })
+    }
+
+    /// Start a [`ClientBuilder`] — required when calling [`Self::create_swap`].
+    pub fn builder() -> ClientBuilder {
+        ClientBuilder::default()
+    }
+
+    /// Attach (or replace) the referral code attached to every
+    /// swap/quote originating from this client. Pass `None` (or an
+    /// empty string) to clear it. Useful after [`Self::new`], which
+    /// doesn't go through the builder.
+    pub fn set_referral_code(&mut self, code: Option<String>) {
+        self.referral_code = code.filter(|s| !s.is_empty());
+    }
+
+    /// Internal dispatch chokepoint for every endpoint described by
+    /// [`Endpoint`]. Builds the URL, attaches the payload (query / body /
+    /// none), sends, maps non-2xx responses to [`Error::Api`], and decodes
+    /// JSON into the endpoint's `Response` type.
+    #[tracing::instrument(
+        name = "send",
+        skip_all,
+        fields(method = %E::METHOD, path = E::PATH),
+    )]
+    pub async fn send<E: Endpoint>(&self, req: E) -> Result<E::Response> {
+        let url = self.url(E::PATH)?;
+        tracing::debug!(%url, "sending request");
+        let builder = self.http.request(E::METHOD, url);
+        let builder = attach_payload(builder, &req, E::PAYLOAD);
+        let resp = builder.send().await?;
+        tracing::debug!(status = %resp.status(), "response received");
+        let resp = check_status(resp).await?;
+        Ok(resp.json::<E::Response>().await?)
+    }
+
+    /// `GET /health` — returns the raw `text/plain` body.
+    ///
+    /// Not routed through [`Self::send`] because the response is plain text
+    /// rather than JSON.
+    #[tracing::instrument(name = "health", skip_all)]
+    pub async fn health(&self) -> Result<String> {
+        let url = self.url("health")?;
+        tracing::debug!(%url, "sending health probe");
+        let resp = self.http.get(url).send().await?;
+        tracing::debug!(status = %resp.status(), "response received");
+        let resp = check_status(resp).await?;
+        Ok(resp.text().await?)
+    }
+
+    /// `GET /version`.
+    pub async fn version(&self) -> Result<Version> {
+        self.send(VersionRequest).await
+    }
+
+    /// `GET /quote` — fetch an exchange quote.
+    pub async fn get_quote(&self, req: QuoteRequest) -> Result<QuoteResponse> {
+        self.send(req).await
+    }
+
+    /// Create a swap. Thin dispatcher: validates the direction
+    /// (`source` / `target` / `receive_to` combination) and routes to the
+    /// direction-specific method below.
+    ///
+    /// `receive_to = None` means "send to the SDK's own Arkade wallet" —
+    /// requires the Client to have been built with
+    /// [`ClientBuilder::arkade_config`] so the SDK knows which Arkade
+    /// network to derive the address against. The address-less variant
+    /// only makes sense when `target` is BTC.
+    ///
+    /// `source_chain` is required (not inferred from `source`) because
+    /// [`TokenId::Btc`] is rail-ambiguous — `Lightning` and `Bitcoin`
+    /// both source BTC. For EVM-side stablecoin sources where the
+    /// `TokenId` already carries chain info (`UsdcPolygon`, etc.) the
+    /// two must agree; mismatches return [`Error::InvalidSwap`].
+    ///
+    /// Supported today:
+    /// - EVM stablecoin (Polygon / Arbitrum / Ethereum) → BTC on Arkade
+    /// - Lightning → BTC on Arkade (uses a Bolt11 invoice; `gasless` + `extra_fees_bps` are ignored
+    ///   — the Lightning rail doesn't model them server-side today, and the amount must be a target
+    ///   `QuoteAmount::Target(sats_receive)`).
+    ///
+    /// Any other source / target combination returns
+    /// [`Error::InvalidSwap`].
+    pub async fn create_swap(
+        &self,
+        source_chain: KnownChain,
+        source: TokenId,
+        target: TokenId,
+        amount: QuoteAmount,
+        receive_to: Option<Address>,
+        extra_fees_bps: Option<u16>,
+    ) -> Result<Swap> {
+        // For EVM-side stablecoins the `TokenId` carries the chain;
+        // catch a mismatch with the caller-supplied `source_chain` early
+        // so we don't silently route to the wrong direction.
+        if let Some(token_chain) = source.chain()
+            && token_chain != source_chain
+        {
+            return Err(Error::InvalidSwap(format!(
+                "source_chain ({source_chain:?}) disagrees with source token's native chain ({token_chain:?}) — TokenId::{source:?} lives on {token_chain:?}",
+            )));
+        }
+
+        // Resolve `None` receive_to to the SDK's internal Arkade wallet.
+        let receive_to = match receive_to {
+            Some(addr) => addr,
+            None => {
+                if !matches!(target, TokenId::Btc) {
+                    return Err(Error::InvalidSwap(
+                        "receive_to=None only supported when target=BTC (the SDK's internal wallet lives on Arkade)".into(),
+                    ));
+                }
+                let wallet = self.arkade_wallet().await?;
+                Address::Arkade(wallet.offchain_address().await?)
+            }
+        };
+
+        let target_is_btc = matches!(target, TokenId::Btc);
+        let target_is_arkade = matches!(&receive_to, Address::Arkade(_));
+        let source_is_evm = source_chain.evm_chain_id().is_some();
+        let source_is_lightning = matches!(source_chain, KnownChain::Lightning);
+
+        if target_is_btc && target_is_arkade {
+            if source_is_evm {
+                // Dispatcher defaults to non-gasless. Callers who need
+                // gasless relay invoke `create_evm_to_arkade_swap`
+                // directly.
+                return self
+                    .create_evm_to_arkade_swap(source, amount, receive_to, false, extra_fees_bps)
+                    .await;
+            }
+            if source_is_lightning {
+                if !matches!(source, TokenId::Btc) {
+                    return Err(Error::InvalidSwap(format!(
+                        "Lightning source must use TokenId::Btc, got {source:?}",
+                    )));
+                }
+                let sats_receive = match amount {
+                    QuoteAmount::Target(v) => v,
+                    QuoteAmount::Source(_) => {
+                        return Err(Error::InvalidSwap(
+                            "Lightning→Arkade requires QuoteAmount::Target — the server only accepts a target (sats_receive) amount".into(),
+                        ));
+                    }
+                };
+                // `extra_fees_bps` is intentionally dropped: the
+                // server's LN→Arkade request body doesn't model it
+                // today. Will plumb through when the field lands.
+                let _ = extra_fees_bps;
+                return self
+                    .create_lightning_to_arkade_swap(sats_receive, receive_to)
+                    .await;
+            }
+        }
+
+        Err(Error::InvalidSwap(format!(
+            "unsupported swap direction: {source_chain:?}/{source:?} -> {target:?} (receive_to={receive_to:?})",
+        )))
+    }
+
+    /// Create an EVM stablecoin → BTC-on-Arkade swap.
+    ///
+    /// The SDK derives the hash-lock secret, EVM signing address, and
+    /// recovery `user_id` from the configured [`Signer`]; the secret is
+    /// persisted to [`SwapStorage`] keyed by the returned swap ID for
+    /// later claim. The wire-level request struct stays internal — callers
+    /// only see [`Swap`].
+    ///
+    /// Validates:
+    /// - `source` is a token on a recognised EVM chain (Polygon / Arbitrum / Ethereum).
+    /// - `receive_to` is [`Address::Arkade`].
+    /// - A signer is attached to the client (see [`Client::builder`]).
+    ///
+    /// **Funding modes**
+    ///
+    /// `gasless = true` runs the gasless deposit flow: the user is given
+    /// an EVM deposit address derived from the configured [`Signer`] (see
+    /// [`Signer::derive_evm_key`]) and just sends tokens to it from any
+    /// wallet. The SDK then relays the funds into the HTLC via a
+    /// Permit2-signed transaction — the user never needs ETH/MATIC for
+    /// gas and never signs the HTLC funding tx themselves.
+    ///
+    /// `gasless = false` returns the HTLC contract address, but funding it
+    /// requires the user to broadcast a transaction calling the contract
+    /// with specific encoded calldata. That calldata is served by
+    /// `GET /swap/{id}/swap-and-lock-calldata-userop`. **The SDK does not
+    /// yet fetch this calldata** — callers who set `gasless = false`
+    /// today have to issue that follow-up request themselves. A typed
+    /// helper for it will land in a later revision.
+    ///
+    /// **Referral code**: attached to every swap from this client; set
+    /// once on the builder via [`ClientBuilder::referral_code`].
+    ///
+    /// **Phase 1 caveat**: panics (`todo!()`) inside [`Signer`] — Phase 2
+    /// wires the crypto in without changing this signature.
+    pub async fn create_evm_to_arkade_swap(
+        &self,
+        source: TokenId,
+        amount: QuoteAmount,
+        receive_to: Address,
+        gasless: bool,
+        extra_fees_bps: Option<u16>,
+    ) -> Result<Swap> {
+        let source_chain = source.chain().ok_or_else(|| {
+            Error::InvalidSwap(format!(
+                "source token {source:?} has no known chain — pass a named EVM TokenId variant",
+            ))
+        })?;
+        let evm_chain_id = source_chain.evm_chain_id().ok_or_else(|| {
+            Error::InvalidSwap(format!(
+                "source token {source:?} is not on an EVM chain (only Polygon / Ethereum / Arbitrum supported)",
+            ))
+        })?;
+        let arkade_target_address = match &receive_to {
+            Address::Arkade(s) => s.clone(),
+            other => {
+                return Err(Error::InvalidSwap(format!(
+                    "EVM->Arkade swap requires an Arkade receive address, got {other:?}",
+                )));
+            }
+        };
+
+        let signer = self.signer.as_ref().ok_or_else(|| {
+            Error::InvalidSigner(
+                "Client constructed without a signer — use Client::builder() with .mnemonic / .xprv"
+                    .to_string(),
+            )
+        })?;
+
+        // The SDK derives every per-swap secret deterministically from
+        // `(signer, key_index)`. That means a fresh `Client` built from
+        // a recovered seed will start at `key_index = 0` and hit HTTP
+        // 409 ("preimage hash exists already") for every index the
+        // backend has already seen. Rather than depend on durable
+        // local storage (which a recovering user may not have), grind
+        // through indices until we find one the backend accepts.
+        //
+        // Each iteration also burns a `next_key_index` from storage,
+        // so once a swap eventually succeeds the storage counter is
+        // ahead of the highest known-used index — future swaps from
+        // the same `Client` skip the grind. Durable storage is then a
+        // performance optimisation rather than a correctness one.
+        for attempt in 0..MAX_KEY_INDEX_GRIND_ATTEMPTS {
+            let key_index = self.storage.next_key_index()?;
+            let swap_params = signer.derive_swap_params(key_index)?;
+            let evm_key = signer.derive_evm_key(key_index)?;
+            let hash_lock = format!("0x{}", hex::encode(swap_params.hash_lock));
+            let receiver_pk = hex::encode(swap_params.public_key);
+            let user_id = hex::encode(swap_params.user_id);
+
+            let req = CreateEvmToArkadeSwapRequest::new(
+                arkade_target_address.clone(),
+                evm_chain_id,
+                source.clone(),
+                hash_lock,
+                receiver_pk,
+                evm_key.address,
+                user_id,
+                amount.clone(),
+                gasless,
+                self.referral_code.clone(),
+                extra_fees_bps,
+            );
+            match self.send(req).await {
+                Ok(response) => {
+                    // Persist the key_index so claim/refund can re-derive every
+                    // secret from `(signer, key_index)`.
+                    self.storage.put_swap_key_index(&response.id, key_index)?;
+                    return Ok(Swap::from_evm_response(response));
+                }
+                Err(err) if is_preimage_collision(&err) => {
+                    tracing::warn!(
+                        key_index,
+                        attempt = attempt + 1,
+                        "preimage collision — grinding next key_index",
+                    );
+                    continue;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err(Error::InvalidSwap(format!(
+            "exhausted {MAX_KEY_INDEX_GRIND_ATTEMPTS} key_index attempts looking for an unused preimage — \
+             the backend rejected every derived index. If you recently recovered this wallet from a seed, \
+             try again; otherwise this is a bug.",
+        )))
+    }
+
+    /// Create a Lightning → BTC-on-Arkade swap.
+    ///
+    /// The user pays the returned Bolt11 invoice over Lightning; the
+    /// server (via Boltz) observes the payment, locks BTC in an Arkade
+    /// VHTLC, and the user claims it via [`Self::claim`] using the
+    /// preimage the SDK re-derives from the signer.
+    ///
+    /// Mirrors [`Self::create_evm_to_arkade_swap`]'s key-index grind so
+    /// recovered wallets transparently skip used indices. The on-chain
+    /// EVM-derived fields (EOA, chain id) aren't needed for the
+    /// Lightning rail — the user funds via their own Lightning wallet,
+    /// not an EVM EOA.
+    ///
+    /// `sats_receive` is what the user wants to *receive* on Arkade.
+    /// The server quotes the corresponding Bolt11 amount internally and
+    /// embeds it in the invoice.
+    pub async fn create_lightning_to_arkade_swap(
+        &self,
+        sats_receive: u64,
+        receive_to: Address,
+    ) -> Result<Swap> {
+        let arkade_target_address = match &receive_to {
+            Address::Arkade(s) => s.clone(),
+            other => {
+                return Err(Error::InvalidSwap(format!(
+                    "Lightning->Arkade swap requires an Arkade receive address, got {other:?}",
+                )));
+            }
+        };
+
+        let signer = self.signer.as_ref().ok_or_else(|| {
+            Error::InvalidSigner(
+                "Client constructed without a signer — use Client::builder() with .mnemonic / .xprv"
+                    .to_string(),
+            )
+        })?;
+
+        // Same grind loop as the EVM path: a recovered wallet starts at
+        // key_index 0 and the backend rejects every preimage hash it
+        // already knows. We bump through indices until one lands.
+        for attempt in 0..MAX_KEY_INDEX_GRIND_ATTEMPTS {
+            let key_index = self.storage.next_key_index()?;
+            let swap_params = signer.derive_swap_params(key_index)?;
+            let hash_lock = format!("0x{}", hex::encode(swap_params.hash_lock));
+            let claim_pk = hex::encode(swap_params.public_key);
+            let user_id = hex::encode(swap_params.user_id);
+
+            let req = crate::types::CreateLightningToArkadeSwapRequest::new(
+                arkade_target_address.clone(),
+                sats_receive,
+                claim_pk,
+                hash_lock,
+                user_id,
+                self.referral_code.clone(),
+            );
+            match self.send(req).await {
+                Ok(response) => {
+                    self.storage.put_swap_key_index(&response.id, key_index)?;
+                    return Ok(Swap::from_lightning_response(response));
+                }
+                Err(err) if is_preimage_collision(&err) => {
+                    tracing::warn!(
+                        key_index,
+                        attempt = attempt + 1,
+                        "preimage collision — grinding next key_index",
+                    );
+                    continue;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err(Error::InvalidSwap(format!(
+            "exhausted {MAX_KEY_INDEX_GRIND_ATTEMPTS} key_index attempts looking for an unused preimage — \
+             the backend rejected every derived index. If you recently recovered this wallet from a seed, \
+             try again; otherwise this is a bug.",
+        )))
+    }
+
+    /// Create an Arkade → BTC-on-Lightning swap.
+    ///
+    /// The user funds an Arkade VHTLC; the server uses Boltz to pay the
+    /// user-provided Lightning [`LightningDestination`] and claims the
+    /// VHTLC with the resulting preimage. **No client-side claim path**
+    /// — once the user funds the returned [`SwapFunding::ArkadeAddress`],
+    /// the server owns the rest of the flow.
+    ///
+    /// The destination can be a BOLT11 invoice (amount embedded), a
+    /// Lightning address (`user@host`), or a raw LNURL — the server
+    /// resolves the latter two using LNURL-pay. The SDK passes the
+    /// caller's choice through verbatim; no LNURL resolver is bundled.
+    ///
+    /// Same key-index grind pattern as the other directions so a
+    /// recovered wallet skips already-used indices.
+    ///
+    /// Not reachable through the [`Self::create_swap`] dispatcher: the
+    /// destination shape (3-variant input + sometimes-needed `sats`)
+    /// doesn't fit cleanly into the dispatcher's `Address` +
+    /// `QuoteAmount` arguments.
+    pub async fn create_arkade_to_lightning_swap(
+        &self,
+        destination: crate::types::LightningDestination,
+    ) -> Result<Swap> {
+        let signer = self.signer.as_ref().ok_or_else(|| {
+            Error::InvalidSigner(
+                "Client constructed without a signer — use Client::builder() with .mnemonic / .xprv"
+                    .to_string(),
+            )
+        })?;
+
+        for attempt in 0..MAX_KEY_INDEX_GRIND_ATTEMPTS {
+            let key_index = self.storage.next_key_index()?;
+            let swap_params = signer.derive_swap_params(key_index)?;
+            let refund_pk = hex::encode(swap_params.public_key);
+            let user_id = hex::encode(swap_params.user_id);
+
+            let req = crate::types::CreateArkadeToLightningSwapRequest::new(
+                destination.clone(),
+                refund_pk,
+                user_id,
+                self.referral_code.clone(),
+            );
+            match self.send(req).await {
+                Ok(response) => {
+                    self.storage.put_swap_key_index(&response.id, key_index)?;
+                    return Ok(Swap::from_arkade_to_lightning_response(response));
+                }
+                Err(err) if is_preimage_collision(&err) => {
+                    tracing::warn!(
+                        key_index,
+                        attempt = attempt + 1,
+                        "preimage collision — grinding next key_index",
+                    );
+                    continue;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err(Error::InvalidSwap(format!(
+            "exhausted {MAX_KEY_INDEX_GRIND_ATTEMPTS} key_index attempts looking for an unused preimage — \
+             the backend rejected every derived index. If you recently recovered this wallet from a seed, \
+             try again; otherwise this is a bug.",
+        )))
+    }
+
+    /// `GET /swap/{id}` — fetch the current state of a swap by id.
+    ///
+    /// Not routed through [`Self::send`] because the endpoint has a
+    /// path parameter and [`Endpoint::PATH`] is a `&'static str`. The
+    /// shape varies per direction (the server wraps it in a
+    /// `direction`-tagged enum); the projection in [`Swap::from_response`]
+    /// dispatches on the variant.
+    #[tracing::instrument(name = "get_swap", skip_all, fields(%swap_id))]
+    pub async fn get_swap(&self, swap_id: &str) -> Result<Swap> {
+        let body = self.fetch_swap_response(swap_id).await?;
+        Ok(Swap::from_response(body))
+    }
+
+    /// Private: fetch the raw backend response without projection.
+    /// `get_swap` consumers see the trimmed [`Swap`]; internal callers
+    /// (e.g. the Arkade claim flow) need access to fields the public
+    /// projection drops (VHTLC pubkeys, locktimes, network, …) and
+    /// must dispatch on the variant themselves.
+    pub(crate) async fn fetch_swap_response(&self, swap_id: &str) -> Result<GetSwapResponse> {
+        let url = self.url(&format!("swap/{swap_id}"))?;
+        let resp = self.http.get(url).send().await?;
+        let resp = check_status(resp).await?;
+        Ok(resp.json::<GetSwapResponse>().await?)
+    }
+
+    /// Poll `GET /swap/{id}` until the swap reaches one of `targets`
+    /// (returning the matched status) or `timeout` elapses (returning
+    /// [`Error::Timeout`]). Polls at a fixed 3s interval — fast enough
+    /// for local e2e (Anvil block time ~1s, Arkade ~5s) without
+    /// hammering a remote backend.
+    ///
+    /// Doesn't model "failure terminal states" (`Expired`,
+    /// `ServerWontFund`, …) — if you need to short-circuit on those,
+    /// the caller can layer a [`Self::get_swap`] check around this or
+    /// we can grow a `fail_targets` parameter when there's a concrete
+    /// user. For now, terminal failures will just surface as a timeout.
+    ///
+    /// Internals are polling-based (no websockets yet) so the SDK
+    /// stays a single-dep `reqwest` client. The signature is the same
+    /// shape we'd keep if we later swap to the backend's `/ws`
+    /// channel, so callers don't break when that lands.
+    #[tracing::instrument(name = "wait_for_swap_status", skip_all, fields(%swap_id, ?targets, ?timeout))]
+    pub async fn wait_for_swap_status(
+        &self,
+        swap_id: &str,
+        targets: &[SwapStatus],
+        timeout: Duration,
+    ) -> Result<SwapStatus> {
+        const POLL_INTERVAL: Duration = Duration::from_secs(3);
+        let deadline = Instant::now() + timeout;
+        let mut attempt = 0u32;
+        loop {
+            attempt += 1;
+            let swap = self.get_swap(swap_id).await?;
+            tracing::debug!(attempt, status = ?swap.status, "wait_for_swap_status: poll");
+            if targets.contains(&swap.status) {
+                tracing::info!(attempt, status = ?swap.status, "wait_for_swap_status: matched");
+                return Ok(swap.status);
+            }
+            if Instant::now() >= deadline {
+                return Err(Error::Timeout(format!(
+                    "swap {swap_id} did not reach {targets:?} within {timeout:?} (last status: {:?})",
+                    swap.status,
+                )));
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+    }
+
+    fn url(&self, path: &str) -> Result<Url> {
+        // join() respects whether `base_url` ends in a slash; we always treat
+        // `path` as a relative segment with no leading slash.
+        Ok(self.base_url.join(&format!("/{path}"))?)
+    }
+}
+
+/// Arkade-side wallet operations. The SDK doesn't hold a persistent
+/// `ArkadeWallet` instance — each call re-derives one from the
+/// [`ArkadeConfig`] stored on the Client (whose `identity_mnemonic`
+/// field IS the wallet seed). All three calls round-trip to the
+/// Arkade server's gRPC indexer.
+///
+/// Set the config via [`ClientBuilder::arkade_config`] at build time;
+/// these methods return [`Error::InvalidSwap`] when no config is set.
+impl Client {
+    /// Fetch the stored [`crate::arkade::ArkadeConfig`] or error with a
+    /// uniform message. Internal helper so every arkade-touching method
+    /// has the same error wording.
+    pub(crate) fn arkade_config(&self) -> Result<&crate::arkade::ArkadeConfig> {
+        self.arkade_config.as_ref().ok_or_else(|| Error::InvalidSwap(
+            "Client was constructed without an arkade_config — use ClientBuilder::arkade_config(...) at build time".into(),
+        ))
+    }
+
+    /// Get the shared, lazily-connected [`crate::arkade::ArkadeWallet`].
+    /// First call does the gRPC handshake; subsequent calls reuse the
+    /// same wallet so its in-memory state (boarding-output descriptors,
+    /// BDK chain index) is preserved across method calls.
+    pub(crate) async fn arkade_wallet(&self) -> Result<&crate::arkade::ArkadeWallet> {
+        self.arkade_wallet
+            .get_or_try_init(|| async {
+                crate::arkade::ArkadeWallet::connect(self.arkade_config()?).await
+            })
+            .await
+    }
+
+    /// Offchain VTXO balance of the internal Arkade wallet, broken
+    /// into confirmed / pre-confirmed / recoverable buckets — see
+    /// [`crate::arkade::ArkadeBalance`]. The headline number a caller
+    /// usually wants is `confirmed_sats` (what's actually spendable
+    /// via [`Self::arkade_send`]); `total_sats()` adds the other two
+    /// for "are funds in flight?" checks.
+    pub async fn arkade_balance(&self) -> Result<crate::arkade::ArkadeBalance> {
+        let wallet = self.arkade_wallet().await?;
+        wallet.offchain_balance().await
+    }
+
+    /// Roll over all spendable VTXOs + boarding outputs into the next
+    /// Arkade batch — the operation users perform before their VTXOs
+    /// expire. Returns `Ok(None)` if there's nothing to settle, or
+    /// `Ok(Some(commitment_txid))` for the batch that absorbed them.
+    pub async fn arkade_settle(&self) -> Result<Option<bitcoin::Txid>> {
+        let wallet = self.arkade_wallet().await?;
+        wallet.settle().await
+    }
+
+    /// Derive the internal Arkade wallet's offchain address. Useful for
+    /// the caller to know where funds from an address-less
+    /// [`Self::create_swap`] will land, or to display a deposit address
+    /// for arbitrary inbound BTC.
+    pub async fn arkade_offchain_address(&self) -> Result<String> {
+        let wallet = self.arkade_wallet().await?;
+        wallet.offchain_address().await
+    }
+
+    /// Send `amount_sats` from the internal Arkade wallet to
+    /// `destination` via an offchain Ark transaction. Returns the Ark
+    /// txid. Primary use case: funding the Arkade VHTLC returned by
+    /// [`Self::create_arkade_to_lightning_swap`].
+    pub async fn arkade_send(&self, destination: &str, amount_sats: u64) -> Result<bitcoin::Txid> {
+        let wallet = self.arkade_wallet().await?;
+        wallet.send_offchain(destination, amount_sats).await
+    }
+
+    /// On-chain Bitcoin boarding address for the internal Arkade
+    /// wallet. Funding flow: send L1 BTC here, mine a confirmation,
+    /// then call [`Self::arkade_settle`] to promote the boarding
+    /// output into a confirmed VTXO. Use this when you want to fund
+    /// the SDK's Arkade wallet from a regular Bitcoin wallet rather
+    /// than via a swap.
+    pub async fn arkade_boarding_address(&self) -> Result<String> {
+        let wallet = self.arkade_wallet().await?;
+        wallet.boarding_address().await
+    }
+}
+
+/// Builder for [`Client`].
+///
+/// Required: exactly one of `mnemonic` / `xprv` — every other field has a
+/// default. `base_url` defaults to [`DEFAULT_BASE_URL`], `storage` to
+/// [`InMemorySwapStorage`], `http` to a fresh `reqwest::Client`.
+#[derive(Default)]
+pub struct ClientBuilder {
+    base_url: Option<String>,
+    mnemonic: Option<String>,
+    xprv: Option<String>,
+    storage: Option<Arc<dyn SwapStorage>>,
+    http: Option<reqwest::Client>,
+    referral_code: Option<String>,
+    arkade_config: Option<crate::arkade::ArkadeConfig>,
+}
+
+impl ClientBuilder {
+    /// Override the target server URL. Defaults to [`DEFAULT_BASE_URL`]
+    /// (`https://api.satora.io`) when not called.
+    pub fn base_url(mut self, url: impl Into<String>) -> Self {
+        self.base_url = Some(url.into());
+        self
+    }
+
+    /// BIP-39 mnemonic phrase. Mutually exclusive with [`Self::xprv`].
+    pub fn mnemonic(mut self, mnemonic: impl Into<String>) -> Self {
+        self.mnemonic = Some(mnemonic.into());
+        self
+    }
+
+    /// BIP-32 extended private key (base58check). Mutually exclusive with
+    /// [`Self::mnemonic`].
+    pub fn xprv(mut self, xprv: impl Into<String>) -> Self {
+        self.xprv = Some(xprv.into());
+        self
+    }
+
+    /// Storage backend for swap secrets. Defaults to [`InMemorySwapStorage`].
+    pub fn storage(mut self, storage: Arc<dyn SwapStorage>) -> Self {
+        self.storage = Some(storage);
+        self
+    }
+
+    /// Inject an existing `reqwest::Client` (custom timeouts, middleware,
+    /// shared pool, …). Defaults to a fresh one.
+    pub fn http(mut self, http: reqwest::Client) -> Self {
+        self.http = Some(http);
+        self
+    }
+
+    /// Referral code attached to every swap created by this client. Set
+    /// once at builder time so per-swap call sites don't have to repeat
+    /// it. Omit (or pass an empty string) to opt out.
+    pub fn referral_code(mut self, code: impl Into<String>) -> Self {
+        let code = code.into();
+        self.referral_code = if code.is_empty() { None } else { Some(code) };
+        self
+    }
+
+    /// Arkade-side config. Required by every method that talks to arkd
+    /// (`claim`, `arkade_balance_sats`, `arkade_settle`,
+    /// `arkade_offchain_address`, and `create_swap` with no
+    /// `receive_to`). Omit if the client will only do EVM-side
+    /// operations.
+    pub fn arkade_config(mut self, config: crate::arkade::ArkadeConfig) -> Self {
+        self.arkade_config = Some(config);
+        self
+    }
+
+    pub fn build(self) -> Result<Client> {
+        crate::crypto_init::ensure_default_provider_installed();
+        let base_url = self
+            .base_url
+            .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
+        let base_url = Url::parse(&base_url)?;
+        let signer = match (self.mnemonic, self.xprv) {
+            (Some(_), Some(_)) => {
+                return Err(Error::InvalidSigner(
+                    "ClientBuilder: mnemonic and xprv are mutually exclusive".to_string(),
+                ));
+            }
+            (Some(m), None) => Signer::from_mnemonic(m)?,
+            (None, Some(x)) => Signer::from_xprv(x)?,
+            (None, None) => {
+                return Err(Error::InvalidSigner(
+                    "ClientBuilder: provide one of mnemonic or xprv".to_string(),
+                ));
+            }
+        };
+        let storage = self
+            .storage
+            .unwrap_or_else(|| Arc::new(InMemorySwapStorage::new()) as Arc<dyn SwapStorage>);
+        let http = self.http.unwrap_or_default();
+        Ok(Client {
+            http,
+            base_url,
+            signer: Some(signer),
+            storage,
+            referral_code: self.referral_code,
+            arkade_config: self.arkade_config,
+            arkade_wallet: Arc::new(tokio::sync::OnceCell::new()),
+        })
+    }
+}
+
+/// Compact, user-facing view of a created swap. Carries the fields a
+/// caller needs to display payment instructions to the user.
+///
+/// `#[non_exhaustive]` so we can add fields (e.g. `expires_at`) in a
+/// SemVer-minor release.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Swap {
+    pub id: String,
+    pub status: SwapStatus,
+    /// Funding instructions — depends on whether the swap was created
+    /// with `gasless = true` (Gasless variant) or `gasless = false`
+    /// (UserSubmitted variant).
+    pub funding: SwapFunding,
+    /// Amount the user must deposit, in the smallest unit of
+    /// `deposit_token`. String to preserve precision for large EVM
+    /// token amounts.
+    pub deposit_amount: String,
+    pub deposit_token: TokenId,
+    /// Where the user receives the target asset (their `receive_to`).
+    pub receive_address: String,
+    /// Amount the user will receive, in the smallest unit of `receive_token`.
+    pub receive_amount: String,
+    pub receive_token: TokenId,
+}
+
+/// How the user has to fund the swap.
+///
+/// Both the enum and its variants are `#[non_exhaustive]`:
+/// - new variants (e.g. a future "user submits a signed permit2 message") can land as a
+///   SemVer-minor change;
+/// - new fields on existing variants are likewise non-breaking.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SwapFunding {
+    /// `gasless = true` flow: the user sends tokens to `deposit_address`
+    /// from any wallet. The SDK relays the funds into the HTLC via a
+    /// Permit2-signed transaction so the user never pays gas.
+    Gasless {
+        /// EVM address derived from the configured [`Signer`]
+        /// (`m/44'/60'/0'/0/0`). The same address is reused across
+        /// every swap from this client.
+        deposit_address: String,
+    },
+    /// `gasless = false` flow: the user submits the funding transaction
+    /// themselves, calling the HTLC coordinator with specific calldata.
+    ///
+    /// The calldata + AA configuration come from the separate
+    /// `GET /swap/{id}/swap-and-lock-calldata-userop` endpoint, which
+    /// the SDK does not yet fetch. A later revision will populate this
+    /// variant with the fields a caller needs (contract address, calls
+    /// array, AA addresses, etc.). For now this variant carries no
+    /// payload — its presence is the signal that "you asked for a
+    /// non-gasless swap and need to do the funding step yourself."
+    #[non_exhaustive]
+    UserSubmitted {},
+    /// Lightning → Arkade flow: the user must pay this Bolt11 invoice
+    /// over Lightning. The server (via Boltz) observes the payment and
+    /// then funds the Arkade VHTLC; the user offchain-claims with the
+    /// preimage via [`Client::claim`].
+    Bolt11Invoice {
+        /// Bolt11-encoded Lightning invoice (`lnbc…` / `lnbcrt…` /
+        /// `lntb…` depending on network).
+        invoice: String,
+    },
+    /// Arkade → Lightning flow: the user must fund this Arkade VHTLC
+    /// address with `deposit_amount` sats. Once funded, the server
+    /// (via Boltz) pays the user's Lightning invoice and claims the
+    /// VHTLC with the resulting preimage — no client-side claim
+    /// needed.
+    ArkadeAddress {
+        /// Arkade VHTLC address (`tark1q…`) the user funds.
+        address: String,
+    },
+}
+
+impl Swap {
+    /// Project a `GetSwapResponse` (direction-tagged) into the
+    /// per-direction-agnostic public [`Swap`] surface.
+    fn from_response(r: GetSwapResponse) -> Self {
+        match r {
+            GetSwapResponse::EvmToArkade(r) => Self::from_evm_response(r),
+            GetSwapResponse::LightningToArkade(r) => Self::from_lightning_response(r),
+            GetSwapResponse::ArkadeToLightning(r) => Self::from_arkade_to_lightning_response(r),
+        }
+    }
+
+    fn from_evm_response(r: EvmToArkadeSwapResponse) -> Self {
+        // `client_evm_address` is the address the SDK derives from the
+        // signer's EVM key and echoes back in the response. In the
+        // gasless flow it's where the user deposits their tokens.
+        let funding = if r.gasless {
+            SwapFunding::Gasless {
+                deposit_address: r.client_evm_address,
+            }
+        } else {
+            SwapFunding::UserSubmitted {}
+        };
+        Self {
+            id: r.id,
+            status: r.status,
+            funding,
+            deposit_amount: r.source_amount,
+            deposit_token: r.source_token.token_id,
+            receive_address: r.target_arkade_address,
+            receive_amount: r.target_amount,
+            receive_token: r.target_token.token_id,
+        }
+    }
+
+    fn from_lightning_response(r: crate::types::LightningToArkadeSwapResponse) -> Self {
+        Self {
+            id: r.id,
+            status: r.status,
+            funding: SwapFunding::Bolt11Invoice {
+                invoice: r.bolt11_invoice,
+            },
+            deposit_amount: r.source_amount,
+            deposit_token: r.source_token.token_id,
+            receive_address: r.target_arkade_address,
+            receive_amount: r.target_amount,
+            receive_token: r.target_token.token_id,
+        }
+    }
+
+    fn from_arkade_to_lightning_response(r: crate::types::ArkadeToLightningSwapResponse) -> Self {
+        Self {
+            id: r.id,
+            status: r.status,
+            funding: SwapFunding::ArkadeAddress {
+                address: r.arkade_vhtlc_address,
+            },
+            deposit_amount: r.source_amount,
+            deposit_token: r.source_token.token_id,
+            // The Lightning side has no on-chain address; surface the
+            // resolved invoice instead so callers can display
+            // "you'll pay this invoice" to the user.
+            receive_address: r.client_lightning_invoice,
+            receive_amount: r.target_amount,
+            receive_token: r.target_token.token_id,
+        }
+    }
+}
+
+fn attach_payload<E: Serialize>(
+    builder: reqwest::RequestBuilder,
+    req: &E,
+    kind: PayloadKind,
+) -> reqwest::RequestBuilder {
+    match kind {
+        PayloadKind::Query => builder.query(req),
+        PayloadKind::JsonBody => builder.json(req),
+        PayloadKind::None => builder,
+    }
+}
+
+async fn check_status(resp: reqwest::Response) -> Result<reqwest::Response> {
+    let status = resp.status();
+    if status.is_success() {
+        return Ok(resp);
+    }
+    let code = status.as_u16();
+    let message = match resp.json::<ErrorResponse>().await {
+        Ok(body) => body.error,
+        Err(_) => default_status_message(status),
+    };
+    tracing::warn!(status = code, %message, "API returned non-2xx");
+    Err(Error::Api {
+        status: code,
+        message,
+    })
+}
+
+fn default_status_message(status: StatusCode) -> String {
+    status
+        .canonical_reason()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| status.to_string())
+}
