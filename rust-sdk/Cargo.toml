@@ -6,8 +6,8 @@ name = "lendaswap-sdk"
 version = "0.0.1"
 edition = "2024"
 license = "MIT"
-description = "Lendaswap Client SDK (Rust). FFI-friendly public API; the schema is verified against the upstream OpenAPI spec."
 repository = "https://github.com/satoraHQ/lendaswap-sdk"
+description = "Lendaswap Client SDK (Rust). FFI-friendly public API; the schema is verified against the upstream OpenAPI spec."
 
 [lib]
 name = "lendaswap_sdk"
@@ -21,6 +21,6 @@ thiserror = "1"
 url = "2"
 
 [dev-dependencies]
+jsonschema = { version = "0.27", default-features = false }
 tokio = { version = "1", features = ["rt", "macros", "rt-multi-thread"] }
 wiremock = "0.6"
-jsonschema = { version = "0.27", default-features = false }

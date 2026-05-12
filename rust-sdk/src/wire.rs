@@ -11,7 +11,6 @@
 //! `pub(crate)`. Wire types stay invisible to downstream callers so we can
 //! evolve them (rename fields, change types, drop them entirely) without it
 //! counting as a breaking change in the public API.
-//!
 
 use crate::types::Chain;
 use crate::types::QuoteAmount;
