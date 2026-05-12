@@ -1,0 +1,26 @@
+# Standalone crate (not part of the root Cargo workspace).
+[workspace]
+
+[package]
+name = "lendaswap-sdk"
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+description = "Lendaswap Client SDK (Rust). FFI-friendly public API; the schema is verified against the upstream OpenAPI spec."
+repository = "https://github.com/satoraHQ/lendaswap-sdk"
+
+[lib]
+name = "lendaswap_sdk"
+crate-type = ["rlib"]
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+url = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros", "rt-multi-thread"] }
+wiremock = "0.6"
+jsonschema = { version = "0.27", default-features = false }
