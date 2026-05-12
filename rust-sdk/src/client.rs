@@ -2,13 +2,21 @@
 //!
 //! The public surface intentionally avoids generics and borrowed inputs so the
 //! same shape can be re-exposed over a C-ABI / `csbindgen` / `interoptopus`
-//! layer in a future crate.
+//! layer in a future crate. Generics only appear on the internal
+//! [`Client::send`] helper, which is the single chokepoint every endpoint
+//! flows through — that's where auth headers, retry, and tracing will plug in.
 
 use crate::error::Error;
 use crate::error::Result;
+use crate::request::Endpoint;
+use crate::request::PayloadKind;
 use crate::types::ErrorResponse;
+use crate::types::QuoteRequest;
+use crate::types::QuoteResponse;
 use crate::types::Version;
+use crate::types::VersionRequest;
 use reqwest::StatusCode;
+use serde::Serialize;
 use url::Url;
 
 #[derive(Debug, Clone)]
@@ -34,7 +42,23 @@ impl Client {
         Ok(Self { http, base_url })
     }
 
+    /// Internal dispatch chokepoint for every endpoint described by
+    /// [`Endpoint`]. Builds the URL, attaches the payload (query / body /
+    /// none), sends, maps non-2xx responses to [`Error::Api`], and decodes
+    /// JSON into the endpoint's `Response` type.
+    pub async fn send<E: Endpoint>(&self, req: E) -> Result<E::Response> {
+        let url = self.url(E::PATH)?;
+        let builder = self.http.request(E::METHOD, url);
+        let builder = attach_payload(builder, &req, E::PAYLOAD);
+        let resp = builder.send().await?;
+        let resp = check_status(resp).await?;
+        Ok(resp.json::<E::Response>().await?)
+    }
+
     /// `GET /health` — returns the raw `text/plain` body.
+    ///
+    /// Not routed through [`Self::send`] because the response is plain text
+    /// rather than JSON.
     pub async fn health(&self) -> Result<String> {
         let url = self.url("health")?;
         let resp = self.http.get(url).send().await?;
@@ -44,20 +68,33 @@ impl Client {
 
     /// `GET /version`.
     pub async fn version(&self) -> Result<Version> {
-        self.get_json("version").await
+        self.send(VersionRequest).await
     }
 
-    async fn get_json<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
-        let url = self.url(path)?;
-        let resp = self.http.get(url).send().await?;
-        let resp = check_status(resp).await?;
-        Ok(resp.json::<T>().await?)
+    /// `GET /quote` — fetch an exchange quote.
+    ///
+    /// Exactly one of source / target amount must be specified, which the
+    /// `QuoteAmount` enum enforces at the type level.
+    pub async fn get_quote(&self, req: QuoteRequest) -> Result<QuoteResponse> {
+        self.send(req).await
     }
 
     fn url(&self, path: &str) -> Result<Url> {
         // join() respects whether `base_url` ends in a slash; we always treat
         // `path` as a relative segment with no leading slash.
         Ok(self.base_url.join(&format!("/{path}"))?)
+    }
+}
+
+fn attach_payload<E: Serialize>(
+    builder: reqwest::RequestBuilder,
+    req: &E,
+    kind: PayloadKind,
+) -> reqwest::RequestBuilder {
+    match kind {
+        PayloadKind::Query => builder.query(req),
+        PayloadKind::JsonBody => builder.json(req),
+        PayloadKind::None => builder,
     }
 }
 
