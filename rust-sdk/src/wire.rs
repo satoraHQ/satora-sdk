@@ -13,6 +13,7 @@
 //! counting as a breaking change in the public API.
 
 use crate::types::Chain;
+use crate::types::CreateEvmToArkadeSwapRequest;
 use crate::types::QuoteAmount;
 use crate::types::QuoteRequest;
 use crate::types::TokenId;
@@ -57,6 +58,57 @@ impl From<QuoteRequest> for QuoteRequestWire {
             bridge_target_chain: r.bridge_target_chain,
             bridge_source_chain: r.bridge_source_chain,
             bridge_recipient_setup: r.bridge_recipient_setup,
+            referral_code: r.referral_code,
+        }
+    }
+}
+
+/// Flat JSON body for `POST /swap/evm/arkade`. Flattens the public
+/// `QuoteAmount` mutex into the spec's `amount_in` / `amount_out`
+/// siblings. `token_address` is a `TokenId` (the public type's field
+/// type) — its `From<String> / Into<String>` impls route it to the
+/// correct wire address.
+#[derive(Serialize)]
+pub(crate) struct CreateEvmToArkadeSwapRequestWire {
+    pub(crate) target_address: String,
+    pub(crate) evm_chain_id: u64,
+    pub(crate) token_address: TokenId,
+    pub(crate) hash_lock: String,
+    pub(crate) receiver_pk: String,
+    pub(crate) user_address: String,
+    pub(crate) user_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) amount_in: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) amount_out: Option<u64>,
+    pub(crate) gasless: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) bridge_source_chain: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) bridge_source_token_address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) referral_code: Option<String>,
+}
+
+impl From<CreateEvmToArkadeSwapRequest> for CreateEvmToArkadeSwapRequestWire {
+    fn from(r: CreateEvmToArkadeSwapRequest) -> Self {
+        let (amount_in, amount_out) = match r.amount {
+            QuoteAmount::Source(v) => (Some(v), None),
+            QuoteAmount::Target(v) => (None, Some(v)),
+        };
+        Self {
+            target_address: r.target_address,
+            evm_chain_id: r.evm_chain_id,
+            token_address: r.token_address,
+            hash_lock: r.hash_lock,
+            receiver_pk: r.receiver_pk,
+            user_address: r.user_address,
+            user_id: r.user_id,
+            amount_in,
+            amount_out,
+            gasless: r.gasless,
+            bridge_source_chain: r.bridge_source_chain,
+            bridge_source_token_address: r.bridge_source_token_address,
             referral_code: r.referral_code,
         }
     }

@@ -19,6 +19,12 @@ pub enum Error {
 
     #[error("API returned HTTP {status}: {message}")]
     Api { status: u16, message: String },
+
+    #[error("invalid signer: {0}")]
+    InvalidSigner(String),
+
+    #[error("invalid swap arguments: {0}")]
+    InvalidSwap(String),
 }
 
 impl From<reqwest::Error> for Error {
