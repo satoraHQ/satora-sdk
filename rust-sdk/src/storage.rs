@@ -1,64 +1,93 @@
-//! Persistence for swap secrets.
+//! Per-swap state persistence.
 //!
-//! The SDK generates a 32-byte secret per swap, hashes it (`SHA256`) into
-//! the `hash_lock` that the backend sees, and keeps the secret around for
-//! the eventual claim. That secret has to survive process restarts —
-//! whoever holds it controls the swap.
+//! Each swap the SDK creates owns a `key_index` — the integer the
+//! [`crate::Signer`] uses to derive the swap's signing key, EVM key, and
+//! claim preimage. Because every piece of secret material is
+//! deterministically re-derivable from `(mnemonic / xprv, key_index)`,
+//! that small integer is the only thing the SDK has to remember per
+//! swap. Persisting it lets the client survive process restarts and
+//! still claim the swap later.
 //!
-//! [`SwapStorage`] is the trait callers implement against their persistence
+//! [`SwapStorage`] is what callers implement against their persistence
 //! layer (an embedded DB, a server-side store, …). [`InMemorySwapStorage`]
-//! is shipped for tests and quick starts; production callers should swap in
-//! something durable.
+//! is shipped for tests and quick starts; production callers should swap
+//! in something durable.
 
 use crate::error::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
 
-/// Trait implemented by callers to persist per-swap secrets.
+/// Trait implemented by callers to persist swap state and allocate
+/// monotonically-increasing key indices.
 ///
 /// Implementations must be safe to call from multiple async tasks
 /// concurrently (`Send + Sync`). The trait is synchronous on purpose —
 /// callers with async persistence can wrap their store in a blocking
 /// adapter rather than forcing every consumer to be async-aware.
 pub trait SwapStorage: Send + Sync {
-    /// Persist the secret for the given swap ID. Idempotent: calling twice
-    /// with the same ID replaces the value.
-    fn put_secret(&self, swap_id: &str, secret: &[u8]) -> Result<()>;
+    /// Atomically allocate the next `key_index` for a new swap. The
+    /// returned value is unique within this storage instance and
+    /// monotonically increasing.
+    ///
+    /// Implementations backed by durable storage must persist the
+    /// counter so that an SDK restart doesn't reuse indices.
+    fn next_key_index(&self) -> Result<u32>;
 
-    /// Retrieve the secret previously stored for the given swap ID, if any.
-    fn get_secret(&self, swap_id: &str) -> Result<Option<Vec<u8>>>;
+    /// Remember the `key_index` used to derive material for the given
+    /// `swap_id`. Idempotent: calling twice with the same ID replaces
+    /// the value.
+    ///
+    /// Knowing `(mnemonic_or_xprv, key_index)` is sufficient to
+    /// re-derive every secret the SDK needs to claim or refund the
+    /// swap, so this is the only durable bit of state per swap.
+    fn put_swap_key_index(&self, swap_id: &str, key_index: u32) -> Result<()>;
+
+    /// Retrieve the `key_index` previously stored for `swap_id`, if any.
+    fn get_swap_key_index(&self, swap_id: &str) -> Result<Option<u32>>;
 }
 
 /// Thread-safe in-memory store. Useful for tests and ephemeral processes;
-/// not durable across restarts.
-#[derive(Default, Clone)]
+/// not durable across restarts (key-index counter restarts at zero).
+#[derive(Default)]
 pub struct InMemorySwapStorage {
-    inner: Arc<Mutex<HashMap<String, Vec<u8>>>>,
+    swaps: Mutex<HashMap<String, u32>>,
+    next_index: AtomicU32,
 }
 
 impl InMemorySwapStorage {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Wrap in `Arc` for use with [`crate::ClientBuilder::storage`].
+    pub fn shared() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
 }
 
 impl SwapStorage for InMemorySwapStorage {
-    fn put_secret(&self, swap_id: &str, secret: &[u8]) -> Result<()> {
-        self.inner
+    fn next_key_index(&self) -> Result<u32> {
+        Ok(self.next_index.fetch_add(1, Ordering::Relaxed))
+    }
+
+    fn put_swap_key_index(&self, swap_id: &str, key_index: u32) -> Result<()> {
+        self.swaps
             .lock()
             .expect("SwapStorage mutex poisoned")
-            .insert(swap_id.to_string(), secret.to_vec());
+            .insert(swap_id.to_string(), key_index);
         Ok(())
     }
 
-    fn get_secret(&self, swap_id: &str) -> Result<Option<Vec<u8>>> {
+    fn get_swap_key_index(&self, swap_id: &str) -> Result<Option<u32>> {
         Ok(self
-            .inner
+            .swaps
             .lock()
             .expect("SwapStorage mutex poisoned")
             .get(swap_id)
-            .cloned())
+            .copied())
     }
 }
 
@@ -67,18 +96,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn in_memory_round_trips_secret() {
+    fn in_memory_round_trips_key_index() {
         let s = InMemorySwapStorage::new();
-        s.put_secret("swap_1", &[1, 2, 3]).unwrap();
-        assert_eq!(s.get_secret("swap_1").unwrap(), Some(vec![1, 2, 3]));
-        assert_eq!(s.get_secret("missing").unwrap(), None);
+        s.put_swap_key_index("swap_1", 7).unwrap();
+        assert_eq!(s.get_swap_key_index("swap_1").unwrap(), Some(7));
+        assert_eq!(s.get_swap_key_index("missing").unwrap(), None);
     }
 
     #[test]
     fn in_memory_overwrites_on_repeat_put() {
         let s = InMemorySwapStorage::new();
-        s.put_secret("swap_1", &[1]).unwrap();
-        s.put_secret("swap_1", &[9, 9, 9]).unwrap();
-        assert_eq!(s.get_secret("swap_1").unwrap(), Some(vec![9, 9, 9]));
+        s.put_swap_key_index("swap_1", 1).unwrap();
+        s.put_swap_key_index("swap_1", 42).unwrap();
+        assert_eq!(s.get_swap_key_index("swap_1").unwrap(), Some(42));
+    }
+
+    #[test]
+    fn next_key_index_is_monotonic_and_unique() {
+        let s = InMemorySwapStorage::new();
+        let a = s.next_key_index().unwrap();
+        let b = s.next_key_index().unwrap();
+        let c = s.next_key_index().unwrap();
+        assert_eq!(a, 0);
+        assert_eq!(b, 1);
+        assert_eq!(c, 2);
     }
 }

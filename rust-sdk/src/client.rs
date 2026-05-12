@@ -177,10 +177,25 @@ impl Client {
     /// - `receive_to` is [`Address::Arkade`].
     /// - A signer is attached to the client (see [`Client::builder`]).
     ///
-    /// `gasless = true` asks the server to submit the funding tx on the
-    /// user's behalf (Permit2 relay). The referral code attached to every
-    /// swap from this client is set once on the builder via
-    /// [`ClientBuilder::referral_code`].
+    /// **Funding modes**
+    ///
+    /// `gasless = true` runs the gasless deposit flow: the user is given
+    /// an EVM deposit address derived from the configured [`Signer`] (see
+    /// [`Signer::derive_evm_key`]) and just sends tokens to it from any
+    /// wallet. The SDK then relays the funds into the HTLC via a
+    /// Permit2-signed transaction — the user never needs ETH/MATIC for
+    /// gas and never signs the HTLC funding tx themselves.
+    ///
+    /// `gasless = false` returns the HTLC contract address, but funding it
+    /// requires the user to broadcast a transaction calling the contract
+    /// with specific encoded calldata. That calldata is served by
+    /// `GET /swap/{id}/swap-and-lock-calldata-userop`. **The SDK does not
+    /// yet fetch this calldata** — callers who set `gasless = false`
+    /// today have to issue that follow-up request themselves. A typed
+    /// helper for it will land in a later revision.
+    ///
+    /// **Referral code**: attached to every swap from this client; set
+    /// once on the builder via [`ClientBuilder::referral_code`].
     ///
     /// **Phase 1 caveat**: panics (`todo!()`) inside [`Signer`] — Phase 2
     /// wires the crypto in without changing this signature.
@@ -216,12 +231,14 @@ impl Client {
                     .to_string(),
             )
         })?;
-        let key_index = 0; // Phase 2: pull from storage / increment per swap.
+        // Allocate a fresh key_index for this swap so every concurrent
+        // swap from the same client has its own EVM deposit address.
+        let key_index = self.storage.next_key_index()?;
         let swap_params = signer.derive_swap_params(key_index)?;
-        let evm_key = signer.derive_evm_key()?;
-        let hash_lock = format!("0x{}", hex_encode(&swap_params.hash_lock));
-        let receiver_pk = hex_encode(&swap_params.public_key);
-        let user_id = hex_encode(&swap_params.user_id);
+        let evm_key = signer.derive_evm_key(key_index)?;
+        let hash_lock = format!("0x{}", hex::encode(swap_params.hash_lock));
+        let receiver_pk = hex::encode(swap_params.public_key);
+        let user_id = hex::encode(swap_params.user_id);
 
         let req = CreateEvmToArkadeSwapRequest::new(
             arkade_target_address,
@@ -237,8 +254,9 @@ impl Client {
         );
         let response = self.send(req).await?;
 
-        // Persist the secret so we can claim later.
-        self.storage.put_secret(&response.id, &swap_params.secret)?;
+        // Persist the key_index so claim/refund can re-derive every
+        // secret from `(signer, key_index)`.
+        self.storage.put_swap_key_index(&response.id, key_index)?;
 
         Ok(Swap::from_response(response))
     }
@@ -344,16 +362,20 @@ impl ClientBuilder {
 /// Compact, user-facing view of a created swap. Carries the fields a
 /// caller needs to display payment instructions to the user.
 ///
-/// The full backend response is reachable via the low-level
-/// [`Client::create_evm_to_arkade_swap`] entry point.
+/// `#[non_exhaustive]` so we can add fields (e.g. `expires_at`) in a
+/// SemVer-minor release.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Swap {
     pub id: String,
     pub status: SwapStatus,
-    /// Where the user must send their source funds.
-    pub deposit_address: String,
-    /// Amount the user must send, in the smallest unit of `deposit_token`.
-    /// String to preserve precision for large EVM token amounts.
+    /// Funding instructions — depends on whether the swap was created
+    /// with `gasless = true` (Gasless variant) or `gasless = false`
+    /// (UserSubmitted variant).
+    pub funding: SwapFunding,
+    /// Amount the user must deposit, in the smallest unit of
+    /// `deposit_token`. String to preserve precision for large EVM
+    /// token amounts.
     pub deposit_amount: String,
     pub deposit_token: TokenId,
     /// Where the user receives the target asset (their `receive_to`).
@@ -363,12 +385,54 @@ pub struct Swap {
     pub receive_token: TokenId,
 }
 
+/// How the user has to fund the swap.
+///
+/// Both the enum and its variants are `#[non_exhaustive]`:
+/// - new variants (e.g. a future "user submits a signed permit2 message") can land as a
+///   SemVer-minor change;
+/// - new fields on existing variants are likewise non-breaking.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SwapFunding {
+    /// `gasless = true` flow: the user sends tokens to `deposit_address`
+    /// from any wallet. The SDK relays the funds into the HTLC via a
+    /// Permit2-signed transaction so the user never pays gas.
+    Gasless {
+        /// EVM address derived from the configured [`Signer`]
+        /// (`m/44'/60'/0'/0/0`). The same address is reused across
+        /// every swap from this client.
+        deposit_address: String,
+    },
+    /// `gasless = false` flow: the user submits the funding transaction
+    /// themselves, calling the HTLC coordinator with specific calldata.
+    ///
+    /// The calldata + AA configuration come from the separate
+    /// `GET /swap/{id}/swap-and-lock-calldata-userop` endpoint, which
+    /// the SDK does not yet fetch. A later revision will populate this
+    /// variant with the fields a caller needs (contract address, calls
+    /// array, AA addresses, etc.). For now this variant carries no
+    /// payload — its presence is the signal that "you asked for a
+    /// non-gasless swap and need to do the funding step yourself."
+    #[non_exhaustive]
+    UserSubmitted {},
+}
+
 impl Swap {
     fn from_response(r: EvmToArkadeSwapResponse) -> Self {
+        // `client_evm_address` is the address the SDK derives from the
+        // signer's EVM key and echoes back in the response. In the
+        // gasless flow it's where the user deposits their tokens.
+        let funding = if r.gasless {
+            SwapFunding::Gasless {
+                deposit_address: r.client_evm_address,
+            }
+        } else {
+            SwapFunding::UserSubmitted {}
+        };
         Self {
             id: r.id,
             status: r.status,
-            deposit_address: r.evm_htlc_address,
+            funding,
             deposit_amount: r.source_amount,
             deposit_token: r.source_token.token_id,
             receive_address: r.target_arkade_address,
@@ -376,15 +440,6 @@ impl Swap {
             receive_token: r.target_token.token_id,
         }
     }
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        use std::fmt::Write as _;
-        let _ = write!(&mut out, "{b:02x}");
-    }
-    out
 }
 
 fn attach_payload<E: Serialize>(
