@@ -4,9 +4,12 @@
 
 use lendaswap_sdk::Client;
 use lendaswap_sdk::Error;
+use lendaswap_sdk::SwapFunding;
+use lendaswap_sdk::types::Address;
 use lendaswap_sdk::types::Chain;
 use lendaswap_sdk::types::QuoteAmount;
 use lendaswap_sdk::types::QuoteRequest;
+use lendaswap_sdk::types::SwapStatus;
 use lendaswap_sdk::types::TokenId;
 use serde_json::json;
 use wiremock::Mock;
@@ -208,12 +211,205 @@ async fn get_quote_sends_optional_bridge_and_referral() {
     assert_eq!(params_get(&params, "ref"), Some("FOO123"));
 }
 
-// NOTE: a wiremock test for the EVM->Arkade swap flow lived here previously;
-// it constructed a `CreateEvmToArkadeSwapRequest` directly. After the
-// refactor, the public method takes (source, amount, receive_to) and runs
-// signer derivation, so end-to-end testing requires the Phase-2 signer
-// crypto. The test will be reintroduced once `Signer::derive_swap_params`
-// is implemented.
+/// Well-known BIP-39 test mnemonic — produces deterministic signer
+/// output so the wiremock test can verify exact wire shapes.
+const TEST_MNEMONIC: &str =
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+#[tokio::test]
+async fn create_evm_to_arkade_swap_posts_high_level_request() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/swap/evm/arkade"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "swap_42",
+            "status": "pending",
+            "fee_sats": 500,
+            "hash_lock": "0xdeadbeef",
+            "source_token": {
+                "token_id": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+                "symbol": "USDT",
+                "chain": "42161",
+                "name": "Tether USD",
+                "decimals": 6,
+            },
+            "target_token": {
+                "token_id": "btc",
+                "symbol": "BTC",
+                "chain": "Arkade",
+                "name": "Bitcoin",
+                "decimals": 8,
+            },
+            "created_at": "2026-05-12T00:00:00Z",
+            "chain": "Arbitrum",
+            "evm_chain_id": 42161,
+            "source_amount": "100000000",
+            "target_amount": "150000",
+            "evm_expected_sats": "150000",
+            "evm_htlc_address": "0xhtlc",
+            "client_evm_address": "0xclient",
+            "server_evm_address": "0xserver",
+            "evm_refund_locktime": 1_000_000,
+            "btc_vhtlc_address": "ark1qvhtlc",
+            "target_arkade_address": "ark1qtarget",
+            "sender_pk": "02sender",
+            "receiver_pk": "02receiver",
+            "arkade_server_pk": "02arkade",
+            "vhtlc_refund_locktime": 1_000_000,
+            "unilateral_claim_delay": 144,
+            "unilateral_refund_delay": 288,
+            "unilateral_refund_without_receiver_delay": 432,
+            "network": "mainnet",
+            "gasless": true,
+        })))
+        .mount(&server)
+        .await;
+
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(TEST_MNEMONIC)
+        .referral_code("TEST_REF")
+        .build()
+        .expect("client builds");
+
+    let swap = client
+        .create_evm_to_arkade_swap(
+            TokenId::Usdt0Arbitrum,
+            QuoteAmount::Source(100_000_000),
+            Address::Arkade("ark1qtarget".to_string()),
+            true,
+        )
+        .await
+        .expect("create_evm_to_arkade_swap succeeds");
+
+    assert_eq!(swap.id, "swap_42");
+    assert_eq!(swap.status, SwapStatus::Pending);
+    assert_eq!(swap.deposit_token, TokenId::Usdt0Arbitrum);
+    assert_eq!(swap.receive_token, TokenId::Btc);
+    assert_eq!(swap.receive_address, "ark1qtarget");
+    // gasless=true → Gasless variant with the SDK-derived EVM address
+    // (echoed back as client_evm_address by the backend).
+    match swap.funding {
+        SwapFunding::Gasless { deposit_address } => {
+            assert_eq!(deposit_address, "0xclient");
+        }
+        other => panic!("expected Gasless funding, got {other:?}"),
+    }
+
+    // Inspect the wire body to confirm the signer-derived fields and the
+    // builder-set referral code flow through.
+    let received = server.received_requests().await.expect("requests recorded");
+    let req = received.last().expect("at least one request");
+    let body: serde_json::Value = serde_json::from_slice(&req.body).expect("body is valid JSON");
+    assert_eq!(body["target_address"], "ark1qtarget");
+    assert_eq!(body["evm_chain_id"], 42161);
+    assert_eq!(
+        body["token_address"],
+        "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9"
+    );
+    assert_eq!(body["amount_in"], 100_000_000);
+    assert!(body.get("amount_out").is_none() || body["amount_out"].is_null());
+    assert_eq!(body["gasless"], true);
+    // Swap-request body uses `referral_code` (the quote endpoint renames it
+    // to `ref`; the two endpoints differ on this field name).
+    assert_eq!(body["referral_code"], "TEST_REF");
+    // hash_lock + receiver_pk + user_id + user_address come from the
+    // signer; check shape, not exact value (those are well-defined by the
+    // signer unit tests).
+    assert!(body["hash_lock"].as_str().unwrap().starts_with("0x"));
+    assert_eq!(body["hash_lock"].as_str().unwrap().len(), 66); // 0x + 64 hex
+    assert_eq!(body["receiver_pk"].as_str().unwrap().len(), 66); // 33 bytes hex
+    assert_eq!(body["user_id"].as_str().unwrap().len(), 66);
+    assert!(body["user_address"].as_str().unwrap().starts_with("0x"));
+}
+
+#[tokio::test]
+async fn create_swap_dispatcher_routes_to_evm_to_arkade() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/swap/evm/arkade"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "swap_99",
+            "status": "pending",
+            "fee_sats": 500,
+            "hash_lock": "0xdeadbeef",
+            "source_token": {
+                "token_id": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+                "symbol": "USDC",
+                "chain": "137",
+                "name": "USD Coin",
+                "decimals": 6,
+            },
+            "target_token": {
+                "token_id": "btc",
+                "symbol": "BTC",
+                "chain": "Arkade",
+                "name": "Bitcoin",
+                "decimals": 8,
+            },
+            "created_at": "2026-05-12T00:00:00Z",
+            "chain": "Polygon",
+            "evm_chain_id": 137,
+            "source_amount": "100000000",
+            "target_amount": "150000",
+            "evm_expected_sats": "150000",
+            "evm_htlc_address": "0xhtlc",
+            "client_evm_address": "0xclient",
+            "server_evm_address": "0xserver",
+            "evm_refund_locktime": 1_000_000,
+            "btc_vhtlc_address": "ark1qvhtlc",
+            "target_arkade_address": "ark1qtarget",
+            "sender_pk": "02sender",
+            "receiver_pk": "02receiver",
+            "arkade_server_pk": "02arkade",
+            "vhtlc_refund_locktime": 1_000_000,
+            "unilateral_claim_delay": 144,
+            "unilateral_refund_delay": 288,
+            "unilateral_refund_without_receiver_delay": 432,
+            "network": "mainnet",
+            "gasless": false,
+        })))
+        .mount(&server)
+        .await;
+
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(TEST_MNEMONIC)
+        .build()
+        .expect("client builds");
+
+    let swap = client
+        .create_swap(
+            TokenId::UsdcPolygon,
+            TokenId::Btc,
+            QuoteAmount::Source(100_000_000),
+            Address::Arkade("ark1qtarget".to_string()),
+        )
+        .await
+        .expect("dispatcher routes to evm_to_arkade");
+    assert_eq!(swap.id, "swap_99");
+}
+
+#[tokio::test]
+async fn create_swap_rejects_unsupported_direction() {
+    let client = Client::builder()
+        .base_url("https://example.invalid")
+        .mnemonic(TEST_MNEMONIC)
+        .build()
+        .expect("client builds");
+
+    // BTC source -> EVM target is not wired today.
+    let err = client
+        .create_swap(
+            TokenId::Btc,
+            TokenId::UsdcPolygon,
+            QuoteAmount::Source(100_000),
+            Address::Evm("0xclient".to_string()),
+        )
+        .await
+        .expect_err("unsupported direction must error");
+    assert!(matches!(err, Error::InvalidSwap(_)), "got {err:?}");
+}
 
 fn query_pairs(req: &Request) -> Vec<(String, String)> {
     req.url

@@ -14,10 +14,17 @@ name = "lendaswap_sdk"
 crate-type = ["rlib"]
 
 [dependencies]
+# Crypto: HD wallet derivation, secp256k1, hashes.
+# `bitcoin` re-exports `secp256k1`; no need to pull it in directly.
+bip39 = "2"
+bitcoin = { version = "0.32", default-features = false, features = ["std"] }
+hex = "0.4"
 reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls", "query"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 thiserror = "1"
+tiny-keccak = { version = "2", features = ["keccak"] }
 tracing = "0.1"
 url = "2"
 

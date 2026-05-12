@@ -19,6 +19,7 @@ mod wire;
 pub use client::Client;
 pub use client::ClientBuilder;
 pub use client::Swap;
+pub use client::SwapFunding;
 pub use error::Error;
 pub use error::Result;
 pub use request::Endpoint;
