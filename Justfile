@@ -68,6 +68,35 @@ bump-version version:
     cd ts-pure-sdk && npm version {{ version }} --no-git-tag-version
 
 # =============================================================================
+# Cross-SDK developer recipes
+#
+# These cover every SDK in this directory. The root `justfile` delegates to
+# them via `just client-sdk <recipe>` so module-level concerns stay here.
+# =============================================================================
+
+# Format Rust + TypeScript sources.
+#
+# The workspace `rustfmt.toml` uses unstable features (`wrap_comments`,
+# `imports_granularity`, etc.) so we invoke the same pinned nightly that
+# `dprint`'s exec plugin uses (see `scripts/rustfmt-nightly.sh`).
+fmt:
+    cd rust-sdk && cargo +nightly-2025-11-01 fmt
+    cd ts-pure-sdk && npm run lint:fix
+
+# Run unit tests across SDKs.
+#
+# FIXME: ts-pure-sdk tests are broken (better-sqlite3 native binding fails to
+# load against the current Node ABI). Re-add `cd ts-pure-sdk && npm run test:run`
+# here once that's fixed.
+test:
+    cd rust-sdk && cargo test
+
+# Lint: clippy for Rust (deny warnings), biome for TypeScript
+lint:
+    cd rust-sdk && cargo clippy --all-targets -- -D warnings
+    cd ts-pure-sdk && npm run lint
+
+# =============================================================================
 # Changesets (SDK release versioning + changelogs)
 # =============================================================================
 

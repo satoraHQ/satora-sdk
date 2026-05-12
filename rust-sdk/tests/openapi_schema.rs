@@ -4,12 +4,11 @@
 //! When the backend's `openapi.json` changes shape, this test fails — that is
 //! the signal to update the Rust types (and any callers).
 
-use std::path::Path;
-
 use lendaswap_sdk::types::ErrorResponse;
 use lendaswap_sdk::types::Version;
 use serde_json::Value;
 use serde_json::json;
+use std::path::Path;
 
 const SPEC_PATH: &str = "openapi.json";
 
