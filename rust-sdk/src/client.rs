@@ -4,13 +4,12 @@
 //! same shape can be re-exposed over a C-ABI / `csbindgen` / `interoptopus`
 //! layer in a future crate.
 
-use reqwest::StatusCode;
-use url::Url;
-
 use crate::error::Error;
 use crate::error::Result;
 use crate::types::ErrorResponse;
 use crate::types::Version;
+use reqwest::StatusCode;
+use url::Url;
 
 #[derive(Debug, Clone)]
 pub struct Client {
