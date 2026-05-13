@@ -1,3 +1,8 @@
+# Use shell positional args ($1, $2, "$@", …) so variadic recipes can
+# forward args without losing quoting (e.g. `--source-amount "10 USD"`
+# stays one token across forwarding hops).
+set positional-arguments := true
+
 # =============================================================================
 # Database (SQLx migrations for core)
 # =============================================================================
@@ -87,9 +92,11 @@ fmt: fmt-rust fmt-ts
 # `rustfmt.toml` uses unstable options, so we invoke the same pinned nightly
 # that `dprint`'s exec plugin uses (see `scripts/rustfmt-nightly.sh`).
 #
-# Format Rust sources only.
+# Format Rust sources only. Covers every Rust crate under client-sdk:
+# rust-sdk (the pure-Rust SDK) AND dotnet-sdk/native (the FFI shim).
 fmt-rust:
     cd rust-sdk && cargo +nightly-2025-11-01 fmt
+    cd dotnet-sdk/native && cargo +nightly-2025-11-01 fmt
 
 # Format / auto-fix TypeScript sources only (via biome).
 fmt-ts:
@@ -97,25 +104,52 @@ fmt-ts:
 
 # FIXME: ts-pure-sdk tests are broken (better-sqlite3 native binding fails to
 # load against the current Node ABI). Re-add a `test-ts` dependency here
-# once that's fixed.
+# once that's fixed. dotnet-sdk tests live under `test-dotnet` because
+# they need the `dotnet` CLI installed — not everyone has it.
 #
-# Run unit tests across SDKs.
+# Run Rust unit tests (currently the only working set).
 test: test-rust
 
-# Run Rust unit tests only.
+# Run Rust unit tests only (rust-sdk; dotnet-sdk/native is pure FFI scaffolding).
 test-rust:
     cd rust-sdk && cargo test
 
-# Lint: clippy for Rust (deny warnings) + biome for TypeScript.
+# Lint: clippy for Rust + biome for TypeScript (C# build excluded — see lint-dotnet).
 lint: lint-rust lint-ts
 
-# Lint Rust only (no node required).
+# Lint Rust only (no node required). Covers rust-sdk + dotnet-sdk/native.
 lint-rust:
     cd rust-sdk && cargo clippy --all-targets -- -D warnings
+    cd dotnet-sdk/native && cargo clippy --all-targets -- -D warnings
 
 # Lint TypeScript only (biome).
 lint-ts:
     cd ts-pure-sdk && npm run lint
+
+# =============================================================================
+# dotnet-sdk recipes (require the .NET SDK + uniffi-bindgen-cs).
+#
+# These are gated behind explicit recipe names because they pull in a
+# separate toolchain. Local devs without `dotnet` can ignore them; CI
+# runs them in a dedicated job that sets up dotnet on the runner.
+# =============================================================================
+
+# Build the C# solution (also rebuilds the native cdylib + regenerates bindings).
+build-dotnet:
+    cd dotnet-sdk && just build
+
+# Run the C# test suite.
+test-dotnet:
+    cd dotnet-sdk && just test
+
+# Lint dotnet-sdk: clippy on the native FFI crate (C# side has no linter wired yet).
+lint-dotnet:
+    cd dotnet-sdk && just lint-rust
+
+# Run the .NET sample CLI. Pass arguments after `--`, e.g.:
+#   just client-sdk dotnet-cli -- quote --source Arb:USDT --target Arkade:BTC --source-amount "10 USD"
+dotnet-cli *args:
+    cd dotnet-sdk && just dotnet-cli "$@"
 
 # =============================================================================
 # Changesets (SDK release versioning + changelogs)

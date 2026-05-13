@@ -1,0 +1,29 @@
+
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Lendaswap.Sdk", "Lendaswap.Sdk\Lendaswap.Sdk.csproj", "{1B7E0DCF-0001-4001-8001-000000000001}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Lendaswap.Sdk.Tests", "Lendaswap.Sdk.Tests\Lendaswap.Sdk.Tests.csproj", "{1B7E0DCF-0001-4001-8001-000000000002}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Lendaswap.Sdk.Cli", "Lendaswap.Sdk.Cli\Lendaswap.Sdk.Cli.csproj", "{1B7E0DCF-0001-4001-8001-000000000003}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{1B7E0DCF-0001-4001-8001-000000000001}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1B7E0DCF-0001-4001-8001-000000000001}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1B7E0DCF-0001-4001-8001-000000000001}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1B7E0DCF-0001-4001-8001-000000000001}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1B7E0DCF-0001-4001-8001-000000000002}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1B7E0DCF-0001-4001-8001-000000000002}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1B7E0DCF-0001-4001-8001-000000000002}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1B7E0DCF-0001-4001-8001-000000000002}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1B7E0DCF-0001-4001-8001-000000000003}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1B7E0DCF-0001-4001-8001-000000000003}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1B7E0DCF-0001-4001-8001-000000000003}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1B7E0DCF-0001-4001-8001-000000000003}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
