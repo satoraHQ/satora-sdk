@@ -1,0 +1,32 @@
+# Standalone crate (not part of the root Cargo workspace).
+[workspace]
+
+[package]
+name = "lendaswap-sdk-ffi"
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+description = "C-ABI/UniFFI bindings to lendaswap-sdk. Internal — consumed by the dotnet-sdk wrapper, not published to crates.io."
+
+[lib]
+# `cdylib` for the dynamic .dylib/.so/.dll the .NET project P/Invokes into.
+# `staticlib` for any future scenarios that need a static archive (e.g. iOS).
+# `lib` so we can also pull this crate into other Rust code (test harnesses).
+name = "lendaswap_sdk_ffi"
+crate-type = ["cdylib", "staticlib", "lib"]
+
+[dependencies]
+lendaswap-sdk = { path = "../../rust-sdk" }
+thiserror = "1"
+# Multi-thread runtime so multiple FFI calls don't serialise on a single
+# worker. block_on() inside extern fns drives async lendaswap-sdk methods
+# from synchronous C# callers.
+tokio = { version = "1", features = ["rt-multi-thread"] }
+# uniffi 0.29.x pairs with uniffi-bindgen-cs v0.10.x (last verified against
+# NordSecurity/uniffi-bindgen-cs releases). Pin tightly while both are
+# pre-1.0 to avoid macro/scaffolding drift between the Rust side and the
+# external C# bindgen.
+uniffi = { version = "0.29", features = ["tokio"] }
+
+[build-dependencies]
+uniffi = { version = "0.29", features = ["build"] }
