@@ -83,10 +83,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
+      # On macos-14 the preinstalled rustup sometimes lacks a default
+      # toolchain — `cargo` then proxies through rustup-init and errors
+      # with "unexpected argument 'build'". Anchor toolchain state
+      # explicitly instead of relying on the dtolnay action alone.
+      - name: Install Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustup target add ${{ matrix.target }}
+          echo "--- toolchain state ---"
+          which cargo
+          cargo --version
+          rustc --version
+          rustup show
 
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
@@ -120,8 +138,20 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Install Rust (for uniffi-bindgen-cs + host cdylib)
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust toolchain (for uniffi-bindgen-cs + host cdylib)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          cargo --version
+          rustc --version
 
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
