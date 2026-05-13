@@ -252,10 +252,12 @@ jobs:
           path: dotnet-sdk/dist/*.nupkg
           if-no-files-found: error
 
-      # Only publish on main (and on manual dispatch when publish=true).
-      # PRs build + pack as a smoke test but never push.
+      # While we're still validating the publish pipeline, also push on
+      # PR runs so test branches produce visible packages. Once we trust
+      # the flow, drop `pull_request` from this condition so only main /
+      # explicit dispatch publishes.
       - name: Push to GitHub Packages
-        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)
+        if: github.event_name == 'push' || github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.publish)
         working-directory: dotnet-sdk
         run: |
           dotnet nuget push dist/*.nupkg \
