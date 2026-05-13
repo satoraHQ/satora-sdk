@@ -1,0 +1,227 @@
+# Build + publish the Lendaswap .NET SDK NuGet package.
+#
+# IMPORTANT: this workflow file lives in the *source* repo under
+# `client-sdk/.github/workflows/` so the existing client-sdk subtree
+# sync (`sync-client-sdk-subtree.yml`) mirrors it to
+# `lendasat/lendaswap-sdk/.github/workflows/` — i.e. it runs in the
+# PUBLIC mirror repo, not the private source repo. Public repos get
+# free Actions minutes, hence the indirection.
+#
+# Layout assumption (post-subtree-push):
+#   ./dotnet-sdk/native/               # Rust cdylib source
+#   ./dotnet-sdk/Lendaswap.Sdk/        # C# project
+#   ./rust-sdk/                        # pure-Rust SDK (path-dep of native/)
+#
+# Per-push behaviour:
+#   1. Matrix-build the Rust cdylib on three native runners
+#      (osx-arm64 / linux-x64 / win-x64). Each uploads exactly one
+#      native artifact.
+#   2. Pack job downloads all three, regenerates UniFFI bindings,
+#      stamps a SemVer-prerelease version derived from the commit,
+#      runs `dotnet pack`, and pushes to GitHub Packages on the same
+#      org that owns this (mirrored) repo.
+#
+# Consumers install with:
+#   dotnet add package Lendaswap.Sdk --prerelease \
+#       --source https://nuget.pkg.github.com/lendasat/index.json
+# (with a PAT that has `read:packages`).
+
+name: Build .NET SDK NuGet
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - dotnet-sdk/**
+      - rust-sdk/**
+      - .github/workflows/build-dotnet-sdk.yml
+  pull_request:
+    paths:
+      - dotnet-sdk/**
+      - rust-sdk/**
+      - .github/workflows/build-dotnet-sdk.yml
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Push the resulting .nupkg to GitHub Packages'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  CARGO_TERM_COLOR: always
+  DOTNET_NOLOGO: 1
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+  # Pin lockstep with the Justfile's `bindgen_tag` — bindgen releases
+  # are tagged `<bindgen>+<uniffi>` and only work with their matching
+  # uniffi crate version.
+  UNIFFI_BINDGEN_CS_TAG: v0.10.0+v0.29.4
+
+jobs:
+  build-native:
+    name: native ${{ matrix.rid }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: osx-arm64
+            os: macos-14
+            target: aarch64-apple-darwin
+            lib: liblendaswap_sdk_ffi.dylib
+          - rid: linux-x64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            lib: liblendaswap_sdk_ffi.so
+          - rid: win-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            lib: lendaswap_sdk_ffi.dll
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: dotnet-sdk/native
+          shared-key: native-${{ matrix.rid }}
+
+      - name: Build cdylib (release)
+        working-directory: dotnet-sdk/native
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Upload native artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.rid }}
+          path: dotnet-sdk/native/target/${{ matrix.target }}/release/${{ matrix.lib }}
+          if-no-files-found: error
+          retention-days: 7
+
+  pack:
+    name: Pack NuGet
+    needs: build-native
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install Rust (for uniffi-bindgen-cs + host cdylib)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: dotnet-sdk/native
+          shared-key: native-host
+
+      - name: Download all native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: native-artifacts
+          pattern: native-*
+
+      # Stage native libs at the target-triple-keyed paths the csproj's
+      # release ItemGroups expect. Matches the layout `cargo build
+      # --target <triple> --release` would produce locally — so a dev
+      # can reproduce the pack flow by building each target themselves.
+      - name: Stage native libs into native/target/<triple>/release/
+        run: |
+          set -euo pipefail
+          declare -A triple_for_rid=(
+            [osx-arm64]=aarch64-apple-darwin
+            [linux-x64]=x86_64-unknown-linux-gnu
+            [win-x64]=x86_64-pc-windows-msvc
+          )
+          for rid in osx-arm64 linux-x64 win-x64; do
+            triple="${triple_for_rid[$rid]}"
+            mkdir -p "dotnet-sdk/native/target/${triple}/release"
+            cp -v native-artifacts/native-${rid}/* \
+              "dotnet-sdk/native/target/${triple}/release/"
+          done
+          ls -lR dotnet-sdk/native/target/*/release || true
+
+      - name: Install uniffi-bindgen-cs
+        run: |
+          cargo install --locked \
+            --git https://github.com/NordSecurity/uniffi-bindgen-cs \
+            --tag "$UNIFFI_BINDGEN_CS_TAG" \
+            uniffi-bindgen-cs
+
+      # Generate bindings from the linux .so we just staged (no need
+      # to rebuild — the same host can read the metadata out of an
+      # x86_64 .so via uniffi's library mode).
+      - name: Generate C# bindings
+        working-directory: dotnet-sdk
+        run: |
+          set -euo pipefail
+          uniffi-bindgen-cs \
+            --library native/target/x86_64-unknown-linux-gnu/release/liblendaswap_sdk_ffi.so \
+            --out-dir Lendaswap.Sdk/Generated
+          # Mirror the Justfile post-process: tagged-enum base records
+          # ship as `internal` by default, which makes them unreachable
+          # from consumer assemblies. Public-bump the three we expose.
+          sed -i.bak \
+            -e 's/^internal record ChainId {/public record ChainId {/' \
+            -e 's/^internal record TokenId {/public record TokenId {/' \
+            -e 's/^internal record QuoteAmount {/public record QuoteAmount {/' \
+            Lendaswap.Sdk/Generated/lendaswap_sdk_ffi.cs
+          rm Lendaswap.Sdk/Generated/lendaswap_sdk_ffi.cs.bak
+
+      # SemVer-prerelease string derived from CI metadata:
+      #   <base>-ci.<YYYYMMDD>.<run_number>.sha-<short>
+      # The leading `-ci.` keeps these treated as prerelease so they
+      # don't outrank a future stable `0.1.0` release. `run_number`
+      # is monotonic per-workflow; the SHA pins exact provenance.
+      - name: Compute CI version
+        id: version
+        run: |
+          set -euo pipefail
+          BASE=$(grep -oE '<Version>[^<]+' dotnet-sdk/Lendaswap.Sdk/Lendaswap.Sdk.csproj \
+            | head -n1 | sed -E 's,<Version>,,; s,-.*,,')
+          DATE=$(date -u +%Y%m%d)
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          VERSION="${BASE}-ci.${DATE}.${{ github.run_number }}.sha-${SHORT_SHA}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Computed package version: ${VERSION}"
+
+      - name: dotnet pack
+        working-directory: dotnet-sdk
+        run: |
+          dotnet pack Lendaswap.Sdk/Lendaswap.Sdk.csproj \
+            -c Release \
+            -p:Version=${{ steps.version.outputs.version }} \
+            -p:RepositoryCommit=${{ github.sha }} \
+            -o dist
+
+      - name: Upload .nupkg artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Lendaswap.Sdk-${{ steps.version.outputs.version }}
+          path: dotnet-sdk/dist/*.nupkg
+          if-no-files-found: error
+
+      # Only publish on main (and on manual dispatch when publish=true).
+      # PRs build + pack as a smoke test but never push.
+      - name: Push to GitHub Packages
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)
+        working-directory: dotnet-sdk
+        run: |
+          dotnet nuget push dist/*.nupkg \
+            --source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" \
+            --api-key "${{ secrets.GITHUB_TOKEN }}" \
+            --skip-duplicate

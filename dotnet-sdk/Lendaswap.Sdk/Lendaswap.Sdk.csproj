@@ -46,25 +46,54 @@
        The relative path resolves to client-sdk/dotnet-sdk/native/target/
        — i.e. the cargo build output. CI / release builds replace this
        with platform-specific prebuilts (see Justfile `pack`). -->
-  <ItemGroup Condition="Exists('..\native\target\debug\liblendaswap_sdk_ffi.dylib')">
+  <!-- Debug-mode ItemGroups: copy the locally-built cdylib into bin/
+       so `dotnet test` / `dotnet run` find it without a publish step.
+       Gated to Debug so they don't fight the Release ItemGroups below
+       during `dotnet pack -c Release`. -->
+  <ItemGroup Condition="'$(Configuration)' == 'Debug' And Exists('..\native\target\debug\liblendaswap_sdk_ffi.dylib')">
     <None Include="..\native\target\debug\liblendaswap_sdk_ffi.dylib"
           Pack="true"
           PackagePath="runtimes/osx-arm64/native/liblendaswap_sdk_ffi.dylib"
           CopyToOutputDirectory="PreserveNewest"
           Visible="false" />
   </ItemGroup>
-  <ItemGroup Condition="Exists('..\native\target\debug\liblendaswap_sdk_ffi.so')">
+  <ItemGroup Condition="'$(Configuration)' == 'Debug' And Exists('..\native\target\debug\liblendaswap_sdk_ffi.so')">
     <None Include="..\native\target\debug\liblendaswap_sdk_ffi.so"
           Pack="true"
           PackagePath="runtimes/linux-x64/native/liblendaswap_sdk_ffi.so"
           CopyToOutputDirectory="PreserveNewest"
           Visible="false" />
   </ItemGroup>
-  <ItemGroup Condition="Exists('..\native\target\debug\lendaswap_sdk_ffi.dll')">
+  <ItemGroup Condition="'$(Configuration)' == 'Debug' And Exists('..\native\target\debug\lendaswap_sdk_ffi.dll')">
     <None Include="..\native\target\debug\lendaswap_sdk_ffi.dll"
           Pack="true"
           PackagePath="runtimes/win-x64/native/lendaswap_sdk_ffi.dll"
           CopyToOutputDirectory="PreserveNewest"
+          Visible="false" />
+  </ItemGroup>
+
+  <!-- Release-mode, target-triple-keyed staging used by CI's pack job.
+       Each matrix runner cross-compiles its own RID into
+       `native/target/<triple>/release/<lib>`; this csproj globs them
+       into the .nupkg under `runtimes/<rid>/native/`. The ItemGroups
+       are Exists-gated so local Debug builds (which don't have these
+       paths) stay unaffected. -->
+  <ItemGroup Condition="Exists('..\native\target\aarch64-apple-darwin\release\liblendaswap_sdk_ffi.dylib')">
+    <None Include="..\native\target\aarch64-apple-darwin\release\liblendaswap_sdk_ffi.dylib"
+          Pack="true"
+          PackagePath="runtimes/osx-arm64/native/liblendaswap_sdk_ffi.dylib"
+          Visible="false" />
+  </ItemGroup>
+  <ItemGroup Condition="Exists('..\native\target\x86_64-unknown-linux-gnu\release\liblendaswap_sdk_ffi.so')">
+    <None Include="..\native\target\x86_64-unknown-linux-gnu\release\liblendaswap_sdk_ffi.so"
+          Pack="true"
+          PackagePath="runtimes/linux-x64/native/liblendaswap_sdk_ffi.so"
+          Visible="false" />
+  </ItemGroup>
+  <ItemGroup Condition="Exists('..\native\target\x86_64-pc-windows-msvc\release\lendaswap_sdk_ffi.dll')">
+    <None Include="..\native\target\x86_64-pc-windows-msvc\release\lendaswap_sdk_ffi.dll"
+          Pack="true"
+          PackagePath="runtimes/win-x64/native/lendaswap_sdk_ffi.dll"
           Visible="false" />
   </ItemGroup>
 
