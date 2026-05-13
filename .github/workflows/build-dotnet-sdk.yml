@@ -165,13 +165,20 @@ jobs:
       # Generate bindings from the linux .so we just staged (no need
       # to rebuild — the same host can read the metadata out of an
       # x86_64 .so via uniffi's library mode).
+      #
+      # NOTE: `uniffi-bindgen-cs --library` still shells out to
+      # `cargo metadata` internally, which walks upward looking for a
+      # `Cargo.toml`. The mirror repo has no Cargo.toml above
+      # `dotnet-sdk/`, so we run bindgen from inside `native/` (the
+      # crate's own Cargo.toml) and let it write back into the C#
+      # project via the `--out-dir ../...` path.
       - name: Generate C# bindings
         working-directory: dotnet-sdk
         run: |
           set -euo pipefail
-          uniffi-bindgen-cs \
-            --library native/target/x86_64-unknown-linux-gnu/release/liblendaswap_sdk_ffi.so \
-            --out-dir Lendaswap.Sdk/Generated
+          (cd native && uniffi-bindgen-cs \
+            --library target/x86_64-unknown-linux-gnu/release/liblendaswap_sdk_ffi.so \
+            --out-dir ../Lendaswap.Sdk/Generated)
           # Mirror the Justfile post-process: tagged-enum base records
           # ship as `internal` by default, which makes them unreachable
           # from consumer assemblies. Public-bump the three we expose.

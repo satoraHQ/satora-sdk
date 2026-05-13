@@ -35,6 +35,12 @@ build-native:
 # Generate the C# P/Invoke bindings from the just-built cdylib. Must run
 # after build-native so the symbol metadata is fresh.
 #
+# Run from inside `native/` because uniffi-bindgen-cs internally invokes
+# `cargo metadata`, which walks upward looking for a `Cargo.toml`. That
+# works fine inside the mono-repo (root workspace has one) but breaks in
+# the standalone mirror, where there's no Cargo.toml above `dotnet-sdk/`.
+# Anchoring at `native/Cargo.toml` makes the recipe robust either way.
+#
 # Post-process: uniffi-bindgen-cs emits the base record of every tagged
 # enum (and the SDK error base type) as `internal`, while the variants
 # are `public`. That breaks any public API that uses these types as
@@ -43,9 +49,9 @@ build-native:
 # records to `public` so the SDK can expose them in its public surface.
 # Idempotent: running twice is a no-op.
 generate-bindings: build-native
-    uniffi-bindgen-cs \
-        --library native/target/debug/liblendaswap_sdk_ffi.dylib \
-        --out-dir {{ generated_dir }}
+    cd native && uniffi-bindgen-cs \
+        --library target/debug/liblendaswap_sdk_ffi.dylib \
+        --out-dir ../{{ generated_dir }}
     sed -i.bak \
         -e 's/^internal record ChainId {/public record ChainId {/' \
         -e 's/^internal record TokenId {/public record TokenId {/' \
