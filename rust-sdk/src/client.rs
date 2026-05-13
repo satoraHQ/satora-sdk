@@ -43,6 +43,25 @@ use url::Url;
 /// the URL themselves.
 pub const DEFAULT_BASE_URL: &str = "https://api.satora.io";
 
+/// How many `key_index` values `create_evm_to_arkade_swap` will try
+/// before giving up. A recovering user's worst case is "as many swaps
+/// as I previously created" — 1000 covers every realistic wallet while
+/// staying well under any HTTP / API rate limit a user could hit
+/// during one swap creation.
+const MAX_KEY_INDEX_GRIND_ATTEMPTS: u32 = 1000;
+
+/// Detect the backend's "this preimage hash already exists" rejection.
+/// Anchored on HTTP 409 + a substring match (case-insensitive) on
+/// "preimage" so unrelated 409s (e.g. some future "duplicate referral")
+/// don't make us grind forever.
+fn is_preimage_collision(err: &Error) -> bool {
+    matches!(
+        err,
+        Error::Api { status: 409, message }
+            if message.to_ascii_lowercase().contains("preimage")
+    )
+}
+
 #[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
@@ -231,34 +250,63 @@ impl Client {
                     .to_string(),
             )
         })?;
-        // Allocate a fresh key_index for this swap so every concurrent
-        // swap from the same client has its own EVM deposit address.
-        let key_index = self.storage.next_key_index()?;
-        let swap_params = signer.derive_swap_params(key_index)?;
-        let evm_key = signer.derive_evm_key(key_index)?;
-        let hash_lock = format!("0x{}", hex::encode(swap_params.hash_lock));
-        let receiver_pk = hex::encode(swap_params.public_key);
-        let user_id = hex::encode(swap_params.user_id);
 
-        let req = CreateEvmToArkadeSwapRequest::new(
-            arkade_target_address,
-            evm_chain_id,
-            source,
-            hash_lock,
-            receiver_pk,
-            evm_key.address,
-            user_id,
-            amount,
-            gasless,
-            self.referral_code.clone(),
-        );
-        let response = self.send(req).await?;
+        // The SDK derives every per-swap secret deterministically from
+        // `(signer, key_index)`. That means a fresh `Client` built from
+        // a recovered seed will start at `key_index = 0` and hit HTTP
+        // 409 ("preimage hash exists already") for every index the
+        // backend has already seen. Rather than depend on durable
+        // local storage (which a recovering user may not have), grind
+        // through indices until we find one the backend accepts.
+        //
+        // Each iteration also burns a `next_key_index` from storage,
+        // so once a swap eventually succeeds the storage counter is
+        // ahead of the highest known-used index — future swaps from
+        // the same `Client` skip the grind. Durable storage is then a
+        // performance optimisation rather than a correctness one.
+        for attempt in 0..MAX_KEY_INDEX_GRIND_ATTEMPTS {
+            let key_index = self.storage.next_key_index()?;
+            let swap_params = signer.derive_swap_params(key_index)?;
+            let evm_key = signer.derive_evm_key(key_index)?;
+            let hash_lock = format!("0x{}", hex::encode(swap_params.hash_lock));
+            let receiver_pk = hex::encode(swap_params.public_key);
+            let user_id = hex::encode(swap_params.user_id);
 
-        // Persist the key_index so claim/refund can re-derive every
-        // secret from `(signer, key_index)`.
-        self.storage.put_swap_key_index(&response.id, key_index)?;
-
-        Ok(Swap::from_response(response))
+            let req = CreateEvmToArkadeSwapRequest::new(
+                arkade_target_address.clone(),
+                evm_chain_id,
+                source.clone(),
+                hash_lock,
+                receiver_pk,
+                evm_key.address,
+                user_id,
+                amount.clone(),
+                gasless,
+                self.referral_code.clone(),
+            );
+            match self.send(req).await {
+                Ok(response) => {
+                    // Persist the key_index so claim/refund can re-derive every
+                    // secret from `(signer, key_index)`.
+                    self.storage.put_swap_key_index(&response.id, key_index)?;
+                    return Ok(Swap::from_response(response));
+                }
+                Err(err) if is_preimage_collision(&err) => {
+                    tracing::warn!(
+                        key_index,
+                        attempt = attempt + 1,
+                        "preimage collision — grinding next key_index",
+                    );
+                    continue;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err(Error::InvalidSwap(format!(
+            "exhausted {MAX_KEY_INDEX_GRIND_ATTEMPTS} key_index attempts looking for an unused preimage — \
+             the backend rejected every derived index. If you recently recovered this wallet from a seed, \
+             try again; otherwise this is a bug.",
+        )))
     }
 
     fn url(&self, path: &str) -> Result<Url> {
