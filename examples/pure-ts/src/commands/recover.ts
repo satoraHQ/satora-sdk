@@ -11,9 +11,15 @@ export async function recoverSwaps(client: Client): Promise<void> {
 
   // #region recover-swaps
   // Recover all swaps from the server
-  const recovered = await client.recoverSwaps();
-  console.log(`Recovered ${recovered.length} swaps`);
+  const recovery = await client.recoverAllSwaps();
+  console.log(`Recovered ${recovery.swaps.length} swaps`);
   // ... "Recovered 3 swaps"
+
+  if (!recovery.complete) {
+    console.warn("Recovery stopped before completion:", recovery.errorMessage);
+    console.warn("Successful scans:", recovery.scans);
+    console.warn("Scanned until:", recovery.scannedUntil);
+  }
   // #endregion recover-swaps
 
   console.log("");
