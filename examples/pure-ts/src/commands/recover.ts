@@ -25,7 +25,7 @@ export async function recoverSwaps(client: Client): Promise<void> {
   console.log("");
 
   // #region process-recovered
-  const swaps = await client.listAllSwaps();
+  const swaps = recovery.swaps;
 
   for (const stored of swaps) {
     const swap = stored.response;
@@ -33,7 +33,7 @@ export async function recoverSwaps(client: Client): Promise<void> {
       case "serverfunded":
         console.log(`Swap ${stored.swapId}: Ready to claim!`);
         // ... "Swap 550e8400-...: Ready to claim!"
-        await client.claim(stored.swapId);
+        //   npm run redeem -- <swap-id>
         break;
       case "clientfundedserverrefunded":
         console.log(`Swap ${stored.swapId}: Needs refund`);
