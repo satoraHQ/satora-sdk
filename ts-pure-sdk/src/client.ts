@@ -214,7 +214,7 @@ export interface RecoverSwapsOptions {
 export interface RecoverSwapsResult {
   /** Recovered swaps stored locally. */
   swaps: StoredSwap[];
-  /** Legacy compatibility field from the API. Prefer `nextIndex`. */
+  /** @deprecated Legacy compatibility field from the API. Prefer `nextIndex`. */
   highestIndex: number;
   /** Derivation index to use for the next new swap. */
   nextIndex: number;
@@ -222,6 +222,32 @@ export interface RecoverSwapsResult {
   scannedUntil: number;
   /** True when scanning stopped due to the recovery gap limit. */
   complete: boolean;
+}
+
+export interface RecoverAllSwapsOptions {
+  /** Derivation index to start scanning from. Defaults to 0. */
+  startIndex?: number;
+}
+
+export type RecoverAllSwapsStopReason = "complete" | "error";
+
+export interface RecoverAllSwapsResult {
+  /** Recovered swaps stored locally, de-duplicated by swap ID. */
+  swaps: StoredSwap[];
+  /** Derivation index to use for the next new swap. */
+  nextIndex: number;
+  /** Last derivation index scanned by the server, or null if no scan succeeded. */
+  scannedUntil: number | null;
+  /** True when recovery stopped because the server reported completion. */
+  complete: boolean;
+  /** Why recovery stopped. */
+  stoppedReason: RecoverAllSwapsStopReason;
+  /** Number of successful recovery scans performed. */
+  scans: number;
+  /** Error message when recovery stopped due to an error. */
+  errorMessage?: string;
+  /** Original error when recovery stopped due to an error. */
+  error?: unknown;
 }
 
 /** Result of attempting a refund */
@@ -1376,6 +1402,70 @@ export class Client {
       scannedUntil: data.scanned_until,
       complete: data.complete,
     };
+  }
+
+  /**
+   * Recovers every swap discoverable for the current wallet.
+   *
+   * This repeatedly calls `recoverSwaps`, continuing from the last scanned
+   * derivation index, until the server reports that recovery is complete or a
+   * recovery scan fails. On failure, it returns the progress made so far instead
+   * of throwing.
+   *
+   * Use this for fresh wallets that cannot rely on local recovery state.
+   *
+   * @returns Aggregated recovery metadata and all recovered swaps stored locally.
+   */
+  async recoverAllSwaps(
+    options: RecoverAllSwapsOptions = {},
+  ): Promise<RecoverAllSwapsResult> {
+    let startIndex = options.startIndex ?? 0;
+    let scans = 0;
+
+    const swapsById = new Map<string, StoredSwap>();
+
+    let nextIndex = startIndex;
+    let scannedUntil: number | null = null;
+
+    while (true) {
+      let result: RecoverSwapsResult;
+      try {
+        result = await this.recoverSwaps({ startIndex });
+      } catch (error) {
+        return {
+          swaps: [...swapsById.values()],
+          nextIndex,
+          scannedUntil,
+          complete: false,
+          stoppedReason: "error",
+          scans,
+          errorMessage: error instanceof Error ? error.message : String(error),
+          error,
+        };
+      }
+
+      scans += 1;
+
+      for (const swap of result.swaps) {
+        swapsById.set(swap.swapId, swap);
+      }
+
+      nextIndex = Math.max(nextIndex, result.nextIndex);
+      scannedUntil = result.scannedUntil;
+
+      if (result.complete) {
+        return {
+          swaps: [...swapsById.values()],
+          nextIndex,
+          scannedUntil,
+          complete: true,
+          stoppedReason: "complete",
+          scans,
+        };
+      }
+
+      startIndex = result.scannedUntil + 1;
+    }
   }
 
   /**
