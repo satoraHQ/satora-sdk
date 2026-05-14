@@ -65,9 +65,8 @@ export interface UseropCalldataResponse {
   relay_fee?: string;
   aa: {
     entry_point: string;
-    account_factory: string;
-    account_impl: string;
-    salt: string;
+    /** Kernel implementation the depositor EOA delegates to via EIP-7702. */
+    delegation_target: string;
   };
 }
 

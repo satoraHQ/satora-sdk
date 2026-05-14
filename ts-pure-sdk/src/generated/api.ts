@@ -832,11 +832,12 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Returns data for funding an EVM-to-BTC swap via a user's 4337 smart
-         *     account. The client composes a UserOperation that executes receiveMessage
-         *     (for CCTP-inbound) + USDC.approve(Permit2, max) + executeAndCreateWithPermit2
-         *     atomically — `destinationCaller` on the source-chain burn is the smart
-         *     account address, so CCTPv2's receiveMessage gating is pinned to it.
+         * Returns data for funding an EVM-to-BTC swap via the depositor's
+         *     EIP-7702-delegated EOA. The client composes a UserOperation that
+         *     executes receiveMessage (for CCTP-inbound) + USDC.approve(Permit2,
+         *     max) + executeAndCreateWithPermit2 atomically. Because the EOA
+         *     address and the smart-account address are the same under 7702,
+         *     CCTPv2's `destinationCaller` is pinned to the user's EOA directly.
          */
         get: operations["get_coordinator_funding_calldata_userop"];
         put?: never;
@@ -890,21 +891,21 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
-         * @description ERC-4337 / Kernel specific addresses the client uses to derive its
-         *     smart-account sender + compose `initCode`.
+         * @description ERC-4337 / Kernel addresses the client needs to assemble its
+         *     UserOperation. Under EIP-7702 the depositor's EOA IS the smart
+         *     account, so there's no factory, no salt, no counterfactual address
+         *     to derive — only the delegation target the EOA upgrades to.
          */
         AaConfig: {
-            /** @description Kernel (ZeroDev) factory address on this chain. */
-            account_factory: string;
-            /** @description Kernel implementation the factory deploys. */
-            account_impl: string;
+            /**
+             * @description Kernel implementation contract the depositor's EOA delegates to
+             *     via the first UserOp's `eip7702Auth` tuple. Subsequent UserOps
+             *     from the same EOA reuse the on-chain delegation and omit the
+             *     auth.
+             */
+            delegation_target: string;
             /** @description Canonical EntryPoint v0.7 deployment. */
             entry_point: string;
-            /**
-             * @description Salt used when deriving the smart-account address. Pinned to "0"
-             *     so each user has exactly one smart account per signing key.
-             */
-            salt: string;
         };
         /**
          * @description Chain-agnostic request for Arkade-to-EVM swaps.

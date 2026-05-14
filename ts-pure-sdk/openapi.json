@@ -6,7 +6,7 @@
     "license": {
       "name": ""
     },
-    "version": "0.2.25"
+    "version": "0.2.31"
   },
   "paths": {
     "/api/delegate/cosigner-pk": {
@@ -1870,7 +1870,7 @@
     "/swap/{id}/swap-and-lock-calldata-userop": {
       "get": {
         "tags": ["swap-and-lock-calldata-userop"],
-        "summary": "Returns data for funding an EVM-to-BTC swap via a user's 4337 smart\naccount. The client composes a UserOperation that executes receiveMessage\n(for CCTP-inbound) + USDC.approve(Permit2, max) + executeAndCreateWithPermit2\natomically — `destinationCaller` on the source-chain burn is the smart\naccount address, so CCTPv2's receiveMessage gating is pinned to it.",
+        "summary": "Returns data for funding an EVM-to-BTC swap via the depositor's\nEIP-7702-delegated EOA. The client composes a UserOperation that\nexecutes receiveMessage (for CCTP-inbound) + USDC.approve(Permit2,\nmax) + executeAndCreateWithPermit2 atomically. Because the EOA\naddress and the smart-account address are the same under 7702,\nCCTPv2's `destinationCaller` is pinned to the user's EOA directly.",
         "operationId": "get_coordinator_funding_calldata_userop",
         "parameters": [
           {
@@ -1996,24 +1996,16 @@
     "schemas": {
       "AaConfig": {
         "type": "object",
-        "description": "ERC-4337 / Kernel specific addresses the client uses to derive its\nsmart-account sender + compose `initCode`.",
-        "required": ["entry_point", "account_factory", "account_impl", "salt"],
+        "description": "ERC-4337 / Kernel addresses the client needs to assemble its\nUserOperation. Under EIP-7702 the depositor's EOA IS the smart\naccount, so there's no factory, no salt, no counterfactual address\nto derive — only the delegation target the EOA upgrades to.",
+        "required": ["entry_point", "delegation_target"],
         "properties": {
-          "account_factory": {
+          "delegation_target": {
             "type": "string",
-            "description": "Kernel (ZeroDev) factory address on this chain."
-          },
-          "account_impl": {
-            "type": "string",
-            "description": "Kernel implementation the factory deploys."
+            "description": "Kernel implementation contract the depositor's EOA delegates to\nvia the first UserOp's `eip7702Auth` tuple. Subsequent UserOps\nfrom the same EOA reuse the on-chain delegation and omit the\nauth."
           },
           "entry_point": {
             "type": "string",
             "description": "Canonical EntryPoint v0.7 deployment."
-          },
-          "salt": {
-            "type": "string",
-            "description": "Salt used when deriving the smart-account address. Pinned to \"0\"\nso each user has exactly one smart account per signing key."
           }
         }
       },

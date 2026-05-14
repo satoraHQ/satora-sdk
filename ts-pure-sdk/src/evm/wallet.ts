@@ -55,10 +55,10 @@ export interface EvmSigner {
   /**
    * Sign a raw message hash (personal_sign style).
    *
-   * **Required for the CCTP-inbound flow** — Kernel's ECDSA validator
-   * signs the UserOp hash via `signMessage({ raw })` on the owner.
-   * The direct-Permit2 path does not call this, so existing consumers
-   * can leave it unimplemented.
+   * **Required for the CCTP-inbound flow** — Kernel signs the UserOp
+   * hash via `signMessage({ raw })` on the owner. The direct-Permit2
+   * path does not call this, so existing consumers can leave it
+   * unimplemented.
    *
    * For wagmi/Privy/viem consumers this is a one-liner:
    * `(m) => walletClient.signMessage({ account, message: m })`.
@@ -66,6 +66,37 @@ export interface EvmSigner {
    * Must return the 65-byte hex signature (0x-prefixed).
    */
   signMessage?(message: { raw: string }): Promise<string>;
+
+  /**
+   * Sign an EIP-7702 authorization tuple.
+   *
+   * **Required for the CCTP-inbound flow under 7702** — the user's EOA
+   * delegates to a Kernel implementation on its first UserOp; the
+   * signed authorization rides along with the UserOp and is installed
+   * on-chain by the bundler. Subsequent UserOps from the same EOA
+   * skip this once delegation exists.
+   *
+   * The signature is over `keccak256(0x05 || rlp([chainId, address,
+   * nonce]))` with **no** EIP-191 prefix — getting this wrong silently
+   * fails at submission. viem / wagmi / Privy walletClients implement
+   * it correctly via `walletClient.signAuthorization(...)`.
+   *
+   * For viem consumers this is a one-liner:
+   * `(a) => walletClient.signAuthorization({ account, ...a })`.
+   */
+  signAuthorization?(authorization: {
+    chainId: number;
+    contractAddress: string;
+    nonce: number;
+  }): Promise<{
+    r: string;
+    s: string;
+    v?: number;
+    yParity: number;
+    chainId: number;
+    address: string;
+    nonce: number;
+  }>;
 
   /**
    * Send a raw transaction and return the transaction hash (0x-prefixed).

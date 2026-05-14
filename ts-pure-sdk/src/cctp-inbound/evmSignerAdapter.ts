@@ -1,15 +1,18 @@
 /**
  * Bridge `EvmSigner` → a viem `LocalAccount` that ZeroDev's Kernel
- * ECDSA validator accepts as an `owner`.
+ * (under EIP-7702) accepts as the EOA being delegated.
  *
- * Kernel's validator calls:
+ * Kernel calls:
  *   - `signMessage({ message: { raw } })` to sign the UserOp hash.
  *   - `signTypedData({ ... })` to sign the Permit2 witness (and any
- *     other EIP-712 message routed through the smart account).
+ *     other EIP-712 message routed through the account).
+ *   - `signAuthorization({...})` to sign the 7702 auth tuple on the
+ *     first UserOp from this EOA — installs the delegation on-chain.
  *
  * `EvmSigner.signTypedData` is required on all callers. `signMessage`
- * is optional on `EvmSigner` — this adapter throws a clear error if
- * the CCTP path is reached with an `EvmSigner` that lacks it.
+ * and `signAuthorization` are optional on `EvmSigner` — this adapter
+ * throws a clear error if the CCTP path is reached with an
+ * `EvmSigner` that lacks them.
  *
  * `signTransaction` is provided as a stub: Kernel never routes txs
  * through the owner account (the bundler submits UserOps), so calling
@@ -21,8 +24,8 @@ import { toAccount } from "viem/accounts";
 import type { EvmSigner } from "../evm/wallet.js";
 
 /**
- * Wrap an `EvmSigner` in a viem `LocalAccount` so ZeroDev Kernel's
- * `signerToEcdsaValidator` can use it as the account owner.
+ * Wrap an `EvmSigner` in a viem `LocalAccount` so ZeroDev Kernel can
+ * use it as the EIP-7702 delegated account (`eip7702Account`).
  */
 export function evmSignerToKernelOwner(signer: EvmSigner): LocalAccount {
   return toAccount({
@@ -50,6 +53,37 @@ export function evmSignerToKernelOwner(signer: EvmSigner): LocalAccount {
       return (await signer.signTypedData(
         typedData as unknown as Parameters<EvmSigner["signTypedData"]>[0],
       )) as Hex;
+    },
+    async signAuthorization(authorization) {
+      if (!signer.signAuthorization) {
+        throw new Error(
+          "CCTP-inbound flow under EIP-7702 requires `EvmSigner.signAuthorization`. Extend your signer — e.g. `(a) => walletClient.signAuthorization({ account, ...a })`.",
+        );
+      }
+      // viem's `AuthorizationRequest` is a `OneOf` — the delegation
+      // target arrives as EITHER `address` (the canonical field, which
+      // Kernel/viem actually use) OR the `contractAddress` alias.
+      // Reading only `contractAddress` yields `undefined` on the
+      // `address` branch, which then blows up inside viem's
+      // `hashAuthorization` ("Cannot read properties of undefined").
+      const contractAddress = (authorization.address ??
+        authorization.contractAddress) as string;
+      const result = await signer.signAuthorization({
+        chainId: authorization.chainId as number,
+        contractAddress,
+        nonce: authorization.nonce as number,
+      });
+      // viem accepts either `v` or `yParity`; the field they actually
+      // read is `yParity`. Pass both for compatibility.
+      return {
+        r: result.r as Hex,
+        s: result.s as Hex,
+        v: result.v !== undefined ? BigInt(result.v) : undefined,
+        yParity: result.yParity,
+        chainId: result.chainId,
+        address: result.address as Hex,
+        nonce: result.nonce,
+      };
     },
     async signTransaction() {
       throw new Error(

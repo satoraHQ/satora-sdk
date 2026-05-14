@@ -1,25 +1,26 @@
 /**
- * Build a ZeroDev Kernel smart-account client on Arbitrum, owned by a
- * viem `Account` supplied by the consumer (Privy, wagmi, raw private
- * key — any viem-compatible signer).
+ * Build a ZeroDev Kernel smart-account client on Arbitrum from a viem
+ * `Account` supplied by the consumer (Privy, wagmi, raw private key —
+ * any viem-compatible signer).
  *
- * The smart-account address is deterministic from `(owner, factory,
- * impl, salt)`, which makes it usable as both:
+ * Under EIP-7702 the consumer's EOA *is* the smart account — its code
+ * is delegated to a Kernel implementation on the first UserOp. So the
+ * smart-account address and the EOA address are the same, which makes
+ * the EOA address usable directly as both:
  *   - `mintRecipient` on the source-chain CCTP burn (USDC arrives here)
  *   - `destinationCaller` (bytes32-padded) — only this account can
  *     call `receiveMessage` on Arbitrum
  *
- * The account is counterfactually deployed: the bytecode doesn't exist
- * on-chain until the first UserOperation submits, and its `initCode`
- * is provided by Kernel's factory.
+ * No CREATE2, no factory, no counterfactual address: the first
+ * UserOperation carries the 7702 authorization tuple and installs the
+ * delegation on-chain; subsequent ones reuse it.
  *
  * Bundler + paymaster both live at the same Alchemy app URL; the
  * policy id is passed via the ERC-7677 `paymasterContext`.
  */
 
-import { signerToEcdsaValidator } from "@zerodev/ecdsa-validator";
 import { createKernelAccount, createKernelAccountClient } from "@zerodev/sdk";
-import { getEntryPoint, KERNEL_V3_1 } from "@zerodev/sdk/constants";
+import { getEntryPoint, KERNEL_V3_3 } from "@zerodev/sdk/constants";
 import type { Chain } from "viem";
 import { createPublicClient, http } from "viem";
 import { createPaymasterClient } from "viem/account-abstraction";
@@ -30,10 +31,12 @@ import type { AaConfig } from "./types.js";
 
 export interface CreateSwapSmartAccountClientParams {
   /**
-   * The Kernel account owner expressed as the SDK's `EvmSigner`. The
+   * The EOA being delegated, expressed as the SDK's `EvmSigner`. The
    * same abstraction used by `Client.fundSwap` — one signer covers
-   * both the direct-Permit2 and CCTP-inbound paths. Requires
-   * `signer.signMessage` (optional on `EvmSigner`) for the CCTP flow.
+   * both the direct-Permit2 and CCTP-inbound paths. The CCTP flow
+   * requires `signer.signMessage` (UserOp hash) **and**
+   * `signer.signAuthorization` (7702 auth tuple) — both optional on
+   * `EvmSigner`; the adapter throws a clear error if either is missing.
    */
   signer: EvmSigner;
   /** AA config (bundler URL + Gas Manager policy id). */
@@ -48,10 +51,10 @@ export interface CreateSwapSmartAccountClientParams {
 
 /**
  * Creates a Kernel smart-account client ready to send UserOperations.
- * Async — resolves once the account address + validator are derived.
+ * Async — resolves once the account is derived.
  *
  * @returns `{ client, account, accountAddress }` where `accountAddress`
- *          is the deterministic smart-account address.
+ *          equals the consumer's EOA address (7702: EOA *is* the account).
  */
 export async function createSwapSmartAccountClient(
   params: CreateSwapSmartAccountClientParams,
@@ -73,23 +76,21 @@ export async function createSwapSmartAccountClient(
     transport: http(bundlerUrl),
   });
 
-  // Adapt the EvmSigner to a viem LocalAccount so ZeroDev's validator
-  // can treat it as the owner. The adapter throws a clear error if
-  // `signer.signMessage` is missing (required for Kernel's UserOp sig).
+  // Adapt the EvmSigner to a viem LocalAccount. Under 7702 this is the
+  // EOA whose code gets delegated to Kernel — the adapter throws a
+  // clear error if `signMessage` (UserOp hash) or `signAuthorization`
+  // (7702 auth tuple) is missing on the EvmSigner.
   const kernelOwner = evmSignerToKernelOwner(signer);
 
-  // ZeroDev's ECDSA validator is the signature scheme gating the Kernel
-  // account — owner signs, validator checks via ERC-1271.
-  const validator = await signerToEcdsaValidator(publicClient, {
-    signer: kernelOwner,
-    entryPoint,
-    kernelVersion: KERNEL_V3_1,
-  });
-
+  // EIP-7702 mode: pass the EOA as `eip7702Account`. Kernel signs the
+  // authorization tuple on the first UserOp via the account's
+  // `signAuthorization`, installing the delegation on-chain. No
+  // separate ECDSA validator plugin or CREATE2 factory needed — the
+  // delegated EOA's own key gates the account.
   const account = await createKernelAccount(publicClient, {
-    plugins: { sudo: validator },
+    eip7702Account: kernelOwner,
     entryPoint,
-    kernelVersion: KERNEL_V3_1,
+    kernelVersion: KERNEL_V3_3,
   });
 
   // Alchemy serves standard ERC-7677 paymaster methods
