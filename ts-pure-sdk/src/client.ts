@@ -1360,8 +1360,14 @@ export class Client {
       }
     }
 
-    // Update key index so new swaps don't reuse indices.
-    await this.setKeyIndex(data.next_index);
+    // Update key index so new swaps don't reuse indices, but never regress an
+    // existing local index. Recovery may be run from an old startIndex or return
+    // no swaps, in which case data.next_index can be lower than the local index.
+    const currentKeyIndex = await this.getKeyIndex();
+    const nextKeyIndex = Math.max(currentKeyIndex, data.next_index);
+    if (nextKeyIndex !== currentKeyIndex) {
+      await this.setKeyIndex(nextKeyIndex);
+    }
 
     return {
       swaps: storedSwaps,
