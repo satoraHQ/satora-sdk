@@ -60,6 +60,13 @@ const client = await Client.builder()
 const mnemonic = client.getMnemonic();
 ```
 
+### API Status
+
+```typescript
+const status = await client.getStatus();
+console.log(status.healthy, status.services.bitcoin.healthy);
+```
+
 ### Quotes
 
 ```typescript

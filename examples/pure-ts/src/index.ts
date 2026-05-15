@@ -13,6 +13,7 @@
  *   tsx src/index.ts redeem <id> [destination]      - Redeem a swap
  *   tsx src/index.ts refund <id>                    - Refund a swap
  *   tsx src/index.ts swaps                          - List stored swaps
+ *   tsx src/index.ts status                         - Show detailed API status
  *   tsx src/index.ts info                           - Show wallet info
  *
  * Swap Directions:
@@ -44,6 +45,7 @@ import { evmRefundSwap } from "./commands/evm-refund.js";
 import { evmClaimSwap } from "./commands/evm-claim.js";
 import { showEvmBalances } from "./commands/evm-balances.js";
 import { recoverSwaps } from "./commands/recover.js";
+import { showStatus } from "./commands/status.js";
 import { delegateSettle } from "./commands/delegate-settle.js";
 import { deriveSwapEvmAddress } from "./commands/derive-evm-address.js";
 
@@ -128,6 +130,7 @@ Commands:
   derive-evm-address <id>            Derive EVM address from stored swap key
   swaps                              List locally stored swaps
   recover                            Recover swaps from server
+  status                             Show detailed API and dependency status
   info                               Show wallet info
   help                               Show this help message
 
@@ -158,6 +161,7 @@ Other Examples:
   tsx src/index.ts redeem 12345678-... 0x1234...   (Arkade-to-EVM gasless claim)
   tsx src/index.ts refund 12345678-... bc1q... 5
   tsx src/index.ts swaps
+  tsx src/index.ts status
   tsx src/index.ts info
 
 Environment Variables:
@@ -272,6 +276,9 @@ async function main(): Promise<void> {
       break;
     case "recover":
       await recoverSwaps(client);
+      break;
+    case "status":
+      await showStatus(client);
       break;
     case "delegate-settle":
       await delegateSettle(client, swapStorage, args[1], args[2]);

@@ -58,6 +58,9 @@ npm run evm-balances
 # List locally stored swaps
 npm run swaps
 
+# Show detailed API and dependency status
+npm run status
+
 # Show wallet and API info
 npm run info
 ```

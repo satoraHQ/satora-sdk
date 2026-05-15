@@ -23,6 +23,8 @@ export type {
   // Types
   paths,
   QuoteResponse,
+  ServiceStatus,
+  StatusResponse,
   SwapPairInfo,
   SwapPairsResponse,
   SwapStatus,

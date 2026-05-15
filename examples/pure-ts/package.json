@@ -16,6 +16,7 @@
     "evm-claim": "tsx src/index.ts evm-claim",
     "evm-balances": "tsx src/index.ts evm-balances",
     "swaps": "tsx src/index.ts swaps",
+    "status": "tsx src/index.ts status",
     "info": "tsx src/index.ts info",
     "recover": "tsx src/index.ts recover"
   },

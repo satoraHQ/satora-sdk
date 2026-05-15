@@ -1,10 +1,22 @@
 import { HDKey } from "@scure/bip32";
 import * as bip39 from "@scure/bip39";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Client, ClientBuilder, InMemoryWalletStorage } from "../src/index.js";
 
 const TEST_MNEMONIC =
   "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+const healthyStatus = {
+  healthy: true,
+  services: {
+    arbitrum: { healthy: true },
+    arkade: { healthy: true },
+    bitcoin: { healthy: true },
+    ethereum: { healthy: true },
+    lightning: { healthy: true },
+    polygon: { healthy: true },
+  },
+};
 
 function xprvFor(mnemonic: string): string {
   const seed = bip39.mnemonicToSeedSync(mnemonic, "");
@@ -30,11 +42,56 @@ describe("Client", () => {
   it("should have convenience methods", async () => {
     const client = await Client.builder().build();
 
+    expect(client.getStatus).toBeDefined();
     expect(client.healthCheck).toBeDefined();
     expect(client.getVersion).toBeDefined();
     expect(client.getTokens).toBeDefined();
     expect(client.getQuote).toBeDefined();
     expect(client.getSwap).toBeDefined();
+  });
+
+  it("should get detailed API status", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        Response.json(healthyStatus, { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = await Client.builder()
+      .withBaseUrl("https://example.test")
+      .build();
+
+    await expect(client.getStatus()).resolves.toEqual(healthyStatus);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [request] = fetchMock.mock.calls[0] ?? [];
+    expect(request).toBeInstanceOf(Request);
+    expect((request as Request).url).toBe("https://example.test/status");
+
+    vi.unstubAllGlobals();
+  });
+
+  it("should return detailed API status for unhealthy dependencies", async () => {
+    const unhealthyStatus = {
+      ...healthyStatus,
+      healthy: false,
+      services: {
+        ...healthyStatus.services,
+        bitcoin: { healthy: false, error: "unavailable" },
+      },
+    };
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        Response.json(unhealthyStatus, { status: 503 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = await Client.builder()
+      .withBaseUrl("https://example.test")
+      .build();
+
+    await expect(client.getStatus()).resolves.toEqual(unhealthyStatus);
+
+    vi.unstubAllGlobals();
   });
 });
 

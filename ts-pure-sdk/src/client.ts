@@ -12,6 +12,7 @@ import {
   type LightningToArkadeSwapResponse,
   type LightningToEvmSwapResponse,
   type QuoteResponse,
+  type StatusResponse,
   type SwapPairsResponse,
   type TokenInfos,
 } from "./api/client.js";
@@ -204,6 +205,15 @@ export type {
 /** A support agent's Nostr identity */
 export interface SupportAgentInfo {
   npub: string;
+}
+
+function isStatusResponse(value: unknown): value is StatusResponse {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "healthy" in value &&
+    "services" in value
+  );
 }
 
 export interface RecoverSwapsOptions {
@@ -1050,7 +1060,30 @@ export class Client {
   // =========================================================================
 
   /**
+   * Gets the aggregated status of the API and its external dependencies.
+   *
+   * Returns the status body for both healthy (200) and unhealthy (503) responses.
+   * @throws Error if the status response is missing or malformed.
+   */
+  async getStatus(): Promise<StatusResponse> {
+    const { data, error } = await this.#apiClient.GET("/status");
+
+    if (error) {
+      // openapi-fetch puts non-2xx response bodies in `error`.
+      // /status returns StatusResponse for both 200 and expected 503 responses.
+      if (isStatusResponse(error)) {
+        return error;
+      }
+
+      throw new Error(`Failed to get status: ${JSON.stringify(error)}`);
+    }
+
+    return data;
+  }
+
+  /**
    * Checks the health status of the API.
+   * @deprecated Use {@link getStatus} for detailed dependency health.
    * @returns A promise that resolves to "ok" if the API is healthy.
    * @throws Error if the health check fails.
    */
