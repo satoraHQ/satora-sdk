@@ -949,6 +949,12 @@ export interface components {
              */
             evm_chain_id: number;
             /**
+             * Format: int32
+             * @description Optional per-swap fee surcharge in basis points
+             *     (0..=max_extra_fee_bps configured on the matching developer key).
+             */
+            extra_fees?: number | null;
+            /**
              * @description Whether the server should execute the DEX swap on behalf of the user (gasless claim).
              *     When true, the gasless network fee is added to the total fee charged.
              *     Defaults to true.
@@ -1129,6 +1135,12 @@ export interface components {
             /** @description User's claim public key for the Arkade VHTLC */
             claim_pk: string;
             /**
+             * Format: int32
+             * @description Optional per-swap fee surcharge in basis points
+             *     (0..=max_extra_fee_bps configured on the matching developer key).
+             */
+            extra_fees?: number | null;
+            /**
              * @description Hash lock provided by the client (20-byte hex string, no 0x prefix).
              *     The client generates a secret and computes HASH160(secret) = RIPEMD160(SHA256(secret)).
              *     This hash is used for both the on-chain Bitcoin HTLC (OP_HASH160) and the Arkade VHTLC.
@@ -1195,6 +1207,12 @@ export interface components {
              * @description Numeric EVM chain ID: 1 (Ethereum), 137 (Polygon), 42161 (Arbitrum).
              */
             evm_chain_id: number;
+            /**
+             * Format: int32
+             * @description Optional per-swap fee surcharge in basis points
+             *     (0..=max_extra_fee_bps configured on the matching developer key).
+             */
+            extra_fees?: number | null;
             /**
              * @description Whether the server should execute the DEX swap on behalf of the user (gasless claim).
              *     When true, the gasless network fee is added to the total fee charged.
@@ -1704,6 +1722,12 @@ export interface components {
              * @description Numeric EVM chain ID: 1 (Ethereum), 137 (Polygon), 42161 (Arbitrum).
              */
             evm_chain_id: number;
+            /**
+             * Format: int32
+             * @description Optional per-swap fee surcharge in basis points
+             *     (0..=max_extra_fee_bps configured on the matching developer key).
+             */
+            extra_fees?: number | null;
             /** @description Whether to use gasless relay for funding (server submits tx on behalf of user). */
             gasless?: boolean;
             /** @description Hash lock (0x-prefixed 32-byte hex). Client generates secret, computes SHA256(secret). */
@@ -1808,6 +1832,12 @@ export interface components {
              * @description Numeric EVM chain ID: 1 (Ethereum), 137 (Polygon), 42161 (Arbitrum).
              */
             evm_chain_id: number;
+            /**
+             * Format: int32
+             * @description Optional per-swap fee surcharge in basis points
+             *     (0..=max_extra_fee_bps configured on the matching developer key).
+             */
+            extra_fees?: number | null;
             /** @description Whether to use gasless relay for funding (server submits tx on behalf of user). */
             gasless?: boolean;
             /** @description Hash lock (0x-prefixed 32-byte hex). Client generates secret, computes SHA256(secret). */
@@ -1929,6 +1959,12 @@ export interface components {
              * @description Numeric EVM chain ID: 1 (Ethereum), 137 (Polygon), 42161 (Arbitrum).
              */
             evm_chain_id: number;
+            /**
+             * Format: int32
+             * @description Optional per-swap fee surcharge in basis points
+             *     (0..=max_extra_fee_bps configured on the matching developer key).
+             */
+            extra_fees?: number | null;
             /** @description Whether to use gasless relay for funding (server submits tx on behalf of user). */
             gasless?: boolean;
             /**
@@ -2199,6 +2235,13 @@ export interface components {
              */
             evm_chain_id: number;
             /**
+             * Format: int32
+             * @description Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps
+             *     configured on the matching developer key). Rejected with 400 if it
+             *     exceeds the per-key cap.
+             */
+            extra_fees?: number | null;
+            /**
              * @description Whether the server should execute the DEX swap on behalf of the user (gasless claim).
              *     When true, the gasless network fee is added to the total fee charged.
              *     Defaults to true.
@@ -2206,7 +2249,10 @@ export interface components {
             gasless?: boolean;
             /** @description Hash lock provided by the client (32-byte hex string with 0x prefix). */
             hash_lock: string;
-            /** @description Optional referral code for tracking. */
+            /**
+             * @description Optional referral code for tracking. Matches a developer's API key
+             *     (`referral_id` on `developer_api_keys`) and is persisted for attribution.
+             */
             referral_code?: string | null;
             /** @description Refund public key used to generate the Arkade VHTLC. */
             refund_pk: string;
@@ -3314,6 +3360,12 @@ export interface operations {
                 bridge_recipient_setup?: boolean;
                 /** @description Optional referral code for tracking. */
                 ref?: string | null;
+                /**
+                 * @description Optional per-swap fee surcharge in basis points
+                 *     (0..=max_extra_fee_bps configured on the matching developer key).
+                 *     Rejected with 400 if it exceeds the per-key cap.
+                 */
+                extra_fees?: number | null;
             };
             header?: never;
             path?: never;

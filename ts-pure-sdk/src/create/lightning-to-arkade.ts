@@ -60,6 +60,7 @@ export async function createLightningToArkadeSwap(
       sats_receive: options.satsReceive,
       target_arkade_address: options.targetAddress,
       referral_code: options.referralCode,
+      extra_fees: options.extraFees,
     };
 
     const { data, error } = await ctx.apiClient.POST("/swap/lightning/arkade", {

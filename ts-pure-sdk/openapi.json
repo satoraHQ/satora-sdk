@@ -829,6 +829,17 @@
             "schema": {
               "type": ["string", "null"]
             }
+          },
+          {
+            "name": "extra_fees",
+            "in": "query",
+            "description": "Optional per-swap fee surcharge in basis points\n(0..=max_extra_fee_bps configured on the matching developer key).\nRejected with 400 if it exceeds the per-key cap.",
+            "required": false,
+            "schema": {
+              "type": ["integer", "null"],
+              "format": "int32",
+              "minimum": 0
+            }
           }
         ],
         "responses": {
@@ -2066,6 +2077,12 @@
             "description": "Numeric EVM chain ID: 1 (Ethereum), 137 (Polygon), 42161 (Arbitrum).",
             "minimum": 0
           },
+          "extra_fees": {
+            "type": ["integer", "null"],
+            "format": "int32",
+            "description": "Optional per-swap fee surcharge in basis points\n(0..=max_extra_fee_bps configured on the matching developer key).",
+            "minimum": 0
+          },
           "gasless": {
             "type": "boolean",
             "description": "Whether the server should execute the DEX swap on behalf of the user (gasless claim).\nWhen true, the gasless network fee is added to the total fee charged.\nDefaults to true."
@@ -2454,6 +2471,12 @@
             "type": "string",
             "description": "User's claim public key for the Arkade VHTLC"
           },
+          "extra_fees": {
+            "type": ["integer", "null"],
+            "format": "int32",
+            "description": "Optional per-swap fee surcharge in basis points\n(0..=max_extra_fee_bps configured on the matching developer key).",
+            "minimum": 0
+          },
           "hash_lock": {
             "type": "string",
             "description": "Hash lock provided by the client (20-byte hex string, no 0x prefix).\nThe client generates a secret and computes HASH160(secret) = RIPEMD160(SHA256(secret)).\nThis hash is used for both the on-chain Bitcoin HTLC (OP_HASH160) and the Arkade VHTLC.\nClient will use the secret to claim the Arkade VHTLC later."
@@ -2526,6 +2549,12 @@
             "type": "integer",
             "format": "int64",
             "description": "Numeric EVM chain ID: 1 (Ethereum), 137 (Polygon), 42161 (Arbitrum).",
+            "minimum": 0
+          },
+          "extra_fees": {
+            "type": ["integer", "null"],
+            "format": "int32",
+            "description": "Optional per-swap fee surcharge in basis points\n(0..=max_extra_fee_bps configured on the matching developer key).",
             "minimum": 0
           },
           "gasless": {
@@ -3401,6 +3430,12 @@
             "description": "Numeric EVM chain ID: 1 (Ethereum), 137 (Polygon), 42161 (Arbitrum).",
             "minimum": 0
           },
+          "extra_fees": {
+            "type": ["integer", "null"],
+            "format": "int32",
+            "description": "Optional per-swap fee surcharge in basis points\n(0..=max_extra_fee_bps configured on the matching developer key).",
+            "minimum": 0
+          },
           "gasless": {
             "type": "boolean",
             "description": "Whether to use gasless relay for funding (server submits tx on behalf of user)."
@@ -3622,6 +3657,12 @@
             "description": "Numeric EVM chain ID: 1 (Ethereum), 137 (Polygon), 42161 (Arbitrum).",
             "minimum": 0
           },
+          "extra_fees": {
+            "type": ["integer", "null"],
+            "format": "int32",
+            "description": "Optional per-swap fee surcharge in basis points\n(0..=max_extra_fee_bps configured on the matching developer key).",
+            "minimum": 0
+          },
           "gasless": {
             "type": "boolean",
             "description": "Whether to use gasless relay for funding (server submits tx on behalf of user)."
@@ -3834,6 +3875,12 @@
             "type": "integer",
             "format": "int64",
             "description": "Numeric EVM chain ID: 1 (Ethereum), 137 (Polygon), 42161 (Arbitrum).",
+            "minimum": 0
+          },
+          "extra_fees": {
+            "type": ["integer", "null"],
+            "format": "int32",
+            "description": "Optional per-swap fee surcharge in basis points\n(0..=max_extra_fee_bps configured on the matching developer key).",
             "minimum": 0
           },
           "gasless": {
@@ -4484,6 +4531,12 @@
             "description": "Numeric EVM chain ID: 1 (Ethereum), 137 (Polygon), 42161 (Arbitrum).",
             "minimum": 0
           },
+          "extra_fees": {
+            "type": ["integer", "null"],
+            "format": "int32",
+            "description": "Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps\nconfigured on the matching developer key). Rejected with 400 if it\nexceeds the per-key cap.",
+            "minimum": 0
+          },
           "gasless": {
             "type": "boolean",
             "description": "Whether the server should execute the DEX swap on behalf of the user (gasless claim).\nWhen true, the gasless network fee is added to the total fee charged.\nDefaults to true."
@@ -4494,7 +4547,7 @@
           },
           "referral_code": {
             "type": ["string", "null"],
-            "description": "Optional referral code for tracking."
+            "description": "Optional referral code for tracking. Matches a developer's API key\n(`referral_id` on `developer_api_keys`) and is persisted for attribution."
           },
           "refund_pk": {
             "type": "string",

@@ -72,6 +72,7 @@ export async function createEvmToLightningSwapGeneric(
       lightning_invoice: lightningInvoice,
       lnurl: lnurl,
       referral_code: options.referralCode,
+      extra_fees: options.extraFees,
       token_address: options.tokenAddress,
       user_address: userAddress,
       user_id: userId,

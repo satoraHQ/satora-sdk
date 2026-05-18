@@ -483,8 +483,6 @@ const DEFAULT_ESPLORA_URLS: Record<string, string> = {
 export interface ClientConfig {
   /** The base URL of the Lendaswap API. */
   baseUrl: string;
-  /** Optional unique identifier for the organization using the SDK. */
-  orgCode?: string;
   /** Optional default headers to send with SDK API requests. */
   defaultHeaders?: Record<string, string>;
   /** Optional Esplora API URL for broadcasting Bitcoin transactions. */
@@ -533,7 +531,6 @@ export interface ClientConfig {
  */
 export class ClientBuilder {
   #baseUrl: string = DEFAULT_BASE_URL;
-  #orgCode?: string;
   #defaultHeaders?: Record<string, string>;
   #esploraUrl?: string;
   #arkadeServerUrl?: string;
@@ -552,16 +549,6 @@ export class ClientBuilder {
    */
   withBaseUrl(baseUrl: string): this {
     this.#baseUrl = baseUrl;
-    return this;
-  }
-
-  /**
-   * Sets the org code.
-   * @param orgCode - The identifier for the organization sending the request.
-   * @returns The builder instance for chaining.
-   */
-  withOrgCode(orgCode: string): this {
-    this.#orgCode = orgCode;
     return this;
   }
 
@@ -762,7 +749,6 @@ export class ClientBuilder {
     return new Client(
       {
         baseUrl: this.#baseUrl.replace(/\/+$/, ""),
-        orgCode: this.#orgCode,
         defaultHeaders: this.#defaultHeaders,
         esploraUrl: this.#esploraUrl?.replace(/\/+$/, ""),
         arkadeServerUrl: this.#arkadeServerUrl?.replace(/\/+$/, ""),
@@ -791,7 +777,6 @@ export class ClientBuilder {
  * ```ts
  * const client = await Client.builder()
  *   .withSignerStorage(new IdbWalletStorage())
- *   .withOrgCode("your-org-code")
  *   .build();
  *
  * // Get mnemonic (for backup)
@@ -827,7 +812,6 @@ export class Client {
     this.#config = config;
     this.#apiClient = createApiClient({
       baseUrl: config.baseUrl,
-      orgCode: config.orgCode,
       defaultHeaders: config.defaultHeaders,
     });
     this.#signer = signer;
@@ -1198,6 +1182,13 @@ export class Client {
     targetAmount?: number;
     referralCode?: string;
     /**
+     * Optional per-swap fee surcharge in basis points
+     * (0..=max_extra_fee_bps configured on the matching developer key).
+     * Must be passed identically here and on the corresponding createSwap
+     * so the quoted fee matches what's charged.
+     */
+    extraFees?: number;
+    /**
      * Optional ATA-existence hint for non-EVM CCTP destinations
      * (Solana). `true` = recipient has no USDC ATA yet, `false` =
      * recipient already holds USDC. Omit to let the backend fall back
@@ -1263,6 +1254,7 @@ export class Client {
       bridge_source_token_address: bridgeSourceTokenAddress,
       bridge_recipient_setup: params.bridgeRecipientSetup,
       ref: params.referralCode,
+      extra_fees: params.extraFees,
     };
     const { data, error } = await this.#apiClient.GET("/quote", {
       params: { query },
@@ -3914,6 +3906,7 @@ export class Client {
           ? BigInt(options.targetAmount)
           : undefined,
         referralCode: options.referralCode,
+        extraFees: options.extraFees,
         bridgeParams,
       });
     }
@@ -3927,6 +3920,7 @@ export class Client {
         amountIn: options.sourceAmount,
         amountOut: options.targetAmount,
         referralCode: options.referralCode,
+        extraFees: options.extraFees,
         bridgeParams,
       });
     }
@@ -3956,12 +3950,14 @@ export class Client {
             : { lnurl: options.targetAddress }),
           amountSats: options.targetAmount,
           referralCode: options.referralCode,
+          extraFees: options.extraFees,
         });
       }
 
       return this.createArkadeToLightningSwap({
         lightningInvoice: options.targetAddress,
         referralCode: options.referralCode,
+        extraFees: options.extraFees,
       });
     }
 
@@ -3976,6 +3972,7 @@ export class Client {
         satsReceive: options.targetAmount,
         targetAddress: options.targetAddress,
         referralCode: options.referralCode,
+        extraFees: options.extraFees,
       });
     }
 
@@ -3988,6 +3985,7 @@ export class Client {
         sourceAmount: options.sourceAmount,
         targetAmount: options.targetAmount,
         referralCode: options.referralCode,
+        extraFees: options.extraFees,
         bridgeParams,
       });
     }
@@ -4003,6 +4001,7 @@ export class Client {
         satsReceive: options.targetAmount,
         targetAddress: options.targetAddress,
         referralCode: options.referralCode,
+        extraFees: options.extraFees,
       });
     }
 
@@ -4023,6 +4022,7 @@ export class Client {
           : undefined,
         targetAmount: options.targetAmount,
         referralCode: options.referralCode,
+        extraFees: options.extraFees,
         gasless: options.gasless,
         inboundBridgeParams,
       });
@@ -4045,6 +4045,7 @@ export class Client {
           : undefined,
         targetAmount: options.targetAmount,
         referralCode: options.referralCode,
+        extraFees: options.extraFees,
         gasless: options.gasless,
         inboundBridgeParams,
       });
@@ -4084,6 +4085,7 @@ export class Client {
           tokenAddress: sourceTokenId,
           userAddress: options.userAddress ?? "",
           referralCode: options.referralCode,
+          extraFees: options.extraFees,
           gasless: options.gasless,
           inboundBridgeParams,
         });
@@ -4097,6 +4099,7 @@ export class Client {
         return this.createLightningToArkadeSwap({
           targetAddress: options.targetAddress,
           referralCode: options.referralCode,
+          extraFees: options.extraFees,
           satsReceive: options.targetAmount,
         });
       }
@@ -4107,6 +4110,7 @@ export class Client {
         tokenAddress: sourceTokenId,
         userAddress: options.userAddress ?? "",
         referralCode: options.referralCode,
+        extraFees: options.extraFees,
         gasless: options.gasless,
         inboundBridgeParams,
       });
@@ -4658,12 +4662,8 @@ export class Client {
     // 2. Fetch Permit2 funding data from server
     const baseUrl = this.#config.baseUrl.replace(/\/$/, "");
     const url = `${baseUrl}/swap/${swapId}/swap-and-lock-calldata-permit2`;
-    const headers: Record<string, string> = {};
-    if (this.#config.orgCode) {
-      headers["X-Org-Code"] = this.#config.orgCode;
-    }
 
-    const resp = await fetch(url, { headers });
+    const resp = await fetch(url);
     if (!resp.ok) {
       const body = await resp.text();
       throw new Error(
@@ -4832,12 +4832,8 @@ export class Client {
     // Fetch Permit2 funding data from server
     const baseUrl = this.#config.baseUrl.replace(/\/$/, "");
     const url = `${baseUrl}/swap/${swapId}/swap-and-lock-calldata-permit2`;
-    const headers: Record<string, string> = {};
-    if (this.#config.orgCode) {
-      headers["X-Org-Code"] = this.#config.orgCode;
-    }
 
-    const resp = await fetch(url, { headers });
+    const resp = await fetch(url);
     if (!resp.ok) {
       const body = await resp.text();
       throw new Error(
@@ -5282,12 +5278,8 @@ export class Client {
     // 2. Fetch Permit2 funding data (includes fee transfer in calls + EIP-2612 data)
     const baseUrl = this.#config.baseUrl.replace(/\/$/, "");
     const url = `${baseUrl}/swap/${swapId}/swap-and-lock-calldata-permit2`;
-    const headers: Record<string, string> = {};
-    if (this.#config.orgCode) {
-      headers["X-Org-Code"] = this.#config.orgCode;
-    }
 
-    const resp = await fetch(url, { headers });
+    const resp = await fetch(url);
     if (!resp.ok) {
       const body = await resp.text();
       throw new Error(
@@ -5394,7 +5386,6 @@ export class Client {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...headers,
       },
       body: JSON.stringify({
         permit2_nonce: nonce.toString(),

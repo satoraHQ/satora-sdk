@@ -12,15 +12,6 @@ describe("API Client", () => {
     expect(client.POST).toBeDefined();
   });
 
-  it("should create a client with org code", () => {
-    const client = createApiClient({
-      baseUrl: "https://api.lendaswap.com",
-      orgCode: "test-org-code",
-    });
-
-    expect(client).toBeDefined();
-  });
-
   it("should create a client with default headers", () => {
     const client = createApiClient({
       baseUrl: "https://api.lendaswap.com",

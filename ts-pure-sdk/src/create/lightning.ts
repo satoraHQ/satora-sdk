@@ -47,6 +47,7 @@ export async function createLightningToEvmSwapGeneric(
       amount_in: options.amountIn,
       amount_out: options.amountOut,
       referral_code: options.referralCode,
+      extra_fees: options.extraFees,
       gasless: options.gasless ?? true,
       bridge_target_chain: options.bridgeParams?.targetChain,
       bridge_target_token_address: options.bridgeParams?.targetTokenAddress,

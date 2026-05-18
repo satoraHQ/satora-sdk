@@ -52,6 +52,7 @@ export async function createArkadeToLightningSwap(
     refund_pk: publicKey,
     user_id: userId,
     referral_code: options.referralCode,
+    extra_fees: options.extraFees,
   };
 
   if (options.lightningInvoice) {

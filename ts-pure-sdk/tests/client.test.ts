@@ -111,16 +111,9 @@ describe("ClientBuilder", () => {
     expect(client.baseUrl).toBe("https://custom.api.com");
   });
 
-  it("should build a client with org code", async () => {
-    const client = await Client.builder().withOrgCode("test-org-code").build();
-
-    expect(client).toBeDefined();
-  });
-
   it("should support method chaining", async () => {
     const client = await Client.builder()
       .withBaseUrl("https://custom.api.com")
-      .withOrgCode("test-org-code")
       .withDefaultHeaders({ "X-Client-Id": "test-client-id" })
       .build();
 

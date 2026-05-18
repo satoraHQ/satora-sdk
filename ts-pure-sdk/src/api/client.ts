@@ -71,7 +71,6 @@ export type SwapPairsResponse = components["schemas"]["SwapPairsResponse"];
 
 export interface ApiClientOptions {
   baseUrl: string;
-  orgCode?: string;
   defaultHeaders?: Record<string, string>;
 }
 
@@ -80,9 +79,6 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     "X-Lendaswap-Client": CLIENT_AGENT,
     ...(options.defaultHeaders ?? {}),
   };
-  if (options.orgCode) {
-    headers["X-Org-Code"] = options.orgCode;
-  }
 
   return createClient<paths>({
     baseUrl: options.baseUrl,

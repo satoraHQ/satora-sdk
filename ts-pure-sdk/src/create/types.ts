@@ -73,6 +73,8 @@ export interface BtcToEvmSwapOptions {
   targetAmount?: number;
   /** Optional referral code for fee exemption */
   referralCode?: string;
+  /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
+  extraFees?: number;
 }
 
 /** Options for creating a Bitcoin (on-chain) to EVM swap via the generic endpoint */
@@ -89,6 +91,8 @@ export interface BitcoinToEvmSwapOptions {
   targetAmount?: number;
   /** Optional referral code for fee exemption */
   referralCode?: string;
+  /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
+  extraFees?: number;
   /** Whether the server should execute the DEX swap on behalf of the user (gasless claim). Defaults to true. */
   gasless?: boolean;
   /** Optional: when set, USDC is bridged via CCTP to the destination chain after the DEX swap. */
@@ -114,6 +118,8 @@ export interface BitcoinToArkadeSwapOptions {
   targetAddress: string;
   /** Optional referral code for fee exemption */
   referralCode?: string;
+  /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
+  extraFees?: number;
 }
 
 /** Result of creating a Bitcoin (on-chain) to Arkade swap */
@@ -138,6 +144,8 @@ export interface EvmToArkadeSwapOptions {
   userAddress: string;
   /** Optional referral code for fee exemption */
   referralCode?: string;
+  /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
+  extraFees?: number;
 }
 
 /** Result of creating an EVM to Arkade swap */
@@ -160,6 +168,8 @@ export interface EvmToLightningSwapOptions {
   userAddress: string;
   /** Optional referral code for fee exemption */
   referralCode?: string;
+  /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
+  extraFees?: number;
 }
 
 /** Options for creating a Lightning-to-EVM swap via the generic endpoint */
@@ -176,6 +186,8 @@ export interface LightningToEvmSwapGenericOptions {
   amountOut?: number;
   /** Optional referral code */
   referralCode?: string;
+  /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
+  extraFees?: number;
   /** Whether the server should execute the DEX swap on behalf of the user (gasless claim). Defaults to true. */
   gasless?: boolean;
   /** Optional: when set, USDC is bridged via CCTP to the destination chain after the DEX swap. */
@@ -211,6 +223,8 @@ export interface EvmToLightningSwapGenericOptions {
   userAddress: string;
   /** Optional referral code */
   referralCode?: string;
+  /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
+  extraFees?: number;
   /** Use gasless relay. When true, userAddress is auto-derived from the swap's secretKey. */
   gasless?: boolean;
   /** Optional: when set, source USDC originates on another CCTP chain and hops to Arbitrum via CCTPv2. */
@@ -241,6 +255,8 @@ export interface EvmToArkadeSwapGenericOptions {
   targetAmount?: number;
   /** Optional referral code */
   referralCode?: string;
+  /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
+  extraFees?: number;
   /** Use gasless relay. When true, userAddress is auto-derived from the swap's secretKey. */
   gasless?: boolean;
   /** Optional: when set, source USDC originates on another CCTP chain and hops to Arbitrum via CCTPv2. */
@@ -271,6 +287,8 @@ export interface EvmToBitcoinSwapOptions {
   targetAmount?: number;
   /** Optional referral code */
   referralCode?: string;
+  /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
+  extraFees?: number;
   /** Use gasless relay. When true, userAddress is auto-derived from the swap's secretKey. */
   gasless?: boolean;
   /** Optional: when set, source USDC originates on another CCTP chain and hops to Arbitrum via CCTPv2. */
@@ -302,6 +320,8 @@ export interface ArkadeToEvmSwapOptions {
   targetAmount?: bigint;
   /** Optional referral code */
   referralCode?: string;
+  /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
+  extraFees?: number;
   /** Whether the server should execute the DEX swap on behalf of the user (gasless claim). Defaults to true. */
   gasless?: boolean;
   /** Optional: when set, USDC is bridged via CCTP to the destination chain after the DEX swap. */
@@ -357,6 +377,8 @@ export interface CreateSwapOptions {
   /** EVM address of the user (required for EVM→* swaps) */
   userAddress?: string;
   referralCode?: string;
+  /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
+  extraFees?: number;
   /** Whether to use gasless relay for EVM funding (no wallet needed). When true, the SDK-derived EVM address is used as the depositor. */
   gasless?: boolean;
   /** Optional: when set, USDC is bridged via CCTP to the destination chain after the DEX swap. */
@@ -381,6 +403,8 @@ export interface LightningToArkadeSwapOptions {
   targetAddress: string;
   /** Optional referral code for fee exemption */
   referralCode?: string;
+  /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
+  extraFees?: number;
 }
 
 /** Result of creating a Lightning-to-Arkade swap */
@@ -406,6 +430,8 @@ export interface ArkadeToLightningSwapOptions {
   amountSats?: number;
   /** Optional referral code for fee tracking */
   referralCode?: string;
+  /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
+  extraFees?: number;
 }
 
 /** Result of creating an Arkade-to-Lightning swap */
