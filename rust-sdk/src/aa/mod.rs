@@ -20,4 +20,8 @@
 //! ZeroDev Kernel `v3.3` git tag.
 
 pub mod abi;
+pub mod bundler;
+pub mod kernel;
+pub mod paymaster;
+pub mod permit2;
 pub mod userop;
