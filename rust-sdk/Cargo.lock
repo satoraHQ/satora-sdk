@@ -2547,6 +2547,7 @@ name = "lendaswap-sdk"
 version = "0.0.1"
 dependencies = [
  "alloy",
+ "alloy-provider",
  "bip39",
  "bitcoin",
  "hex",

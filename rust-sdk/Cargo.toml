@@ -18,7 +18,7 @@ crate-type = ["rlib"]
 # to a ZeroDev Kernel V3.3 implementation. Off by default: pulls in alloy,
 # so the base SDK (quote, create_swap) stays lean and the FFI / dotnet
 # layer can opt out.
-gasless = ["dep:alloy"]
+gasless = ["dep:alloy", "dep:alloy-provider"]
 
 [dependencies]
 # Crypto: HD wallet derivation, secp256k1, hashes.
@@ -36,9 +36,14 @@ tracing = "0.1"
 url = "2"
 
 # Account-abstraction (`gasless` feature only). `sol-types` for the `sol!`
-# ABI blocks, `rpc-types` for the ERC-4337 `PackedUserOperation` wire type.
-# Provider / signer features land in a later phase.
-alloy = { version = "1", optional = true, features = ["sol-types", "rpc-types"] }
+# ABI blocks, `rpc-types` for the ERC-4337 `PackedUserOperation` wire type,
+# `providers` + `transport-http` for the bundler RPC. `alloy-provider` is
+# pulled in directly *with* the `erc4337-api` feature because the umbrella
+# `alloy` crate doesn't re-export that feature (it gates the `Erc4337Api`
+# extension trait — `eth_sendUserOperation` / `estimate_user_operation_gas`
+# / `get_user_operation_receipt`).
+alloy = { version = "1", optional = true, features = ["sol-types", "rpc-types", "providers", "transport-http"] }
+alloy-provider = { version = "1", optional = true, features = ["erc4337-api"] }
 
 [dev-dependencies]
 jsonschema = { version = "0.46.4", default-features = false }
