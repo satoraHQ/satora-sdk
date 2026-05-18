@@ -64,16 +64,16 @@ fn is_preimage_collision(err: &Error) -> bool {
 
 #[derive(Clone)]
 pub struct Client {
-    http: reqwest::Client,
-    base_url: Url,
+    pub(crate) http: reqwest::Client,
+    pub(crate) base_url: Url,
     /// Optional: only required by [`Self::create_swap`]. Constructors that
     /// don't set it leave this `None`, and `create_swap` returns
     /// [`Error::InvalidSigner`].
-    signer: Option<Signer>,
-    storage: Arc<dyn SwapStorage>,
+    pub(crate) signer: Option<Signer>,
+    pub(crate) storage: Arc<dyn SwapStorage>,
     /// Optional referral code attached to every swap this client creates.
     /// Set via [`ClientBuilder::referral_code`].
-    referral_code: Option<String>,
+    pub(crate) referral_code: Option<String>,
 }
 
 impl std::fmt::Debug for Client {

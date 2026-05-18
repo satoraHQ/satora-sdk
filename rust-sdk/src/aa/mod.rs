@@ -21,7 +21,13 @@
 
 pub mod abi;
 pub mod bundler;
+pub mod client_ext;
 pub mod kernel;
+pub mod orchestrate;
 pub mod paymaster;
 pub mod permit2;
+pub mod signing;
 pub mod userop;
+
+pub use client_ext::AaConfig;
+pub use orchestrate::FundSwapReceipt;

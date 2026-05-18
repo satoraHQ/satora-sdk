@@ -18,7 +18,7 @@ crate-type = ["rlib"]
 # to a ZeroDev Kernel V3.3 implementation. Off by default: pulls in alloy,
 # so the base SDK (quote, create_swap) stays lean and the FFI / dotnet
 # layer can opt out.
-gasless = ["dep:alloy", "dep:alloy-provider"]
+gasless = ["dep:alloy", "dep:alloy-provider", "dep:rand", "dep:tokio"]
 
 [dependencies]
 # Crypto: HD wallet derivation, secp256k1, hashes.
@@ -42,8 +42,13 @@ url = "2"
 # `alloy` crate doesn't re-export that feature (it gates the `Erc4337Api`
 # extension trait — `eth_sendUserOperation` / `estimate_user_operation_gas`
 # / `get_user_operation_receipt`).
-alloy = { version = "1", optional = true, features = ["sol-types", "rpc-types", "providers", "transport-http"] }
+alloy = { version = "1", optional = true, features = ["sol-types", "rpc-types", "providers", "transport-http", "signer-local"] }
 alloy-provider = { version = "1", optional = true, features = ["erc4337-api"] }
+# `rand` for Permit2 nonce generation, `tokio` for the receipt-poll
+# sleep. The base SDK already pulls in reqwest's async machinery; the
+# orchestration just needs the runtime's timer.
+rand = { version = "0.8", optional = true }
+tokio = { version = "1", optional = true, features = ["time"] }
 
 [dev-dependencies]
 jsonschema = { version = "0.46.4", default-features = false }
