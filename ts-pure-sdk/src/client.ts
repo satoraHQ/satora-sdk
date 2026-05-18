@@ -483,6 +483,13 @@ const DEFAULT_ESPLORA_URLS: Record<string, string> = {
 export interface ClientConfig {
   /** The base URL of the Lendaswap API. */
   baseUrl: string;
+  /**
+   * Optional default referral code (`referral_id` on the swap backend).
+   * If set, every `createSwap` / `getQuote` call that doesn't pass its
+   * own `referralCode` will use this value. Useful for SDK consumers
+   * that always attribute swaps to the same developer key.
+   */
+  referralCode?: string;
   /** Optional default headers to send with SDK API requests. */
   defaultHeaders?: Record<string, string>;
   /** Optional Esplora API URL for broadcasting Bitcoin transactions. */
@@ -531,6 +538,7 @@ export interface ClientConfig {
  */
 export class ClientBuilder {
   #baseUrl: string = DEFAULT_BASE_URL;
+  #referralCode?: string;
   #defaultHeaders?: Record<string, string>;
   #esploraUrl?: string;
   #arkadeServerUrl?: string;
@@ -550,6 +558,26 @@ export class ClientBuilder {
   withBaseUrl(baseUrl: string): this {
     this.#baseUrl = baseUrl;
     return this;
+  }
+
+  /**
+   * Sets a default referral code for every `createSwap` / `getQuote`
+   * call. Per-call `referralCode` always wins.
+   * @returns The builder instance for chaining.
+   */
+  withReferralCode(referralCode: string): this {
+    this.#referralCode = referralCode;
+    return this;
+  }
+
+  /**
+   * @deprecated Use {@link withReferralCode}. Kept as a backwards-compat
+   * alias for SDK consumers that haven't migrated from the old
+   * `X-Org-Code` model — both sides flow through the same per-call
+   * `referral_code` plumbing now.
+   */
+  withOrgCode(orgCode: string): this {
+    return this.withReferralCode(orgCode);
   }
 
   /**
@@ -749,6 +777,7 @@ export class ClientBuilder {
     return new Client(
       {
         baseUrl: this.#baseUrl.replace(/\/+$/, ""),
+        referralCode: this.#referralCode,
         defaultHeaders: this.#defaultHeaders,
         esploraUrl: this.#esploraUrl?.replace(/\/+$/, ""),
         arkadeServerUrl: this.#arkadeServerUrl?.replace(/\/+$/, ""),
@@ -1253,7 +1282,9 @@ export class Client {
       bridge_source_chain: bridgeSourceChain,
       bridge_source_token_address: bridgeSourceTokenAddress,
       bridge_recipient_setup: params.bridgeRecipientSetup,
-      ref: params.referralCode,
+      // Per-call referralCode wins; fall back to the client config default
+      // (set via withReferralCode / withOrgCode).
+      ref: params.referralCode ?? this.#config.referralCode,
       extra_fees: params.extraFees,
     };
     const { data, error } = await this.#apiClient.GET("/quote", {
@@ -3807,6 +3838,14 @@ export class Client {
    * @throws Error if the swap direction is unsupported or required fields are missing.
    */
   async createSwap(options: CreateSwapOptions): Promise<CreateSwapResult> {
+    // Apply config-level referralCode (set via withReferralCode /
+    // withOrgCode) as a fallback when the caller didn't pass one. Per-call
+    // value always wins.
+    options = {
+      ...options,
+      referralCode: options.referralCode ?? this.#config.referralCode,
+    };
+
     // Resolve source/target from either the new Asset form or the legacy TokenInfo form
     const src = options.source ?? options.sourceAsset;
     const tgt = options.target ?? options.targetAsset;
