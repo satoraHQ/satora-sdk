@@ -11,6 +11,11 @@ pub mod signer;
 pub mod storage;
 pub mod types;
 
+// Account-abstraction: gasless EVM funding via ERC-4337 + EIP-7702.
+// Feature-gated so the base SDK doesn't pull in alloy.
+#[cfg(feature = "gasless")]
+pub mod aa;
+
 // Internal-only: wire-format structs that public types route through via
 // `#[serde(into = …)] / from = …`. Crate-private so downstream callers can
 // never accidentally depend on them.
