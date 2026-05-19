@@ -757,6 +757,10 @@ static class _UniFFILib {
     
     
     
+    
+    
+    
+    
 
     static _UniFFILib() {
         _UniFFILib.uniffiCheckContractApiVersion();
@@ -789,11 +793,19 @@ static class _UniFFILib {
     );
 
     [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_get_swap(IntPtr @ptr,RustBuffer @swapId,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern RustBuffer uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_quote(IntPtr @ptr,RustBuffer @sourceChain,RustBuffer @sourceToken,RustBuffer @targetChain,RustBuffer @targetToken,RustBuffer @amount,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern RustBuffer uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_version(IntPtr @ptr,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_wait_for_swap_status(IntPtr @ptr,RustBuffer @swapId,RustBuffer @targets,ulong @timeoutSeconds,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -1029,11 +1041,19 @@ static class _UniFFILib {
     );
 
     [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_get_swap(
+    );
+
+    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern ushort uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_quote(
     );
 
     [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern ushort uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_version(
+    );
+
+    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_wait_for_swap_status(
     );
 
     [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -1071,6 +1091,12 @@ static class _UniFFILib {
             }
         }
         {
+            var checksum = _UniFFILib.uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_get_swap();
+            if (checksum != 36569) {
+                throw new UniffiContractChecksumException($"uniffi.lendaswap_sdk_ffi: uniffi bindings expected function `uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_get_swap` checksum `36569`, library returned `{checksum}`");
+            }
+        }
+        {
             var checksum = _UniFFILib.uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_quote();
             if (checksum != 9034) {
                 throw new UniffiContractChecksumException($"uniffi.lendaswap_sdk_ffi: uniffi bindings expected function `uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_quote` checksum `9034`, library returned `{checksum}`");
@@ -1080,6 +1106,12 @@ static class _UniFFILib {
             var checksum = _UniFFILib.uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_version();
             if (checksum != 37555) {
                 throw new UniffiContractChecksumException($"uniffi.lendaswap_sdk_ffi: uniffi bindings expected function `uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_version` checksum `37555`, library returned `{checksum}`");
+            }
+        }
+        {
+            var checksum = _UniFFILib.uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_wait_for_swap_status();
+            if (checksum != 58005) {
+                throw new UniffiContractChecksumException($"uniffi.lendaswap_sdk_ffi: uniffi bindings expected function `uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_wait_for_swap_status` checksum `58005`, library returned `{checksum}`");
             }
         }
         {
@@ -1272,6 +1304,13 @@ public interface ILendaswapClient {
     /// <exception cref="SdkException"></exception>
     FundSwapReceipt FundSwapGasless(string @swapId, AaConfig @aaConfig);
     /// <summary>
+    /// `GET /swap/{id}` — fetch a swap's current state. Returns the
+    /// same `Swap` shape `create_swap` does, so callers can re-read
+    /// after the backend transitions states (e.g. ServerFunded).
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    Swap GetSwap(string @swapId);
+    /// <summary>
     /// Fetch a swap quote. Chain / token / amount are typed enums;
     /// the "exactly one of source/target" invariant is enforced by
     /// the `QuoteAmount` discriminator instead of runtime validation.
@@ -1285,6 +1324,18 @@ public interface ILendaswapClient {
     /// </summary>
     /// <exception cref="SdkException"></exception>
     Version Version();
+    /// <summary>
+    /// Poll `GET /swap/{id}` until the status matches one of `targets`
+    /// or `timeout_seconds` elapses (returns `SdkError::Internal` with
+    /// the SDK's `Error::Timeout` message in that case). 3s poll
+    /// interval, fixed inside the SDK.
+    ///
+    /// `timeout_seconds: u64` because uniffi's `Duration` support is
+    /// patchy across foreign bindgens; seconds is precise enough for
+    /// swap-status polling (sub-second timeouts make no sense here).
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    SwapStatus WaitForSwapStatus(string @swapId, SwapStatus[] @targets, ulong @timeoutSeconds);
 }
 /// <summary>
 /// Stateful FFI client — wraps one `lendaswap_sdk::Client` for its
@@ -1442,6 +1493,20 @@ public class LendaswapClient : ILendaswapClient, IDisposable {
     
     
     /// <summary>
+    /// `GET /swap/{id}` — fetch a swap's current state. Returns the
+    /// same `Swap` shape `create_swap` does, so callers can re-read
+    /// after the backend transitions states (e.g. ServerFunded).
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public Swap GetSwap(string @swapId) {
+        return CallWithPointer(thisPtr => FfiConverterTypeSwap.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_get_swap(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), ref _status)
+)));
+    }
+    
+    
+    /// <summary>
     /// Fetch a swap quote. Chain / token / amount are typed enums;
     /// the "exactly one of source/target" invariant is enforced by
     /// the `QuoteAmount` discriminator instead of runtime validation.
@@ -1465,6 +1530,25 @@ public class LendaswapClient : ILendaswapClient, IDisposable {
         return CallWithPointer(thisPtr => FfiConverterTypeVersion.INSTANCE.Lift(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
     _UniFFILib.uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_version(thisPtr,  ref _status)
+)));
+    }
+    
+    
+    /// <summary>
+    /// Poll `GET /swap/{id}` until the status matches one of `targets`
+    /// or `timeout_seconds` elapses (returns `SdkError::Internal` with
+    /// the SDK's `Error::Timeout` message in that case). 3s poll
+    /// interval, fixed inside the SDK.
+    ///
+    /// `timeout_seconds: u64` because uniffi's `Duration` support is
+    /// patchy across foreign bindgens; seconds is precise enough for
+    /// swap-status polling (sub-second timeouts make no sense here).
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public SwapStatus WaitForSwapStatus(string @swapId, SwapStatus[] @targets, ulong @timeoutSeconds) {
+        return CallWithPointer(thisPtr => FfiConverterTypeSwapStatus.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_wait_for_swap_status(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterSequenceTypeSwapStatus.INSTANCE.Lower(@targets), FfiConverterUInt64.INSTANCE.Lower(@timeoutSeconds), ref _status)
 )));
     }
     
@@ -2812,6 +2896,52 @@ class FfiConverterOptionalTypePaymasterConfig: FfiConverterRustBuffer<PaymasterC
             stream.WriteByte(1);
             FfiConverterTypePaymasterConfig.INSTANCE.Write((PaymasterConfig)value, stream);
         }
+    }
+}
+
+
+
+
+class FfiConverterSequenceTypeSwapStatus: FfiConverterRustBuffer<SwapStatus[]> {
+    public static FfiConverterSequenceTypeSwapStatus INSTANCE = new FfiConverterSequenceTypeSwapStatus();
+
+    public override SwapStatus[]  Read(BigEndianStream stream) {
+        var length = stream.ReadInt();
+        if (length == 0) {
+            return [];
+        }
+
+        var result = new SwapStatus[(length)];
+        var readFn = FfiConverterTypeSwapStatus.INSTANCE.Read;
+        for (int i = 0; i < length; i++) {
+            result[i] = readFn(stream);
+        }
+        return result;
+    }
+
+    public override int AllocationSize(SwapStatus[]  value) {
+        var sizeForLength = 4;
+
+        // details/1-empty-list-as-default-method-parameter.md
+        if (value == null) {
+            return sizeForLength;
+        }
+
+        var allocationSizeFn = FfiConverterTypeSwapStatus.INSTANCE.AllocationSize;
+        var sizeForItems = value.Sum(item => allocationSizeFn(item));
+        return sizeForLength + sizeForItems;
+    }
+
+    public override void Write(SwapStatus[] value, BigEndianStream stream) {
+        // details/1-empty-list-as-default-method-parameter.md
+        if (value == null) {
+            stream.WriteInt(0);
+            return;
+        }
+
+        stream.WriteInt(value.Length);
+        var writerFn = FfiConverterTypeSwapStatus.INSTANCE.Write;
+        value.ForEach(item => writerFn(item, stream));
     }
 }
 #pragma warning restore 8625

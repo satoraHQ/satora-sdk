@@ -307,4 +307,47 @@ public sealed class Client : IDisposable
             () => TryOrThrow(() => FundReceipt.FromFfi(ffi.FundSwapGasless(swapId, aaConfig))),
             cancellationToken);
     }
+
+    /// <summary>
+    /// Fetch a swap's current state. Works on any client (signing or
+    /// read-only). Returns the same shape <see cref="CreateSwapAsync"/>
+    /// does, so callers can re-read after the backend transitions
+    /// states (e.g. ServerFunded).
+    /// </summary>
+    public Task<SwapDetails> GetSwapAsync(string swapId, CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        return Task.Run(
+            () => TryOrThrow(() => SwapDetails.FromFfi(ffi.GetSwap(swapId))),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Poll <c>GET /swap/{id}</c> until the backend reaches one of
+    /// <paramref name="targets"/> or <paramref name="timeout"/> elapses
+    /// (in which case the SDK throws <see cref="SdkException"/> with
+    /// its internal `Error::Timeout` message). 3s poll interval is
+    /// hard-coded on the Rust side.
+    /// </summary>
+    /// <param name="swapId">UUID of a previously-created swap.</param>
+    /// <param name="targets">Accept-states. A typical post-funding wait is
+    /// <c>[SwapStatus.ServerFunded, SwapStatus.ClientRedeemed, SwapStatus.ServerRedeemed]</c>
+    /// — three accept-states cover the case where the swap raced past
+    /// ServerFunded between polls.</param>
+    /// <param name="timeout">Total wait budget. The SDK accepts seconds; we round up.</param>
+    public Task<SwapStatus> WaitForSwapStatusAsync(
+        string swapId,
+        IEnumerable<SwapStatus> targets,
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        // The generated Vec<SwapStatus> binding takes an array, not a List.
+        var targetArray = targets.ToArray();
+        // Round up so callers asking for 30.5s don't get cut to 30s.
+        var seconds = (ulong)Math.Ceiling(timeout.TotalSeconds);
+        return Task.Run(
+            () => TryOrThrow(() => ffi.WaitForSwapStatus(swapId, targetArray, seconds)),
+            cancellationToken);
+    }
 }
