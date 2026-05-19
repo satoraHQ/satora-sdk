@@ -141,16 +141,18 @@ impl Client {
             .join(&format!("/swap/{swap_id}/swap-and-lock-calldata-userop"))?;
         let resp = self.http.get(url).send().await?;
         let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
             return Err(Error::Api {
                 status: status.as_u16(),
                 message: body,
             });
         }
-        resp.json::<UseropFundingCalldataResponse>()
-            .await
-            .map_err(|e| Error::Decode(format!("userop calldata response: {e}")))
+        // Read the body as text first so a decode error can include the
+        // raw JSON in the message — `resp.json::<T>()` swallows that
+        // context and you end up debugging blind.
+        serde_json::from_str::<UseropFundingCalldataResponse>(&body)
+            .map_err(|e| Error::Decode(format!("userop calldata response: {e} (body: {body})")))
     }
 }
 
@@ -162,7 +164,10 @@ struct UseropFundingCalldataResponse {
     #[allow(dead_code)] // surfaced for callers but not consumed by orchestrate.
     permit2_address: String,
     source_token_address: String,
-    source_amount: u64,
+    /// Decimal string — the backend serialises u64 amounts via
+    /// `serde_string` so they round-trip cleanly through JS clients
+    /// that can't represent the full uint64 range as a Number.
+    source_amount: String,
     lock_token_address: String,
     preimage_hash: String,
     claim_address: String,
@@ -209,7 +214,7 @@ fn build_fund_swap_inputs(
     Ok(FundSwapInputs {
         coordinator_address: parse_address(&backend.coordinator_address, "coordinator_address")?,
         source_token_address: parse_address(&backend.source_token_address, "source_token_address")?,
-        source_amount: U256::from(backend.source_amount),
+        source_amount: parse_u256_dec(&backend.source_amount, "source_amount")?,
         lock_token_address: parse_address(&backend.lock_token_address, "lock_token_address")?,
         preimage_hash: parse_b256(&backend.preimage_hash, "preimage_hash")?,
         claim_address: parse_address(&backend.claim_address, "claim_address")?,

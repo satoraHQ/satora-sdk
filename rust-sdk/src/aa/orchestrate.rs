@@ -64,19 +64,26 @@ use rand::RngCore;
 use rand::rngs::OsRng;
 use serde_json::Value;
 use std::time::Duration;
+use tracing::info;
 
-/// Stub `signature` placeholder for gas-estimation passes — the
-/// bundler simulates against bytes of the right shape; the real
-/// signature replaces it before [`BundlerClient::send_user_operation`].
+/// Stub `signature` placeholder for gas-estimation passes — matches
+/// ZeroDev's `DUMMY_ECDSA_SIG` exactly (see `@zerodev/sdk/constants.ts`).
+///
+/// The layout matters: `s` must start with `0x7a` (< `0x7f`) so it
+/// sits below `secp256k1n/2` ("low-s"). A high-s stub makes Solady's
+/// `ECDSA.recover` revert with `InvalidSignature()` (`0x8baa579f`)
+/// during validateUserOp simulation, manifesting as `AA23 reverted`
+/// from the bundler. Low-s lets recover return *some* (wrong) address,
+/// the validator returns `SIG_VALIDATION_FAILED`, and the bundler
+/// proceeds with gas estimation as expected.
 const STUB_USEROP_SIGNATURE: [u8; 65] = [
-    // 15 × 0xff + 0xf0 (16 bytes)
+    // r (32 bytes): 15 × 0xff + 0xf0 + 16 × 0x00
     0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xf0,
-    // 15 × 0x00 + 0x07 (16 bytes)
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07,
-    // 32 × 0xaa
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // s (32 bytes): 0x7a + 31 × 0xaa  — low-s, see comment above
+    0x7a, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa,
     0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa,
-    0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa,
-    // v = 0x1c
+    // v = 0x1c (28)
     0x1c,
 ];
 
@@ -90,11 +97,14 @@ const MIN_PRIORITY_FEE_WEI: u128 = 1_000_000;
 /// for this long after construction. 30 minutes matches the TS SDK.
 const PERMIT2_DEADLINE_HORIZON: Duration = Duration::from_secs(30 * 60);
 
-/// Polling interval + cap for `eth_getUserOperationReceipt`. The userOp
-/// usually lands within seconds; polling for ~3 minutes total
-/// generously covers a slow Arbitrum block.
-const RECEIPT_POLL_INTERVAL: Duration = Duration::from_secs(3);
-const RECEIPT_POLL_ATTEMPTS: u32 = 60;
+/// Polling interval + cap for `eth_getUserOperationReceipt`. Tuned for
+/// real-chain block times (Arbitrum ~250ms, Polygon ~2s, Anvil 1s) —
+/// 1s × 30 = 30s total is more than enough for the userOp to land on
+/// any chain we target. Bundler/network issues that take longer than
+/// this would have surfaced as RPC errors during gas estimation or
+/// submission first.
+const RECEIPT_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const RECEIPT_POLL_ATTEMPTS: u32 = 30;
 
 /// Everything `fund_swap` needs from the backend's
 /// `/swap/{id}/swap-and-lock-calldata-userop` response, plus the
@@ -165,6 +175,15 @@ pub async fn fund_swap(
     inputs: FundSwapInputs,
     clients: FundSwapClients<'_>,
 ) -> Result<FundSwapReceipt> {
+    info!(
+        eoa = %inputs.eoa_address,
+        chain_id = inputs.chain_id,
+        entry_point = %inputs.entry_point,
+        delegation_target = %inputs.delegation_target,
+        has_paymaster = clients.paymaster.is_some(),
+        "fund_swap: starting"
+    );
+
     // 1. Permit2 witness signature.
     let (permit2_nonce, permit2_deadline) = generate_permit2_nonce_and_deadline();
     let permit2_witness_digest = permit2_digest(
@@ -197,14 +216,18 @@ pub async fn fund_swap(
     let call_data = kernel::encode_execute_batch(&[approve_call, execute_and_create_call]);
 
     // 3. Nonces.
+    info!("fund_swap: fetching userOp nonce (EntryPoint.getNonce)");
     let userop_nonce =
         fetch_userop_nonce(clients.node, inputs.entry_point, inputs.eoa_address).await?;
+    info!(%userop_nonce, "fund_swap: userOp nonce obtained");
+    info!("fund_swap: fetching EOA tx nonce (eth_getTransactionCount)");
     let eoa_tx_nonce = clients
         .node
         .get_transaction_count(inputs.eoa_address)
         .pending()
         .await
         .map_err(|e| Error::Transport(format!("eth_getTransactionCount: {e}")))?;
+    info!(eoa_tx_nonce, "fund_swap: EOA tx nonce obtained");
 
     // 4. EIP-7702 authorization.
     let auth = Authorization {
@@ -243,6 +266,10 @@ pub async fn fund_swap(
 
     // 6. Paymaster stub. Skipped when there's no paymaster — the userOp's paymaster* fields stay
     //    None and EntryPoint will pull reimbursement from the sender's prefund at execution time.
+    info!(
+        skipped = clients.paymaster.is_none(),
+        "fund_swap: paymaster stub data (pm_getPaymasterStubData)"
+    );
     let stub_is_final = if let Some(pm) = clients.paymaster.as_ref() {
         let stub = pm
             .client
@@ -263,22 +290,31 @@ pub async fn fund_swap(
     };
 
     // 7. Gas price.
+    info!("fund_swap: fetching gas price (eth_gasPrice)");
     let (max_fee, max_priority_fee) = fetch_gas_prices(clients.node).await?;
     userop.max_fee_per_gas = U256::from(max_fee);
     userop.max_priority_fee_per_gas = U256::from(max_priority_fee);
+    info!(max_fee, max_priority_fee, "fund_swap: gas prices set");
 
     // 8. Gas estimation.
+    info!("fund_swap: estimating gas (eth_estimateUserOperationGas)");
     let gas = clients
         .bundler
         .estimate_user_operation_gas(&userop, inputs.entry_point, Some(&signed_auth))
         .await?;
     userop.call_gas_limit = gas.call_gas_limit;
-    // alloy names the field `verification_gas` (no `_limit`).
-    userop.verification_gas_limit = gas.verification_gas;
+    userop.verification_gas_limit = gas.verification_gas_limit;
     userop.pre_verification_gas = gas.pre_verification_gas;
+    info!(
+        call_gas_limit = %userop.call_gas_limit,
+        verification_gas_limit = %userop.verification_gas_limit,
+        pre_verification_gas = %userop.pre_verification_gas,
+        "fund_swap: gas estimated"
+    );
 
     // 9. Final paymaster data (skip if no paymaster, or stub said it was final).
     if let Some(pm) = clients.paymaster.as_ref().filter(|_| !stub_is_final) {
+        info!("fund_swap: final paymaster data (pm_getPaymasterData)");
         let final_pm = pm
             .client
             .get_paymaster_data(
@@ -294,17 +330,21 @@ pub async fn fund_swap(
 
     // 10. Sign the userOpHash (EIP-191).
     let hash = user_op_hash(&userop, inputs.entry_point, inputs.chain_id);
+    info!(user_op_hash = %hash, "fund_swap: signing userOpHash");
     let sig_raw = signing::sign_eip191_message(&inputs.secret_key, hash.as_slice())?;
     userop.signature = kernel::wrap_user_op_signature(&sig_to_array(&sig_raw));
 
     // 11. Submit.
+    info!("fund_swap: submitting (eth_sendUserOperation)");
     let user_op_hash_out = clients
         .bundler
         .send_user_operation(&userop, inputs.entry_point, Some(&signed_auth))
         .await?;
+    info!(user_op_hash = %user_op_hash_out, "fund_swap: submitted; polling receipt");
 
     // 12. Poll for the receipt.
     let transaction_hash = poll_receipt(clients.bundler, user_op_hash_out).await;
+    info!(?transaction_hash, "fund_swap: poll complete");
 
     Ok(FundSwapReceipt {
         user_op_hash: user_op_hash_out,
@@ -422,19 +462,32 @@ fn apply_paymaster(
 /// Poll `eth_getUserOperationReceipt` until it lands or we exhaust the
 /// attempt budget. Returns the tx hash if mined.
 async fn poll_receipt(bundler: &BundlerClient, user_op_hash: B256) -> Option<B256> {
-    for _ in 0..RECEIPT_POLL_ATTEMPTS {
+    for attempt in 1..=RECEIPT_POLL_ATTEMPTS {
         match bundler.get_user_operation_receipt(user_op_hash).await {
             Ok(Some(receipt)) => {
+                info!(
+                    attempt,
+                    tx_hash = %receipt.receipt.transaction_hash,
+                    "fund_swap: receipt received"
+                );
                 return Some(receipt.receipt.transaction_hash);
             }
-            Ok(None) => {}
+            Ok(None) => {
+                tracing::debug!(attempt, "fund_swap: receipt pending");
+            }
             // Treat transient RPC errors as "still pending" — we'll
-            // retry. A persistent error surfaces as the tx_hash being
-            // None at the end; the caller can re-poll.
-            Err(_) => {}
+            // retry. Log them so a persistent failure (e.g. bundler
+            // dropped the op) doesn't masquerade as a slow block.
+            Err(e) => {
+                tracing::warn!(attempt, error = %e, "fund_swap: receipt poll errored");
+            }
         }
         tokio::time::sleep(RECEIPT_POLL_INTERVAL).await;
     }
+    info!(
+        attempts = RECEIPT_POLL_ATTEMPTS,
+        "fund_swap: receipt poll exhausted without success"
+    );
     None
 }
 
