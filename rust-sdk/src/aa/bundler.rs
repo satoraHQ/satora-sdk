@@ -34,12 +34,12 @@ use crate::error::Error;
 use crate::error::Result;
 use alloy::primitives::Address;
 use alloy::primitives::B256;
+use alloy::primitives::U256;
 use alloy::providers::Provider;
 use alloy::providers::RootProvider;
 use alloy::rpc::types::erc4337::PackedUserOperation;
-use alloy::rpc::types::erc4337::UserOperationGasEstimation;
-use alloy::rpc::types::erc4337::UserOperationReceipt;
 use alloy_provider::ext::Erc4337Api;
+use serde::Deserialize;
 use serde_json::Value;
 use serde_json::json;
 use url::Url;
@@ -54,6 +54,52 @@ pub enum BundlerCasing {
     CamelCase,
     /// `chain_id`, `y_parity`, … — Alchemy.
     SnakeCase,
+}
+
+/// `eth_estimateUserOperationGas` response shape, matching the
+/// ERC-4337 v0.7 spec field names. Defined here (rather than reusing
+/// alloy's `UserOperationGasEstimation`) because alloy mistakenly names
+/// the verification field `verificationGas` — every bundler returns
+/// `verificationGasLimit`, and the alloy shape fails to deserialize.
+///
+/// Paymaster gas fields are `Option` since they're only present when
+/// the userOp carried `paymaster*` fields in the request.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GasEstimation {
+    pub pre_verification_gas: U256,
+    pub verification_gas_limit: U256,
+    pub call_gas_limit: U256,
+    #[serde(default)]
+    pub paymaster_verification_gas_limit: Option<U256>,
+    #[serde(default)]
+    pub paymaster_post_op_gas_limit: Option<U256>,
+}
+
+/// Minimal `eth_getUserOperationReceipt` response shape.
+///
+/// Hand-rolled (rather than reusing alloy's `UserOperationReceipt`)
+/// because alloy declares `paymaster` and `reason` as non-optional
+/// fields, whereas ERC-4337 v0.7 (and every bundler) omits / nulls
+/// them for unsponsored ops and on success respectively. Decoding then
+/// fails with an error whose message contains `"null"`, which our
+/// pending-detection heuristic used to swallow as `Ok(None)` — turning
+/// every successful receipt into a missed poll.
+///
+/// We only consume `receipt.transaction_hash` downstream, so anything
+/// else is intentionally absent. Add fields here when callers grow new
+/// needs — don't reach for alloy's bloated shape.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserOperationReceipt {
+    pub receipt: InnerTxReceipt,
+}
+
+/// Just the tx-hash slice of the embedded transaction receipt.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InnerTxReceipt {
+    pub transaction_hash: B256,
 }
 
 /// Signed EIP-7702 authorization in the flat shape bundlers expect.
@@ -99,12 +145,19 @@ impl BundlerClient {
     /// `estimate_user_operation_gas` can't attach `eip7702Auth`, which
     /// bundlers need to simulate against the (about-to-be-delegated)
     /// EOA's code rather than its current empty bytecode.
+    ///
+    /// We also don't use alloy's `UserOperationGasEstimation` response
+    /// type because it names the field `verification_gas`
+    /// (`verificationGas` on the wire) — the actual ERC-4337 v0.7 spec
+    /// (and every bundler) returns `verificationGasLimit`, and the
+    /// alloy shape fails to deserialize. Local [`GasEstimation`] matches
+    /// the wire.
     pub async fn estimate_user_operation_gas(
         &self,
         userop: &PackedUserOperation,
         entry_point: Address,
         eip7702_auth: Option<&SignedEip7702Authorization>,
-    ) -> Result<UserOperationGasEstimation> {
+    ) -> Result<GasEstimation> {
         let userop_json = userop_with_auth_json(userop, eip7702_auth, self.casing)?;
         self.provider
             .client()
@@ -130,30 +183,20 @@ impl BundlerClient {
             .map_err(|e| Error::Transport(format!("eth_sendUserOperation: {e}")))
     }
 
-    /// `eth_getUserOperationReceipt` — first-party in `alloy-provider`.
-    /// Returns `None` while the op is still pending.
+    /// `eth_getUserOperationReceipt`. Returns `None` while the op is
+    /// still pending — typed as `Option<_>` so a bundler-side `null`
+    /// deserializes cleanly without any string-matching on error
+    /// messages (that heuristic used to mistake a non-null receipt
+    /// containing a null field for "pending"; see [`UserOperationReceipt`]).
     pub async fn get_user_operation_receipt(
         &self,
         user_op_hash: B256,
     ) -> Result<Option<UserOperationReceipt>> {
         self.provider
-            .get_user_operation_receipt(user_op_hash.into())
+            .client()
+            .request("eth_getUserOperationReceipt", (user_op_hash,))
             .await
-            .map(Some)
-            .or_else(|e| {
-                // Some bundlers return null instead of an error for an
-                // unknown hash; alloy surfaces that as an error too.
-                // Distinguish at the message level: a truly absent
-                // receipt → Ok(None); anything else propagates.
-                let msg = e.to_string();
-                if msg.contains("null") || msg.contains("not found") {
-                    Ok(None)
-                } else {
-                    Err(Error::Transport(format!(
-                        "eth_getUserOperationReceipt: {e}"
-                    )))
-                }
-            })
+            .map_err(|e| Error::Transport(format!("eth_getUserOperationReceipt: {e}")))
     }
 
     /// `eth_supportedEntryPoints`. Useful for a startup sanity check —
