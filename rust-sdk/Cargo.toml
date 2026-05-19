@@ -19,6 +19,11 @@ crate-type = ["rlib"]
 # so the base SDK (quote, create_swap) stays lean and the FFI / dotnet
 # layer can opt out.
 gasless = ["dep:alloy", "dep:alloy-provider", "dep:rand"]
+# Arkade VHTLC claim via ark-rs (offchain spend path). Off by default:
+# pulls in ark-rs (gRPC stack), ark-bdk-wallet, and esplora-client,
+# which together add a few MB of compile time the EVM-only SDK doesn't
+# need to pay for.
+arkade-claim = ["dep:ark-rs", "dep:ark-bdk-wallet", "dep:esplora-client"]
 
 [dependencies]
 # Crypto: HD wallet derivation, secp256k1, hashes.
@@ -52,6 +57,14 @@ rand = { version = "0.8", optional = true }
 # and gating it would force a feature flag onto a fundamental client
 # primitive.
 tokio = { version = "1", features = ["time"] }
+
+# Arkade VHTLC claim (`arkade-claim` feature only). `ark-rs` for the
+# core VHTLC script + gRPC client to arkd, `ark-bdk-wallet` for the
+# on-chain wallet plumbing ark-client demands, `esplora-client` for
+# chain queries. Versions track `scripts/e2e-rust/Cargo.toml`.
+ark-bdk-wallet = { version = "0.9", optional = true }
+ark-rs = { version = "0.9", optional = true, features = ["client", "grpc"] }
+esplora-client = { version = "0.11", optional = true, default-features = false, features = ["async", "async-https", "tokio"] }
 
 [dev-dependencies]
 jsonschema = { version = "0.46.4", default-features = false }
