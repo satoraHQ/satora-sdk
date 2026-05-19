@@ -75,22 +75,59 @@ impl From<SdkErrorInner> for SdkError {
     }
 }
 
-/// Fetch the deployed Lendaswap backend's version + commit hash.
+/// Stateful FFI client — wraps one `lendaswap_sdk::Client` for its
+/// lifetime so storage (swap_id → key_index) persists across calls.
+/// Without that continuity, a `create_swap`/`fund_swap`/`claim` chain
+/// from foreign code couldn't recover the per-swap secret material.
 ///
-/// Canary endpoint for the FFI surface — exercises the full build
-/// chain (Rust → cdylib → uniffi-generated C# → managed test) with
-/// minimal domain logic. If this works end-to-end, every other method
-/// is mechanical.
+/// Constructed via [`Self::new`] (read-only, supports version + quote
+/// only) or [`Self::new_signing`] (full surface — required for
+/// `create_swap`, funding, and claim). Both forms use the default
+/// in-memory swap storage; the FFI doesn't expose a way to plug in a
+/// custom backend yet.
+#[derive(uniffi::Object)]
+pub struct LendaswapClient {
+    inner: Client,
+}
+
 #[uniffi::export]
-pub fn fetch_version(base_url: String) -> Result<Version, SdkError> {
-    runtime().block_on(async {
-        let client = Client::new(&base_url)?;
-        let v = client.version().await?;
-        Ok(Version {
-            tag: v.tag,
-            commit_hash: v.commit_hash,
+impl LendaswapClient {
+    /// Read-only client. Supports [`Self::version`] and
+    /// [`Self::quote`]; any signer-requiring method (`create_swap`,
+    /// `fund_swap_gasless`, `claim`) errors with `InvalidSigner` when
+    /// invoked through a non-signing client.
+    #[uniffi::constructor]
+    pub fn new(base_url: String) -> Result<std::sync::Arc<Self>, SdkError> {
+        let inner = Client::new(&base_url)?;
+        Ok(std::sync::Arc::new(Self { inner }))
+    }
+
+    /// Signing client. Required for any method that derives per-swap
+    /// secret material (preimage, EVM key) from the mnemonic.
+    #[uniffi::constructor]
+    pub fn new_signing(
+        base_url: String,
+        mnemonic: String,
+    ) -> Result<std::sync::Arc<Self>, SdkError> {
+        let inner = Client::builder()
+            .base_url(&base_url)
+            .mnemonic(&mnemonic)
+            .build()?;
+        Ok(std::sync::Arc::new(Self { inner }))
+    }
+
+    /// `GET /version` — canary endpoint. Exercises the full build
+    /// chain (Rust → cdylib → uniffi-generated C# → managed test)
+    /// with minimal domain logic.
+    pub fn version(&self) -> Result<Version, SdkError> {
+        runtime().block_on(async {
+            let v = self.inner.version().await?;
+            Ok(Version {
+                tag: v.tag,
+                commit_hash: v.commit_hash,
+            })
         })
-    })
+    }
 }
 
 /// Compact view of the quote endpoint's response. Mirrors
@@ -204,43 +241,48 @@ impl From<QuoteAmount> for SdkQuoteAmount {
     }
 }
 
-/// Fetch a swap quote. Chain / token / amount are typed enums; the
-/// "exactly one of source/target" invariant is enforced by the
-/// `QuoteAmount` discriminator instead of runtime validation.
+// Quote method block — split from the constructor / version block so
+// the chain/token/amount enum definitions can sit between them
+// (uniffi::export only sees one impl block at a time, but rustc is
+// fine with multiple).
 #[uniffi::export]
-pub fn fetch_quote(
-    base_url: String,
-    source_chain: ChainId,
-    source_token: TokenId,
-    target_chain: ChainId,
-    target_token: TokenId,
-    amount: QuoteAmount,
-) -> Result<QuoteResult, SdkError> {
-    runtime().block_on(async {
-        let client = Client::new(&base_url)?;
-        let req = QuoteRequest::new(
-            source_chain.into(),
-            source_token.into(),
-            target_chain.into(),
-            target_token.into(),
-            amount.into(),
-        );
-        let resp = client.get_quote(req).await?;
-        Ok(QuoteResult {
-            exchange_rate: resp.exchange_rate,
-            network_fee: resp.network_fee,
-            gasless_network_fee: resp.gasless_network_fee,
-            protocol_fee: resp.protocol_fee,
-            protocol_fee_rate: resp.protocol_fee_rate,
-            min_amount: resp.min_amount,
-            max_amount: resp.max_amount,
-            source_amount: resp.source_amount,
-            target_amount: resp.target_amount,
-            net_source_amount: resp.net_source_amount,
-            net_target_amount: resp.net_target_amount,
-            bridge_fee: resp.bridge_fee,
+impl LendaswapClient {
+    /// Fetch a swap quote. Chain / token / amount are typed enums;
+    /// the "exactly one of source/target" invariant is enforced by
+    /// the `QuoteAmount` discriminator instead of runtime validation.
+    pub fn quote(
+        &self,
+        source_chain: ChainId,
+        source_token: TokenId,
+        target_chain: ChainId,
+        target_token: TokenId,
+        amount: QuoteAmount,
+    ) -> Result<QuoteResult, SdkError> {
+        runtime().block_on(async {
+            let req = QuoteRequest::new(
+                source_chain.into(),
+                source_token.into(),
+                target_chain.into(),
+                target_token.into(),
+                amount.into(),
+            );
+            let resp = self.inner.get_quote(req).await?;
+            Ok(QuoteResult {
+                exchange_rate: resp.exchange_rate,
+                network_fee: resp.network_fee,
+                gasless_network_fee: resp.gasless_network_fee,
+                protocol_fee: resp.protocol_fee,
+                protocol_fee_rate: resp.protocol_fee_rate,
+                min_amount: resp.min_amount,
+                max_amount: resp.max_amount,
+                source_amount: resp.source_amount,
+                target_amount: resp.target_amount,
+                net_source_amount: resp.net_source_amount,
+                net_target_amount: resp.net_target_amount,
+                bridge_fee: resp.bridge_fee,
+            })
         })
-    })
+    }
 }
 
 /// Receive-address tag. Mirrors `lendaswap_sdk::types::Address` — the
@@ -409,43 +451,51 @@ fn token_id_from_sdk(t: SdkTokenId) -> TokenId {
 
 /// Create a swap.
 ///
-/// Today the SDK only supports EVM stablecoin → BTC on Arkade. The
-/// dispatcher in `Client::create_swap` validates the direction and
-/// errors with `Error::InvalidSwap` for anything else. We surface
-/// `gasless` here (the dispatcher hard-codes it to `false`) so FFI
-/// callers can opt into the gasless funding flow without dropping
-/// down to a direction-specific entry point.
+/// Create-swap method block — kept separate from the constructor /
+/// version / quote impls above so the new-types-then-method shape
+/// reads top-down.
 #[uniffi::export]
-pub fn create_swap(
-    base_url: String,
-    mnemonic: String,
-    source_chain: ChainId,
-    source_token: TokenId,
-    target_chain: ChainId,
-    target_token: TokenId,
-    amount: QuoteAmount,
-    receive_to: Address,
-    gasless: bool,
-) -> Result<Swap, SdkError> {
-    // Direction-validation is the SDK's job — `Chain` here is only
-    // useful as a sanity check we route correctly downstream. Today
-    // only EVM-stable → Arkade-BTC is wired; `source_chain` /
-    // `target_chain` are accepted for API symmetry and so the FFI
-    // signature doesn't need to break when more directions land.
-    let _ = (source_chain, target_chain, target_token);
-    runtime().block_on(async {
-        let client = Client::builder()
-            .base_url(&base_url)
-            .mnemonic(&mnemonic)
-            .build()?;
-        let swap = client
-            .create_evm_to_arkade_swap(
-                source_token.into(),
-                amount.into(),
-                receive_to.into(),
-                gasless,
-            )
-            .await?;
-        Ok(swap.into())
-    })
+impl LendaswapClient {
+    /// Create a swap. Today the SDK only supports EVM stablecoin →
+    /// BTC on Arkade. The dispatcher in `Client::create_swap`
+    /// validates the direction and errors with `Error::InvalidSwap`
+    /// for anything else. We surface `gasless` here (the dispatcher
+    /// hard-codes it to `false`) so FFI callers can opt into the
+    /// gasless funding flow without dropping down to a direction-
+    /// specific entry point.
+    ///
+    /// State note: `create_swap` writes the per-swap `key_index` into
+    /// the inner client's storage. Subsequent [`Self::fund_swap_gasless`]
+    /// / [`Self::claim`] calls on THIS instance recover it. A new
+    /// `LendaswapClient` instance won't see it — the FFI doesn't
+    /// expose a persistent storage backend yet.
+    pub fn create_swap(
+        &self,
+        source_chain: ChainId,
+        source_token: TokenId,
+        target_chain: ChainId,
+        target_token: TokenId,
+        amount: QuoteAmount,
+        receive_to: Address,
+        gasless: bool,
+    ) -> Result<Swap, SdkError> {
+        // Direction-validation is the SDK's job — Chain here is only
+        // useful as a sanity check we route correctly downstream.
+        // Today only EVM-stable → Arkade-BTC is wired; the source /
+        // target chain args are accepted for API symmetry and so the
+        // FFI signature stays stable as more directions land.
+        let _ = (source_chain, target_chain, target_token);
+        runtime().block_on(async {
+            let swap = self
+                .inner
+                .create_evm_to_arkade_swap(
+                    source_token.into(),
+                    amount.into(),
+                    receive_to.into(),
+                    gasless,
+                )
+                .await?;
+            Ok(swap.into())
+        })
+    }
 }

@@ -60,6 +60,10 @@ generate-bindings: build-native
         -e 's/^internal record SwapStatus {/public record SwapStatus {/' \
         -e 's/^internal record SwapFunding {/public record SwapFunding {/' \
         -e 's/^internal record Swap (/public record Swap (/' \
+        -e 's/^internal record Version (/public record Version (/' \
+        -e 's/^internal record QuoteResult (/public record QuoteResult (/' \
+        -e 's/^internal interface ILendaswapClient {/public interface ILendaswapClient {/' \
+        -e 's/^internal class LendaswapClient : ILendaswapClient/public class LendaswapClient : ILendaswapClient/' \
         {{ generated_dir }}/lendaswap_sdk_ffi.cs
     rm {{ generated_dir }}/lendaswap_sdk_ffi.cs.bak
 

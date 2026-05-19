@@ -13,6 +13,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Threading;
 namespace uniffi.lendaswap_sdk_ffi;
 
 
@@ -748,6 +749,12 @@ static class _UniFFILib {
     
     
     
+    
+    
+    
+    
+    
+    
 
     static _UniFFILib() {
         _UniFFILib.uniffiCheckContractApiVersion();
@@ -756,15 +763,31 @@ static class _UniFFILib {
         }
 
     [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern RustBuffer uniffi_lendaswap_sdk_ffi_fn_func_create_swap(RustBuffer @baseUrl,RustBuffer @mnemonic,RustBuffer @sourceChain,RustBuffer @sourceToken,RustBuffer @targetChain,RustBuffer @targetToken,RustBuffer @amount,RustBuffer @receiveTo,sbyte @gasless,ref UniffiRustCallStatus _uniffi_out_err
+    public static extern IntPtr uniffi_lendaswap_sdk_ffi_fn_clone_lendaswapclient(IntPtr @ptr,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern RustBuffer uniffi_lendaswap_sdk_ffi_fn_func_fetch_quote(RustBuffer @baseUrl,RustBuffer @sourceChain,RustBuffer @sourceToken,RustBuffer @targetChain,RustBuffer @targetToken,RustBuffer @amount,ref UniffiRustCallStatus _uniffi_out_err
+    public static extern void uniffi_lendaswap_sdk_ffi_fn_free_lendaswapclient(IntPtr @ptr,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern RustBuffer uniffi_lendaswap_sdk_ffi_fn_func_fetch_version(RustBuffer @baseUrl,ref UniffiRustCallStatus _uniffi_out_err
+    public static extern IntPtr uniffi_lendaswap_sdk_ffi_fn_constructor_lendaswapclient_new(RustBuffer @baseUrl,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr uniffi_lendaswap_sdk_ffi_fn_constructor_lendaswapclient_new_signing(RustBuffer @baseUrl,RustBuffer @mnemonic,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_create_swap(IntPtr @ptr,RustBuffer @sourceChain,RustBuffer @sourceToken,RustBuffer @targetChain,RustBuffer @targetToken,RustBuffer @amount,RustBuffer @receiveTo,sbyte @gasless,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_quote(IntPtr @ptr,RustBuffer @sourceChain,RustBuffer @sourceToken,RustBuffer @targetChain,RustBuffer @targetToken,RustBuffer @amount,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_version(IntPtr @ptr,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -992,15 +1015,23 @@ static class _UniFFILib {
     );
 
     [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern ushort uniffi_lendaswap_sdk_ffi_checksum_func_create_swap(
+    public static extern ushort uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_create_swap(
     );
 
     [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern ushort uniffi_lendaswap_sdk_ffi_checksum_func_fetch_quote(
+    public static extern ushort uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_quote(
     );
 
     [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern ushort uniffi_lendaswap_sdk_ffi_checksum_func_fetch_version(
+    public static extern ushort uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_version(
+    );
+
+    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_lendaswap_sdk_ffi_checksum_constructor_lendaswapclient_new(
+    );
+
+    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_lendaswap_sdk_ffi_checksum_constructor_lendaswapclient_new_signing(
     );
 
     [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -1018,21 +1049,33 @@ static class _UniFFILib {
 
     static void uniffiCheckApiChecksums() {
         {
-            var checksum = _UniFFILib.uniffi_lendaswap_sdk_ffi_checksum_func_create_swap();
-            if (checksum != 52163) {
-                throw new UniffiContractChecksumException($"uniffi.lendaswap_sdk_ffi: uniffi bindings expected function `uniffi_lendaswap_sdk_ffi_checksum_func_create_swap` checksum `52163`, library returned `{checksum}`");
+            var checksum = _UniFFILib.uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_create_swap();
+            if (checksum != 33227) {
+                throw new UniffiContractChecksumException($"uniffi.lendaswap_sdk_ffi: uniffi bindings expected function `uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_create_swap` checksum `33227`, library returned `{checksum}`");
             }
         }
         {
-            var checksum = _UniFFILib.uniffi_lendaswap_sdk_ffi_checksum_func_fetch_quote();
-            if (checksum != 27156) {
-                throw new UniffiContractChecksumException($"uniffi.lendaswap_sdk_ffi: uniffi bindings expected function `uniffi_lendaswap_sdk_ffi_checksum_func_fetch_quote` checksum `27156`, library returned `{checksum}`");
+            var checksum = _UniFFILib.uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_quote();
+            if (checksum != 9034) {
+                throw new UniffiContractChecksumException($"uniffi.lendaswap_sdk_ffi: uniffi bindings expected function `uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_quote` checksum `9034`, library returned `{checksum}`");
             }
         }
         {
-            var checksum = _UniFFILib.uniffi_lendaswap_sdk_ffi_checksum_func_fetch_version();
-            if (checksum != 36694) {
-                throw new UniffiContractChecksumException($"uniffi.lendaswap_sdk_ffi: uniffi bindings expected function `uniffi_lendaswap_sdk_ffi_checksum_func_fetch_version` checksum `36694`, library returned `{checksum}`");
+            var checksum = _UniFFILib.uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_version();
+            if (checksum != 37555) {
+                throw new UniffiContractChecksumException($"uniffi.lendaswap_sdk_ffi: uniffi bindings expected function `uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_version` checksum `37555`, library returned `{checksum}`");
+            }
+        }
+        {
+            var checksum = _UniFFILib.uniffi_lendaswap_sdk_ffi_checksum_constructor_lendaswapclient_new();
+            if (checksum != 14287) {
+                throw new UniffiContractChecksumException($"uniffi.lendaswap_sdk_ffi: uniffi bindings expected function `uniffi_lendaswap_sdk_ffi_checksum_constructor_lendaswapclient_new` checksum `14287`, library returned `{checksum}`");
+            }
+        }
+        {
+            var checksum = _UniFFILib.uniffi_lendaswap_sdk_ffi_checksum_constructor_lendaswapclient_new_signing();
+            if (checksum != 61480) {
+                throw new UniffiContractChecksumException($"uniffi.lendaswap_sdk_ffi: uniffi bindings expected function `uniffi_lendaswap_sdk_ffi_checksum_constructor_lendaswapclient_new_signing` checksum `61480`, library returned `{checksum}`");
             }
         }
     }
@@ -1171,6 +1214,258 @@ class FfiConverterString: FfiConverter<string, RustBuffer> {
 
 
 /// <summary>
+/// Stateful FFI client — wraps one `lendaswap_sdk::Client` for its
+/// lifetime so storage (swap_id → key_index) persists across calls.
+/// Without that continuity, a `create_swap`/`fund_swap`/`claim` chain
+/// from foreign code couldn't recover the per-swap secret material.
+///
+/// Constructed via [`Self::new`] (read-only, supports version + quote
+/// only) or [`Self::new_signing`] (full surface — required for
+/// `create_swap`, funding, and claim). Both forms use the default
+/// in-memory swap storage; the FFI doesn't expose a way to plug in a
+/// custom backend yet.
+/// </summary>
+public interface ILendaswapClient {
+    /// <summary>
+    /// Create a swap. Today the SDK only supports EVM stablecoin →
+    /// BTC on Arkade. The dispatcher in `Client::create_swap`
+    /// validates the direction and errors with `Error::InvalidSwap`
+    /// for anything else. We surface `gasless` here (the dispatcher
+    /// hard-codes it to `false`) so FFI callers can opt into the
+    /// gasless funding flow without dropping down to a direction-
+    /// specific entry point.
+    ///
+    /// State note: `create_swap` writes the per-swap `key_index` into
+    /// the inner client's storage. Subsequent [`Self::fund_swap_gasless`]
+    /// / [`Self::claim`] calls on THIS instance recover it. A new
+    /// `LendaswapClient` instance won't see it — the FFI doesn't
+    /// expose a persistent storage backend yet.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    Swap CreateSwap(ChainId @sourceChain, TokenId @sourceToken, ChainId @targetChain, TokenId @targetToken, QuoteAmount @amount, Address @receiveTo, bool @gasless);
+    /// <summary>
+    /// Fetch a swap quote. Chain / token / amount are typed enums;
+    /// the "exactly one of source/target" invariant is enforced by
+    /// the `QuoteAmount` discriminator instead of runtime validation.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    QuoteResult Quote(ChainId @sourceChain, TokenId @sourceToken, ChainId @targetChain, TokenId @targetToken, QuoteAmount @amount);
+    /// <summary>
+    /// `GET /version` — canary endpoint. Exercises the full build
+    /// chain (Rust → cdylib → uniffi-generated C# → managed test)
+    /// with minimal domain logic.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    Version Version();
+}
+/// <summary>
+/// Stateful FFI client — wraps one `lendaswap_sdk::Client` for its
+/// lifetime so storage (swap_id → key_index) persists across calls.
+/// Without that continuity, a `create_swap`/`fund_swap`/`claim` chain
+/// from foreign code couldn't recover the per-swap secret material.
+///
+/// Constructed via [`Self::new`] (read-only, supports version + quote
+/// only) or [`Self::new_signing`] (full surface — required for
+/// `create_swap`, funding, and claim). Both forms use the default
+/// in-memory swap storage; the FFI doesn't expose a way to plug in a
+/// custom backend yet.
+/// </summary>
+public class LendaswapClient : ILendaswapClient, IDisposable {
+    protected IntPtr pointer;
+    private int _wasDestroyed = 0;
+    private long _callCounter = 1;
+
+    public LendaswapClient(IntPtr pointer) {
+        this.pointer = pointer;
+    }
+
+    ~LendaswapClient() {
+        Destroy();
+    }
+    /// <summary>
+    /// Read-only client. Supports [`Self::version`] and
+    /// [`Self::quote`]; any signer-requiring method (`create_swap`,
+    /// `fund_swap_gasless`, `claim`) errors with `InvalidSigner` when
+    /// invoked through a non-signing client.
+    /// </summary>
+    public LendaswapClient(string @baseUrl) :
+        this(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_lendaswap_sdk_ffi_fn_constructor_lendaswapclient_new(FfiConverterString.INSTANCE.Lower(@baseUrl), ref _status)
+)) {}
+
+    protected void FreeRustArcPtr() {
+        _UniffiHelpers.RustCall((ref UniffiRustCallStatus status) => {
+            _UniFFILib.uniffi_lendaswap_sdk_ffi_fn_free_lendaswapclient(this.pointer, ref status);
+        });
+    }
+
+    protected IntPtr CloneRustArcPtr() {
+        return _UniffiHelpers.RustCall((ref UniffiRustCallStatus status) => {
+            return _UniFFILib.uniffi_lendaswap_sdk_ffi_fn_clone_lendaswapclient(this.pointer, ref status);
+        });
+    }
+
+    public void Destroy()
+    {
+        // Only allow a single call to this method.
+        if (Interlocked.CompareExchange(ref _wasDestroyed, 1, 0) == 0)
+        {
+            // This decrement always matches the initial count of 1 given at creation time.
+            if (Interlocked.Decrement(ref _callCounter) == 0)
+            {
+                FreeRustArcPtr();
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        Destroy();
+        GC.SuppressFinalize(this); // Suppress finalization to avoid unnecessary GC overhead.
+    }
+
+    private void IncrementCallCounter() 
+    {
+        // Check and increment the call counter, to keep the object alive.
+        // This needs a compare-and-set retry loop in case of concurrent updates.
+        long count;
+        do
+        {
+            count = Interlocked.Read(ref _callCounter);
+            if (count == 0L) throw new System.ObjectDisposedException(String.Format("'{0}' object has already been destroyed", this.GetType().Name));
+            if (count == long.MaxValue) throw new System.OverflowException(String.Format("'{0}' call counter would overflow", this.GetType().Name));
+
+        } while (Interlocked.CompareExchange(ref _callCounter, count + 1, count) != count);
+    }
+
+    private void DecrementCallCounter() 
+    {
+        // This decrement always matches the increment we performed above.
+        if (Interlocked.Decrement(ref _callCounter) == 0) {
+            FreeRustArcPtr();
+        }
+    }
+
+    internal void CallWithPointer(Action<IntPtr> action)
+    {
+        IncrementCallCounter();
+        try {
+            action(CloneRustArcPtr());
+        }
+        finally {
+            DecrementCallCounter();
+        }
+    }
+
+    internal T CallWithPointer<T>(Func<IntPtr, T> func)
+    {   
+        IncrementCallCounter();
+        try {
+            return func(CloneRustArcPtr());
+        }
+        finally {
+            DecrementCallCounter();
+        }
+    }
+
+    
+    /// <summary>
+    /// Create a swap. Today the SDK only supports EVM stablecoin →
+    /// BTC on Arkade. The dispatcher in `Client::create_swap`
+    /// validates the direction and errors with `Error::InvalidSwap`
+    /// for anything else. We surface `gasless` here (the dispatcher
+    /// hard-codes it to `false`) so FFI callers can opt into the
+    /// gasless funding flow without dropping down to a direction-
+    /// specific entry point.
+    ///
+    /// State note: `create_swap` writes the per-swap `key_index` into
+    /// the inner client's storage. Subsequent [`Self::fund_swap_gasless`]
+    /// / [`Self::claim`] calls on THIS instance recover it. A new
+    /// `LendaswapClient` instance won't see it — the FFI doesn't
+    /// expose a persistent storage backend yet.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public Swap CreateSwap(ChainId @sourceChain, TokenId @sourceToken, ChainId @targetChain, TokenId @targetToken, QuoteAmount @amount, Address @receiveTo, bool @gasless) {
+        return CallWithPointer(thisPtr => FfiConverterTypeSwap.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_create_swap(thisPtr, FfiConverterTypeChainId.INSTANCE.Lower(@sourceChain), FfiConverterTypeTokenId.INSTANCE.Lower(@sourceToken), FfiConverterTypeChainId.INSTANCE.Lower(@targetChain), FfiConverterTypeTokenId.INSTANCE.Lower(@targetToken), FfiConverterTypeQuoteAmount.INSTANCE.Lower(@amount), FfiConverterTypeAddress.INSTANCE.Lower(@receiveTo), FfiConverterBoolean.INSTANCE.Lower(@gasless), ref _status)
+)));
+    }
+    
+    
+    /// <summary>
+    /// Fetch a swap quote. Chain / token / amount are typed enums;
+    /// the "exactly one of source/target" invariant is enforced by
+    /// the `QuoteAmount` discriminator instead of runtime validation.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public QuoteResult Quote(ChainId @sourceChain, TokenId @sourceToken, ChainId @targetChain, TokenId @targetToken, QuoteAmount @amount) {
+        return CallWithPointer(thisPtr => FfiConverterTypeQuoteResult.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_quote(thisPtr, FfiConverterTypeChainId.INSTANCE.Lower(@sourceChain), FfiConverterTypeTokenId.INSTANCE.Lower(@sourceToken), FfiConverterTypeChainId.INSTANCE.Lower(@targetChain), FfiConverterTypeTokenId.INSTANCE.Lower(@targetToken), FfiConverterTypeQuoteAmount.INSTANCE.Lower(@amount), ref _status)
+)));
+    }
+    
+    
+    /// <summary>
+    /// `GET /version` — canary endpoint. Exercises the full build
+    /// chain (Rust → cdylib → uniffi-generated C# → managed test)
+    /// with minimal domain logic.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public Version Version() {
+        return CallWithPointer(thisPtr => FfiConverterTypeVersion.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_version(thisPtr,  ref _status)
+)));
+    }
+    
+    
+
+    
+    /// <summary>
+    /// Signing client. Required for any method that derives per-swap
+    /// secret material (preimage, EVM key) from the mnemonic.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public static LendaswapClient NewSigning(string @baseUrl, string @mnemonic) {
+        return new LendaswapClient(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_lendaswap_sdk_ffi_fn_constructor_lendaswapclient_new_signing(FfiConverterString.INSTANCE.Lower(@baseUrl), FfiConverterString.INSTANCE.Lower(@mnemonic), ref _status)
+));
+    }
+    
+    
+}
+class FfiConverterTypeLendaswapClient: FfiConverter<LendaswapClient, IntPtr> {
+    public static FfiConverterTypeLendaswapClient INSTANCE = new FfiConverterTypeLendaswapClient();
+
+
+    public override IntPtr Lower(LendaswapClient value) {
+        return value.CallWithPointer(thisPtr => thisPtr);
+    }
+
+    public override LendaswapClient Lift(IntPtr value) {
+        return new LendaswapClient(value);
+    }
+
+    public override LendaswapClient Read(BigEndianStream stream) {
+        return Lift(new IntPtr(stream.ReadLong()));
+    }
+
+    public override int AllocationSize(LendaswapClient value) {
+        return 8;
+    }
+
+    public override void Write(LendaswapClient value, BigEndianStream stream) {
+        stream.WriteLong(Lower(value).ToInt64());
+    }
+}
+
+
+
+/// <summary>
 /// Compact view of the quote endpoint's response. Mirrors
 /// `lendaswap_sdk::types::QuoteResponse` minus the wire-only fields
 /// that aren't useful to a non-Rust caller.
@@ -1179,7 +1474,7 @@ class FfiConverterString: FfiConverter<string, RustBuffer> {
 /// wire format) to side-step JS-style number-precision issues and let
 /// callers parse with whatever big-int library they prefer.
 /// </summary>
-internal record QuoteResult (
+public record QuoteResult (
     string @exchangeRate, 
     ulong @networkFee, 
     ulong @gaslessNetworkFee, 
@@ -1314,7 +1609,7 @@ class FfiConverterTypeSwap: FfiConverterRustBuffer<Swap> {
 /// so the FFI surface owns its own data shape and can evolve
 /// independently of the Rust type.
 /// </summary>
-internal record Version (
+public record Version (
     string @tag, 
     string @commitHash
 ) {
@@ -2239,55 +2534,5 @@ class FfiConverterOptionalUInt64: FfiConverterRustBuffer<ulong?> {
 }
 #pragma warning restore 8625
 internal static class LendaswapSdkFfiMethods {
-    /// <summary>
-    /// Create a swap.
-    ///
-    /// Today the SDK only supports EVM stablecoin → BTC on Arkade. The
-    /// dispatcher in `Client::create_swap` validates the direction and
-    /// errors with `Error::InvalidSwap` for anything else. We surface
-    /// `gasless` here (the dispatcher hard-codes it to `false`) so FFI
-    /// callers can opt into the gasless funding flow without dropping
-    /// down to a direction-specific entry point.
-    /// </summary>
-    /// <exception cref="SdkException"></exception>
-    public static Swap CreateSwap(string @baseUrl, string @mnemonic, ChainId @sourceChain, TokenId @sourceToken, ChainId @targetChain, TokenId @targetToken, QuoteAmount @amount, Address @receiveTo, bool @gasless) {
-        return FfiConverterTypeSwap.INSTANCE.Lift(
-    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
-    _UniFFILib.uniffi_lendaswap_sdk_ffi_fn_func_create_swap(FfiConverterString.INSTANCE.Lower(@baseUrl), FfiConverterString.INSTANCE.Lower(@mnemonic), FfiConverterTypeChainId.INSTANCE.Lower(@sourceChain), FfiConverterTypeTokenId.INSTANCE.Lower(@sourceToken), FfiConverterTypeChainId.INSTANCE.Lower(@targetChain), FfiConverterTypeTokenId.INSTANCE.Lower(@targetToken), FfiConverterTypeQuoteAmount.INSTANCE.Lower(@amount), FfiConverterTypeAddress.INSTANCE.Lower(@receiveTo), FfiConverterBoolean.INSTANCE.Lower(@gasless), ref _status)
-));
-    }
-
-
-    /// <summary>
-    /// Fetch a swap quote. Chain / token / amount are typed enums; the
-    /// "exactly one of source/target" invariant is enforced by the
-    /// `QuoteAmount` discriminator instead of runtime validation.
-    /// </summary>
-    /// <exception cref="SdkException"></exception>
-    public static QuoteResult FetchQuote(string @baseUrl, ChainId @sourceChain, TokenId @sourceToken, ChainId @targetChain, TokenId @targetToken, QuoteAmount @amount) {
-        return FfiConverterTypeQuoteResult.INSTANCE.Lift(
-    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
-    _UniFFILib.uniffi_lendaswap_sdk_ffi_fn_func_fetch_quote(FfiConverterString.INSTANCE.Lower(@baseUrl), FfiConverterTypeChainId.INSTANCE.Lower(@sourceChain), FfiConverterTypeTokenId.INSTANCE.Lower(@sourceToken), FfiConverterTypeChainId.INSTANCE.Lower(@targetChain), FfiConverterTypeTokenId.INSTANCE.Lower(@targetToken), FfiConverterTypeQuoteAmount.INSTANCE.Lower(@amount), ref _status)
-));
-    }
-
-
-    /// <summary>
-    /// Fetch the deployed Lendaswap backend's version + commit hash.
-    ///
-    /// Canary endpoint for the FFI surface — exercises the full build
-    /// chain (Rust → cdylib → uniffi-generated C# → managed test) with
-    /// minimal domain logic. If this works end-to-end, every other method
-    /// is mechanical.
-    /// </summary>
-    /// <exception cref="SdkException"></exception>
-    public static Version FetchVersion(string @baseUrl) {
-        return FfiConverterTypeVersion.INSTANCE.Lift(
-    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
-    _UniFFILib.uniffi_lendaswap_sdk_ffi_fn_func_fetch_version(FfiConverterString.INSTANCE.Lower(@baseUrl), ref _status)
-));
-    }
-
-
 }
 
