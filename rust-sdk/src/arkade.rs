@@ -126,14 +126,19 @@ pub struct ClaimReceipt {
 }
 
 /// Connected Arkade client wrapper. Construction performs the gRPC
-/// handshake and primes the on-chain wallet; [`Self::claim_vhtlc_offchain`]
-/// (added in a follow-up commit) does the actual VHTLC spend.
+/// handshake and primes the on-chain wallet; [`Self::offchain_address`]
+/// and [`Self::offchain_balance_sats`] are local + cheap once
+/// connected, while [`crate::Client::claim`] uses an instance
+/// internally for the VHTLC spend.
 ///
-/// Held internally by [`crate::Client::claim`] — not exposed publicly
-/// because the claim entry point on `Client` is what callers should
-/// use. The struct stays `pub(crate)` for the same reason `aa::bundler`
-/// keeps `BundlerClient` internal.
-pub(crate) struct ArkadeWallet {
+/// Public so callers that need the offchain address BEFORE creating
+/// a swap (the e2e suite, or any consumer that derives `receive_to`
+/// from a mnemonic) don't have to re-implement the
+/// ark-client + ark-bdk-wallet + esplora boilerplate. The inner
+/// `client` stays `pub(crate)` so we don't leak the multi-generic
+/// `ArkClient<...>` type into the public surface — callers go
+/// through the methods on this struct.
+pub struct ArkadeWallet {
     pub(crate) client:
         ArkClient<EsploraBlockchain, Wallet<InMemoryDb>, InMemorySwapStorage, StaticKeyProvider>,
 }
@@ -142,7 +147,7 @@ impl ArkadeWallet {
     /// Build an [`ArkadeWallet`] from `config`: derive the BIP-85
     /// identity, instantiate the on-chain wallet against `esplora_url`,
     /// connect to arkd at `arkade_server_url`.
-    pub(crate) async fn connect(config: &ArkadeConfig) -> Result<Self> {
+    pub async fn connect(config: &ArkadeConfig) -> Result<Self> {
         let mnemonic = bip39::Mnemonic::from_str(config.identity_mnemonic.trim())
             .map_err(|e| Error::InvalidSigner(format!("Arkade mnemonic: {e}")))?;
         let seed = mnemonic.to_seed("");
@@ -192,6 +197,33 @@ impl ArkadeWallet {
             .map_err(|e| Error::Transport(format!("arkd connect: {e}")))?;
 
         Ok(Self { client })
+    }
+
+    /// Derive a fresh offchain Ark address — the bech32m `tark1q…`
+    /// string an SDK consumer passes as `receive_to` for an
+    /// EVM→Arkade swap (or hands to anyone who wants to send them
+    /// BTC offchain). Cheap once [`Self::connect`] has primed the
+    /// underlying wallet.
+    pub fn offchain_address(&self) -> Result<String> {
+        let (address, _vtxo) = self
+            .client
+            .get_offchain_address()
+            .map_err(|e| Error::Transport(format!("get_offchain_address: {e}")))?;
+        Ok(address.encode())
+    }
+
+    /// Sum of confirmed + pre-confirmed + recoverable VTXOs owned by
+    /// this wallet, in satoshis. Used by the e2e to assert the claim
+    /// actually moved BTC — snapshot before [`crate::Client::claim`],
+    /// snapshot again after, compare deltas. Hits the Arkade server's
+    /// indexer over gRPC each call.
+    pub async fn offchain_balance_sats(&self) -> Result<u64> {
+        let balance = self
+            .client
+            .offchain_balance()
+            .await
+            .map_err(|e| Error::Transport(format!("offchain_balance: {e}")))?;
+        Ok(balance.total().to_sat())
     }
 }
 
