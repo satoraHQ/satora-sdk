@@ -13,6 +13,7 @@ use crate::aa::bundler::BundlerClient;
 use crate::aa::orchestrate::FundSwapClients;
 use crate::aa::orchestrate::FundSwapInputs;
 use crate::aa::orchestrate::FundSwapReceipt;
+use crate::aa::orchestrate::PaymasterRef;
 use crate::aa::orchestrate::fund_swap;
 use crate::aa::paymaster::PaymasterClient;
 use crate::error::Error;
@@ -27,20 +28,33 @@ use serde_json::Value;
 use std::str::FromStr;
 use url::Url;
 
-/// Bundler + paymaster + node-RPC configuration the gasless flow needs.
+/// Bundler + node-RPC + optional paymaster configuration the gasless
+/// flow needs.
 ///
-/// All four URLs are required (Alchemy lets you point bundler +
-/// paymaster + node at the same URL; other setups split them). The
-/// `paymaster_context` is the paymaster-specific JSON — for Alchemy
-/// Gas Manager: `serde_json::json!({ "policyId": "<uuid>" })`. Use
-/// `serde_json::Value::Null` for paymasters that don't take one.
+/// `paymaster` is `None` when there's no sponsor — alto-against-Anvil
+/// dev setups, for instance, where the depositor EOA pays its own gas
+/// (EntryPoint pulls reimbursement from the sender, not a third party).
+/// When `Some`, the SDK runs the ERC-7677 `pm_*` dance and embeds the
+/// resulting `paymasterAndData` so a real paymaster picks up the bill.
 #[derive(Debug, Clone)]
 pub struct AaConfig {
     pub bundler_url: Url,
-    pub paymaster_url: Url,
     pub node_rpc_url: Url,
-    pub paymaster_context: Value,
+    pub paymaster: Option<PaymasterConfig>,
     pub bundler_casing: BundlerCasing,
+}
+
+/// Optional paymaster sponsorship — URL + context as a unit, since one
+/// without the other doesn't address any real paymaster.
+#[derive(Debug, Clone)]
+pub struct PaymasterConfig {
+    /// Paymaster RPC URL. Often identical to the bundler URL (Alchemy
+    /// co-locates them).
+    pub url: Url,
+    /// Paymaster-specific context object. For Alchemy Gas Manager:
+    /// `serde_json::json!({"policyId": "<uuid>"})`. Use `Value::Null`
+    /// for paymasters that don't take one.
+    pub context: Value,
 }
 
 impl Client {
@@ -82,7 +96,11 @@ impl Client {
 
         // 3. RPC clients.
         let bundler = BundlerClient::new(aa_config.bundler_url, aa_config.bundler_casing)?;
-        let paymaster = PaymasterClient::new(aa_config.paymaster_url, aa_config.bundler_casing)?;
+        let paymaster_client = aa_config
+            .paymaster
+            .as_ref()
+            .map(|pm| PaymasterClient::new(pm.url.clone(), aa_config.bundler_casing))
+            .transpose()?;
         let node = RootProvider::new_http(aa_config.node_rpc_url);
         let chain_id = node
             .get_chain_id()
@@ -92,14 +110,23 @@ impl Client {
         // 4. Map backend wire types onto the orchestration input.
         let inputs = build_fund_swap_inputs(backend, evm_key.secret_key, eoa_address, chain_id)?;
 
-        // 5. Drive the orchestration.
+        // 5. Drive the orchestration. The PaymasterRef borrows both the client and the
+        //    user-supplied context — bundled so the orchestrate layer can't see one without the
+        //    other.
+        let paymaster_ref = paymaster_client.as_ref().map(|client| PaymasterRef {
+            client,
+            context: aa_config
+                .paymaster
+                .as_ref()
+                .map(|pm| pm.context.clone())
+                .unwrap_or(Value::Null),
+        });
         fund_swap(
             inputs,
             FundSwapClients {
                 bundler: &bundler,
-                paymaster: &paymaster,
                 node: &node,
-                paymaster_context: aa_config.paymaster_context,
+                paymaster: paymaster_ref,
             },
         )
         .await
