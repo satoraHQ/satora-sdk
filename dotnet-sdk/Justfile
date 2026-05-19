@@ -56,6 +56,10 @@ generate-bindings: build-native
         -e 's/^internal record ChainId {/public record ChainId {/' \
         -e 's/^internal record TokenId {/public record TokenId {/' \
         -e 's/^internal record QuoteAmount {/public record QuoteAmount {/' \
+        -e 's/^internal record Address {/public record Address {/' \
+        -e 's/^internal record SwapStatus {/public record SwapStatus {/' \
+        -e 's/^internal record SwapFunding {/public record SwapFunding {/' \
+        -e 's/^internal record Swap (/public record Swap (/' \
         {{ generated_dir }}/lendaswap_sdk_ffi.cs
     rm {{ generated_dir }}/lendaswap_sdk_ffi.cs.bak
 

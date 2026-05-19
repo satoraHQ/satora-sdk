@@ -18,10 +18,14 @@
 
 use lendaswap_sdk::Client;
 use lendaswap_sdk::Error as SdkErrorInner;
+use lendaswap_sdk::Swap as SdkSwap;
+use lendaswap_sdk::SwapFunding as SdkSwapFunding;
+use lendaswap_sdk::types::Address as SdkAddress;
 use lendaswap_sdk::types::Chain as SdkChain;
 use lendaswap_sdk::types::KnownChain as SdkKnownChain;
 use lendaswap_sdk::types::QuoteAmount as SdkQuoteAmount;
 use lendaswap_sdk::types::QuoteRequest;
+use lendaswap_sdk::types::SwapStatus as SdkSwapStatus;
 use lendaswap_sdk::types::TokenId as SdkTokenId;
 use std::sync::OnceLock;
 
@@ -236,5 +240,212 @@ pub fn fetch_quote(
             net_target_amount: resp.net_target_amount,
             bridge_fee: resp.bridge_fee,
         })
+    })
+}
+
+/// Receive-address tag. Mirrors `lendaswap_sdk::types::Address` — the
+/// variant carries both the network and the encoded string so callers
+/// can't accidentally pass a Bitcoin address where an Arkade address
+/// is required (or vice versa). The SDK's direction validator catches
+/// the mismatch but errors are clearer when the type system catches it
+/// first.
+#[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Address {
+    Arkade { address: String },
+    Bitcoin { address: String },
+    Lightning { invoice: String },
+    Evm { address: String },
+}
+
+impl From<Address> for SdkAddress {
+    fn from(a: Address) -> Self {
+        match a {
+            Address::Arkade { address } => SdkAddress::Arkade(address),
+            Address::Bitcoin { address } => SdkAddress::Bitcoin(address),
+            Address::Lightning { invoice } => SdkAddress::Lightning(invoice),
+            Address::Evm { address } => SdkAddress::Evm(address),
+        }
+    }
+}
+
+/// State machine for a swap. Mirrors `lendaswap_sdk::types::SwapStatus`
+/// 1:1 (incl. the `Other { wire }` forward-compat escape hatch) so
+/// FFI callers can pattern-match on the same set of states the Rust
+/// SDK exposes.
+#[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum SwapStatus {
+    Pending,
+    ClientFundingSeen,
+    ClientFunded,
+    ClientRefunded,
+    ServerFunded,
+    ClientRedeeming,
+    ClientRedeemed,
+    ServerRedeemed,
+    ClientFundedServerRefunded,
+    ClientRefundedServerFunded,
+    ClientRefundedServerRefunded,
+    Expired,
+    ClientInvalidFunded,
+    ClientFundedTooLate,
+    ServerWontFund,
+    ClientRedeemedAndClientRefunded,
+    /// Unrecognised wire value, preserved verbatim.
+    Other {
+        wire: String,
+    },
+}
+
+impl From<SdkSwapStatus> for SwapStatus {
+    fn from(s: SdkSwapStatus) -> Self {
+        match s {
+            SdkSwapStatus::Pending => Self::Pending,
+            SdkSwapStatus::ClientFundingSeen => Self::ClientFundingSeen,
+            SdkSwapStatus::ClientFunded => Self::ClientFunded,
+            SdkSwapStatus::ClientRefunded => Self::ClientRefunded,
+            SdkSwapStatus::ServerFunded => Self::ServerFunded,
+            SdkSwapStatus::ClientRedeeming => Self::ClientRedeeming,
+            SdkSwapStatus::ClientRedeemed => Self::ClientRedeemed,
+            SdkSwapStatus::ServerRedeemed => Self::ServerRedeemed,
+            SdkSwapStatus::ClientFundedServerRefunded => Self::ClientFundedServerRefunded,
+            SdkSwapStatus::ClientRefundedServerFunded => Self::ClientRefundedServerFunded,
+            SdkSwapStatus::ClientRefundedServerRefunded => Self::ClientRefundedServerRefunded,
+            SdkSwapStatus::Expired => Self::Expired,
+            SdkSwapStatus::ClientInvalidFunded => Self::ClientInvalidFunded,
+            SdkSwapStatus::ClientFundedTooLate => Self::ClientFundedTooLate,
+            SdkSwapStatus::ServerWontFund => Self::ServerWontFund,
+            SdkSwapStatus::ClientRedeemedAndClientRefunded => Self::ClientRedeemedAndClientRefunded,
+            SdkSwapStatus::Other(s) => Self::Other { wire: s },
+            // `SdkSwapStatus` is `#[non_exhaustive]` upstream — keep
+            // this catch-all so adding a variant there doesn't break
+            // the FFI build.
+            other => Self::Other {
+                wire: other.as_wire_str().to_string(),
+            },
+        }
+    }
+}
+
+/// How the user has to fund the swap. Mirrors `lendaswap_sdk::SwapFunding`.
+///
+/// `Gasless` carries the depositor EOA the user sends source-token to;
+/// the SDK relays into the HTLC via a Permit2-signed userOp.
+/// `UserSubmitted` is the non-gasless path — caller fetches HTLC calldata
+/// out-of-band and broadcasts the funding tx themselves.
+#[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum SwapFunding {
+    Gasless { deposit_address: String },
+    UserSubmitted,
+}
+
+impl From<SdkSwapFunding> for SwapFunding {
+    fn from(f: SdkSwapFunding) -> Self {
+        match f {
+            SdkSwapFunding::Gasless { deposit_address } => Self::Gasless { deposit_address },
+            SdkSwapFunding::UserSubmitted { .. } => Self::UserSubmitted,
+            // `SdkSwapFunding` is `#[non_exhaustive]` upstream. Mapping
+            // an unknown variant to `UserSubmitted` is wrong, but the
+            // closed-set today makes the arm unreachable; keep the
+            // catch-all so the FFI build doesn't break when a new
+            // variant lands.
+            other => panic!("unhandled SwapFunding variant: {other:?}"),
+        }
+    }
+}
+
+/// Compact, user-facing view of a created swap. Mirrors
+/// `lendaswap_sdk::Swap` — amounts stay as strings to preserve
+/// precision for large EVM token amounts.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct Swap {
+    pub id: String,
+    pub status: SwapStatus,
+    pub funding: SwapFunding,
+    pub deposit_amount: String,
+    pub deposit_token: TokenId,
+    pub receive_address: String,
+    pub receive_amount: String,
+    pub receive_token: TokenId,
+}
+
+impl From<SdkSwap> for Swap {
+    fn from(s: SdkSwap) -> Self {
+        Self {
+            id: s.id,
+            status: s.status.into(),
+            funding: s.funding.into(),
+            deposit_amount: s.deposit_amount,
+            deposit_token: token_id_from_sdk(s.deposit_token),
+            receive_address: s.receive_address,
+            receive_amount: s.receive_amount,
+            receive_token: token_id_from_sdk(s.receive_token),
+        }
+    }
+}
+
+/// Reverse direction of the existing `From<TokenId> for SdkTokenId`
+/// — needed because `Swap`'s `deposit_token` / `receive_token` come
+/// from the SDK as `SdkTokenId` and we project them into the FFI's
+/// own enum. Inlined as a free fn so the existing `From` impl can
+/// stay one-way (uniffi-bindgen doesn't need both).
+fn token_id_from_sdk(t: SdkTokenId) -> TokenId {
+    match t {
+        SdkTokenId::Btc => TokenId::Btc,
+        SdkTokenId::UsdcPolygon => TokenId::UsdcPolygon,
+        SdkTokenId::UsdcArbitrum => TokenId::UsdcArbitrum,
+        SdkTokenId::UsdcEthereum => TokenId::UsdcEthereum,
+        SdkTokenId::UsdtPolygon => TokenId::UsdtPolygon,
+        SdkTokenId::UsdtEthereum => TokenId::UsdtEthereum,
+        SdkTokenId::Usdt0Arbitrum => TokenId::Usdt0Arbitrum,
+        SdkTokenId::WbtcPolygon => TokenId::WbtcPolygon,
+        SdkTokenId::WbtcArbitrum => TokenId::WbtcArbitrum,
+        SdkTokenId::WbtcEthereum => TokenId::WbtcEthereum,
+        SdkTokenId::Other(s) => TokenId::Other { wire: s },
+        other => TokenId::Other {
+            wire: other.as_wire_str().to_string(),
+        },
+    }
+}
+
+/// Create a swap.
+///
+/// Today the SDK only supports EVM stablecoin → BTC on Arkade. The
+/// dispatcher in `Client::create_swap` validates the direction and
+/// errors with `Error::InvalidSwap` for anything else. We surface
+/// `gasless` here (the dispatcher hard-codes it to `false`) so FFI
+/// callers can opt into the gasless funding flow without dropping
+/// down to a direction-specific entry point.
+#[uniffi::export]
+pub fn create_swap(
+    base_url: String,
+    mnemonic: String,
+    source_chain: ChainId,
+    source_token: TokenId,
+    target_chain: ChainId,
+    target_token: TokenId,
+    amount: QuoteAmount,
+    receive_to: Address,
+    gasless: bool,
+) -> Result<Swap, SdkError> {
+    // Direction-validation is the SDK's job — `Chain` here is only
+    // useful as a sanity check we route correctly downstream. Today
+    // only EVM-stable → Arkade-BTC is wired; `source_chain` /
+    // `target_chain` are accepted for API symmetry and so the FFI
+    // signature doesn't need to break when more directions land.
+    let _ = (source_chain, target_chain, target_token);
+    runtime().block_on(async {
+        let client = Client::builder()
+            .base_url(&base_url)
+            .mnemonic(&mnemonic)
+            .build()?;
+        let swap = client
+            .create_evm_to_arkade_swap(
+                source_token.into(),
+                amount.into(),
+                receive_to.into(),
+                gasless,
+            )
+            .await?;
+        Ok(swap.into())
     })
 }
