@@ -35,6 +35,9 @@
     <Using Include="uniffi.lendaswap_sdk_ffi.ChainId" Alias="ChainId" />
     <Using Include="uniffi.lendaswap_sdk_ffi.TokenId" Alias="TokenId" />
     <Using Include="uniffi.lendaswap_sdk_ffi.QuoteAmount" Alias="QuoteAmount" />
+    <Using Include="uniffi.lendaswap_sdk_ffi.Address" Alias="Address" />
+    <Using Include="uniffi.lendaswap_sdk_ffi.SwapStatus" Alias="SwapStatus" />
+    <Using Include="uniffi.lendaswap_sdk_ffi.SwapFunding" Alias="SwapFunding" />
   </ItemGroup>
 
   <!-- Native libraries: at pack time these go under runtimes/{rid}/native
