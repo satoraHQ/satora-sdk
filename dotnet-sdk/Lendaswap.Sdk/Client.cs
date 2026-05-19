@@ -121,20 +121,35 @@ public sealed record SwapDetails(
 }
 
 /// <summary>
-/// Top-level client. Today only exposes <see cref="GetVersionAsync"/> as
-/// a smoke endpoint; full surface lands as the FFI exports grow.
+/// Top-level client. Holds an FFI handle whose Rust side owns the
+/// per-swap key_index storage that <see cref="CreateSwapAsync"/> writes
+/// to and the funding / claim flows read from. Dispose this when done
+/// — the underlying Rust resources are released by the handle's
+/// <c>IDisposable</c>.
 /// </summary>
-public sealed class Client
+public sealed class Client : IDisposable
 {
-    private readonly string _baseUrl;
-    private readonly string? _mnemonic;
+    /// <summary>
+    /// Underlying FFI handle. Internal so the generated namespace
+    /// doesn't leak into the public surface, but exposed via interface
+    /// for tests / extension code that wants to drop down.
+    /// </summary>
+    internal readonly Ffi.LendaswapClient _ffi;
+    private readonly bool _hasMnemonic;
 
     /// <summary>
     /// Construct a read-only client — supports <see cref="GetVersionAsync"/>
     /// and <see cref="GetQuoteAsync"/>. Calls that require a signer (e.g.
     /// <see cref="CreateSwapAsync"/>) throw if invoked from here.
     /// </summary>
-    public Client(string baseUrl) : this(baseUrl, mnemonic: null) { }
+    public Client(string baseUrl)
+    {
+        // uniffi-bindgen-cs maps the first `#[uniffi::constructor]` to
+        // a normal C# `new T(...)`; secondary constructors become static
+        // factories (`NewSigning` below).
+        _ffi = TryOrThrow(() => new Ffi.LendaswapClient(baseUrl));
+        _hasMnemonic = false;
+    }
 
     /// <summary>
     /// Construct a signing client. The mnemonic is needed to derive the
@@ -142,10 +157,25 @@ public sealed class Client
     /// Held in memory for the lifetime of this instance — callers
     /// concerned about exposure should keep the client short-lived.
     /// </summary>
-    public Client(string baseUrl, string? mnemonic)
+    public Client(string baseUrl, string mnemonic)
     {
-        _baseUrl = baseUrl;
-        _mnemonic = mnemonic;
+        _ffi = TryOrThrow(() => Ffi.LendaswapClient.NewSigning(baseUrl, mnemonic));
+        _hasMnemonic = true;
+    }
+
+    /// <summary>Releases the FFI handle. Idempotent.</summary>
+    public void Dispose() => _ffi.Dispose();
+
+    /// <summary>
+    /// Shared helper: invoke an FFI call and re-wrap its tagged-enum
+    /// error as the public <see cref="SdkException"/>. Used by both the
+    /// constructor (which can fail on invalid base URL) and the method
+    /// bodies below.
+    /// </summary>
+    private static T TryOrThrow<T>(Func<T> call)
+    {
+        try { return call(); }
+        catch (Ffi.SdkException.Internal ex) { throw new SdkException(ex.Message, ex); }
     }
 
     /// <summary>
@@ -160,20 +190,8 @@ public sealed class Client
     /// </remarks>
     public Task<Version> GetVersionAsync(CancellationToken cancellationToken = default)
     {
-        var baseUrl = _baseUrl;
-        return Task.Run(
-            () =>
-            {
-                try
-                {
-                    return Version.FromFfi(Ffi.LendaswapSdkFfiMethods.FetchVersion(baseUrl));
-                }
-                catch (Ffi.SdkException.Internal ex)
-                {
-                    throw new SdkException(ex.Message, ex);
-                }
-            },
-            cancellationToken);
+        var ffi = _ffi;
+        return Task.Run(() => TryOrThrow(() => Version.FromFfi(ffi.Version())), cancellationToken);
     }
 
     /// <summary>
@@ -194,25 +212,14 @@ public sealed class Client
         QuoteAmount amount,
         CancellationToken cancellationToken = default)
     {
-        var baseUrl = _baseUrl;
+        var ffi = _ffi;
         return Task.Run(
-            () =>
-            {
-                try
-                {
-                    return Quote.FromFfi(Ffi.LendaswapSdkFfiMethods.FetchQuote(
-                        baseUrl,
-                        sourceChain,
-                        sourceToken,
-                        targetChain,
-                        targetToken,
-                        amount));
-                }
-                catch (Ffi.SdkException.Internal ex)
-                {
-                    throw new SdkException(ex.Message, ex);
-                }
-            },
+            () => TryOrThrow(() => Quote.FromFfi(ffi.Quote(
+                sourceChain,
+                sourceToken,
+                targetChain,
+                targetToken,
+                amount))),
             cancellationToken);
     }
 
@@ -245,30 +252,21 @@ public sealed class Client
         bool gasless,
         CancellationToken cancellationToken = default)
     {
-        var baseUrl = _baseUrl;
-        var mnemonic = _mnemonic ?? throw new InvalidOperationException(
-            "CreateSwapAsync requires a mnemonic — construct the client with `new Client(baseUrl, mnemonic)`.");
+        if (!_hasMnemonic)
+        {
+            throw new InvalidOperationException(
+                "CreateSwapAsync requires a mnemonic — construct the client with `new Client(baseUrl, mnemonic)`.");
+        }
+        var ffi = _ffi;
         return Task.Run(
-            () =>
-            {
-                try
-                {
-                    return SwapDetails.FromFfi(Ffi.LendaswapSdkFfiMethods.CreateSwap(
-                        baseUrl,
-                        mnemonic,
-                        sourceChain,
-                        sourceToken,
-                        targetChain,
-                        targetToken,
-                        amount,
-                        receiveTo,
-                        gasless));
-                }
-                catch (Ffi.SdkException.Internal ex)
-                {
-                    throw new SdkException(ex.Message, ex);
-                }
-            },
+            () => TryOrThrow(() => SwapDetails.FromFfi(ffi.CreateSwap(
+                sourceChain,
+                sourceToken,
+                targetChain,
+                targetToken,
+                amount,
+                receiveTo,
+                gasless))),
             cancellationToken);
     }
 }
