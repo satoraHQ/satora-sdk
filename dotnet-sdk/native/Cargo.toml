@@ -16,7 +16,12 @@ name = "lendaswap_sdk_ffi"
 crate-type = ["cdylib", "staticlib", "lib"]
 
 [dependencies]
-lendaswap-sdk = { path = "../../rust-sdk" }
+# `gasless` feature pulls in the alloy-based AA stack the FFI exposes
+# via `fund_swap_gasless`. Adds substantial compile time + dylib size
+# (~few MB); when an EVM-disabled build is needed (e.g. iOS-only
+# minimal SDK), gate this off and remove the corresponding methods.
+lendaswap-sdk = { path = "../../rust-sdk", features = ["gasless"] }
+serde_json = "1"
 thiserror = "1"
 # Multi-thread runtime so multiple FFI calls don't serialise on a single
 # worker. block_on() inside extern fns drives async lendaswap-sdk methods
@@ -27,6 +32,11 @@ tokio = { version = "1", features = ["rt-multi-thread"] }
 # pre-1.0 to avoid macro/scaffolding drift between the Rust side and the
 # external C# bindgen.
 uniffi = { version = "0.29", features = ["tokio"] }
+# `url` to construct `AaConfig`'s typed Url fields from the FFI's
+# String inputs; `serde_json` to parse the paymaster context string
+# into the SDK's `serde_json::Value` field. Both versions track what
+# `lendaswap-sdk` itself uses to keep the resolver coherent.
+url = "2"
 
 [build-dependencies]
 uniffi = { version = "0.29", features = ["build"] }

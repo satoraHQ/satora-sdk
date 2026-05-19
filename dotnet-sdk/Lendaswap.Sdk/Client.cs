@@ -121,6 +121,19 @@ public sealed record SwapDetails(
 }
 
 /// <summary>
+/// Result of submitting the gasless ERC-4337 funding userOp.
+/// </summary>
+/// <param name="UserOpHash">The bundler-computed userOpHash (32-byte hex, `0x…`).</param>
+/// <param name="TransactionHash">
+/// On-chain tx hash if the SDK's bounded receipt poll caught it; null
+/// if the poll exhausted (caller can re-poll the bundler directly).
+/// </param>
+public sealed record FundReceipt(string UserOpHash, string? TransactionHash)
+{
+    internal static FundReceipt FromFfi(FundSwapReceiptRaw r) => new(r.@userOpHash, r.@transactionHash);
+}
+
+/// <summary>
 /// Top-level client. Holds an FFI handle whose Rust side owns the
 /// per-swap key_index storage that <see cref="CreateSwapAsync"/> writes
 /// to and the funding / claim flows read from. Dispose this when done
@@ -267,6 +280,31 @@ public sealed class Client : IDisposable
                 amount,
                 receiveTo,
                 gasless))),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Submit the gasless ERC-4337 + EIP-7702 funding userOp for a
+    /// previously-created swap. Requires the client to have been built
+    /// with a mnemonic (the SDK re-derives the per-swap signing key
+    /// from it) AND the depositor EOA must already hold the source
+    /// token at the time of submission.
+    /// </summary>
+    /// <param name="swapId">UUID returned by <see cref="CreateSwapAsync"/>.</param>
+    /// <param name="aaConfig">Bundler / node-RPC / optional paymaster URLs.</param>
+    public Task<FundReceipt> FundSwapAsync(
+        string swapId,
+        AaConfig aaConfig,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_hasMnemonic)
+        {
+            throw new InvalidOperationException(
+                "FundSwapAsync requires a mnemonic — construct the client with `new Client(baseUrl, mnemonic)`.");
+        }
+        var ffi = _ffi;
+        return Task.Run(
+            () => TryOrThrow(() => FundReceipt.FromFfi(ffi.FundSwapGasless(swapId, aaConfig))),
             cancellationToken);
     }
 }

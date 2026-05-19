@@ -38,6 +38,10 @@
     <Using Include="uniffi.lendaswap_sdk_ffi.Address" Alias="Address" />
     <Using Include="uniffi.lendaswap_sdk_ffi.SwapStatus" Alias="SwapStatus" />
     <Using Include="uniffi.lendaswap_sdk_ffi.SwapFunding" Alias="SwapFunding" />
+    <Using Include="uniffi.lendaswap_sdk_ffi.AaConfig" Alias="AaConfig" />
+    <Using Include="uniffi.lendaswap_sdk_ffi.PaymasterConfig" Alias="PaymasterConfig" />
+    <Using Include="uniffi.lendaswap_sdk_ffi.BundlerCasing" Alias="BundlerCasing" />
+    <Using Include="uniffi.lendaswap_sdk_ffi.FundSwapReceipt" Alias="FundSwapReceiptRaw" />
   </ItemGroup>
 
   <!-- Native libraries: at pack time these go under runtimes/{rid}/native
