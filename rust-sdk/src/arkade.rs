@@ -49,6 +49,7 @@ use ark_rs::core::send::SendReceiver;
 use ark_rs::core::send::VtxoInput;
 use ark_rs::core::send::build_offchain_transactions;
 use ark_rs::core::send::sign_ark_transaction;
+use ark_rs::core::send::sign_checkpoint_transaction;
 use ark_rs::core::server::parse_sequence_number;
 use ark_rs::core::vhtlc::VhtlcOptions;
 use ark_rs::core::vhtlc::VhtlcScript;
@@ -555,11 +556,51 @@ impl Client {
         let ark_txid = ark_tx.unsigned_tx.compute_txid();
         tracing::info!(%ark_txid, "claim: ark TX signed");
 
-        // 8: submit + finalize — implemented in the next commit.
-        let _ = checkpoint_txs;
-        Err(Error::InvalidSwap(
-            "Client::claim: submit + finalize not implemented yet (next commit)".to_string(),
-        ))
+        // 8. Submit the signed Ark TX + checkpoint PSBTs to the Arkade server. The server co-signs
+        //    the checkpoints and hands them back so we can finalize. (Two-step because the
+        //    checkpoint chain anchors the offchain spend against unilateral exit.)
+        let submit_res = arkade
+            .client
+            .network_client()
+            .submit_offchain_transaction_request(ark_tx, checkpoint_txs)
+            .await
+            .map_err(|e| Error::Transport(format!("submit_offchain_transaction_request: {e}")))?;
+
+        let mut checkpoint_psbt = submit_res
+            .signed_checkpoint_txs
+            .first()
+            .ok_or_else(|| {
+                Error::Transport(
+                    "submit_offchain_transaction_request returned no signed checkpoint TXs"
+                        .to_string(),
+                )
+            })?
+            .clone();
+
+        // 9. Sign the server-cosigned checkpoint with our key (and again embed the preimage as a
+        //    VHTLC condition — the server checks it on finalize too) and ship it back to finalize.
+        //    After this, the VHTLC is spent offchain and funds are at `destination`.
+        sign_checkpoint_transaction(sign_fn, &mut checkpoint_psbt)
+            .map_err(|e| Error::Decode(format!("sign_checkpoint_transaction: {e}")))?;
+
+        arkade
+            .client
+            .network_client()
+            .finalize_offchain_transaction(ark_txid, vec![checkpoint_psbt])
+            .await
+            .map_err(|e| Error::Transport(format!("finalize_offchain_transaction: {e}")))?;
+
+        tracing::info!(
+            %swap_id,
+            %ark_txid,
+            amount_sats = claim_amount.to_sat(),
+            "claim: VHTLC swept",
+        );
+
+        Ok(ClaimReceipt {
+            ark_txid,
+            claim_amount_sats: claim_amount.to_sat(),
+        })
     }
 }
 
