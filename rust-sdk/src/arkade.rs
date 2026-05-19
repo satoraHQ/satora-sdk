@@ -39,8 +39,16 @@ use ark_rs::client::TxStatus;
 use ark_rs::client::error::Error as ArkError;
 use ark_rs::client::swap_storage::InMemorySwapStorage;
 use ark_rs::client::wallet::Persistence;
+use ark_rs::core::ArkAddress;
 use ark_rs::core::BoardingOutput;
 use ark_rs::core::ExplorerUtxo;
+use ark_rs::core::VTXO_CONDITION_KEY;
+use ark_rs::core::VtxoList;
+use ark_rs::core::send::OffchainTransactions;
+use ark_rs::core::send::SendReceiver;
+use ark_rs::core::send::VtxoInput;
+use ark_rs::core::send::build_offchain_transactions;
+use ark_rs::core::send::sign_ark_transaction;
 use ark_rs::core::server::parse_sequence_number;
 use ark_rs::core::vhtlc::VhtlcOptions;
 use ark_rs::core::vhtlc::VhtlcScript;
@@ -50,16 +58,24 @@ use bitcoin::Network;
 use bitcoin::OutPoint;
 use bitcoin::Transaction;
 use bitcoin::Txid;
+use bitcoin::VarInt;
 use bitcoin::XOnlyPublicKey;
 use bitcoin::bip32::DerivationPath;
 use bitcoin::bip32::Xpriv;
+use bitcoin::consensus::Encodable;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::ripemd160;
 use bitcoin::hashes::sha256;
 use bitcoin::key::Secp256k1;
+use bitcoin::psbt;
+use bitcoin::secp256k1;
+use bitcoin::secp256k1::Keypair;
 use bitcoin::secp256k1::SecretKey;
+use bitcoin::secp256k1::schnorr;
+use bitcoin::taproot::LeafVersion;
 use esplora_client::OutputStatus;
 use std::collections::HashMap;
+use std::io::Write;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::RwLock;
@@ -424,13 +440,125 @@ impl Client {
 
         // 4. Wire up the Arkade client. The connect blocks on gRPC, which is why everything that
         //    can fail without network is above this line.
-        let _arkade = ArkadeWallet::connect(&config).await?;
+        let arkade = ArkadeWallet::connect(&config).await?;
 
-        // 5+: VTXO fetch, offchain claim TX, submit, finalize.
-        //     Implemented in follow-up commits.
-        let _ = (vhtlc, destination, &swap_params);
+        // 5. Find the VHTLC's VTXO. The VHTLC produces exactly one output, but the indexer can take
+        //    a moment to surface it even after the backend reaches ServerFunded — callers that race
+        //    the indexer should poll on top of this rather than retry inside the claim path.
+        let vhtlc_ark_address = vhtlc.address();
+        let virtual_tx_outpoints = arkade
+            .client
+            .get_virtual_tx_outpoints(std::iter::once(vhtlc_ark_address))
+            .await
+            .map_err(|e| Error::Transport(format!("get_virtual_tx_outpoints: {e}")))?;
+
+        let vtxo_list = VtxoList::new(arkade.client.server_info.dust, virtual_tx_outpoints);
+        let vhtlc_outpoint = vtxo_list
+            .all_unspent()
+            .next()
+            .ok_or_else(|| {
+                Error::InvalidSwap(format!(
+                    "no unspent VTXO at VHTLC address {} — funding not yet visible to the Arkade indexer",
+                    resp.btc_vhtlc_address,
+                ))
+            })?
+            .clone();
+        let claim_amount = vhtlc_outpoint.amount;
+        tracing::info!(
+            amount_sats = claim_amount.to_sat(),
+            outpoint = %vhtlc_outpoint.outpoint,
+            "claim: located VHTLC VTXO",
+        );
+
+        // 6. Construct the VtxoInput spending via the VHTLC's claim script (preimage + receiver sig
+        //    + server sig). The control block lets the spending tx prove the script is in the
+        //    Taproot tree without revealing the other leaves.
+        let destination_address = ArkAddress::decode(destination)
+            .map_err(|e| Error::InvalidSwap(format!("destination ArkAddress::decode: {e}")))?;
+
+        let spend_info = vhtlc.taproot_spend_info();
+        let claim_script = vhtlc.claim_script();
+        let script_ver = (claim_script.clone(), LeafVersion::TapScript);
+        let control_block = spend_info.control_block(&script_ver).ok_or_else(|| {
+            Error::InvalidSwap(
+                "control block not found for claim script — VhtlcScript out of sync".to_string(),
+            )
+        })?;
+
+        // `tapscripts(self)` consumes the VHTLC by value, so capture
+        // any other fields we still need (script_pubkey) first.
+        let script_pubkey = vhtlc.script_pubkey();
+        let tapscripts = vhtlc.tapscripts();
+        let vhtlc_input = VtxoInput::new(
+            claim_script,
+            None,
+            control_block,
+            tapscripts,
+            script_pubkey,
+            claim_amount,
+            vhtlc_outpoint.outpoint,
+            vhtlc_outpoint.assets.clone(),
+        );
+
+        let outputs = vec![SendReceiver::bitcoin(destination_address, claim_amount)];
+        // We're draining the VHTLC entirely; reuse the destination as the change address (no
+        // change will actually be produced).
+        let OffchainTransactions {
+            mut ark_tx,
+            checkpoint_txs,
+        } = build_offchain_transactions(
+            &outputs,
+            &destination_address,
+            std::slice::from_ref(&vhtlc_input),
+            &arkade.client.server_info,
+        )
+        .map_err(|e| Error::Decode(format!("build_offchain_transactions: {e}")))?;
+
+        // 7. Sign the Ark TX with the user's per-swap secp256k1 key AND embed the preimage as a
+        //    PSBT field under the VHTLC's condition key (type=222) — the Ark server reads it on
+        //    submit to satisfy the OP_HASH160 branch of the claim script. Layout per ark-core's
+        //    witness format: 0x01 || varint(preimage_len) || preimage
+        let secret_key = secp256k1::SecretKey::from_slice(&swap_params.secret)
+            .map_err(|e| Error::InvalidSigner(format!("secp256k1 SecretKey::from_slice: {e}")))?;
+        let secp = Secp256k1::new();
+        let claimer_kp = Keypair::from_secret_key(&secp, &secret_key);
+        let preimage_bytes = swap_params.preimage;
+        let sign_fn = |input: &mut psbt::Input,
+                       msg: secp256k1::Message|
+         -> std::result::Result<
+            Vec<(schnorr::Signature, XOnlyPublicKey)>,
+            ark_rs::core::Error,
+        > {
+            // Encode the preimage witness: 0x01 (count) || varint(len) || preimage.
+            let mut bytes = vec![1u8];
+            VarInt::from(preimage_bytes.len() as u64)
+                .consensus_encode(&mut bytes)
+                .expect("varint encode never fails on Vec");
+            bytes
+                .write_all(&preimage_bytes)
+                .expect("write to Vec never fails");
+            input.unknown.insert(
+                psbt::raw::Key {
+                    type_value: 222,
+                    key: VTXO_CONDITION_KEY.to_vec(),
+                },
+                bytes,
+            );
+
+            let sig = Secp256k1::new().sign_schnorr_no_aux_rand(&msg, &claimer_kp);
+            let pk = claimer_kp.x_only_public_key().0;
+            Ok(vec![(sig, pk)])
+        };
+
+        sign_ark_transaction(sign_fn, &mut ark_tx, 0)
+            .map_err(|e| Error::Decode(format!("sign_ark_transaction: {e}")))?;
+        let ark_txid = ark_tx.unsigned_tx.compute_txid();
+        tracing::info!(%ark_txid, "claim: ark TX signed");
+
+        // 8: submit + finalize — implemented in the next commit.
+        let _ = checkpoint_txs;
         Err(Error::InvalidSwap(
-            "Client::claim: VTXO sweep not implemented yet (next commit)".to_string(),
+            "Client::claim: submit + finalize not implemented yet (next commit)".to_string(),
         ))
     }
 }
