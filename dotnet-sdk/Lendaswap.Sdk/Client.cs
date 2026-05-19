@@ -87,14 +87,66 @@ public sealed record Quote(
 
 
 /// <summary>
+/// Compact, user-facing view of a created swap. Mirrors
+/// <c>lendaswap_sdk::Swap</c> — amount fields stay as strings to
+/// preserve precision for large EVM token amounts.
+/// </summary>
+/// <param name="Id">Swap UUID. Persist this to drive funding / claim.</param>
+/// <param name="Status">Current backend state; see <see cref="SwapStatus"/>.</param>
+/// <param name="Funding">Funding instructions; depends on whether the swap was created with gasless on/off.</param>
+/// <param name="DepositAmount">Amount the user must deposit, in the smallest unit of <paramref name="DepositToken"/>.</param>
+/// <param name="DepositToken">Source token the user pays in.</param>
+/// <param name="ReceiveAddress">Where the user receives the target asset.</param>
+/// <param name="ReceiveAmount">Amount the user will receive, in the smallest unit of <paramref name="ReceiveToken"/>.</param>
+/// <param name="ReceiveToken">Target token the user receives.</param>
+public sealed record SwapDetails(
+    string Id,
+    SwapStatus Status,
+    SwapFunding Funding,
+    string DepositAmount,
+    TokenId DepositToken,
+    string ReceiveAddress,
+    string ReceiveAmount,
+    TokenId ReceiveToken)
+{
+    internal static SwapDetails FromFfi(Ffi.Swap s) => new(
+        s.@id,
+        s.@status,
+        s.@funding,
+        s.@depositAmount,
+        s.@depositToken,
+        s.@receiveAddress,
+        s.@receiveAmount,
+        s.@receiveToken);
+}
+
+/// <summary>
 /// Top-level client. Today only exposes <see cref="GetVersionAsync"/> as
 /// a smoke endpoint; full surface lands as the FFI exports grow.
 /// </summary>
 public sealed class Client
 {
     private readonly string _baseUrl;
+    private readonly string? _mnemonic;
 
-    public Client(string baseUrl) => _baseUrl = baseUrl;
+    /// <summary>
+    /// Construct a read-only client — supports <see cref="GetVersionAsync"/>
+    /// and <see cref="GetQuoteAsync"/>. Calls that require a signer (e.g.
+    /// <see cref="CreateSwapAsync"/>) throw if invoked from here.
+    /// </summary>
+    public Client(string baseUrl) : this(baseUrl, mnemonic: null) { }
+
+    /// <summary>
+    /// Construct a signing client. The mnemonic is needed to derive the
+    /// per-swap preimage and EVM key for create / fund / claim flows.
+    /// Held in memory for the lifetime of this instance — callers
+    /// concerned about exposure should keep the client short-lived.
+    /// </summary>
+    public Client(string baseUrl, string? mnemonic)
+    {
+        _baseUrl = baseUrl;
+        _mnemonic = mnemonic;
+    }
 
     /// <summary>
     /// Fetch the deployed backend's version and commit hash.
@@ -155,6 +207,62 @@ public sealed class Client
                         targetChain,
                         targetToken,
                         amount));
+                }
+                catch (Ffi.SdkException.Internal ex)
+                {
+                    throw new SdkException(ex.Message, ex);
+                }
+            },
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Create a swap. Today the SDK only routes EVM stablecoin → BTC on
+    /// Arkade; other direction combos return an <see cref="SdkException"/>.
+    /// Requires the client to be constructed with a mnemonic (see
+    /// <see cref="Client(string, string)"/>) — the signer derives the
+    /// per-swap preimage and EVM EOA from it.
+    /// </summary>
+    /// <param name="sourceChain">Source chain enum.</param>
+    /// <param name="sourceToken">Source token enum.</param>
+    /// <param name="targetChain">Target chain enum.</param>
+    /// <param name="targetToken">Target token enum.</param>
+    /// <param name="amount">Source / target amount mutex.</param>
+    /// <param name="receiveTo">Destination address tagged with its rail.</param>
+    /// <param name="gasless">
+    /// When <c>true</c>, the backend returns a deposit address the user
+    /// funds with a plain ERC-20 transfer; the SDK then relays into the
+    /// HTLC via a Permit2-signed userOp. When <c>false</c>, funding the
+    /// HTLC is the caller's responsibility (out-of-band calldata fetch).
+    /// </param>
+    public Task<SwapDetails> CreateSwapAsync(
+        ChainId sourceChain,
+        TokenId sourceToken,
+        ChainId targetChain,
+        TokenId targetToken,
+        QuoteAmount amount,
+        Address receiveTo,
+        bool gasless,
+        CancellationToken cancellationToken = default)
+    {
+        var baseUrl = _baseUrl;
+        var mnemonic = _mnemonic ?? throw new InvalidOperationException(
+            "CreateSwapAsync requires a mnemonic — construct the client with `new Client(baseUrl, mnemonic)`.");
+        return Task.Run(
+            () =>
+            {
+                try
+                {
+                    return SwapDetails.FromFfi(Ffi.LendaswapSdkFfiMethods.CreateSwap(
+                        baseUrl,
+                        mnemonic,
+                        sourceChain,
+                        sourceToken,
+                        targetChain,
+                        targetToken,
+                        amount,
+                        receiveTo,
+                        gasless));
                 }
                 catch (Ffi.SdkException.Internal ex)
                 {
