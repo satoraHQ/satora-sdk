@@ -22,6 +22,12 @@ using ChainId = uniffi.lendaswap_sdk_ffi.ChainId;
 using TokenId = uniffi.lendaswap_sdk_ffi.TokenId;
 using QuoteAmount = uniffi.lendaswap_sdk_ffi.QuoteAmount;
 using Address = uniffi.lendaswap_sdk_ffi.Address;
+using AaConfig = uniffi.lendaswap_sdk_ffi.AaConfig;
+using PaymasterConfig = uniffi.lendaswap_sdk_ffi.PaymasterConfig;
+using BundlerCasing = uniffi.lendaswap_sdk_ffi.BundlerCasing;
+using ArkadeConfig = uniffi.lendaswap_sdk_ffi.ArkadeConfig;
+using BitcoinNetwork = uniffi.lendaswap_sdk_ffi.BitcoinNetwork;
+using SwapStatus = uniffi.lendaswap_sdk_ffi.SwapStatus;
 
 return await Cli.RunAsync(args).ConfigureAwait(false);
 
@@ -43,6 +49,8 @@ internal static class Cli
             {
                 "quote" => await QuoteCommand.RunAsync(args[1..]).ConfigureAwait(false),
                 "create-swap" => await CreateSwapCommand.RunAsync(args[1..]).ConfigureAwait(false),
+                "status" => await StatusCommand.RunAsync(args[1..]).ConfigureAwait(false),
+                "flow" => await FlowCommand.RunAsync(args[1..]).ConfigureAwait(false),
                 _ => Fail($"unknown subcommand: {args[0]}"),
             };
         }
@@ -72,23 +80,33 @@ internal static class Cli
             USAGE:
                 lendaswap quote        --source <chain:token> --target <chain:token> --source-amount "<value> <unit>"
                 lendaswap quote        --source <chain:token> --target <chain:token> --target-amount "<value> <unit>"
-                lendaswap create-swap  --source <chain:token> --target <chain:token> --target-amount "<value> <unit>" --receive-to "<address>" [--gasless]
+                lendaswap create-swap  --source <chain:token> --target <chain:token> --target-amount "<value> <unit>" --receive-to "<addr>" [--gasless]
+                lendaswap status       <swap-id>
+                lendaswap flow         --source <chain:token> --target <chain:token> --target-amount "<value> <unit>" --receive-to "<addr>" [--gasless]
 
             EXAMPLES:
                 lendaswap quote        --source Arb:USDT --target Arkade:BTC --source-amount "10 USD"
-                lendaswap quote        --source Arb:USDT --target Arkade:BTC --target-amount "1000 sats"
                 lendaswap create-swap  --source Arb:USDC --target Arkade:BTC --target-amount "10000 sats" --receive-to "tark1q..." --gasless
+                lendaswap status       38da340b-784d-4132-bc50-6218a7af9872
+                lendaswap flow         --source Arb:USDC --target Arkade:BTC --target-amount "10000 sats" --receive-to "tark1q..." --gasless
 
             CHAIN ALIASES: Arb, Eth, Pol, Arkade, Lightning, Bitcoin
             TOKEN ALIASES: USDC, USDT, USDT0, WBTC, BTC
             UNITS:         USD (×10^6), sats (×1), raw (×1)
 
             ENV:
-                LENDASWAP_API_URL   override the default backend
-                                    (default: https://api.satora.io)
-                MNEMONIC            BIP-39 mnemonic — required for `create-swap`.
-                                    Stays in this process's memory only; never
-                                    persisted, never echoed.
+                LENDASWAP_API_URL       override the default backend
+                                        (default: https://api.satora.io)
+                MNEMONIC                BIP-39 mnemonic — required for `create-swap` / `flow`.
+                                        Stays in this process's memory only.
+                AA_BUNDLER_URL          ERC-4337 bundler endpoint        (flow --gasless)
+                AA_NODE_RPC_URL         EVM node RPC for the AA stack    (flow --gasless)
+                AA_PAYMASTER_URL        optional paymaster endpoint      (flow --gasless)
+                AA_PAYMASTER_CONTEXT    optional paymaster JSON context  (flow --gasless)
+                ARKADE_URL              Arkade arkd gRPC endpoint        (flow)
+                ESPLORA_URL             Esplora HTTP endpoint            (flow)
+                ARKADE_MNEMONIC         BIP-39 mnemonic for the Arkade identity (flow)
+                ARKADE_NETWORK          mainnet|testnet|signet|regtest   (flow, default regtest)
             """);
     }
 }
@@ -369,6 +387,222 @@ internal static class CreateSwapCommand
         Console.WriteLine($"  receive_to     : {swap.ReceiveAddress}");
         Console.WriteLine($"  funding        : {swap.Funding}");
         return 0;
+    }
+
+    private static string TakeValue(string[] args, ref int i, string flag)
+    {
+        if (i + 1 >= args.Length)
+        {
+            throw new ArgumentException($"{flag} requires a value");
+        }
+        return args[++i];
+    }
+}
+
+/// <summary>
+/// Implements the <c>status</c> subcommand — a one-shot read of a
+/// swap's current backend state. Doesn't need a mnemonic; uses the
+/// read-only client.
+/// </summary>
+internal static class StatusCommand
+{
+    internal static async Task<int> RunAsync(string[] args)
+    {
+        if (args.Length != 1 || args[0].StartsWith("--"))
+        {
+            Console.Error.WriteLine("error: status takes exactly one positional argument: <swap-id>");
+            return 2;
+        }
+        var swapId = args[0];
+        var baseUrl = Environment.GetEnvironmentVariable("LENDASWAP_API_URL") ?? "https://api.satora.io";
+        using var client = new Client(baseUrl);
+        var swap = await client.GetSwapAsync(swapId).ConfigureAwait(false);
+
+        Console.WriteLine($"  swap_id        : {swap.Id}");
+        Console.WriteLine($"  status         : {swap.Status}");
+        Console.WriteLine($"  deposit_amount : {swap.DepositAmount}");
+        Console.WriteLine($"  deposit_token  : {swap.DepositToken}");
+        Console.WriteLine($"  receive_amount : {swap.ReceiveAmount}");
+        Console.WriteLine($"  receive_token  : {swap.ReceiveToken}");
+        Console.WriteLine($"  receive_to     : {swap.ReceiveAddress}");
+        Console.WriteLine($"  funding        : {swap.Funding}");
+        return 0;
+    }
+}
+
+/// <summary>
+/// Implements the <c>flow</c> subcommand: end-to-end create → fund →
+/// wait → claim in a single process. Mirrors the Rust e2e's
+/// `evm_to_arkade` scenario (scripts/e2e-rust/src/tests/) so the C#
+/// surface gets the same demonstration path. State (per-swap
+/// key_index) lives in the FFI handle's in-memory storage — that's
+/// why these four operations have to run in one process.
+/// </summary>
+internal static class FlowCommand
+{
+    internal static async Task<int> RunAsync(string[] args)
+    {
+        string? source = null;
+        string? target = null;
+        string? sourceAmount = null;
+        string? targetAmount = null;
+        string? receiveTo = null;
+        var gasless = false;
+
+        for (var i = 0; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--source": source = TakeValue(args, ref i, "--source"); break;
+                case "--target": target = TakeValue(args, ref i, "--target"); break;
+                case "--source-amount": sourceAmount = TakeValue(args, ref i, "--source-amount"); break;
+                case "--target-amount": targetAmount = TakeValue(args, ref i, "--target-amount"); break;
+                case "--receive-to": receiveTo = TakeValue(args, ref i, "--receive-to"); break;
+                case "--gasless": gasless = true; break;
+                default:
+                    Console.Error.WriteLine($"error: unexpected arg `{args[i]}`");
+                    return 2;
+            }
+        }
+
+        if (source is null || target is null || receiveTo is null)
+        {
+            Console.Error.WriteLine("error: --source, --target and --receive-to are required");
+            return 2;
+        }
+        if ((sourceAmount is null) == (targetAmount is null))
+        {
+            Console.Error.WriteLine("error: exactly one of --source-amount / --target-amount must be set");
+            return 2;
+        }
+
+        var mnemonic = RequireEnv("MNEMONIC", "lendaswap signing mnemonic");
+        if (mnemonic is null) return 2;
+
+        var (sourceChain, sourceToken) = QuoteCommand.ResolvePairInternal(source);
+        var (targetChain, targetToken) = QuoteCommand.ResolvePairInternal(target);
+
+        QuoteAmount amount = sourceAmount is not null
+            ? new QuoteAmount.Source(QuoteCommand.ParseAmountInternal(sourceAmount, sourceToken))
+            : new QuoteAmount.Target(QuoteCommand.ParseAmountInternal(targetAmount!, targetToken));
+
+        Address receiveAddress = targetChain switch
+        {
+            ChainId.Arkade => new Address.Arkade(receiveTo),
+            ChainId.Bitcoin => new Address.Bitcoin(receiveTo),
+            ChainId.Lightning => new Address.Lightning(receiveTo),
+            ChainId.Arbitrum or ChainId.Ethereum or ChainId.Polygon
+                => new Address.Evm(receiveTo),
+            _ => throw new ArgumentException(
+                $"cannot infer Address rail for target chain {targetChain}"),
+        };
+
+        var baseUrl = Environment.GetEnvironmentVariable("LENDASWAP_API_URL") ?? "https://api.satora.io";
+        using var client = new Client(baseUrl, mnemonic);
+
+        // ── 1. Create the swap ──
+        Console.WriteLine("[1/4] create-swap");
+        var swap = await client.CreateSwapAsync(
+            sourceChain, sourceToken, targetChain, targetToken, amount, receiveAddress, gasless)
+            .ConfigureAwait(false);
+        Console.WriteLine($"  swap_id        : {swap.Id}");
+        Console.WriteLine($"  status         : {swap.Status}");
+        Console.WriteLine($"  deposit_amount : {swap.DepositAmount}");
+        Console.WriteLine($"  receive_amount : {swap.ReceiveAmount}");
+        Console.WriteLine($"  funding        : {swap.Funding}");
+
+        if (gasless)
+        {
+            // ── 2. Fund via the gasless ERC-4337 + EIP-7702 flow ──
+            //
+            // Real users transfer source-tokens to the SwapFunding.Gasless
+            // deposit_address out-of-band BEFORE invoking the bundler. The
+            // CLI assumes you've done that already — it doesn't do Anvil
+            // pre-seeding (that's the Rust e2e harness's job).
+            Console.WriteLine();
+            Console.WriteLine("[2/4] fund (gasless)");
+            var bundlerUrl = RequireEnv("AA_BUNDLER_URL", "ERC-4337 bundler URL");
+            var nodeRpcUrl = RequireEnv("AA_NODE_RPC_URL", "EVM node RPC URL");
+            if (bundlerUrl is null || nodeRpcUrl is null) return 2;
+
+            PaymasterConfig? paymaster = null;
+            var paymasterUrl = Environment.GetEnvironmentVariable("AA_PAYMASTER_URL");
+            if (!string.IsNullOrWhiteSpace(paymasterUrl))
+            {
+                var context = Environment.GetEnvironmentVariable("AA_PAYMASTER_CONTEXT") ?? "null";
+                paymaster = new PaymasterConfig(paymasterUrl, context);
+            }
+
+            var aa = new AaConfig(
+                bundlerUrl,
+                nodeRpcUrl,
+                paymaster,
+                BundlerCasing.CamelCase);
+            var fund = await client.FundSwapAsync(swap.Id, aa).ConfigureAwait(false);
+            Console.WriteLine($"  user_op_hash   : {fund.UserOpHash}");
+            Console.WriteLine($"  tx_hash        : {fund.TransactionHash ?? "<poll exhausted>"}");
+
+            // ── 3. Wait for serverfunded ──
+            Console.WriteLine();
+            Console.WriteLine("[3/4] wait-for-serverfunded");
+            var reached = await client.WaitForSwapStatusAsync(
+                swap.Id,
+                // SwapStatus variants are tagged-enum nested types — each is
+                // its own no-arg ctor call. Three accept-states cover the
+                // race where the swap progresses past ServerFunded between
+                // polls (matches the Rust e2e's target list).
+                new SwapStatus[]
+                {
+                    new SwapStatus.ServerFunded(),
+                    new SwapStatus.ClientRedeemed(),
+                    new SwapStatus.ServerRedeemed(),
+                },
+                TimeSpan.FromMinutes(5)).ConfigureAwait(false);
+            Console.WriteLine($"  reached        : {reached}");
+
+            // ── 4. Claim the Arkade VHTLC ──
+            //
+            // Claim needs a separate ARKADE_MNEMONIC because the Arkade
+            // identity is a distinct BIP-85 derivation; the SDK doesn't
+            // assume the same mnemonic serves both rails.
+            Console.WriteLine();
+            Console.WriteLine("[4/4] claim");
+            var arkadeUrl = RequireEnv("ARKADE_URL", "Arkade arkd gRPC endpoint");
+            var esploraUrl = RequireEnv("ESPLORA_URL", "esplora HTTP endpoint");
+            var arkadeMnemonic = RequireEnv("ARKADE_MNEMONIC", "BIP-39 mnemonic for the Arkade identity");
+            if (arkadeUrl is null || esploraUrl is null || arkadeMnemonic is null) return 2;
+            var network = (Environment.GetEnvironmentVariable("ARKADE_NETWORK") ?? "regtest").ToLowerInvariant() switch
+            {
+                "mainnet" or "bitcoin" => BitcoinNetwork.Mainnet,
+                "testnet" => BitcoinNetwork.Testnet,
+                "signet" => BitcoinNetwork.Signet,
+                _ => BitcoinNetwork.Regtest,
+            };
+
+            var arkade = new ArkadeConfig(arkadeUrl, esploraUrl, arkadeMnemonic, network);
+            var claim = await client.ClaimAsync(swap.Id, receiveTo, arkade).ConfigureAwait(false);
+            Console.WriteLine($"  ark_txid       : {claim.ArkTxid}");
+            Console.WriteLine($"  amount_sats    : {claim.ClaimAmountSats}");
+        }
+        else
+        {
+            Console.WriteLine();
+            Console.WriteLine("note: --gasless not set; flow stops after create. Use the SwapFunding.UserSubmitted");
+            Console.WriteLine("      flow to submit funding from your own wallet, then `status` to track.");
+        }
+
+        return 0;
+    }
+
+    private static string? RequireEnv(string name, string description)
+    {
+        var value = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            Console.Error.WriteLine($"error: {name} env var must be set ({description}).");
+            return null;
+        }
+        return value;
     }
 
     private static string TakeValue(string[] args, ref int i, string flag)
