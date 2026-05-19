@@ -746,12 +746,18 @@ static class _UniFFILib {
     
     
     
+    
+    
 
     static _UniFFILib() {
         _UniFFILib.uniffiCheckContractApiVersion();
         _UniFFILib.uniffiCheckApiChecksums();
         
         }
+
+    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_lendaswap_sdk_ffi_fn_func_create_swap(RustBuffer @baseUrl,RustBuffer @mnemonic,RustBuffer @sourceChain,RustBuffer @sourceToken,RustBuffer @targetChain,RustBuffer @targetToken,RustBuffer @amount,RustBuffer @receiveTo,sbyte @gasless,ref UniffiRustCallStatus _uniffi_out_err
+    );
 
     [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern RustBuffer uniffi_lendaswap_sdk_ffi_fn_func_fetch_quote(RustBuffer @baseUrl,RustBuffer @sourceChain,RustBuffer @sourceToken,RustBuffer @targetChain,RustBuffer @targetToken,RustBuffer @amount,ref UniffiRustCallStatus _uniffi_out_err
@@ -986,6 +992,10 @@ static class _UniFFILib {
     );
 
     [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_lendaswap_sdk_ffi_checksum_func_create_swap(
+    );
+
+    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern ushort uniffi_lendaswap_sdk_ffi_checksum_func_fetch_quote(
     );
 
@@ -1007,6 +1017,12 @@ static class _UniFFILib {
     }
 
     static void uniffiCheckApiChecksums() {
+        {
+            var checksum = _UniFFILib.uniffi_lendaswap_sdk_ffi_checksum_func_create_swap();
+            if (checksum != 52163) {
+                throw new UniffiContractChecksumException($"uniffi.lendaswap_sdk_ffi: uniffi bindings expected function `uniffi_lendaswap_sdk_ffi_checksum_func_create_swap` checksum `52163`, library returned `{checksum}`");
+            }
+        }
         {
             var checksum = _UniFFILib.uniffi_lendaswap_sdk_ffi_checksum_func_fetch_quote();
             if (checksum != 27156) {
@@ -1076,6 +1092,32 @@ class FfiConverterDouble: FfiConverter<double, double> {
 
     public override void Write(double value, BigEndianStream stream) {
         stream.WriteDouble(value);
+    }
+}
+
+
+
+class FfiConverterBoolean: FfiConverter<bool, sbyte> {
+    public static FfiConverterBoolean INSTANCE = new FfiConverterBoolean();
+
+    public override bool Lift(sbyte value) {
+        return value != 0;
+    }
+
+    public override bool Read(BigEndianStream stream) {
+        return Lift(stream.ReadSByte());
+    }
+
+    public override sbyte Lower(bool value) {
+        return value ? (sbyte)1 : (sbyte)0;
+    }
+
+    public override int AllocationSize(bool value) {
+        return (sbyte)1;
+    }
+
+    public override void Write(bool value, BigEndianStream stream) {
+        stream.WriteSByte(Lower(value));
     }
 }
 
@@ -1208,6 +1250,65 @@ class FfiConverterTypeQuoteResult: FfiConverterRustBuffer<QuoteResult> {
 
 
 /// <summary>
+/// Compact, user-facing view of a created swap. Mirrors
+/// `lendaswap_sdk::Swap` — amounts stay as strings to preserve
+/// precision for large EVM token amounts.
+/// </summary>
+public record Swap (
+    string @id, 
+    SwapStatus @status, 
+    SwapFunding @funding, 
+    string @depositAmount, 
+    TokenId @depositToken, 
+    string @receiveAddress, 
+    string @receiveAmount, 
+    TokenId @receiveToken
+) {
+}
+
+class FfiConverterTypeSwap: FfiConverterRustBuffer<Swap> {
+    public static FfiConverterTypeSwap INSTANCE = new FfiConverterTypeSwap();
+
+    public override Swap Read(BigEndianStream stream) {
+        return new Swap(
+            @id: FfiConverterString.INSTANCE.Read(stream),
+            @status: FfiConverterTypeSwapStatus.INSTANCE.Read(stream),
+            @funding: FfiConverterTypeSwapFunding.INSTANCE.Read(stream),
+            @depositAmount: FfiConverterString.INSTANCE.Read(stream),
+            @depositToken: FfiConverterTypeTokenId.INSTANCE.Read(stream),
+            @receiveAddress: FfiConverterString.INSTANCE.Read(stream),
+            @receiveAmount: FfiConverterString.INSTANCE.Read(stream),
+            @receiveToken: FfiConverterTypeTokenId.INSTANCE.Read(stream)
+        );
+    }
+
+    public override int AllocationSize(Swap value) {
+        return 0
+            + FfiConverterString.INSTANCE.AllocationSize(value.@id)
+            + FfiConverterTypeSwapStatus.INSTANCE.AllocationSize(value.@status)
+            + FfiConverterTypeSwapFunding.INSTANCE.AllocationSize(value.@funding)
+            + FfiConverterString.INSTANCE.AllocationSize(value.@depositAmount)
+            + FfiConverterTypeTokenId.INSTANCE.AllocationSize(value.@depositToken)
+            + FfiConverterString.INSTANCE.AllocationSize(value.@receiveAddress)
+            + FfiConverterString.INSTANCE.AllocationSize(value.@receiveAmount)
+            + FfiConverterTypeTokenId.INSTANCE.AllocationSize(value.@receiveToken);
+    }
+
+    public override void Write(Swap value, BigEndianStream stream) {
+            FfiConverterString.INSTANCE.Write(value.@id, stream);
+            FfiConverterTypeSwapStatus.INSTANCE.Write(value.@status, stream);
+            FfiConverterTypeSwapFunding.INSTANCE.Write(value.@funding, stream);
+            FfiConverterString.INSTANCE.Write(value.@depositAmount, stream);
+            FfiConverterTypeTokenId.INSTANCE.Write(value.@depositToken, stream);
+            FfiConverterString.INSTANCE.Write(value.@receiveAddress, stream);
+            FfiConverterString.INSTANCE.Write(value.@receiveAmount, stream);
+            FfiConverterTypeTokenId.INSTANCE.Write(value.@receiveToken, stream);
+    }
+}
+
+
+
+/// <summary>
 /// Version reported by the backend (`GET /version`). Mirrors
 /// `lendaswap_sdk::types::Version` — copied here as a `uniffi::Record`
 /// so the FFI surface owns its own data shape and can evolve
@@ -1240,6 +1341,112 @@ class FfiConverterTypeVersion: FfiConverterRustBuffer<Version> {
             FfiConverterString.INSTANCE.Write(value.@commitHash, stream);
     }
 }
+
+
+
+
+
+/// <summary>
+/// Receive-address tag. Mirrors `lendaswap_sdk::types::Address` — the
+/// variant carries both the network and the encoded string so callers
+/// can't accidentally pass a Bitcoin address where an Arkade address
+/// is required (or vice versa). The SDK's direction validator catches
+/// the mismatch but errors are clearer when the type system catches it
+/// first.
+/// </summary>
+public record Address {
+    
+    public record Arkade (
+        string @address
+    ) : Address {}
+    
+    public record Bitcoin (
+        string @address
+    ) : Address {}
+    
+    public record Lightning (
+        string @invoice
+    ) : Address {}
+    
+    public record Evm (
+        string @address
+    ) : Address {}
+    
+
+    
+}
+
+class FfiConverterTypeAddress : FfiConverterRustBuffer<Address>{
+    public static FfiConverterRustBuffer<Address> INSTANCE = new FfiConverterTypeAddress();
+
+    public override Address Read(BigEndianStream stream) {
+        var value = stream.ReadInt();
+        switch (value) {
+            case 1:
+                return new Address.Arkade(
+                    FfiConverterString.INSTANCE.Read(stream)
+                );
+            case 2:
+                return new Address.Bitcoin(
+                    FfiConverterString.INSTANCE.Read(stream)
+                );
+            case 3:
+                return new Address.Lightning(
+                    FfiConverterString.INSTANCE.Read(stream)
+                );
+            case 4:
+                return new Address.Evm(
+                    FfiConverterString.INSTANCE.Read(stream)
+                );
+            default:
+                throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeAddress.Read()", value));
+        }
+    }
+
+    public override int AllocationSize(Address value) {
+        switch (value) {
+            case Address.Arkade variant_value:
+                return 4
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@address);
+            case Address.Bitcoin variant_value:
+                return 4
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@address);
+            case Address.Lightning variant_value:
+                return 4
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@invoice);
+            case Address.Evm variant_value:
+                return 4
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@address);
+            default:
+                throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeAddress.AllocationSize()", value));
+        }
+    }
+
+    public override void Write(Address value, BigEndianStream stream) {
+        switch (value) {
+            case Address.Arkade variant_value:
+                stream.WriteInt(1);
+                FfiConverterString.INSTANCE.Write(variant_value.@address, stream);
+                break;
+            case Address.Bitcoin variant_value:
+                stream.WriteInt(2);
+                FfiConverterString.INSTANCE.Write(variant_value.@address, stream);
+                break;
+            case Address.Lightning variant_value:
+                stream.WriteInt(3);
+                FfiConverterString.INSTANCE.Write(variant_value.@invoice, stream);
+                break;
+            case Address.Evm variant_value:
+                stream.WriteInt(4);
+                FfiConverterString.INSTANCE.Write(variant_value.@address, stream);
+                break;
+            default:
+                throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeAddress.Write()", value));
+        }
+    }
+}
+
+
 
 
 
@@ -1527,6 +1734,316 @@ class FfiConverterTypeSdkError : FfiConverterRustBuffer<SdkException>, CallStatu
 
 
 /// <summary>
+/// How the user has to fund the swap. Mirrors `lendaswap_sdk::SwapFunding`.
+///
+/// `Gasless` carries the depositor EOA the user sends source-token to;
+/// the SDK relays into the HTLC via a Permit2-signed userOp.
+/// `UserSubmitted` is the non-gasless path — caller fetches HTLC calldata
+/// out-of-band and broadcasts the funding tx themselves.
+/// </summary>
+public record SwapFunding {
+    
+    public record Gasless (
+        string @depositAddress
+    ) : SwapFunding {}
+    
+    public record UserSubmitted: SwapFunding {}
+    
+    
+
+    
+}
+
+class FfiConverterTypeSwapFunding : FfiConverterRustBuffer<SwapFunding>{
+    public static FfiConverterRustBuffer<SwapFunding> INSTANCE = new FfiConverterTypeSwapFunding();
+
+    public override SwapFunding Read(BigEndianStream stream) {
+        var value = stream.ReadInt();
+        switch (value) {
+            case 1:
+                return new SwapFunding.Gasless(
+                    FfiConverterString.INSTANCE.Read(stream)
+                );
+            case 2:
+                return new SwapFunding.UserSubmitted(
+                );
+            default:
+                throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeSwapFunding.Read()", value));
+        }
+    }
+
+    public override int AllocationSize(SwapFunding value) {
+        switch (value) {
+            case SwapFunding.Gasless variant_value:
+                return 4
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@depositAddress);
+            case SwapFunding.UserSubmitted variant_value:
+                return 4;
+            default:
+                throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeSwapFunding.AllocationSize()", value));
+        }
+    }
+
+    public override void Write(SwapFunding value, BigEndianStream stream) {
+        switch (value) {
+            case SwapFunding.Gasless variant_value:
+                stream.WriteInt(1);
+                FfiConverterString.INSTANCE.Write(variant_value.@depositAddress, stream);
+                break;
+            case SwapFunding.UserSubmitted variant_value:
+                stream.WriteInt(2);
+                break;
+            default:
+                throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeSwapFunding.Write()", value));
+        }
+    }
+}
+
+
+
+
+
+
+
+/// <summary>
+/// State machine for a swap. Mirrors `lendaswap_sdk::types::SwapStatus`
+/// 1:1 (incl. the `Other { wire }` forward-compat escape hatch) so
+/// FFI callers can pattern-match on the same set of states the Rust
+/// SDK exposes.
+/// </summary>
+public record SwapStatus {
+    
+    public record Pending: SwapStatus {}
+    
+    
+    public record ClientFundingSeen: SwapStatus {}
+    
+    
+    public record ClientFunded: SwapStatus {}
+    
+    
+    public record ClientRefunded: SwapStatus {}
+    
+    
+    public record ServerFunded: SwapStatus {}
+    
+    
+    public record ClientRedeeming: SwapStatus {}
+    
+    
+    public record ClientRedeemed: SwapStatus {}
+    
+    
+    public record ServerRedeemed: SwapStatus {}
+    
+    
+    public record ClientFundedServerRefunded: SwapStatus {}
+    
+    
+    public record ClientRefundedServerFunded: SwapStatus {}
+    
+    
+    public record ClientRefundedServerRefunded: SwapStatus {}
+    
+    
+    public record Expired: SwapStatus {}
+    
+    
+    public record ClientInvalidFunded: SwapStatus {}
+    
+    
+    public record ClientFundedTooLate: SwapStatus {}
+    
+    
+    public record ServerWontFund: SwapStatus {}
+    
+    
+    public record ClientRedeemedAndClientRefunded: SwapStatus {}
+    
+    
+    /// <summary>
+    /// Unrecognised wire value, preserved verbatim.
+    /// </summary>
+    public record Other (
+        string @wire
+    ) : SwapStatus {}
+    
+
+    
+}
+
+class FfiConverterTypeSwapStatus : FfiConverterRustBuffer<SwapStatus>{
+    public static FfiConverterRustBuffer<SwapStatus> INSTANCE = new FfiConverterTypeSwapStatus();
+
+    public override SwapStatus Read(BigEndianStream stream) {
+        var value = stream.ReadInt();
+        switch (value) {
+            case 1:
+                return new SwapStatus.Pending(
+                );
+            case 2:
+                return new SwapStatus.ClientFundingSeen(
+                );
+            case 3:
+                return new SwapStatus.ClientFunded(
+                );
+            case 4:
+                return new SwapStatus.ClientRefunded(
+                );
+            case 5:
+                return new SwapStatus.ServerFunded(
+                );
+            case 6:
+                return new SwapStatus.ClientRedeeming(
+                );
+            case 7:
+                return new SwapStatus.ClientRedeemed(
+                );
+            case 8:
+                return new SwapStatus.ServerRedeemed(
+                );
+            case 9:
+                return new SwapStatus.ClientFundedServerRefunded(
+                );
+            case 10:
+                return new SwapStatus.ClientRefundedServerFunded(
+                );
+            case 11:
+                return new SwapStatus.ClientRefundedServerRefunded(
+                );
+            case 12:
+                return new SwapStatus.Expired(
+                );
+            case 13:
+                return new SwapStatus.ClientInvalidFunded(
+                );
+            case 14:
+                return new SwapStatus.ClientFundedTooLate(
+                );
+            case 15:
+                return new SwapStatus.ServerWontFund(
+                );
+            case 16:
+                return new SwapStatus.ClientRedeemedAndClientRefunded(
+                );
+            case 17:
+                return new SwapStatus.Other(
+                    FfiConverterString.INSTANCE.Read(stream)
+                );
+            default:
+                throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeSwapStatus.Read()", value));
+        }
+    }
+
+    public override int AllocationSize(SwapStatus value) {
+        switch (value) {
+            case SwapStatus.Pending variant_value:
+                return 4;
+            case SwapStatus.ClientFundingSeen variant_value:
+                return 4;
+            case SwapStatus.ClientFunded variant_value:
+                return 4;
+            case SwapStatus.ClientRefunded variant_value:
+                return 4;
+            case SwapStatus.ServerFunded variant_value:
+                return 4;
+            case SwapStatus.ClientRedeeming variant_value:
+                return 4;
+            case SwapStatus.ClientRedeemed variant_value:
+                return 4;
+            case SwapStatus.ServerRedeemed variant_value:
+                return 4;
+            case SwapStatus.ClientFundedServerRefunded variant_value:
+                return 4;
+            case SwapStatus.ClientRefundedServerFunded variant_value:
+                return 4;
+            case SwapStatus.ClientRefundedServerRefunded variant_value:
+                return 4;
+            case SwapStatus.Expired variant_value:
+                return 4;
+            case SwapStatus.ClientInvalidFunded variant_value:
+                return 4;
+            case SwapStatus.ClientFundedTooLate variant_value:
+                return 4;
+            case SwapStatus.ServerWontFund variant_value:
+                return 4;
+            case SwapStatus.ClientRedeemedAndClientRefunded variant_value:
+                return 4;
+            case SwapStatus.Other variant_value:
+                return 4
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@wire);
+            default:
+                throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeSwapStatus.AllocationSize()", value));
+        }
+    }
+
+    public override void Write(SwapStatus value, BigEndianStream stream) {
+        switch (value) {
+            case SwapStatus.Pending variant_value:
+                stream.WriteInt(1);
+                break;
+            case SwapStatus.ClientFundingSeen variant_value:
+                stream.WriteInt(2);
+                break;
+            case SwapStatus.ClientFunded variant_value:
+                stream.WriteInt(3);
+                break;
+            case SwapStatus.ClientRefunded variant_value:
+                stream.WriteInt(4);
+                break;
+            case SwapStatus.ServerFunded variant_value:
+                stream.WriteInt(5);
+                break;
+            case SwapStatus.ClientRedeeming variant_value:
+                stream.WriteInt(6);
+                break;
+            case SwapStatus.ClientRedeemed variant_value:
+                stream.WriteInt(7);
+                break;
+            case SwapStatus.ServerRedeemed variant_value:
+                stream.WriteInt(8);
+                break;
+            case SwapStatus.ClientFundedServerRefunded variant_value:
+                stream.WriteInt(9);
+                break;
+            case SwapStatus.ClientRefundedServerFunded variant_value:
+                stream.WriteInt(10);
+                break;
+            case SwapStatus.ClientRefundedServerRefunded variant_value:
+                stream.WriteInt(11);
+                break;
+            case SwapStatus.Expired variant_value:
+                stream.WriteInt(12);
+                break;
+            case SwapStatus.ClientInvalidFunded variant_value:
+                stream.WriteInt(13);
+                break;
+            case SwapStatus.ClientFundedTooLate variant_value:
+                stream.WriteInt(14);
+                break;
+            case SwapStatus.ServerWontFund variant_value:
+                stream.WriteInt(15);
+                break;
+            case SwapStatus.ClientRedeemedAndClientRefunded variant_value:
+                stream.WriteInt(16);
+                break;
+            case SwapStatus.Other variant_value:
+                stream.WriteInt(17);
+                FfiConverterString.INSTANCE.Write(variant_value.@wire, stream);
+                break;
+            default:
+                throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeSwapStatus.Write()", value));
+        }
+    }
+}
+
+
+
+
+
+
+
+/// <summary>
 /// Token identifiers exposed across FFI. Mirrors
 /// `lendaswap_sdk::types::TokenId`. `Other { wire }` carries any
 /// contract address or wire string the SDK doesn't name.
@@ -1722,6 +2239,25 @@ class FfiConverterOptionalUInt64: FfiConverterRustBuffer<ulong?> {
 }
 #pragma warning restore 8625
 internal static class LendaswapSdkFfiMethods {
+    /// <summary>
+    /// Create a swap.
+    ///
+    /// Today the SDK only supports EVM stablecoin → BTC on Arkade. The
+    /// dispatcher in `Client::create_swap` validates the direction and
+    /// errors with `Error::InvalidSwap` for anything else. We surface
+    /// `gasless` here (the dispatcher hard-codes it to `false`) so FFI
+    /// callers can opt into the gasless funding flow without dropping
+    /// down to a direction-specific entry point.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public static Swap CreateSwap(string @baseUrl, string @mnemonic, ChainId @sourceChain, TokenId @sourceToken, ChainId @targetChain, TokenId @targetToken, QuoteAmount @amount, Address @receiveTo, bool @gasless) {
+        return FfiConverterTypeSwap.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_lendaswap_sdk_ffi_fn_func_create_swap(FfiConverterString.INSTANCE.Lower(@baseUrl), FfiConverterString.INSTANCE.Lower(@mnemonic), FfiConverterTypeChainId.INSTANCE.Lower(@sourceChain), FfiConverterTypeTokenId.INSTANCE.Lower(@sourceToken), FfiConverterTypeChainId.INSTANCE.Lower(@targetChain), FfiConverterTypeTokenId.INSTANCE.Lower(@targetToken), FfiConverterTypeQuoteAmount.INSTANCE.Lower(@amount), FfiConverterTypeAddress.INSTANCE.Lower(@receiveTo), FfiConverterBoolean.INSTANCE.Lower(@gasless), ref _status)
+));
+    }
+
+
     /// <summary>
     /// Fetch a swap quote. Chain / token / amount are typed enums; the
     /// "exactly one of source/target" invariant is enforced by the
