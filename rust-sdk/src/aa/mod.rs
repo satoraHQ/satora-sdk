@@ -30,4 +30,5 @@ pub mod signing;
 pub mod userop;
 
 pub use client_ext::AaConfig;
+pub use client_ext::PaymasterConfig;
 pub use orchestrate::FundSwapReceipt;

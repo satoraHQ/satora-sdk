@@ -16,12 +16,13 @@
 //!    the userOp on submission.
 //! 5. Build a skeleton `PackedUserOperation` (sender, nonce, callData, gas/paymaster placeholders,
 //!    gas-estimation stub signature).
-//! 6. `pm_getPaymasterStubData` → fills paymaster fields.
+//! 6. `pm_getPaymasterStubData` → fills paymaster fields. **Skipped** when no paymaster is
+//!    configured (the userOp's `paymaster*` fields stay empty and the sender's prefund covers gas).
 //! 7. Read gas price (`eth_gasPrice` for max-fee; static floor for the priority component —
 //!    bundler-specific tuning is out of scope here).
 //! 8. `eth_estimateUserOperationGas` (with auth + stub paymaster) → fills the gas-limit fields.
-//! 9. `pm_getPaymasterData` (unless stub came back `isFinal: true`) → fills the real paymaster
-//!    fields.
+//! 9. `pm_getPaymasterData` (unless stub came back `isFinal: true`, or there's no paymaster) →
+//!    fills the real paymaster fields.
 //! 10. Compute `userOpHash` and sign it with EIP-191 (Kernel's 7702 validator does
 //!     `ECDSA.recover(toEthSignedMessageHash(…), sig)`).
 //! 11. `eth_sendUserOperation` (with auth) → returns userOpHash.
@@ -123,19 +124,27 @@ pub struct FundSwapInputs {
     pub chain_id: u64,
 }
 
-/// The clients + paymaster context the orchestration needs. Passed by
+/// The clients + optional paymaster the orchestration needs. Passed by
 /// reference so a single set can drive multiple swaps.
 pub struct FundSwapClients<'a> {
     pub bundler: &'a BundlerClient,
-    pub paymaster: &'a PaymasterClient,
     /// Node RPC for `eth_getTransactionCount`, `EntryPoint.getNonce`,
     /// and `eth_gasPrice`. Often the same URL as `bundler` (Alchemy
     /// co-locates them) but logically distinct.
     pub node: &'a RootProvider,
-    /// Paymaster-specific context object. For Alchemy Gas Manager:
-    /// `{"policyId": "<uuid>"}`. Use `Value::Null` for paymasters that
-    /// don't take one.
-    pub paymaster_context: Value,
+    /// Sponsorship paymaster — `None` when the sender pays its own gas
+    /// (alto-against-Anvil dev setups, for instance). When `Some`, the
+    /// orchestration runs the ERC-7677 `pm_*` dance and the userOp
+    /// carries `paymasterAndData`; when `None`, those fields stay empty
+    /// and EntryPoint pulls reimbursement from the sender's prefund.
+    pub paymaster: Option<PaymasterRef<'a>>,
+}
+
+/// Paymaster client + its context, bundled so callers can't construct
+/// a half-configured paymaster (URL without context or vice versa).
+pub struct PaymasterRef<'a> {
+    pub client: &'a PaymasterClient,
+    pub context: Value,
 }
 
 /// What the orchestration returns once the userOp has been submitted
@@ -232,18 +241,26 @@ pub async fn fund_swap(
         signature: Bytes::from_static(&STUB_USEROP_SIGNATURE),
     };
 
-    // 6. Paymaster stub.
-    let stub = clients
-        .paymaster
-        .get_paymaster_stub_data(
-            &userop,
-            inputs.entry_point,
-            inputs.chain_id,
-            clients.paymaster_context.clone(),
-            Some(&signed_auth),
-        )
-        .await?;
-    apply_paymaster(&mut userop, &stub);
+    // 6. Paymaster stub. Skipped when there's no paymaster — the userOp's paymaster* fields stay
+    //    None and EntryPoint will pull reimbursement from the sender's prefund at execution time.
+    let stub_is_final = if let Some(pm) = clients.paymaster.as_ref() {
+        let stub = pm
+            .client
+            .get_paymaster_stub_data(
+                &userop,
+                inputs.entry_point,
+                inputs.chain_id,
+                pm.context.clone(),
+                Some(&signed_auth),
+            )
+            .await?;
+        apply_paymaster(&mut userop, &stub);
+        stub.is_final
+    } else {
+        // No stub call → no fields to apply. Treat as "final" so we
+        // don't run a second `pm_*` call below.
+        true
+    };
 
     // 7. Gas price.
     let (max_fee, max_priority_fee) = fetch_gas_prices(clients.node).await?;
@@ -260,15 +277,15 @@ pub async fn fund_swap(
     userop.verification_gas_limit = gas.verification_gas;
     userop.pre_verification_gas = gas.pre_verification_gas;
 
-    // 9. Final paymaster data (skip if stub said it was final).
-    if !stub.is_final {
-        let final_pm = clients
-            .paymaster
+    // 9. Final paymaster data (skip if no paymaster, or stub said it was final).
+    if let Some(pm) = clients.paymaster.as_ref().filter(|_| !stub_is_final) {
+        let final_pm = pm
+            .client
             .get_paymaster_data(
                 &userop,
                 inputs.entry_point,
                 inputs.chain_id,
-                clients.paymaster_context.clone(),
+                pm.context.clone(),
                 Some(&signed_auth),
             )
             .await?;
