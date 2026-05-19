@@ -21,6 +21,7 @@ using Lendaswap.Sdk;
 using ChainId = uniffi.lendaswap_sdk_ffi.ChainId;
 using TokenId = uniffi.lendaswap_sdk_ffi.TokenId;
 using QuoteAmount = uniffi.lendaswap_sdk_ffi.QuoteAmount;
+using Address = uniffi.lendaswap_sdk_ffi.Address;
 
 return await Cli.RunAsync(args).ConfigureAwait(false);
 
@@ -41,6 +42,7 @@ internal static class Cli
             return args[0] switch
             {
                 "quote" => await QuoteCommand.RunAsync(args[1..]).ConfigureAwait(false),
+                "create-swap" => await CreateSwapCommand.RunAsync(args[1..]).ConfigureAwait(false),
                 _ => Fail($"unknown subcommand: {args[0]}"),
             };
         }
@@ -68,12 +70,14 @@ internal static class Cli
             lendaswap — Lendaswap SDK sample CLI
 
             USAGE:
-                lendaswap quote --source <chain:token> --target <chain:token> --source-amount "<value> <unit>"
-                lendaswap quote --source <chain:token> --target <chain:token> --target-amount "<value> <unit>"
+                lendaswap quote        --source <chain:token> --target <chain:token> --source-amount "<value> <unit>"
+                lendaswap quote        --source <chain:token> --target <chain:token> --target-amount "<value> <unit>"
+                lendaswap create-swap  --source <chain:token> --target <chain:token> --target-amount "<value> <unit>" --receive-to "<address>" [--gasless]
 
             EXAMPLES:
-                lendaswap quote --source Arb:USDT --target Arkade:BTC --source-amount "10 USD"
-                lendaswap quote --source Arb:USDT --target Arkade:BTC --target-amount "1000 sats"
+                lendaswap quote        --source Arb:USDT --target Arkade:BTC --source-amount "10 USD"
+                lendaswap quote        --source Arb:USDT --target Arkade:BTC --target-amount "1000 sats"
+                lendaswap create-swap  --source Arb:USDC --target Arkade:BTC --target-amount "10000 sats" --receive-to "tark1q..." --gasless
 
             CHAIN ALIASES: Arb, Eth, Pol, Arkade, Lightning, Bitcoin
             TOKEN ALIASES: USDC, USDT, USDT0, WBTC, BTC
@@ -82,6 +86,9 @@ internal static class Cli
             ENV:
                 LENDASWAP_API_URL   override the default backend
                                     (default: https://api.satora.io)
+                MNEMONIC            BIP-39 mnemonic — required for `create-swap`.
+                                    Stays in this process's memory only; never
+                                    persisted, never echoed.
             """);
     }
 }
@@ -240,7 +247,7 @@ internal static class QuoteCommand
     /// Multiply a decimal by 10^<paramref name="decimals"/> and round to a ulong,
     /// erroring on overflow.
     /// </summary>
-    private static ulong CheckedScale(decimal value, int decimals)
+    internal static ulong CheckedScale(decimal value, int decimals)
     {
         var scale = (decimal)Math.Pow(10, decimals);
         var scaled = value * scale;
@@ -249,5 +256,127 @@ internal static class QuoteCommand
             throw new OverflowException($"amount {value} × 10^{decimals} does not fit in ulong");
         }
         return (ulong)scaled;
+    }
+
+    /// <summary>
+    /// Shared chain-token alias resolver — exposed internal so
+    /// <see cref="CreateSwapCommand"/> can reuse the same alias table
+    /// the <c>quote</c> subcommand uses (`Arb:USDC` etc.) without
+    /// duplicating the lookup.
+    /// </summary>
+    internal static (ChainId Chain, TokenId Token) ResolvePairInternal(string pair) => ResolvePair(pair);
+
+    /// <summary>
+    /// Likewise exposed for <see cref="CreateSwapCommand"/>'s amount
+    /// flags — same `"10 USD"` / `"1000 sats"` / `"100000"` parsing.
+    /// </summary>
+    internal static ulong ParseAmountInternal(string input, TokenId token) => ParseAmount(input, token);
+}
+
+/// <summary>
+/// Implements the <c>create-swap</c> subcommand. Drives
+/// <see cref="Client.CreateSwapAsync"/> against the configured backend
+/// using a mnemonic from the <c>MNEMONIC</c> env var.
+/// </summary>
+internal static class CreateSwapCommand
+{
+    internal static async Task<int> RunAsync(string[] args)
+    {
+        string? source = null;
+        string? target = null;
+        string? sourceAmount = null;
+        string? targetAmount = null;
+        string? receiveTo = null;
+        var gasless = false;
+
+        for (var i = 0; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--source": source = TakeValue(args, ref i, "--source"); break;
+                case "--target": target = TakeValue(args, ref i, "--target"); break;
+                case "--source-amount": sourceAmount = TakeValue(args, ref i, "--source-amount"); break;
+                case "--target-amount": targetAmount = TakeValue(args, ref i, "--target-amount"); break;
+                case "--receive-to": receiveTo = TakeValue(args, ref i, "--receive-to"); break;
+                case "--gasless": gasless = true; break;
+                default:
+                    Console.Error.WriteLine($"error: unexpected arg `{args[i]}`");
+                    return 2;
+            }
+        }
+
+        if (source is null || target is null || receiveTo is null)
+        {
+            Console.Error.WriteLine("error: --source, --target and --receive-to are required");
+            return 2;
+        }
+
+        if ((sourceAmount is null) == (targetAmount is null))
+        {
+            Console.Error.WriteLine("error: exactly one of --source-amount / --target-amount must be set");
+            return 2;
+        }
+
+        var mnemonic = Environment.GetEnvironmentVariable("MNEMONIC");
+        if (string.IsNullOrWhiteSpace(mnemonic))
+        {
+            Console.Error.WriteLine("error: MNEMONIC env var must be set for create-swap (BIP-39 phrase).");
+            return 2;
+        }
+
+        var (sourceChain, sourceToken) = QuoteCommand.ResolvePairInternal(source);
+        var (targetChain, targetToken) = QuoteCommand.ResolvePairInternal(target);
+
+        QuoteAmount amount = sourceAmount is not null
+            ? new QuoteAmount.Source(QuoteCommand.ParseAmountInternal(sourceAmount, sourceToken))
+            : new QuoteAmount.Target(QuoteCommand.ParseAmountInternal(targetAmount!, targetToken));
+
+        // Tag the receive address with the target chain's rail so the
+        // SDK's direction validator accepts it. The chain → Address
+        // variant mapping mirrors how the Rust e2e wraps `receive_to`
+        // before handing it to `create_evm_to_arkade_swap`.
+        // The FFI `Address` enum doesn't carry a chain-id wire string —
+        // it just tags the rail. Map ChainId → Address rail; an unknown
+        // chain (`Other`) is rejected because we can't infer the rail.
+        Address receiveAddress = targetChain switch
+        {
+            ChainId.Arkade => new Address.Arkade(receiveTo),
+            ChainId.Bitcoin => new Address.Bitcoin(receiveTo),
+            ChainId.Lightning => new Address.Lightning(receiveTo),
+            ChainId.Arbitrum or ChainId.Ethereum or ChainId.Polygon
+                => new Address.Evm(receiveTo),
+            _ => throw new ArgumentException(
+                $"cannot infer Address rail for target chain {targetChain} — only Arkade/Bitcoin/Lightning/EVM are supported."),
+        };
+
+        var baseUrl = Environment.GetEnvironmentVariable("LENDASWAP_API_URL") ?? "https://api.satora.io";
+        var client = new Client(baseUrl, mnemonic);
+        var swap = await client.CreateSwapAsync(
+            sourceChain,
+            sourceToken,
+            targetChain,
+            targetToken,
+            amount,
+            receiveAddress,
+            gasless).ConfigureAwait(false);
+
+        Console.WriteLine($"  swap_id        : {swap.Id}");
+        Console.WriteLine($"  status         : {swap.Status}");
+        Console.WriteLine($"  deposit_amount : {swap.DepositAmount}");
+        Console.WriteLine($"  deposit_token  : {swap.DepositToken}");
+        Console.WriteLine($"  receive_amount : {swap.ReceiveAmount}");
+        Console.WriteLine($"  receive_token  : {swap.ReceiveToken}");
+        Console.WriteLine($"  receive_to     : {swap.ReceiveAddress}");
+        Console.WriteLine($"  funding        : {swap.Funding}");
+        return 0;
+    }
+
+    private static string TakeValue(string[] args, ref int i, string flag)
+    {
+        if (i + 1 >= args.Length)
+        {
+            throw new ArgumentException($"{flag} requires a value");
+        }
+        return args[++i];
     }
 }
