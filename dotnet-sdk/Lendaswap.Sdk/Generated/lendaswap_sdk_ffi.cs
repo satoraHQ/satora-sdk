@@ -755,6 +755,8 @@ static class _UniFFILib {
     
     
     
+    
+    
 
     static _UniFFILib() {
         _UniFFILib.uniffiCheckContractApiVersion();
@@ -780,6 +782,10 @@ static class _UniFFILib {
 
     [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern RustBuffer uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_create_swap(IntPtr @ptr,RustBuffer @sourceChain,RustBuffer @sourceToken,RustBuffer @targetChain,RustBuffer @targetToken,RustBuffer @amount,RustBuffer @receiveTo,sbyte @gasless,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_fund_swap_gasless(IntPtr @ptr,RustBuffer @swapId,RustBuffer @aaConfig,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -1019,6 +1025,10 @@ static class _UniFFILib {
     );
 
     [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_fund_swap_gasless(
+    );
+
+    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern ushort uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_quote(
     );
 
@@ -1052,6 +1062,12 @@ static class _UniFFILib {
             var checksum = _UniFFILib.uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_create_swap();
             if (checksum != 33227) {
                 throw new UniffiContractChecksumException($"uniffi.lendaswap_sdk_ffi: uniffi bindings expected function `uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_create_swap` checksum `33227`, library returned `{checksum}`");
+            }
+        }
+        {
+            var checksum = _UniFFILib.uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_fund_swap_gasless();
+            if (checksum != 2434) {
+                throw new UniffiContractChecksumException($"uniffi.lendaswap_sdk_ffi: uniffi bindings expected function `uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_fund_swap_gasless` checksum `2434`, library returned `{checksum}`");
             }
         }
         {
@@ -1244,6 +1260,18 @@ public interface ILendaswapClient {
     /// <exception cref="SdkException"></exception>
     Swap CreateSwap(ChainId @sourceChain, TokenId @sourceToken, ChainId @targetChain, TokenId @targetToken, QuoteAmount @amount, Address @receiveTo, bool @gasless);
     /// <summary>
+    /// Submit the gasless ERC-4337 + EIP-7702 funding userOp for a
+    /// previously-created swap. The depositor EOA must already hold
+    /// the source token (real users transfer it in; e2e harnesses
+    /// pre-seed via Anvil helpers).
+    ///
+    /// Requires the client to have been built via [`Self::new_signing`]
+    /// — the SDK needs the mnemonic to re-derive the per-swap secret
+    /// material and sign the userOp.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    FundSwapReceipt FundSwapGasless(string @swapId, AaConfig @aaConfig);
+    /// <summary>
     /// Fetch a swap quote. Chain / token / amount are typed enums;
     /// the "exactly one of source/target" invariant is enforced by
     /// the `QuoteAmount` discriminator instead of runtime validation.
@@ -1395,6 +1423,25 @@ public class LendaswapClient : ILendaswapClient, IDisposable {
     
     
     /// <summary>
+    /// Submit the gasless ERC-4337 + EIP-7702 funding userOp for a
+    /// previously-created swap. The depositor EOA must already hold
+    /// the source token (real users transfer it in; e2e harnesses
+    /// pre-seed via Anvil helpers).
+    ///
+    /// Requires the client to have been built via [`Self::new_signing`]
+    /// — the SDK needs the mnemonic to re-derive the per-swap secret
+    /// material and sign the userOp.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public FundSwapReceipt FundSwapGasless(string @swapId, AaConfig @aaConfig) {
+        return CallWithPointer(thisPtr => FfiConverterTypeFundSwapReceipt.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_fund_swap_gasless(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterTypeAaConfig.INSTANCE.Lower(@aaConfig), ref _status)
+)));
+    }
+    
+    
+    /// <summary>
     /// Fetch a swap quote. Chain / token / amount are typed enums;
     /// the "exactly one of source/target" invariant is enforced by
     /// the `QuoteAmount` discriminator instead of runtime validation.
@@ -1460,6 +1507,137 @@ class FfiConverterTypeLendaswapClient: FfiConverter<LendaswapClient, IntPtr> {
 
     public override void Write(LendaswapClient value, BigEndianStream stream) {
         stream.WriteLong(Lower(value).ToInt64());
+    }
+}
+
+
+
+/// <summary>
+/// AA / gasless-funding configuration. URL strings rather than typed
+/// `Url` since uniffi doesn't bridge the alloy/url type. Invalid URLs
+/// produce an `SdkError::Internal` from the SDK at construction time.
+/// </summary>
+/// <param name="paymaster">
+/// `None` (default) means the depositor EOA pays its own gas;
+/// `Some(...)` enables a real paymaster to sponsor the userOp.
+/// </param>
+/// <param name="bundler_casing">
+/// Bundler casing default mirrors the SDK's: CamelCase works for
+/// Pimlico + ZeroDev (and any bundler accepting camelCase).
+/// </param>
+public record AaConfig (
+    string @bundlerUrl, 
+    string @nodeRpcUrl, 
+    /// <summary>
+    /// `None` (default) means the depositor EOA pays its own gas;
+    /// `Some(...)` enables a real paymaster to sponsor the userOp.
+    /// </summary>
+    PaymasterConfig? @paymaster, 
+    /// <summary>
+    /// Bundler casing default mirrors the SDK's: CamelCase works for
+    /// Pimlico + ZeroDev (and any bundler accepting camelCase).
+    /// </summary>
+    BundlerCasing @bundlerCasing
+) {
+}
+
+class FfiConverterTypeAaConfig: FfiConverterRustBuffer<AaConfig> {
+    public static FfiConverterTypeAaConfig INSTANCE = new FfiConverterTypeAaConfig();
+
+    public override AaConfig Read(BigEndianStream stream) {
+        return new AaConfig(
+            @bundlerUrl: FfiConverterString.INSTANCE.Read(stream),
+            @nodeRpcUrl: FfiConverterString.INSTANCE.Read(stream),
+            @paymaster: FfiConverterOptionalTypePaymasterConfig.INSTANCE.Read(stream),
+            @bundlerCasing: FfiConverterTypeBundlerCasing.INSTANCE.Read(stream)
+        );
+    }
+
+    public override int AllocationSize(AaConfig value) {
+        return 0
+            + FfiConverterString.INSTANCE.AllocationSize(value.@bundlerUrl)
+            + FfiConverterString.INSTANCE.AllocationSize(value.@nodeRpcUrl)
+            + FfiConverterOptionalTypePaymasterConfig.INSTANCE.AllocationSize(value.@paymaster)
+            + FfiConverterTypeBundlerCasing.INSTANCE.AllocationSize(value.@bundlerCasing);
+    }
+
+    public override void Write(AaConfig value, BigEndianStream stream) {
+            FfiConverterString.INSTANCE.Write(value.@bundlerUrl, stream);
+            FfiConverterString.INSTANCE.Write(value.@nodeRpcUrl, stream);
+            FfiConverterOptionalTypePaymasterConfig.INSTANCE.Write(value.@paymaster, stream);
+            FfiConverterTypeBundlerCasing.INSTANCE.Write(value.@bundlerCasing, stream);
+    }
+}
+
+
+
+/// <summary>
+/// Submitted-userOp receipt. `transaction_hash` is `None` when the
+/// SDK's bounded receipt poll ran out — callers can re-poll via
+/// the bundler directly if needed.
+/// </summary>
+public record FundSwapReceipt (
+    string @userOpHash, 
+    string? @transactionHash
+) {
+}
+
+class FfiConverterTypeFundSwapReceipt: FfiConverterRustBuffer<FundSwapReceipt> {
+    public static FfiConverterTypeFundSwapReceipt INSTANCE = new FfiConverterTypeFundSwapReceipt();
+
+    public override FundSwapReceipt Read(BigEndianStream stream) {
+        return new FundSwapReceipt(
+            @userOpHash: FfiConverterString.INSTANCE.Read(stream),
+            @transactionHash: FfiConverterOptionalString.INSTANCE.Read(stream)
+        );
+    }
+
+    public override int AllocationSize(FundSwapReceipt value) {
+        return 0
+            + FfiConverterString.INSTANCE.AllocationSize(value.@userOpHash)
+            + FfiConverterOptionalString.INSTANCE.AllocationSize(value.@transactionHash);
+    }
+
+    public override void Write(FundSwapReceipt value, BigEndianStream stream) {
+            FfiConverterString.INSTANCE.Write(value.@userOpHash, stream);
+            FfiConverterOptionalString.INSTANCE.Write(value.@transactionHash, stream);
+    }
+}
+
+
+
+/// <summary>
+/// Optional paymaster sponsorship. `context_json` is the paymaster-
+/// specific context as a JSON string so it crosses the FFI boundary
+/// cleanly (uniffi has no `serde_json::Value` type). For Alchemy Gas
+/// Manager: `{"policyId":"<uuid>"}`. For paymasters that don't take
+/// a context, pass `"null"`.
+/// </summary>
+public record PaymasterConfig (
+    string @url, 
+    string @contextJson
+) {
+}
+
+class FfiConverterTypePaymasterConfig: FfiConverterRustBuffer<PaymasterConfig> {
+    public static FfiConverterTypePaymasterConfig INSTANCE = new FfiConverterTypePaymasterConfig();
+
+    public override PaymasterConfig Read(BigEndianStream stream) {
+        return new PaymasterConfig(
+            @url: FfiConverterString.INSTANCE.Read(stream),
+            @contextJson: FfiConverterString.INSTANCE.Read(stream)
+        );
+    }
+
+    public override int AllocationSize(PaymasterConfig value) {
+        return 0
+            + FfiConverterString.INSTANCE.AllocationSize(value.@url)
+            + FfiConverterString.INSTANCE.AllocationSize(value.@contextJson);
+    }
+
+    public override void Write(PaymasterConfig value, BigEndianStream stream) {
+            FfiConverterString.INSTANCE.Write(value.@url, stream);
+            FfiConverterString.INSTANCE.Write(value.@contextJson, stream);
     }
 }
 
@@ -1738,6 +1916,48 @@ class FfiConverterTypeAddress : FfiConverterRustBuffer<Address>{
             default:
                 throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeAddress.Write()", value));
         }
+    }
+}
+
+
+
+
+
+
+
+/// <summary>
+/// Bundler RPC field-casing dialect. Mirrors `lendaswap_sdk::aa::bundler::BundlerCasing`.
+/// </summary>
+public enum BundlerCasing: int {
+    
+    /// <summary>
+    /// Pimlico / ZeroDev — camelCase 7702-auth fields.
+    /// </summary>
+    CamelCase,
+    /// <summary>
+    /// Alchemy — snake_case 7702-auth fields.
+    /// </summary>
+    SnakeCase
+}
+
+class FfiConverterTypeBundlerCasing: FfiConverterRustBuffer<BundlerCasing> {
+    public static FfiConverterTypeBundlerCasing INSTANCE = new FfiConverterTypeBundlerCasing();
+
+    public override BundlerCasing Read(BigEndianStream stream) {
+        var value = stream.ReadInt() - 1;
+        if (Enum.IsDefined(typeof(BundlerCasing), value)) {
+            return (BundlerCasing)value;
+        } else {
+            throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeBundlerCasing.Read()", value));
+        }
+    }
+
+    public override int AllocationSize(BundlerCasing value) {
+        return 4;
+    }
+
+    public override void Write(BundlerCasing value, BigEndianStream stream) {
+        stream.WriteInt((int)value + 1);
     }
 }
 
@@ -2529,6 +2749,68 @@ class FfiConverterOptionalUInt64: FfiConverterRustBuffer<ulong?> {
         } else {
             stream.WriteByte(1);
             FfiConverterUInt64.INSTANCE.Write((ulong)value, stream);
+        }
+    }
+}
+
+
+
+
+class FfiConverterOptionalString: FfiConverterRustBuffer<string?> {
+    public static FfiConverterOptionalString INSTANCE = new FfiConverterOptionalString();
+
+    public override string? Read(BigEndianStream stream) {
+        if (stream.ReadByte() == 0) {
+            return null;
+        }
+        return FfiConverterString.INSTANCE.Read(stream);
+    }
+
+    public override int AllocationSize(string? value) {
+        if (value == null) {
+            return 1;
+        } else {
+            return 1 + FfiConverterString.INSTANCE.AllocationSize((string)value);
+        }
+    }
+
+    public override void Write(string? value, BigEndianStream stream) {
+        if (value == null) {
+            stream.WriteByte(0);
+        } else {
+            stream.WriteByte(1);
+            FfiConverterString.INSTANCE.Write((string)value, stream);
+        }
+    }
+}
+
+
+
+
+class FfiConverterOptionalTypePaymasterConfig: FfiConverterRustBuffer<PaymasterConfig?> {
+    public static FfiConverterOptionalTypePaymasterConfig INSTANCE = new FfiConverterOptionalTypePaymasterConfig();
+
+    public override PaymasterConfig? Read(BigEndianStream stream) {
+        if (stream.ReadByte() == 0) {
+            return null;
+        }
+        return FfiConverterTypePaymasterConfig.INSTANCE.Read(stream);
+    }
+
+    public override int AllocationSize(PaymasterConfig? value) {
+        if (value == null) {
+            return 1;
+        } else {
+            return 1 + FfiConverterTypePaymasterConfig.INSTANCE.AllocationSize((PaymasterConfig)value);
+        }
+    }
+
+    public override void Write(PaymasterConfig? value, BigEndianStream stream) {
+        if (value == null) {
+            stream.WriteByte(0);
+        } else {
+            stream.WriteByte(1);
+            FfiConverterTypePaymasterConfig.INSTANCE.Write((PaymasterConfig)value, stream);
         }
     }
 }

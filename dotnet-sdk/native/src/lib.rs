@@ -20,6 +20,9 @@ use lendaswap_sdk::Client;
 use lendaswap_sdk::Error as SdkErrorInner;
 use lendaswap_sdk::Swap as SdkSwap;
 use lendaswap_sdk::SwapFunding as SdkSwapFunding;
+use lendaswap_sdk::aa::AaConfig as SdkAaConfig;
+use lendaswap_sdk::aa::PaymasterConfig as SdkPaymasterConfig;
+use lendaswap_sdk::aa::bundler::BundlerCasing as SdkBundlerCasing;
 use lendaswap_sdk::types::Address as SdkAddress;
 use lendaswap_sdk::types::Chain as SdkChain;
 use lendaswap_sdk::types::KnownChain as SdkKnownChain;
@@ -496,6 +499,118 @@ impl LendaswapClient {
                 )
                 .await?;
             Ok(swap.into())
+        })
+    }
+}
+
+// ─── Gasless funding ───────────────────────────────────────────────────
+
+/// Bundler RPC field-casing dialect. Mirrors `lendaswap_sdk::aa::bundler::BundlerCasing`.
+#[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum BundlerCasing {
+    /// Pimlico / ZeroDev — camelCase 7702-auth fields.
+    CamelCase,
+    /// Alchemy — snake_case 7702-auth fields.
+    SnakeCase,
+}
+
+impl From<BundlerCasing> for SdkBundlerCasing {
+    fn from(c: BundlerCasing) -> Self {
+        match c {
+            BundlerCasing::CamelCase => SdkBundlerCasing::CamelCase,
+            BundlerCasing::SnakeCase => SdkBundlerCasing::SnakeCase,
+        }
+    }
+}
+
+/// Optional paymaster sponsorship. `context_json` is the paymaster-
+/// specific context as a JSON string so it crosses the FFI boundary
+/// cleanly (uniffi has no `serde_json::Value` type). For Alchemy Gas
+/// Manager: `{"policyId":"<uuid>"}`. For paymasters that don't take
+/// a context, pass `"null"`.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct PaymasterConfig {
+    pub url: String,
+    pub context_json: String,
+}
+
+/// AA / gasless-funding configuration. URL strings rather than typed
+/// `Url` since uniffi doesn't bridge the alloy/url type. Invalid URLs
+/// produce an `SdkError::Internal` from the SDK at construction time.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct AaConfig {
+    pub bundler_url: String,
+    pub node_rpc_url: String,
+    /// `None` (default) means the depositor EOA pays its own gas;
+    /// `Some(...)` enables a real paymaster to sponsor the userOp.
+    pub paymaster: Option<PaymasterConfig>,
+    /// Bundler casing default mirrors the SDK's: CamelCase works for
+    /// Pimlico + ZeroDev (and any bundler accepting camelCase).
+    pub bundler_casing: BundlerCasing,
+}
+
+/// Submitted-userOp receipt. `transaction_hash` is `None` when the
+/// SDK's bounded receipt poll ran out — callers can re-poll via
+/// the bundler directly if needed.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct FundSwapReceipt {
+    pub user_op_hash: String,
+    pub transaction_hash: Option<String>,
+}
+
+/// Translate the FFI's URL-string config into the SDK's typed shape.
+/// Returns `SdkError::Internal` for malformed URLs / JSON.
+fn aa_config_into_sdk(c: AaConfig) -> Result<SdkAaConfig, SdkError> {
+    use url::Url;
+    let bundler_url = Url::parse(&c.bundler_url).map_err(|e| SdkError::Internal {
+        message: format!("AaConfig.bundler_url parse: {e}"),
+    })?;
+    let node_rpc_url = Url::parse(&c.node_rpc_url).map_err(|e| SdkError::Internal {
+        message: format!("AaConfig.node_rpc_url parse: {e}"),
+    })?;
+    let paymaster = c
+        .paymaster
+        .map(|pm| -> Result<SdkPaymasterConfig, SdkError> {
+            let url = Url::parse(&pm.url).map_err(|e| SdkError::Internal {
+                message: format!("PaymasterConfig.url parse: {e}"),
+            })?;
+            let context: serde_json::Value =
+                serde_json::from_str(&pm.context_json).map_err(|e| SdkError::Internal {
+                    message: format!("PaymasterConfig.context_json parse: {e}"),
+                })?;
+            Ok(SdkPaymasterConfig { url, context })
+        })
+        .transpose()?;
+    Ok(SdkAaConfig {
+        bundler_url,
+        node_rpc_url,
+        paymaster,
+        bundler_casing: c.bundler_casing.into(),
+    })
+}
+
+#[uniffi::export]
+impl LendaswapClient {
+    /// Submit the gasless ERC-4337 + EIP-7702 funding userOp for a
+    /// previously-created swap. The depositor EOA must already hold
+    /// the source token (real users transfer it in; e2e harnesses
+    /// pre-seed via Anvil helpers).
+    ///
+    /// Requires the client to have been built via [`Self::new_signing`]
+    /// — the SDK needs the mnemonic to re-derive the per-swap secret
+    /// material and sign the userOp.
+    pub fn fund_swap_gasless(
+        &self,
+        swap_id: String,
+        aa_config: AaConfig,
+    ) -> Result<FundSwapReceipt, SdkError> {
+        let sdk_config = aa_config_into_sdk(aa_config)?;
+        runtime().block_on(async {
+            let receipt = self.inner.fund_swap_gasless(&swap_id, sdk_config).await?;
+            Ok(FundSwapReceipt {
+                user_op_hash: format!("{:#x}", receipt.user_op_hash),
+                transaction_hash: receipt.transaction_hash.map(|h| format!("{h:#x}")),
+            })
         })
     }
 }
