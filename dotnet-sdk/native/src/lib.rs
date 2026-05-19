@@ -614,3 +614,73 @@ impl LendaswapClient {
         })
     }
 }
+
+// ─── Status polling ────────────────────────────────────────────────────
+
+#[uniffi::export]
+impl LendaswapClient {
+    /// `GET /swap/{id}` — fetch a swap's current state. Returns the
+    /// same `Swap` shape `create_swap` does, so callers can re-read
+    /// after the backend transitions states (e.g. ServerFunded).
+    pub fn get_swap(&self, swap_id: String) -> Result<Swap, SdkError> {
+        runtime().block_on(async {
+            let swap = self.inner.get_swap(&swap_id).await?;
+            Ok(swap.into())
+        })
+    }
+
+    /// Poll `GET /swap/{id}` until the status matches one of `targets`
+    /// or `timeout_seconds` elapses (returns `SdkError::Internal` with
+    /// the SDK's `Error::Timeout` message in that case). 3s poll
+    /// interval, fixed inside the SDK.
+    ///
+    /// `timeout_seconds: u64` because uniffi's `Duration` support is
+    /// patchy across foreign bindgens; seconds is precise enough for
+    /// swap-status polling (sub-second timeouts make no sense here).
+    pub fn wait_for_swap_status(
+        &self,
+        swap_id: String,
+        targets: Vec<SwapStatus>,
+        timeout_seconds: u64,
+    ) -> Result<SwapStatus, SdkError> {
+        let sdk_targets: Vec<SdkSwapStatus> =
+            targets.into_iter().map(swap_status_into_sdk).collect();
+        let timeout = std::time::Duration::from_secs(timeout_seconds);
+        runtime().block_on(async {
+            let reached = self
+                .inner
+                .wait_for_swap_status(&swap_id, &sdk_targets, timeout)
+                .await?;
+            Ok(reached.into())
+        })
+    }
+}
+
+/// Reverse of the existing `From<SdkSwapStatus> for SwapStatus`. Needed
+/// because `wait_for_swap_status` takes FFI-side `SwapStatus` values
+/// for the targets array and we need to hand them to the SDK as
+/// `SdkSwapStatus`. Kept as a free fn (rather than `impl From`) so
+/// the existing one-way mapping stays unambiguous.
+fn swap_status_into_sdk(s: SwapStatus) -> SdkSwapStatus {
+    match s {
+        SwapStatus::Pending => SdkSwapStatus::Pending,
+        SwapStatus::ClientFundingSeen => SdkSwapStatus::ClientFundingSeen,
+        SwapStatus::ClientFunded => SdkSwapStatus::ClientFunded,
+        SwapStatus::ClientRefunded => SdkSwapStatus::ClientRefunded,
+        SwapStatus::ServerFunded => SdkSwapStatus::ServerFunded,
+        SwapStatus::ClientRedeeming => SdkSwapStatus::ClientRedeeming,
+        SwapStatus::ClientRedeemed => SdkSwapStatus::ClientRedeemed,
+        SwapStatus::ServerRedeemed => SdkSwapStatus::ServerRedeemed,
+        SwapStatus::ClientFundedServerRefunded => SdkSwapStatus::ClientFundedServerRefunded,
+        SwapStatus::ClientRefundedServerFunded => SdkSwapStatus::ClientRefundedServerFunded,
+        SwapStatus::ClientRefundedServerRefunded => SdkSwapStatus::ClientRefundedServerRefunded,
+        SwapStatus::Expired => SdkSwapStatus::Expired,
+        SwapStatus::ClientInvalidFunded => SdkSwapStatus::ClientInvalidFunded,
+        SwapStatus::ClientFundedTooLate => SdkSwapStatus::ClientFundedTooLate,
+        SwapStatus::ServerWontFund => SdkSwapStatus::ServerWontFund,
+        SwapStatus::ClientRedeemedAndClientRefunded => {
+            SdkSwapStatus::ClientRedeemedAndClientRefunded
+        }
+        SwapStatus::Other { wire } => SdkSwapStatus::Other(wire),
+    }
+}
