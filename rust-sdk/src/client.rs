@@ -319,11 +319,22 @@ impl Client {
     /// [`Swap::from_response`] for the projection.
     #[tracing::instrument(name = "get_swap", skip_all, fields(%swap_id))]
     pub async fn get_swap(&self, swap_id: &str) -> Result<Swap> {
+        let body = self.fetch_swap_response(swap_id).await?;
+        Ok(Swap::from_response(body))
+    }
+
+    /// Private: fetch the raw backend response without projection.
+    /// `get_swap` consumers see the trimmed [`Swap`]; internal callers
+    /// (e.g. the Arkade claim flow) need access to fields the public
+    /// projection drops (VHTLC pubkeys, locktimes, network, …).
+    pub(crate) async fn fetch_swap_response(
+        &self,
+        swap_id: &str,
+    ) -> Result<EvmToArkadeSwapResponse> {
         let url = self.url(&format!("swap/{swap_id}"))?;
         let resp = self.http.get(url).send().await?;
         let resp = check_status(resp).await?;
-        let body = resp.json::<EvmToArkadeSwapResponse>().await?;
-        Ok(Swap::from_response(body))
+        Ok(resp.json::<EvmToArkadeSwapResponse>().await?)
     }
 
     /// Poll `GET /swap/{id}` until the swap reaches one of `targets`

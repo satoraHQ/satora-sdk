@@ -26,6 +26,7 @@
 //! Today this is scaffolding only; the actual claim flow lands in
 //! follow-up commits as we work through the [`Client::claim`] body.
 
+use crate::client::Client;
 use crate::error::Error;
 use crate::error::Result;
 use ark_bdk_wallet::Wallet;
@@ -40,6 +41,9 @@ use ark_rs::client::swap_storage::InMemorySwapStorage;
 use ark_rs::client::wallet::Persistence;
 use ark_rs::core::BoardingOutput;
 use ark_rs::core::ExplorerUtxo;
+use ark_rs::core::server::parse_sequence_number;
+use ark_rs::core::vhtlc::VhtlcOptions;
+use ark_rs::core::vhtlc::VhtlcScript;
 use bitcoin::Address;
 use bitcoin::Amount;
 use bitcoin::Network;
@@ -49,6 +53,9 @@ use bitcoin::Txid;
 use bitcoin::XOnlyPublicKey;
 use bitcoin::bip32::DerivationPath;
 use bitcoin::bip32::Xpriv;
+use bitcoin::hashes::Hash;
+use bitcoin::hashes::ripemd160;
+use bitcoin::hashes::sha256;
 use bitcoin::key::Secp256k1;
 use bitcoin::secp256k1::SecretKey;
 use esplora_client::OutputStatus;
@@ -340,4 +347,196 @@ impl Blockchain for EsploraBlockchain {
             "broadcast_package not implemented".to_string(),
         ))
     }
+}
+
+// ── claim entry point ──────────────────────────────────────────────────
+
+impl Client {
+    /// Redeem the Arkade VHTLC for an EVM→Arkade swap that has reached
+    /// (or passed) [`crate::types::SwapStatus::ServerFunded`].
+    ///
+    /// Re-derives the preimage from the signer + the swap's `key_index`
+    /// in [`crate::SwapStorage`], rebuilds the VHTLC script from the
+    /// backend's view of the swap, fetches the VTXO at the VHTLC
+    /// address, and offchain-spends it to `destination` via the claim
+    /// script (preimage + receiver sig + server sig).
+    ///
+    /// The body lands in follow-up commits; this commit just validates
+    /// the prerequisites (storage lookup, key derivation, response
+    /// fetch, VHTLC script reconstruction + address sanity check) so a
+    /// caller hitting a config mismatch fails fast with a clear error
+    /// rather than midway through the gRPC handshake.
+    #[tracing::instrument(name = "claim", skip_all, fields(%swap_id))]
+    pub async fn claim(
+        &self,
+        swap_id: &str,
+        destination: &str,
+        config: ArkadeConfig,
+    ) -> Result<ClaimReceipt> {
+        // 1. Re-derive the per-swap secret material from the signer. The preimage isn't persisted
+        //    by the SDK; it's deterministic from (signer master seed, key_index), which IS
+        //    persisted.
+        let signer = self.signer.as_ref().ok_or_else(|| {
+            Error::InvalidSigner(
+                "Client constructed without a signer — use Client::builder() with .mnemonic / .xprv"
+                    .to_string(),
+            )
+        })?;
+        let key_index = self.storage.get_swap_key_index(swap_id)?.ok_or_else(|| {
+            Error::InvalidSwap(format!(
+                "no key_index in storage for swap `{swap_id}` — has create_swap been called on this Client?",
+            ))
+        })?;
+        let swap_params = signer.derive_swap_params(key_index)?;
+
+        // 2. Fetch the backend's current view of the swap — `Swap` drops the VHTLC pubkeys +
+        //    locktimes we need for the script.
+        let resp = self.fetch_swap_response(swap_id).await?;
+
+        // Sanity: SDK-derived hash_lock must match the backend's. A
+        // mismatch means a different mnemonic / wrong key_index — the
+        // claim would silently fail later when Permit2 verifies our
+        // sig against an unexpected pubkey.
+        let backend_hash_lock = parse_hash_lock(&resp.hash_lock)?;
+        if backend_hash_lock != swap_params.hash_lock {
+            return Err(Error::InvalidSwap(format!(
+                "hash_lock mismatch: backend has {} but signer/key_index derived a different preimage",
+                resp.hash_lock,
+            )));
+        }
+
+        // 3. Rebuild the VHTLC script from the response and the user-derived receiver pubkey. The
+        //    sender / server pubkeys come from the backend; the receiver pubkey we trust comes from
+        //    our local signer (matches `receiver_pk` on the response by construction, but it's
+        //    safer to use the local one for signing later).
+        let vhtlc = build_vhtlc_script(&resp, &swap_params, config.network)?;
+
+        // Sanity: computed VHTLC address must match what the backend
+        // told us. If not, we're rebuilding the wrong script — bail
+        // before spending anything.
+        let computed_address = vhtlc.address().encode();
+        if computed_address != resp.btc_vhtlc_address {
+            return Err(Error::InvalidSwap(format!(
+                "VHTLC address mismatch: computed `{computed_address}`, backend says `{}`",
+                resp.btc_vhtlc_address,
+            )));
+        }
+
+        // 4. Wire up the Arkade client. The connect blocks on gRPC, which is why everything that
+        //    can fail without network is above this line.
+        let _arkade = ArkadeWallet::connect(&config).await?;
+
+        // 5+: VTXO fetch, offchain claim TX, submit, finalize.
+        //     Implemented in follow-up commits.
+        let _ = (vhtlc, destination, &swap_params);
+        Err(Error::InvalidSwap(
+            "Client::claim: VTXO sweep not implemented yet (next commit)".to_string(),
+        ))
+    }
+}
+
+// ── helpers ────────────────────────────────────────────────────────────
+
+/// Parse the backend's `hash_lock` hex string into a `[u8; 32]` for
+/// equality comparison with the SDK-derived value.
+fn parse_hash_lock(hex_str: &str) -> Result<[u8; 32]> {
+    let trimmed = hex_str.strip_prefix("0x").unwrap_or(hex_str);
+    let bytes = hex::decode(trimmed)
+        .map_err(|e| Error::Decode(format!("hash_lock hex: {e} (value: {hex_str})")))?;
+    bytes.try_into().map_err(|v: Vec<u8>| {
+        Error::Decode(format!(
+            "hash_lock length: expected 32 bytes, got {}",
+            v.len()
+        ))
+    })
+}
+
+/// Parse a 32-byte x-only public key from a hex string.
+///
+/// Accepts both the bare 32-byte form (64 hex chars) and the SEC-1
+/// compressed form (66 hex chars with a `02`/`03` parity prefix) —
+/// the backend uses the latter for VHTLC pubkeys.
+fn parse_xonly_pubkey(hex_str: &str, field: &str) -> Result<XOnlyPublicKey> {
+    let trimmed = hex_str.strip_prefix("0x").unwrap_or(hex_str);
+    let bytes = hex::decode(trimmed)
+        .map_err(|e| Error::Decode(format!("{field} hex: {e} (value: {hex_str})")))?;
+    let xonly_bytes: &[u8] = match bytes.len() {
+        32 => &bytes,
+        33 => &bytes[1..],
+        n => {
+            return Err(Error::Decode(format!(
+                "{field}: expected 32 or 33 bytes, got {n}"
+            )));
+        }
+    };
+    XOnlyPublicKey::from_slice(xonly_bytes)
+        .map_err(|e| Error::Decode(format!("{field} XOnlyPublicKey::from_slice: {e}")))
+}
+
+/// Build the VHTLC script from the backend's swap response.
+///
+/// The VHTLC's three roles map onto the EVM-→-Arkade swap as:
+///   - `sender` = lendaswap server (it's the one that locked BTC)
+///   - `receiver` = the user (whose key the SDK signs claims with)
+///   - `server` = Arkade server (third-party cosigner)
+///
+/// `preimage_hash` is `HASH160(preimage) = RIPEMD160(SHA256(preimage))`
+/// — distinct from the EVM HTLC's `hash_lock = SHA256(preimage)`.
+fn build_vhtlc_script(
+    resp: &crate::types::EvmToArkadeSwapResponse,
+    swap_params: &crate::signer::SwapParams,
+    network: Network,
+) -> Result<VhtlcScript> {
+    let sender = parse_xonly_pubkey(&resp.sender_pk, "sender_pk")?;
+    let receiver = parse_xonly_pubkey(&resp.receiver_pk, "receiver_pk")?;
+    let server = parse_xonly_pubkey(&resp.arkade_server_pk, "arkade_server_pk")?;
+
+    // Backend's `receiver_pk` should match what we derive from the
+    // signer — if not, this client can't sign the claim regardless of
+    // what other addresses agree on. The SDK's `derive_swap_params`
+    // returns a SEC-1 compressed (33 byte) pubkey; strip the parity
+    // byte to compare against the x-only form the VHTLC uses.
+    let derived_receiver = XOnlyPublicKey::from_slice(&swap_params.public_key[1..])
+        .map_err(|e| Error::InvalidSigner(format!("derived receiver_pk: {e}")))?;
+    if derived_receiver != receiver {
+        return Err(Error::InvalidSwap(format!(
+            "receiver_pk mismatch: backend `{}` vs locally-derived",
+            resp.receiver_pk,
+        )));
+    }
+
+    let preimage_hash = ripemd160::Hash::hash(
+        sha256::Hash::hash(&swap_params.preimage)
+            .as_byte_array()
+            .as_slice(),
+    );
+
+    let refund_locktime = u32::try_from(resp.vhtlc_refund_locktime).map_err(|_| {
+        Error::Decode(format!(
+            "vhtlc_refund_locktime {} doesn't fit in u32",
+            resp.vhtlc_refund_locktime,
+        ))
+    })?;
+    let unilateral_claim_delay = parse_sequence_number(resp.unilateral_claim_delay as i64)
+        .map_err(|e| Error::Decode(format!("unilateral_claim_delay: {e}")))?;
+    let unilateral_refund_delay = parse_sequence_number(resp.unilateral_refund_delay as i64)
+        .map_err(|e| Error::Decode(format!("unilateral_refund_delay: {e}")))?;
+    let unilateral_refund_without_receiver_delay =
+        parse_sequence_number(resp.unilateral_refund_without_receiver_delay as i64)
+            .map_err(|e| Error::Decode(format!("unilateral_refund_without_receiver_delay: {e}")))?;
+
+    VhtlcScript::new(
+        VhtlcOptions {
+            sender,
+            receiver,
+            server,
+            preimage_hash,
+            refund_locktime,
+            unilateral_claim_delay,
+            unilateral_refund_delay,
+            unilateral_refund_without_receiver_delay,
+        },
+        network,
+    )
+    .map_err(|e| Error::Decode(format!("VhtlcScript::new: {e}")))
 }
