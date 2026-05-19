@@ -761,6 +761,8 @@ static class _UniFFILib {
     
     
     
+    
+    
 
     static _UniFFILib() {
         _UniFFILib.uniffiCheckContractApiVersion();
@@ -782,6 +784,10 @@ static class _UniFFILib {
 
     [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern IntPtr uniffi_lendaswap_sdk_ffi_fn_constructor_lendaswapclient_new_signing(RustBuffer @baseUrl,RustBuffer @mnemonic,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_claim(IntPtr @ptr,RustBuffer @swapId,RustBuffer @destination,RustBuffer @config,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -1033,6 +1039,10 @@ static class _UniFFILib {
     );
 
     [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_claim(
+    );
+
+    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern ushort uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_create_swap(
     );
 
@@ -1078,6 +1088,12 @@ static class _UniFFILib {
     }
 
     static void uniffiCheckApiChecksums() {
+        {
+            var checksum = _UniFFILib.uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_claim();
+            if (checksum != 38888) {
+                throw new UniffiContractChecksumException($"uniffi.lendaswap_sdk_ffi: uniffi bindings expected function `uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_claim` checksum `38888`, library returned `{checksum}`");
+            }
+        }
         {
             var checksum = _UniFFILib.uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_create_swap();
             if (checksum != 33227) {
@@ -1275,6 +1291,15 @@ class FfiConverterString: FfiConverter<string, RustBuffer> {
 /// </summary>
 public interface ILendaswapClient {
     /// <summary>
+    /// Redeem the Arkade VHTLC for an EVM→Arkade swap that has
+    /// reached (or passed) ServerFunded. Sweeps the BTC to
+    /// `destination`. Requires a signing client; the Arkade identity
+    /// mnemonic is provided separately via [`ArkadeConfig`] because
+    /// it's distinct from the lendaswap signing mnemonic.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    ClaimReceipt Claim(string @swapId, string @destination, ArkadeConfig @config);
+    /// <summary>
     /// Create a swap. Today the SDK only supports EVM stablecoin →
     /// BTC on Arkade. The dispatcher in `Client::create_swap`
     /// validates the direction and errors with `Error::InvalidSwap`
@@ -1448,6 +1473,22 @@ public class LendaswapClient : ILendaswapClient, IDisposable {
         }
     }
 
+    
+    /// <summary>
+    /// Redeem the Arkade VHTLC for an EVM→Arkade swap that has
+    /// reached (or passed) ServerFunded. Sweeps the BTC to
+    /// `destination`. Requires a signing client; the Arkade identity
+    /// mnemonic is provided separately via [`ArkadeConfig`] because
+    /// it's distinct from the lendaswap signing mnemonic.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public ClaimReceipt Claim(string @swapId, string @destination, ArkadeConfig @config) {
+        return CallWithPointer(thisPtr => FfiConverterTypeClaimReceipt.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_claim(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterString.INSTANCE.Lower(@destination), FfiConverterTypeArkadeConfig.INSTANCE.Lower(@config), ref _status)
+)));
+    }
+    
     
     /// <summary>
     /// Create a swap. Today the SDK only supports EVM stablecoin →
@@ -1650,6 +1691,121 @@ class FfiConverterTypeAaConfig: FfiConverterRustBuffer<AaConfig> {
             FfiConverterString.INSTANCE.Write(value.@nodeRpcUrl, stream);
             FfiConverterOptionalTypePaymasterConfig.INSTANCE.Write(value.@paymaster, stream);
             FfiConverterTypeBundlerCasing.INSTANCE.Write(value.@bundlerCasing, stream);
+    }
+}
+
+
+
+/// <summary>
+/// Arkade-side configuration for [`LendaswapClient::claim`]. The
+/// mnemonic here is the user's Arkade identity (BIP-85 derivation
+/// under the SDK's hard-coded path) — distinct from the lendaswap
+/// signing mnemonic the client was constructed with.
+/// </summary>
+/// <param name="arkade_server_url">
+/// gRPC endpoint of the Arkade server (`arkd`).
+/// </param>
+/// <param name="esplora_url">
+/// HTTP esplora endpoint backing the on-chain wallet + chain queries.
+/// </param>
+/// <param name="identity_mnemonic">
+/// BIP-39 mnemonic the Arkade identity is derived from. MUST
+/// match the mnemonic used to construct the receive address
+/// passed to `create_swap` — otherwise the VHTLC's receiver
+/// keypair won't match the claim signer.
+/// </param>
+/// <param name="network">
+/// Bitcoin network the VHTLC sits on. Regtest for the local
+/// e2e; mainnet for production.
+/// </param>
+public record ArkadeConfig (
+    /// <summary>
+    /// gRPC endpoint of the Arkade server (`arkd`).
+    /// </summary>
+    string @arkadeServerUrl, 
+    /// <summary>
+    /// HTTP esplora endpoint backing the on-chain wallet + chain queries.
+    /// </summary>
+    string @esploraUrl, 
+    /// <summary>
+    /// BIP-39 mnemonic the Arkade identity is derived from. MUST
+    /// match the mnemonic used to construct the receive address
+    /// passed to `create_swap` — otherwise the VHTLC's receiver
+    /// keypair won't match the claim signer.
+    /// </summary>
+    string @identityMnemonic, 
+    /// <summary>
+    /// Bitcoin network the VHTLC sits on. Regtest for the local
+    /// e2e; mainnet for production.
+    /// </summary>
+    BitcoinNetwork @network
+) {
+}
+
+class FfiConverterTypeArkadeConfig: FfiConverterRustBuffer<ArkadeConfig> {
+    public static FfiConverterTypeArkadeConfig INSTANCE = new FfiConverterTypeArkadeConfig();
+
+    public override ArkadeConfig Read(BigEndianStream stream) {
+        return new ArkadeConfig(
+            @arkadeServerUrl: FfiConverterString.INSTANCE.Read(stream),
+            @esploraUrl: FfiConverterString.INSTANCE.Read(stream),
+            @identityMnemonic: FfiConverterString.INSTANCE.Read(stream),
+            @network: FfiConverterTypeBitcoinNetwork.INSTANCE.Read(stream)
+        );
+    }
+
+    public override int AllocationSize(ArkadeConfig value) {
+        return 0
+            + FfiConverterString.INSTANCE.AllocationSize(value.@arkadeServerUrl)
+            + FfiConverterString.INSTANCE.AllocationSize(value.@esploraUrl)
+            + FfiConverterString.INSTANCE.AllocationSize(value.@identityMnemonic)
+            + FfiConverterTypeBitcoinNetwork.INSTANCE.AllocationSize(value.@network);
+    }
+
+    public override void Write(ArkadeConfig value, BigEndianStream stream) {
+            FfiConverterString.INSTANCE.Write(value.@arkadeServerUrl, stream);
+            FfiConverterString.INSTANCE.Write(value.@esploraUrl, stream);
+            FfiConverterString.INSTANCE.Write(value.@identityMnemonic, stream);
+            FfiConverterTypeBitcoinNetwork.INSTANCE.Write(value.@network, stream);
+    }
+}
+
+
+
+/// <summary>
+/// Result of an Arkade VHTLC claim.
+/// </summary>
+/// <param name="ark_txid">
+/// Ark TX ID of the offchain claim transaction. Hex, `0x`-prefixed.
+/// </param>
+public record ClaimReceipt (
+    /// <summary>
+    /// Ark TX ID of the offchain claim transaction. Hex, `0x`-prefixed.
+    /// </summary>
+    string @arkTxid, 
+    ulong @claimAmountSats
+) {
+}
+
+class FfiConverterTypeClaimReceipt: FfiConverterRustBuffer<ClaimReceipt> {
+    public static FfiConverterTypeClaimReceipt INSTANCE = new FfiConverterTypeClaimReceipt();
+
+    public override ClaimReceipt Read(BigEndianStream stream) {
+        return new ClaimReceipt(
+            @arkTxid: FfiConverterString.INSTANCE.Read(stream),
+            @claimAmountSats: FfiConverterUInt64.INSTANCE.Read(stream)
+        );
+    }
+
+    public override int AllocationSize(ClaimReceipt value) {
+        return 0
+            + FfiConverterString.INSTANCE.AllocationSize(value.@arkTxid)
+            + FfiConverterUInt64.INSTANCE.AllocationSize(value.@claimAmountSats);
+    }
+
+    public override void Write(ClaimReceipt value, BigEndianStream stream) {
+            FfiConverterString.INSTANCE.Write(value.@arkTxid, stream);
+            FfiConverterUInt64.INSTANCE.Write(value.@claimAmountSats, stream);
     }
 }
 
@@ -2000,6 +2156,46 @@ class FfiConverterTypeAddress : FfiConverterRustBuffer<Address>{
             default:
                 throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeAddress.Write()", value));
         }
+    }
+}
+
+
+
+
+
+
+
+/// <summary>
+/// Bitcoin network the Arkade VHTLC was created on. Mirrors a
+/// subset of `bitcoin::Network` — only the variants the Arkade
+/// stack realistically exercises today.
+/// </summary>
+public enum BitcoinNetwork: int {
+    
+    Mainnet,
+    Testnet,
+    Signet,
+    Regtest
+}
+
+class FfiConverterTypeBitcoinNetwork: FfiConverterRustBuffer<BitcoinNetwork> {
+    public static FfiConverterTypeBitcoinNetwork INSTANCE = new FfiConverterTypeBitcoinNetwork();
+
+    public override BitcoinNetwork Read(BigEndianStream stream) {
+        var value = stream.ReadInt() - 1;
+        if (Enum.IsDefined(typeof(BitcoinNetwork), value)) {
+            return (BitcoinNetwork)value;
+        } else {
+            throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeBitcoinNetwork.Read()", value));
+        }
+    }
+
+    public override int AllocationSize(BitcoinNetwork value) {
+        return 4;
+    }
+
+    public override void Write(BitcoinNetwork value, BigEndianStream stream) {
+        stream.WriteInt((int)value + 1);
     }
 }
 

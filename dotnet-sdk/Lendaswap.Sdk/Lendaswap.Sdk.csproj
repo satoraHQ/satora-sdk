@@ -42,6 +42,9 @@
     <Using Include="uniffi.lendaswap_sdk_ffi.PaymasterConfig" Alias="PaymasterConfig" />
     <Using Include="uniffi.lendaswap_sdk_ffi.BundlerCasing" Alias="BundlerCasing" />
     <Using Include="uniffi.lendaswap_sdk_ffi.FundSwapReceipt" Alias="FundSwapReceiptRaw" />
+    <Using Include="uniffi.lendaswap_sdk_ffi.ArkadeConfig" Alias="ArkadeConfig" />
+    <Using Include="uniffi.lendaswap_sdk_ffi.BitcoinNetwork" Alias="BitcoinNetwork" />
+    <Using Include="uniffi.lendaswap_sdk_ffi.ClaimReceipt" Alias="ClaimReceiptRaw" />
   </ItemGroup>
 
   <!-- Native libraries: at pack time these go under runtimes/{rid}/native

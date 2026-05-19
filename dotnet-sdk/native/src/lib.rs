@@ -23,6 +23,7 @@ use lendaswap_sdk::SwapFunding as SdkSwapFunding;
 use lendaswap_sdk::aa::AaConfig as SdkAaConfig;
 use lendaswap_sdk::aa::PaymasterConfig as SdkPaymasterConfig;
 use lendaswap_sdk::aa::bundler::BundlerCasing as SdkBundlerCasing;
+use lendaswap_sdk::arkade::ArkadeConfig as SdkArkadeConfig;
 use lendaswap_sdk::types::Address as SdkAddress;
 use lendaswap_sdk::types::Chain as SdkChain;
 use lendaswap_sdk::types::KnownChain as SdkKnownChain;
@@ -652,6 +653,95 @@ impl LendaswapClient {
                 .wait_for_swap_status(&swap_id, &sdk_targets, timeout)
                 .await?;
             Ok(reached.into())
+        })
+    }
+}
+
+// ─── Arkade claim ──────────────────────────────────────────────────────
+
+/// Bitcoin network the Arkade VHTLC was created on. Mirrors a
+/// subset of `bitcoin::Network` — only the variants the Arkade
+/// stack realistically exercises today.
+#[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum BitcoinNetwork {
+    Mainnet,
+    Testnet,
+    Signet,
+    Regtest,
+}
+
+impl From<BitcoinNetwork> for bitcoin::Network {
+    fn from(n: BitcoinNetwork) -> Self {
+        match n {
+            BitcoinNetwork::Mainnet => bitcoin::Network::Bitcoin,
+            BitcoinNetwork::Testnet => bitcoin::Network::Testnet,
+            BitcoinNetwork::Signet => bitcoin::Network::Signet,
+            BitcoinNetwork::Regtest => bitcoin::Network::Regtest,
+        }
+    }
+}
+
+/// Arkade-side configuration for [`LendaswapClient::claim`]. The
+/// mnemonic here is the user's Arkade identity (BIP-85 derivation
+/// under the SDK's hard-coded path) — distinct from the lendaswap
+/// signing mnemonic the client was constructed with.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct ArkadeConfig {
+    /// gRPC endpoint of the Arkade server (`arkd`).
+    pub arkade_server_url: String,
+    /// HTTP esplora endpoint backing the on-chain wallet + chain queries.
+    pub esplora_url: String,
+    /// BIP-39 mnemonic the Arkade identity is derived from. MUST
+    /// match the mnemonic used to construct the receive address
+    /// passed to `create_swap` — otherwise the VHTLC's receiver
+    /// keypair won't match the claim signer.
+    pub identity_mnemonic: String,
+    /// Bitcoin network the VHTLC sits on. Regtest for the local
+    /// e2e; mainnet for production.
+    pub network: BitcoinNetwork,
+}
+
+impl From<ArkadeConfig> for SdkArkadeConfig {
+    fn from(c: ArkadeConfig) -> Self {
+        Self {
+            arkade_server_url: c.arkade_server_url,
+            esplora_url: c.esplora_url,
+            identity_mnemonic: c.identity_mnemonic,
+            network: c.network.into(),
+        }
+    }
+}
+
+/// Result of an Arkade VHTLC claim.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct ClaimReceipt {
+    /// Ark TX ID of the offchain claim transaction. Hex, `0x`-prefixed.
+    pub ark_txid: String,
+    pub claim_amount_sats: u64,
+}
+
+#[uniffi::export]
+impl LendaswapClient {
+    /// Redeem the Arkade VHTLC for an EVM→Arkade swap that has
+    /// reached (or passed) ServerFunded. Sweeps the BTC to
+    /// `destination`. Requires a signing client; the Arkade identity
+    /// mnemonic is provided separately via [`ArkadeConfig`] because
+    /// it's distinct from the lendaswap signing mnemonic.
+    pub fn claim(
+        &self,
+        swap_id: String,
+        destination: String,
+        config: ArkadeConfig,
+    ) -> Result<ClaimReceipt, SdkError> {
+        runtime().block_on(async {
+            let receipt = self
+                .inner
+                .claim(&swap_id, &destination, config.into())
+                .await?;
+            Ok(ClaimReceipt {
+                ark_txid: format!("{:#x}", receipt.ark_txid),
+                claim_amount_sats: receipt.claim_amount_sats,
+            })
         })
     }
 }
