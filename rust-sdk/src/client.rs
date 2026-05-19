@@ -36,6 +36,8 @@ use crate::types::VersionRequest;
 use reqwest::StatusCode;
 use serde::Serialize;
 use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
 use url::Url;
 
 /// Production Lendaswap API endpoint. Used by [`ClientBuilder`] when no
@@ -307,6 +309,65 @@ impl Client {
              the backend rejected every derived index. If you recently recovered this wallet from a seed, \
              try again; otherwise this is a bug.",
         )))
+    }
+
+    /// `GET /swap/{id}` — fetch the current state of a swap by id.
+    ///
+    /// Not routed through [`Self::send`] because the endpoint has a
+    /// path parameter and [`Endpoint::PATH`] is a `&'static str`. The
+    /// shape mirrors the create-swap response, so we reuse
+    /// [`Swap::from_response`] for the projection.
+    #[tracing::instrument(name = "get_swap", skip_all, fields(%swap_id))]
+    pub async fn get_swap(&self, swap_id: &str) -> Result<Swap> {
+        let url = self.url(&format!("swap/{swap_id}"))?;
+        let resp = self.http.get(url).send().await?;
+        let resp = check_status(resp).await?;
+        let body = resp.json::<EvmToArkadeSwapResponse>().await?;
+        Ok(Swap::from_response(body))
+    }
+
+    /// Poll `GET /swap/{id}` until the swap reaches one of `targets`
+    /// (returning the matched status) or `timeout` elapses (returning
+    /// [`Error::Timeout`]). Polls at a fixed 3s interval — fast enough
+    /// for local e2e (Anvil block time ~1s, Arkade ~5s) without
+    /// hammering a remote backend.
+    ///
+    /// Doesn't model "failure terminal states" (`Expired`,
+    /// `ServerWontFund`, …) — if you need to short-circuit on those,
+    /// the caller can layer a [`Self::get_swap`] check around this or
+    /// we can grow a `fail_targets` parameter when there's a concrete
+    /// user. For now, terminal failures will just surface as a timeout.
+    ///
+    /// Internals are polling-based (no websockets yet) so the SDK
+    /// stays a single-dep `reqwest` client. The signature is the same
+    /// shape we'd keep if we later swap to the backend's `/ws`
+    /// channel, so callers don't break when that lands.
+    #[tracing::instrument(name = "wait_for_swap_status", skip_all, fields(%swap_id, ?targets, ?timeout))]
+    pub async fn wait_for_swap_status(
+        &self,
+        swap_id: &str,
+        targets: &[SwapStatus],
+        timeout: Duration,
+    ) -> Result<SwapStatus> {
+        const POLL_INTERVAL: Duration = Duration::from_secs(3);
+        let deadline = Instant::now() + timeout;
+        let mut attempt = 0u32;
+        loop {
+            attempt += 1;
+            let swap = self.get_swap(swap_id).await?;
+            tracing::debug!(attempt, status = ?swap.status, "wait_for_swap_status: poll");
+            if targets.contains(&swap.status) {
+                tracing::info!(attempt, status = ?swap.status, "wait_for_swap_status: matched");
+                return Ok(swap.status);
+            }
+            if Instant::now() >= deadline {
+                return Err(Error::Timeout(format!(
+                    "swap {swap_id} did not reach {targets:?} within {timeout:?} (last status: {:?})",
+                    swap.status,
+                )));
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
     }
 
     fn url(&self, path: &str) -> Result<Url> {
