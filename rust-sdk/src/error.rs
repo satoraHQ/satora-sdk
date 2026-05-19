@@ -7,6 +7,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Variants are plain owned data so this enum can later be projected across
 /// an FFI boundary without lifetime gymnastics.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum Error {
     #[error("invalid base URL: {0}")]
     InvalidBaseUrl(String),
@@ -25,6 +26,9 @@ pub enum Error {
 
     #[error("invalid swap arguments: {0}")]
     InvalidSwap(String),
+
+    #[error("operation timed out: {0}")]
+    Timeout(String),
 }
 
 impl From<reqwest::Error> for Error {
