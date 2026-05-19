@@ -20,7 +20,12 @@ crate-type = ["cdylib", "staticlib", "lib"]
 # via `fund_swap_gasless`. Adds substantial compile time + dylib size
 # (~few MB); when an EVM-disabled build is needed (e.g. iOS-only
 # minimal SDK), gate this off and remove the corresponding methods.
-lendaswap-sdk = { path = "../../rust-sdk", features = ["gasless"] }
+# `bitcoin::Network` is the only thing we need from `bitcoin` — to map
+# the FFI's BitcoinNetwork enum into what `ArkadeConfig` expects.
+# Version pinned to lendaswap-sdk's choice (0.32) so the resolver
+# picks one copy.
+bitcoin = { version = "0.32", default-features = false, features = ["std"] }
+lendaswap-sdk = { path = "../../rust-sdk", features = ["gasless", "arkade-claim"] }
 serde_json = "1"
 thiserror = "1"
 # Multi-thread runtime so multiple FFI calls don't serialise on a single

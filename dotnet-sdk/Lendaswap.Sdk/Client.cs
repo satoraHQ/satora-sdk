@@ -134,6 +134,16 @@ public sealed record FundReceipt(string UserOpHash, string? TransactionHash)
 }
 
 /// <summary>
+/// Result of an Arkade VHTLC claim.
+/// </summary>
+/// <param name="ArkTxid">Ark TX ID of the offchain claim transaction (hex, `0x…`).</param>
+/// <param name="ClaimAmountSats">Amount swept out of the VHTLC, in satoshis.</param>
+public sealed record ClaimReceipt(string ArkTxid, ulong ClaimAmountSats)
+{
+    internal static ClaimReceipt FromFfi(ClaimReceiptRaw r) => new(r.@arkTxid, r.@claimAmountSats);
+}
+
+/// <summary>
 /// Top-level client. Holds an FFI handle whose Rust side owns the
 /// per-swap key_index storage that <see cref="CreateSwapAsync"/> writes
 /// to and the funding / claim flows read from. Dispose this when done
@@ -348,6 +358,37 @@ public sealed class Client : IDisposable
         var seconds = (ulong)Math.Ceiling(timeout.TotalSeconds);
         return Task.Run(
             () => TryOrThrow(() => ffi.WaitForSwapStatus(swapId, targetArray, seconds)),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Redeem the Arkade VHTLC for an EVM→Arkade swap that has reached
+    /// (or passed) ServerFunded. Sweeps the BTC to <paramref name="destination"/>.
+    /// </summary>
+    /// <param name="swapId">UUID of a swap whose backend state is at least <see cref="SwapStatus.ServerFunded"/>.</param>
+    /// <param name="destination">Arkade address (`tark1…`) to receive the BTC.</param>
+    /// <param name="config">
+    /// Arkade-side configuration. The mnemonic here is the user's Arkade
+    /// identity (BIP-85 derivation) — distinct from the lendaswap signing
+    /// mnemonic the client was constructed with. They MUST match the
+    /// mnemonic used to derive the receive address passed to
+    /// <see cref="CreateSwapAsync"/>, otherwise the VHTLC's receiver key
+    /// won't match the claim signer.
+    /// </param>
+    public Task<ClaimReceipt> ClaimAsync(
+        string swapId,
+        string destination,
+        ArkadeConfig config,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_hasMnemonic)
+        {
+            throw new InvalidOperationException(
+                "ClaimAsync requires a mnemonic — construct the client with `new Client(baseUrl, mnemonic)`.");
+        }
+        var ffi = _ffi;
+        return Task.Run(
+            () => TryOrThrow(() => ClaimReceipt.FromFfi(ffi.Claim(swapId, destination, config))),
             cancellationToken);
     }
 }
