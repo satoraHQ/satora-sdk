@@ -32,6 +32,7 @@ pub mod userop;
 
 pub use client_ext::AaConfig;
 pub use client_ext::GasOverrides;
+pub use client_ext::GaslessOpts;
 pub use client_ext::PaymasterConfig;
 pub use orchestrate::FundSwapReceipt;
 pub use remote_config::AaConfigRequest;
