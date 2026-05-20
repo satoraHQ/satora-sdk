@@ -29,6 +29,7 @@ using GasOverrides = uniffi.lendaswap_sdk_ffi.GasOverrides;
 using ArkadeConfig = uniffi.lendaswap_sdk_ffi.ArkadeConfig;
 using BitcoinNetwork = uniffi.lendaswap_sdk_ffi.BitcoinNetwork;
 using SwapStatus = uniffi.lendaswap_sdk_ffi.SwapStatus;
+using SwapFunding = uniffi.lendaswap_sdk_ffi.SwapFunding;
 
 return await Cli.RunAsync(args).ConfigureAwait(false);
 
@@ -100,15 +101,10 @@ internal static class Cli
                                         (default: https://api.satora.io)
                 MNEMONIC                BIP-39 mnemonic — required for `create-swap` / `flow`.
                                         Stays in this process's memory only.
-                AA_BUNDLER_URL              ERC-4337 bundler endpoint        (flow --gasless)
-                AA_NODE_RPC_URL             EVM node RPC for the AA stack    (flow --gasless)
-                AA_PAYMASTER_URL            optional paymaster endpoint      (flow --gasless)
+                AA_BUNDLER_URL              ERC-4337 bundler endpoint   default: http://localhost:4337
+                AA_NODE_RPC_URL             EVM node RPC for the AA stack default: http://localhost:8546
+                AA_PAYMASTER_URL            optional paymaster endpoint  (flow --gasless)
                 AA_PAYMASTER_CONTEXT        optional paymaster JSON context  (flow --gasless)
-                AA_CALL_GAS_LIMIT \
-                AA_VERIFICATION_GAS_LIMIT \
-                AA_PRE_VERIFICATION_GAS     optional: set all three to bypass `eth_estimateUserOperationGas`
-                                            (workaround for bundlers that mis-simulate). Typical for
-                                            Arbitrum gasless: 500_000 / 150_000 / 100_000.
                 ARKADE_URL              Arkade arkd gRPC endpoint        (flow)
                 ESPLORA_URL             Esplora HTTP endpoint            (flow)
                 ARKADE_MNEMONIC         BIP-39 mnemonic for the Arkade identity (flow)
@@ -507,7 +503,7 @@ internal static class FlowCommand
         using var client = new Client(baseUrl, mnemonic);
 
         // ── 1. Create the swap ──
-        Console.WriteLine("[1/4] create-swap");
+        Console.WriteLine("[1/5] create-swap");
         var swap = await client.CreateSwapAsync(
             sourceChain, sourceToken, targetChain, targetToken, amount, receiveAddress, gasless)
             .ConfigureAwait(false);
@@ -519,17 +515,18 @@ internal static class FlowCommand
 
         if (gasless)
         {
-            // ── 2. Fund via the gasless ERC-4337 + EIP-7702 flow ──
+            // ── 2. Wait for the user to fund the deposit address ──
             //
-            // Real users transfer source-tokens to the SwapFunding.Gasless
-            // deposit_address out-of-band BEFORE invoking the bundler. The
-            // CLI assumes you've done that already — it doesn't do Anvil
-            // pre-seeding (that's the Rust e2e harness's job).
-            Console.WriteLine();
-            Console.WriteLine("[2/4] fund (gasless)");
-            var bundlerUrl = RequireEnv("AA_BUNDLER_URL", "ERC-4337 bundler URL");
-            var nodeRpcUrl = RequireEnv("AA_NODE_RPC_URL", "EVM node RPC URL");
-            if (bundlerUrl is null || nodeRpcUrl is null) return 2;
+            // A real consumer flow: print the deposit address + required
+            // amounts, then await the on-chain arrival. The SDK reads
+            // both balances every 5s and proceeds when thresholds are
+            // met (or throws on timeout).
+            //
+            // The CLI defaults LENDASWAP_API_URL / AA_BUNDLER_URL /
+            // AA_NODE_RPC_URL to the local dev stack when unset — same
+            // defaults the Rust e2e uses.
+            var bundlerUrl = Environment.GetEnvironmentVariable("AA_BUNDLER_URL") ?? "http://localhost:4337";
+            var nodeRpcUrl = Environment.GetEnvironmentVariable("AA_NODE_RPC_URL") ?? "http://localhost:8546";
 
             PaymasterConfig? paymaster = null;
             var paymasterUrl = Environment.GetEnvironmentVariable("AA_PAYMASTER_URL");
@@ -539,34 +536,53 @@ internal static class FlowCommand
                 paymaster = new PaymasterConfig(paymasterUrl, context);
             }
 
-            // Optional gas-overrides — set all three of
-            // AA_CALL_GAS_LIMIT / AA_VERIFICATION_GAS_LIMIT /
-            // AA_PRE_VERIFICATION_GAS to bypass the bundler's
-            // estimation RPC (workaround for alto's flaky
-            // simulation).
-            GasOverrides? gasOverrides;
-            try
-            {
-                gasOverrides = ParseGasOverridesFromEnv();
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine($"error: {ex.Message}");
-                return 2;
-            }
+            // Hardcoded gas-overrides — bypass alto's flaky estimation
+            // call (~1.7-1.9× headroom over observed peaks for a
+            // USDC→tBTC swap on Arbitrum).
+            var gasOverrides = new GasOverrides(800_000UL, 200_000UL, 150_000UL);
+
             var aa = new AaConfig(
                 bundlerUrl,
                 nodeRpcUrl,
                 paymaster,
                 BundlerCasing.CamelCase,
                 gasOverrides);
+
+            // ETH headroom: ~0.001 ETH covers a typical USDC→tBTC userOp
+            // without a paymaster. With sponsorship, drop to 0.
+            const ulong MinEthWei = 1_000_000_000_000_000UL; // 0.001 ETH
+
+            // Extract the deposit address from the swap response. The
+            // SwapFunding tagged enum is the FFI shape so pattern-match
+            // explicitly on the gasless variant.
+            var depositAddress = swap.Funding switch
+            {
+                SwapFunding.Gasless g => g.@depositAddress,
+                _ => throw new InvalidOperationException(
+                    $"--gasless requested but backend returned funding={swap.Funding}"),
+            };
+
+            Console.WriteLine();
+            Console.WriteLine("[2/5] waiting for deposit");
+            Console.WriteLine($"  Send to        : {depositAddress}");
+            Console.WriteLine($"  Token amount   : {swap.DepositAmount} (smallest units of {swap.DepositToken})");
+            Console.WriteLine($"  ETH gas        : at least {MinEthWei} wei (~0.001 ETH){(paymaster is null ? "" : " — set to 0 if paymaster covers gas")}");
+            Console.WriteLine($"  Polling node   : {nodeRpcUrl} every 5s");
+            Console.WriteLine();
+            await client.WaitForDepositFundingAsync(
+                swap.Id, aa, MinEthWei, TimeSpan.FromMinutes(30)).ConfigureAwait(false);
+            Console.WriteLine("  ✓ funding observed; submitting userOp");
+
+            // ── 3. Fund via the gasless ERC-4337 + EIP-7702 flow ──
+            Console.WriteLine();
+            Console.WriteLine("[3/5] submit userOp");
             var fund = await client.FundSwapAsync(swap.Id, aa).ConfigureAwait(false);
             Console.WriteLine($"  user_op_hash   : {fund.UserOpHash}");
             Console.WriteLine($"  tx_hash        : {fund.TransactionHash ?? "<poll exhausted>"}");
 
             // ── 3. Wait for serverfunded ──
             Console.WriteLine();
-            Console.WriteLine("[3/4] wait-for-serverfunded");
+            Console.WriteLine("[4/5] wait-for-serverfunded");
             var reached = await client.WaitForSwapStatusAsync(
                 swap.Id,
                 // SwapStatus variants are tagged-enum nested types — each is
@@ -588,7 +604,7 @@ internal static class FlowCommand
             // identity is a distinct BIP-85 derivation; the SDK doesn't
             // assume the same mnemonic serves both rails.
             Console.WriteLine();
-            Console.WriteLine("[4/4] claim");
+            Console.WriteLine("[5/5] claim");
             var arkadeUrl = RequireEnv("ARKADE_URL", "Arkade arkd gRPC endpoint");
             var esploraUrl = RequireEnv("ESPLORA_URL", "esplora HTTP endpoint");
             var arkadeMnemonic = RequireEnv("ARKADE_MNEMONIC", "BIP-39 mnemonic for the Arkade identity");
@@ -625,35 +641,6 @@ internal static class FlowCommand
             return null;
         }
         return value;
-    }
-
-    /// <summary>
-    /// Read AA_CALL_GAS_LIMIT / AA_VERIFICATION_GAS_LIMIT /
-    /// AA_PRE_VERIFICATION_GAS as a unit. Returns null when all three
-    /// are unset (default — let the bundler estimate). Partial-set is
-    /// an error: a stray missing variable would silently fall back to
-    /// estimation, defeating the workaround.
-    /// </summary>
-    private static GasOverrides? ParseGasOverridesFromEnv()
-    {
-        var call = Environment.GetEnvironmentVariable("AA_CALL_GAS_LIMIT");
-        var verification = Environment.GetEnvironmentVariable("AA_VERIFICATION_GAS_LIMIT");
-        var preVerification = Environment.GetEnvironmentVariable("AA_PRE_VERIFICATION_GAS");
-
-        var setCount = (string.IsNullOrWhiteSpace(call) ? 0 : 1)
-            + (string.IsNullOrWhiteSpace(verification) ? 0 : 1)
-            + (string.IsNullOrWhiteSpace(preVerification) ? 0 : 1);
-        if (setCount == 0) return null;
-        if (setCount != 3)
-        {
-            throw new ArgumentException(
-                "AA_CALL_GAS_LIMIT / AA_VERIFICATION_GAS_LIMIT / AA_PRE_VERIFICATION_GAS " +
-                "must all be set together (or all unset to let the bundler estimate).");
-        }
-        return new GasOverrides(
-            ulong.Parse(call!, System.Globalization.CultureInfo.InvariantCulture),
-            ulong.Parse(verification!, System.Globalization.CultureInfo.InvariantCulture),
-            ulong.Parse(preVerification!, System.Globalization.CultureInfo.InvariantCulture));
     }
 
     private static string TakeValue(string[] args, ref int i, string flag)

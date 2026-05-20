@@ -763,6 +763,8 @@ static class _UniFFILib {
     
     
     
+    
+    
 
     static _UniFFILib() {
         _UniFFILib.uniffiCheckContractApiVersion();
@@ -808,6 +810,10 @@ static class _UniFFILib {
 
     [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern RustBuffer uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_version(IntPtr @ptr,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_wait_for_deposit_funding(IntPtr @ptr,RustBuffer @swapId,RustBuffer @aaConfig,ulong @minEthWei,ulong @timeoutSeconds,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -1063,6 +1069,10 @@ static class _UniFFILib {
     );
 
     [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_wait_for_deposit_funding(
+    );
+
+    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern ushort uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_wait_for_swap_status(
     );
 
@@ -1122,6 +1132,12 @@ static class _UniFFILib {
             var checksum = _UniFFILib.uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_version();
             if (checksum != 37555) {
                 throw new UniffiContractChecksumException($"uniffi.lendaswap_sdk_ffi: uniffi bindings expected function `uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_version` checksum `37555`, library returned `{checksum}`");
+            }
+        }
+        {
+            var checksum = _UniFFILib.uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_wait_for_deposit_funding();
+            if (checksum != 24855) {
+                throw new UniffiContractChecksumException($"uniffi.lendaswap_sdk_ffi: uniffi bindings expected function `uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_wait_for_deposit_funding` checksum `24855`, library returned `{checksum}`");
             }
         }
         {
@@ -1350,6 +1366,20 @@ public interface ILendaswapClient {
     /// <exception cref="SdkException"></exception>
     Version Version();
     /// <summary>
+    /// Poll until the gasless deposit address holds enough source
+    /// token AND enough native gas. Resolves the deposit address +
+    /// required token amount from the swap response itself; the
+    /// caller only supplies the gas headroom they want in wei.
+    ///
+    /// For an unsponsored userOp (no paymaster), ~0.001 ETH (= 1e15
+    /// wei) is enough headroom on Arbitrum. With a paymaster, pass 0.
+    ///
+    /// Returns an `Internal` error wrapping the SDK's `Error::Timeout`
+    /// if `timeout_seconds` elapses before both thresholds are met.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    void WaitForDepositFunding(string @swapId, AaConfig @aaConfig, ulong @minEthWei, ulong @timeoutSeconds);
+    /// <summary>
     /// Poll `GET /swap/{id}` until the status matches one of `targets`
     /// or `timeout_seconds` elapses (returns `SdkError::Internal` with
     /// the SDK's `Error::Timeout` message in that case). 3s poll
@@ -1573,6 +1603,28 @@ public class LendaswapClient : ILendaswapClient, IDisposable {
     _UniFFILib.uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_version(thisPtr,  ref _status)
 )));
     }
+    
+    
+    /// <summary>
+    /// Poll until the gasless deposit address holds enough source
+    /// token AND enough native gas. Resolves the deposit address +
+    /// required token amount from the swap response itself; the
+    /// caller only supplies the gas headroom they want in wei.
+    ///
+    /// For an unsponsored userOp (no paymaster), ~0.001 ETH (= 1e15
+    /// wei) is enough headroom on Arbitrum. With a paymaster, pass 0.
+    ///
+    /// Returns an `Internal` error wrapping the SDK's `Error::Timeout`
+    /// if `timeout_seconds` elapses before both thresholds are met.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public void WaitForDepositFunding(string @swapId, AaConfig @aaConfig, ulong @minEthWei, ulong @timeoutSeconds) {
+        CallWithPointer(thisPtr =>
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_wait_for_deposit_funding(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterTypeAaConfig.INSTANCE.Lower(@aaConfig), FfiConverterUInt64.INSTANCE.Lower(@minEthWei), FfiConverterUInt64.INSTANCE.Lower(@timeoutSeconds), ref _status)
+));
+    }
+    
     
     
     /// <summary>
