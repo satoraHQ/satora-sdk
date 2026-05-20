@@ -548,9 +548,13 @@ internal static class FlowCommand
                 BundlerCasing.CamelCase,
                 gasOverrides);
 
-            // ETH headroom: ~0.001 ETH covers a typical USDC→tBTC userOp
-            // without a paymaster. With sponsorship, drop to 0.
-            const ulong MinEthWei = 1_000_000_000_000_000UL; // 0.001 ETH
+            // ETH headroom for the userOp prefund. The actual cost is
+            // `(call + verify + preVerify) × maxFeePerGas` — with our
+            // 1.15M gas budget and ~1 gwei effective fee on Arbitrum,
+            // that's ~0.00115 ETH. 0.01 ETH gives ~10× safety margin
+            // covering occasional gas-price spikes. With a paymaster
+            // sponsoring the userOp, set this to 0.
+            const ulong MinEthWei = 10_000_000_000_000_000UL; // 0.01 ETH
 
             // Extract the deposit address from the swap response. The
             // SwapFunding tagged enum is the FFI shape so pattern-match
