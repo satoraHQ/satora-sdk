@@ -474,6 +474,10 @@ impl LendaswapClient {
     /// / [`Self::claim`] calls on THIS instance recover it. A new
     /// `LendaswapClient` instance won't see it — the FFI doesn't
     /// expose a persistent storage backend yet.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "FFI surface — mirrors the inner SDK signature so uniffi-bindgen-cs maps each arg 1:1 to a C# parameter"
+    )]
     pub fn create_swap(
         &self,
         source_chain: ChainId,
