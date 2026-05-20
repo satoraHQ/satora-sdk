@@ -74,6 +74,50 @@ pub struct GasOverrides {
     pub pre_verification_gas: u64,
 }
 
+/// Caller-supplied knobs for [`Client::fund_swap_gasless`]. The bundler
+/// URL, paymaster URL, EntryPoint, delegation target, and Permit2
+/// address all come from the backend — those don't appear here. What
+/// the SDK can't infer:
+/// - which EVM node to talk to (depends on the consumer's provider stack);
+/// - paymaster context (depends on the paymaster's policy ID etc);
+/// - whether to bypass `eth_estimateUserOperationGas` and with what limits.
+#[derive(Debug, Clone)]
+pub struct GaslessOpts {
+    /// EVM node RPC URL the SDK uses for `eth_chainId`, balance reads,
+    /// etc. Required because most stacks split bundler + node (alto +
+    /// Anvil locally; Alchemy in prod is the exception where bundler +
+    /// node share a URL).
+    pub node_rpc_url: Url,
+    /// Paymaster context (e.g. `{"policyId":"<uuid>"}` for Alchemy Gas
+    /// Manager). Ignored when the backend returns no paymaster.
+    /// `None` => `Value::Null`.
+    pub paymaster_context: Option<Value>,
+    /// Skip `eth_estimateUserOperationGas` with these limits — see
+    /// [`GasOverrides`] for when this matters.
+    pub gas_overrides: Option<GasOverrides>,
+}
+
+impl GaslessOpts {
+    /// Minimal constructor — only the EVM node RPC URL is required.
+    pub fn new(node_rpc_url: Url) -> Self {
+        Self {
+            node_rpc_url,
+            paymaster_context: None,
+            gas_overrides: None,
+        }
+    }
+
+    pub fn with_paymaster_context(mut self, ctx: Value) -> Self {
+        self.paymaster_context = Some(ctx);
+        self
+    }
+
+    pub fn with_gas_overrides(mut self, overrides: GasOverrides) -> Self {
+        self.gas_overrides = Some(overrides);
+        self
+    }
+}
+
 /// Optional paymaster sponsorship — URL + context as a unit, since one
 /// without the other doesn't address any real paymaster.
 #[derive(Debug, Clone)]
@@ -109,22 +153,43 @@ impl Client {
 
     /// Submit a gasless EVM funding UserOp for `swap_id`.
     ///
-    /// Looks up the per-swap `key_index` from storage, derives the
-    /// ephemeral EOA via the configured [`crate::Signer`], fetches the
-    /// backend's `/swap/{id}/swap-and-lock-calldata-userop` payload,
-    /// then drives the full bundler + paymaster + 7702 flow via
-    /// [`fund_swap`].
+    /// Bundler URL + paymaster URL + ERC-4337 / Kernel addresses are
+    /// fetched from the backend via [`Self::fetch_aa_config`] — the
+    /// caller only supplies the bits the server can't ship (node RPC,
+    /// paymaster context, gas overrides) via [`GaslessOpts`]. The
+    /// source chain is derived from the swap's `deposit_token`.
+    ///
+    /// Internally:
+    /// 1. `GET /swap/{id}` to learn the source chain.
+    /// 2. `GET /aa/config?chain={id}` for bundler/paymaster details.
+    /// 3. Existing bundler + paymaster + 7702 flow via [`fund_swap`].
     ///
     /// Errors:
     /// - [`Error::InvalidSigner`] if the client wasn't built with a signer.
-    /// - [`Error::InvalidSwap`] if `swap_id` isn't in storage (no `key_index`).
+    /// - [`Error::InvalidSwap`] if `swap_id` isn't in storage (no `key_index`), or if the swap's
+    ///   `deposit_token` doesn't map to a known EVM chain.
     /// - [`Error::Transport`] / [`Error::Api`] for backend, bundler, paymaster, or node RPC
     ///   failures.
     pub async fn fund_swap_gasless(
         &self,
         swap_id: &str,
-        aa_config: AaConfig,
+        opts: GaslessOpts,
     ) -> Result<FundSwapReceipt> {
+        // 0. Resolve the source chain from the swap itself + fetch the backend-managed AA config.
+        let swap = self.get_swap(swap_id).await?;
+        let chain = swap.deposit_token.chain().ok_or_else(|| {
+            Error::InvalidSwap(format!(
+                "swap `{swap_id}` deposit_token `{}` has no known EVM chain — gasless funding needs an EVM source",
+                swap.deposit_token.as_wire_str(),
+            ))
+        })?;
+        let remote = self.fetch_aa_config(chain.into()).await?;
+        let aa_config = remote.into_config(
+            opts.node_rpc_url,
+            opts.paymaster_context.unwrap_or(Value::Null),
+            opts.gas_overrides,
+        );
+
         // 1. EOA derivation from the per-swap key_index.
         let signer = self.signer.as_ref().ok_or_else(|| {
             Error::InvalidSigner(
@@ -197,10 +262,10 @@ impl Client {
     /// [`Self::fund_swap_gasless`].
     ///
     /// Resolves the deposit address + required token amount from the
-    /// swap response itself; the caller only supplies the gas headroom
-    /// they want to require (in wei). Without a paymaster the SDK
-    /// recommends ~0.001 ETH headroom for a typical USDC→tBTC userOp;
-    /// with a paymaster, pass 0.
+    /// swap response itself; the caller supplies their EVM node RPC URL
+    /// and the gas headroom they want to require (in wei). Without a
+    /// paymaster the SDK recommends ~0.001 ETH headroom for a typical
+    /// USDC→tBTC userOp; with a paymaster, pass 0.
     ///
     /// Returns `Error::Timeout` if `timeout` elapses before both
     /// thresholds are met. 5s poll interval, fixed.
@@ -208,7 +273,7 @@ impl Client {
     pub async fn wait_for_deposit_funding(
         &self,
         swap_id: &str,
-        aa_config: &AaConfig,
+        node_rpc_url: &Url,
         min_eth_wei: u64,
         timeout: std::time::Duration,
     ) -> Result<()> {
@@ -226,7 +291,7 @@ impl Client {
         // Explicit `RootProvider` (defaults to Ethereum network) — the
         // generic param is otherwise ambiguous when only `Provider`
         // methods (no Network-specific filler) are touched.
-        let node: RootProvider = RootProvider::new_http(aa_config.node_rpc_url.clone());
+        let node: RootProvider = RootProvider::new_http(node_rpc_url.clone());
         // The IERC20 ABI's `balanceOf(address)` selector + calldata.
         // Encoded once per loop iteration since the deposit address
         // doesn't change.
