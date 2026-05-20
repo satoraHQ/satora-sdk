@@ -301,12 +301,12 @@ public sealed class Client : IDisposable
     /// arrived and you can submit the gasless userOp.
     /// </summary>
     /// <param name="swapId">UUID returned by <see cref="CreateSwapAsync"/>.</param>
-    /// <param name="aaConfig">Used for the node-RPC URL only (paymaster + bundler URLs are unused here).</param>
+    /// <param name="nodeRpcUrl">EVM node RPC URL (e.g. Alchemy / Infura).</param>
     /// <param name="minEthWei">Native gas headroom in wei. ~1e15 (0.001 ETH) on Arbitrum without a paymaster; 0 with.</param>
     /// <param name="timeout">Total wait budget. Throws <see cref="SdkException"/> on timeout.</param>
     public Task WaitForDepositFundingAsync(
         string swapId,
-        AaConfig aaConfig,
+        string nodeRpcUrl,
         ulong minEthWei,
         TimeSpan timeout,
         CancellationToken cancellationToken = default)
@@ -316,7 +316,7 @@ public sealed class Client : IDisposable
         return Task.Run(
             () => TryOrThrow(() =>
             {
-                ffi.WaitForDepositFunding(swapId, aaConfig, minEthWei, seconds);
+                ffi.WaitForDepositFunding(swapId, nodeRpcUrl, minEthWei, seconds);
                 return 0; // TryOrThrow wants a T; the void method returns nothing.
             }),
             cancellationToken);
@@ -327,13 +327,15 @@ public sealed class Client : IDisposable
     /// previously-created swap. Requires the client to have been built
     /// with a mnemonic (the SDK re-derives the per-swap signing key
     /// from it) AND the depositor EOA must already hold the source
-    /// token at the time of submission.
+    /// token at the time of submission. Bundler + paymaster URLs come
+    /// from the backend's `/aa/config` endpoint — the caller only
+    /// supplies the bits the server can't ship.
     /// </summary>
     /// <param name="swapId">UUID returned by <see cref="CreateSwapAsync"/>.</param>
-    /// <param name="aaConfig">Bundler / node-RPC / optional paymaster URLs.</param>
+    /// <param name="opts">Node-RPC URL + optional paymaster context / gas overrides.</param>
     public Task<FundReceipt> FundSwapAsync(
         string swapId,
-        AaConfig aaConfig,
+        GaslessOpts opts,
         CancellationToken cancellationToken = default)
     {
         if (!_hasMnemonic)
@@ -343,7 +345,7 @@ public sealed class Client : IDisposable
         }
         var ffi = _ffi;
         return Task.Run(
-            () => TryOrThrow(() => FundReceipt.FromFfi(ffi.FundSwapGasless(swapId, aaConfig))),
+            () => TryOrThrow(() => FundReceipt.FromFfi(ffi.FundSwapGasless(swapId, opts))),
             cancellationToken);
     }
 
