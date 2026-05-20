@@ -619,6 +619,37 @@ fn aa_config_into_sdk(c: AaConfig) -> Result<SdkAaConfig, SdkError> {
 
 #[uniffi::export]
 impl LendaswapClient {
+    /// Poll until the gasless deposit address holds enough source
+    /// token AND enough native gas. Resolves the deposit address +
+    /// required token amount from the swap response itself; the
+    /// caller only supplies the gas headroom they want in wei.
+    ///
+    /// For an unsponsored userOp (no paymaster), ~0.001 ETH (= 1e15
+    /// wei) is enough headroom on Arbitrum. With a paymaster, pass 0.
+    ///
+    /// Returns an `Internal` error wrapping the SDK's `Error::Timeout`
+    /// if `timeout_seconds` elapses before both thresholds are met.
+    pub fn wait_for_deposit_funding(
+        &self,
+        swap_id: String,
+        aa_config: AaConfig,
+        min_eth_wei: u64,
+        timeout_seconds: u64,
+    ) -> Result<(), SdkError> {
+        let sdk_config = aa_config_into_sdk(aa_config)?;
+        runtime().block_on(async {
+            self.inner
+                .wait_for_deposit_funding(
+                    &swap_id,
+                    &sdk_config,
+                    min_eth_wei,
+                    std::time::Duration::from_secs(timeout_seconds),
+                )
+                .await?;
+            Ok(())
+        })
+    }
+
     /// Submit the gasless ERC-4337 + EIP-7702 funding userOp for a
     /// previously-created swap. The depositor EOA must already hold
     /// the source token (real users transfer it in; e2e harnesses

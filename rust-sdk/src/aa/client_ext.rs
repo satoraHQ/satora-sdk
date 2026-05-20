@@ -8,6 +8,7 @@
 
 use crate::Client;
 use crate::aa::abi::Call;
+use crate::aa::abi::IERC20;
 use crate::aa::bundler::BundlerCasing;
 use crate::aa::bundler::BundlerClient;
 use crate::aa::orchestrate::FundSwapClients;
@@ -23,6 +24,7 @@ use alloy::primitives::B256;
 use alloy::primitives::U256;
 use alloy::providers::Provider;
 use alloy::providers::RootProvider;
+use alloy::sol_types::SolCall;
 use serde::Deserialize;
 use serde_json::Value;
 use std::str::FromStr;
@@ -167,6 +169,95 @@ impl Client {
             },
         )
         .await
+    }
+
+    /// Poll until the gasless deposit address holds enough source token
+    /// AND enough native gas. Real users send funds to the address out-
+    /// of-band (wallet, exchange, hardware device); this helper lets a
+    /// caller wait on that arrival before invoking
+    /// [`Self::fund_swap_gasless`].
+    ///
+    /// Resolves the deposit address + required token amount from the
+    /// swap response itself; the caller only supplies the gas headroom
+    /// they want to require (in wei). Without a paymaster the SDK
+    /// recommends ~0.001 ETH headroom for a typical USDC→tBTC userOp;
+    /// with a paymaster, pass 0.
+    ///
+    /// Returns `Error::Timeout` if `timeout` elapses before both
+    /// thresholds are met. 5s poll interval, fixed.
+    #[tracing::instrument(name = "wait_for_deposit_funding", skip_all, fields(%swap_id, min_eth_wei, ?timeout))]
+    pub async fn wait_for_deposit_funding(
+        &self,
+        swap_id: &str,
+        aa_config: &AaConfig,
+        min_eth_wei: u64,
+        timeout: std::time::Duration,
+    ) -> Result<()> {
+        const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+        let resp = self.fetch_swap_response(swap_id).await?;
+        let deposit_address = parse_address(&resp.client_evm_address, "client_evm_address")?;
+        let token_address = parse_address(
+            resp.source_token.token_id.as_wire_str(),
+            "source_token_address",
+        )?;
+        let min_token_units = parse_u256_dec(&resp.source_amount, "source_amount")?;
+        let min_eth = U256::from(min_eth_wei);
+
+        // Explicit `RootProvider` (defaults to Ethereum network) — the
+        // generic param is otherwise ambiguous when only `Provider`
+        // methods (no Network-specific filler) are touched.
+        let node: RootProvider = RootProvider::new_http(aa_config.node_rpc_url.clone());
+        // The IERC20 ABI's `balanceOf(address)` selector + calldata.
+        // Encoded once per loop iteration since the deposit address
+        // doesn't change.
+        let balance_calldata = IERC20::balanceOfCall {
+            account: deposit_address,
+        }
+        .abi_encode();
+        let balance_call = alloy::rpc::types::TransactionRequest::default()
+            .to(token_address)
+            .input(balance_calldata.into());
+
+        let deadline = std::time::Instant::now() + timeout;
+        let mut attempt = 0u32;
+        loop {
+            attempt += 1;
+            let eth_bal = node
+                .get_balance(deposit_address)
+                .await
+                .map_err(|e| Error::Transport(format!("eth_getBalance: {e}")))?;
+            let token_bal_bytes = node
+                .call(balance_call.clone())
+                .await
+                .map_err(|e| Error::Transport(format!("balanceOf eth_call: {e}")))?;
+            // Solidity returns uint256 as 32 BE bytes; `U256::from_be_slice`
+            // accepts that directly.
+            let token_bal = U256::from_be_slice(token_bal_bytes.as_ref());
+            tracing::debug!(
+                attempt,
+                eth_wei = %eth_bal,
+                token_units = %token_bal,
+                "wait_for_deposit_funding: poll",
+            );
+            if token_bal >= min_token_units && eth_bal >= min_eth {
+                tracing::info!(
+                    attempt,
+                    eth_wei = %eth_bal,
+                    token_units = %token_bal,
+                    "wait_for_deposit_funding: thresholds met",
+                );
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(Error::Timeout(format!(
+                    "deposit address {deposit_address:#x} did not receive \
+                     enough funding within {timeout:?} (have: {token_bal} token units / {eth_bal} wei; \
+                     need: {min_token_units} / {min_eth})",
+                )));
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
     }
 
     async fn fetch_userop_calldata(&self, swap_id: &str) -> Result<UseropFundingCalldataResponse> {

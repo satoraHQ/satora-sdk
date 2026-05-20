@@ -294,6 +294,35 @@ public sealed class Client : IDisposable
     }
 
     /// <summary>
+    /// Poll until the gasless deposit address has received enough
+    /// source token AND enough native gas. Idiomatic when integrating
+    /// against a real user wallet: print the address + required
+    /// amounts to the user, then await this to know when funding has
+    /// arrived and you can submit the gasless userOp.
+    /// </summary>
+    /// <param name="swapId">UUID returned by <see cref="CreateSwapAsync"/>.</param>
+    /// <param name="aaConfig">Used for the node-RPC URL only (paymaster + bundler URLs are unused here).</param>
+    /// <param name="minEthWei">Native gas headroom in wei. ~1e15 (0.001 ETH) on Arbitrum without a paymaster; 0 with.</param>
+    /// <param name="timeout">Total wait budget. Throws <see cref="SdkException"/> on timeout.</param>
+    public Task WaitForDepositFundingAsync(
+        string swapId,
+        AaConfig aaConfig,
+        ulong minEthWei,
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        var seconds = (ulong)Math.Ceiling(timeout.TotalSeconds);
+        return Task.Run(
+            () => TryOrThrow(() =>
+            {
+                ffi.WaitForDepositFunding(swapId, aaConfig, minEthWei, seconds);
+                return 0; // TryOrThrow wants a T; the void method returns nothing.
+            }),
+            cancellationToken);
+    }
+
+    /// <summary>
     /// Submit the gasless ERC-4337 + EIP-7702 funding userOp for a
     /// previously-created swap. Requires the client to have been built
     /// with a mnemonic (the SDK re-derives the per-swap signing key
