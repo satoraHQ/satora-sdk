@@ -210,12 +210,28 @@ jobs:
             --library target/x86_64-unknown-linux-gnu/release/liblendaswap_sdk_ffi.so \
             --out-dir ../Lendaswap.Sdk/Generated)
           # Mirror the Justfile post-process: tagged-enum base records
-          # ship as `internal` by default, which makes them unreachable
-          # from consumer assemblies. Public-bump the three we expose.
+          # (and the SDK error / client types) ship as `internal` by
+          # default, which makes them unreachable from consumer
+          # assemblies. Bump everything we expose in the public API.
+          # Keep this list in sync with dotnet-sdk/Justfile.
           sed -i.bak \
             -e 's/^internal record ChainId {/public record ChainId {/' \
             -e 's/^internal record TokenId {/public record TokenId {/' \
             -e 's/^internal record QuoteAmount {/public record QuoteAmount {/' \
+            -e 's/^internal record Address {/public record Address {/' \
+            -e 's/^internal record SwapStatus {/public record SwapStatus {/' \
+            -e 's/^internal record SwapFunding {/public record SwapFunding {/' \
+            -e 's/^internal record Swap (/public record Swap (/' \
+            -e 's/^internal record Version (/public record Version (/' \
+            -e 's/^internal record QuoteResult (/public record QuoteResult (/' \
+            -e 's/^internal record GaslessOpts (/public record GaslessOpts (/' \
+            -e 's/^internal record FundSwapReceipt (/public record FundSwapReceipt (/' \
+            -e 's/^internal record GasOverrides (/public record GasOverrides (/' \
+            -e 's/^internal record ArkadeConfig (/public record ArkadeConfig (/' \
+            -e 's/^internal record ClaimReceipt (/public record ClaimReceipt (/' \
+            -e 's/^internal enum BitcoinNetwork: int/public enum BitcoinNetwork: int/' \
+            -e 's/^internal interface ILendaswapClient {/public interface ILendaswapClient {/' \
+            -e 's/^internal class LendaswapClient : ILendaswapClient/public class LendaswapClient : ILendaswapClient/' \
             Lendaswap.Sdk/Generated/lendaswap_sdk_ffi.cs
           rm Lendaswap.Sdk/Generated/lendaswap_sdk_ffi.cs.bak
 
