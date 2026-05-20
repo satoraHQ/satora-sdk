@@ -65,6 +65,7 @@ generate-bindings: build-native
         -e 's/^internal record AaConfig (/public record AaConfig (/' \
         -e 's/^internal record PaymasterConfig (/public record PaymasterConfig (/' \
         -e 's/^internal record FundSwapReceipt (/public record FundSwapReceipt (/' \
+        -e 's/^internal record GasOverrides (/public record GasOverrides (/' \
         -e 's/^internal record ArkadeConfig (/public record ArkadeConfig (/' \
         -e 's/^internal record ClaimReceipt (/public record ClaimReceipt (/' \
         -e 's/^internal enum BundlerCasing: int/public enum BundlerCasing: int/' \

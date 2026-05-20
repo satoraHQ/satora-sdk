@@ -1650,6 +1650,11 @@ class FfiConverterTypeLendaswapClient: FfiConverter<LendaswapClient, IntPtr> {
 /// Bundler casing default mirrors the SDK's: CamelCase works for
 /// Pimlico + ZeroDev (and any bundler accepting camelCase).
 /// </param>
+/// <param name="gas_overrides">
+/// `Some(...)` to skip `eth_estimateUserOperationGas` and use
+/// the provided limits directly. Workaround for bundlers (alto
+/// in particular) that intermittently mis-simulate the userOp.
+/// </param>
 public record AaConfig (
     string @bundlerUrl, 
     string @nodeRpcUrl, 
@@ -1662,7 +1667,13 @@ public record AaConfig (
     /// Bundler casing default mirrors the SDK's: CamelCase works for
     /// Pimlico + ZeroDev (and any bundler accepting camelCase).
     /// </summary>
-    BundlerCasing @bundlerCasing
+    BundlerCasing @bundlerCasing, 
+    /// <summary>
+    /// `Some(...)` to skip `eth_estimateUserOperationGas` and use
+    /// the provided limits directly. Workaround for bundlers (alto
+    /// in particular) that intermittently mis-simulate the userOp.
+    /// </summary>
+    GasOverrides? @gasOverrides
 ) {
 }
 
@@ -1674,7 +1685,8 @@ class FfiConverterTypeAaConfig: FfiConverterRustBuffer<AaConfig> {
             @bundlerUrl: FfiConverterString.INSTANCE.Read(stream),
             @nodeRpcUrl: FfiConverterString.INSTANCE.Read(stream),
             @paymaster: FfiConverterOptionalTypePaymasterConfig.INSTANCE.Read(stream),
-            @bundlerCasing: FfiConverterTypeBundlerCasing.INSTANCE.Read(stream)
+            @bundlerCasing: FfiConverterTypeBundlerCasing.INSTANCE.Read(stream),
+            @gasOverrides: FfiConverterOptionalTypeGasOverrides.INSTANCE.Read(stream)
         );
     }
 
@@ -1683,7 +1695,8 @@ class FfiConverterTypeAaConfig: FfiConverterRustBuffer<AaConfig> {
             + FfiConverterString.INSTANCE.AllocationSize(value.@bundlerUrl)
             + FfiConverterString.INSTANCE.AllocationSize(value.@nodeRpcUrl)
             + FfiConverterOptionalTypePaymasterConfig.INSTANCE.AllocationSize(value.@paymaster)
-            + FfiConverterTypeBundlerCasing.INSTANCE.AllocationSize(value.@bundlerCasing);
+            + FfiConverterTypeBundlerCasing.INSTANCE.AllocationSize(value.@bundlerCasing)
+            + FfiConverterOptionalTypeGasOverrides.INSTANCE.AllocationSize(value.@gasOverrides);
     }
 
     public override void Write(AaConfig value, BigEndianStream stream) {
@@ -1691,6 +1704,7 @@ class FfiConverterTypeAaConfig: FfiConverterRustBuffer<AaConfig> {
             FfiConverterString.INSTANCE.Write(value.@nodeRpcUrl, stream);
             FfiConverterOptionalTypePaymasterConfig.INSTANCE.Write(value.@paymaster, stream);
             FfiConverterTypeBundlerCasing.INSTANCE.Write(value.@bundlerCasing, stream);
+            FfiConverterOptionalTypeGasOverrides.INSTANCE.Write(value.@gasOverrides, stream);
     }
 }
 
@@ -1841,6 +1855,46 @@ class FfiConverterTypeFundSwapReceipt: FfiConverterRustBuffer<FundSwapReceipt> {
     public override void Write(FundSwapReceipt value, BigEndianStream stream) {
             FfiConverterString.INSTANCE.Write(value.@userOpHash, stream);
             FfiConverterOptionalString.INSTANCE.Write(value.@transactionHash, stream);
+    }
+}
+
+
+
+/// <summary>
+/// Explicit gas limits for the userOp. When set on [`AaConfig`], the
+/// SDK skips the bundler's gas estimation entirely. Typical values
+/// for a USDC→tBTC gasless swap on Arbitrum: call ~500_000,
+/// verification ~150_000, pre_verification ~100_000.
+/// </summary>
+public record GasOverrides (
+    ulong @callGasLimit, 
+    ulong @verificationGasLimit, 
+    ulong @preVerificationGas
+) {
+}
+
+class FfiConverterTypeGasOverrides: FfiConverterRustBuffer<GasOverrides> {
+    public static FfiConverterTypeGasOverrides INSTANCE = new FfiConverterTypeGasOverrides();
+
+    public override GasOverrides Read(BigEndianStream stream) {
+        return new GasOverrides(
+            @callGasLimit: FfiConverterUInt64.INSTANCE.Read(stream),
+            @verificationGasLimit: FfiConverterUInt64.INSTANCE.Read(stream),
+            @preVerificationGas: FfiConverterUInt64.INSTANCE.Read(stream)
+        );
+    }
+
+    public override int AllocationSize(GasOverrides value) {
+        return 0
+            + FfiConverterUInt64.INSTANCE.AllocationSize(value.@callGasLimit)
+            + FfiConverterUInt64.INSTANCE.AllocationSize(value.@verificationGasLimit)
+            + FfiConverterUInt64.INSTANCE.AllocationSize(value.@preVerificationGas);
+    }
+
+    public override void Write(GasOverrides value, BigEndianStream stream) {
+            FfiConverterUInt64.INSTANCE.Write(value.@callGasLimit, stream);
+            FfiConverterUInt64.INSTANCE.Write(value.@verificationGasLimit, stream);
+            FfiConverterUInt64.INSTANCE.Write(value.@preVerificationGas, stream);
     }
 }
 
@@ -3060,6 +3114,37 @@ class FfiConverterOptionalString: FfiConverterRustBuffer<string?> {
         } else {
             stream.WriteByte(1);
             FfiConverterString.INSTANCE.Write((string)value, stream);
+        }
+    }
+}
+
+
+
+
+class FfiConverterOptionalTypeGasOverrides: FfiConverterRustBuffer<GasOverrides?> {
+    public static FfiConverterOptionalTypeGasOverrides INSTANCE = new FfiConverterOptionalTypeGasOverrides();
+
+    public override GasOverrides? Read(BigEndianStream stream) {
+        if (stream.ReadByte() == 0) {
+            return null;
+        }
+        return FfiConverterTypeGasOverrides.INSTANCE.Read(stream);
+    }
+
+    public override int AllocationSize(GasOverrides? value) {
+        if (value == null) {
+            return 1;
+        } else {
+            return 1 + FfiConverterTypeGasOverrides.INSTANCE.AllocationSize((GasOverrides)value);
+        }
+    }
+
+    public override void Write(GasOverrides? value, BigEndianStream stream) {
+        if (value == null) {
+            stream.WriteByte(0);
+        } else {
+            stream.WriteByte(1);
+            FfiConverterTypeGasOverrides.INSTANCE.Write((GasOverrides)value, stream);
         }
     }
 }

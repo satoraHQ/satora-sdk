@@ -21,6 +21,7 @@ use lendaswap_sdk::Error as SdkErrorInner;
 use lendaswap_sdk::Swap as SdkSwap;
 use lendaswap_sdk::SwapFunding as SdkSwapFunding;
 use lendaswap_sdk::aa::AaConfig as SdkAaConfig;
+use lendaswap_sdk::aa::GasOverrides as SdkGasOverrides;
 use lendaswap_sdk::aa::PaymasterConfig as SdkPaymasterConfig;
 use lendaswap_sdk::aa::bundler::BundlerCasing as SdkBundlerCasing;
 use lendaswap_sdk::arkade::ArkadeConfig as SdkArkadeConfig;
@@ -548,6 +549,31 @@ pub struct AaConfig {
     /// Bundler casing default mirrors the SDK's: CamelCase works for
     /// Pimlico + ZeroDev (and any bundler accepting camelCase).
     pub bundler_casing: BundlerCasing,
+    /// `Some(...)` to skip `eth_estimateUserOperationGas` and use
+    /// the provided limits directly. Workaround for bundlers (alto
+    /// in particular) that intermittently mis-simulate the userOp.
+    pub gas_overrides: Option<GasOverrides>,
+}
+
+/// Explicit gas limits for the userOp. When set on [`AaConfig`], the
+/// SDK skips the bundler's gas estimation entirely. Typical values
+/// for a USDC→tBTC gasless swap on Arbitrum: call ~500_000,
+/// verification ~150_000, pre_verification ~100_000.
+#[derive(uniffi::Record, Clone, Copy, Debug)]
+pub struct GasOverrides {
+    pub call_gas_limit: u64,
+    pub verification_gas_limit: u64,
+    pub pre_verification_gas: u64,
+}
+
+impl From<GasOverrides> for SdkGasOverrides {
+    fn from(g: GasOverrides) -> Self {
+        Self {
+            call_gas_limit: g.call_gas_limit,
+            verification_gas_limit: g.verification_gas_limit,
+            pre_verification_gas: g.pre_verification_gas,
+        }
+    }
 }
 
 /// Submitted-userOp receipt. `transaction_hash` is `None` when the
@@ -587,6 +613,7 @@ fn aa_config_into_sdk(c: AaConfig) -> Result<SdkAaConfig, SdkError> {
         node_rpc_url,
         paymaster,
         bundler_casing: c.bundler_casing.into(),
+        gas_overrides: c.gas_overrides.map(Into::into),
     })
 }
 
