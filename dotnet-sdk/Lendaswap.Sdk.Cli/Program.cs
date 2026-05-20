@@ -25,6 +25,7 @@ using Address = uniffi.lendaswap_sdk_ffi.Address;
 using AaConfig = uniffi.lendaswap_sdk_ffi.AaConfig;
 using PaymasterConfig = uniffi.lendaswap_sdk_ffi.PaymasterConfig;
 using BundlerCasing = uniffi.lendaswap_sdk_ffi.BundlerCasing;
+using GasOverrides = uniffi.lendaswap_sdk_ffi.GasOverrides;
 using ArkadeConfig = uniffi.lendaswap_sdk_ffi.ArkadeConfig;
 using BitcoinNetwork = uniffi.lendaswap_sdk_ffi.BitcoinNetwork;
 using SwapStatus = uniffi.lendaswap_sdk_ffi.SwapStatus;
@@ -99,10 +100,15 @@ internal static class Cli
                                         (default: https://api.satora.io)
                 MNEMONIC                BIP-39 mnemonic — required for `create-swap` / `flow`.
                                         Stays in this process's memory only.
-                AA_BUNDLER_URL          ERC-4337 bundler endpoint        (flow --gasless)
-                AA_NODE_RPC_URL         EVM node RPC for the AA stack    (flow --gasless)
-                AA_PAYMASTER_URL        optional paymaster endpoint      (flow --gasless)
-                AA_PAYMASTER_CONTEXT    optional paymaster JSON context  (flow --gasless)
+                AA_BUNDLER_URL              ERC-4337 bundler endpoint        (flow --gasless)
+                AA_NODE_RPC_URL             EVM node RPC for the AA stack    (flow --gasless)
+                AA_PAYMASTER_URL            optional paymaster endpoint      (flow --gasless)
+                AA_PAYMASTER_CONTEXT        optional paymaster JSON context  (flow --gasless)
+                AA_CALL_GAS_LIMIT \
+                AA_VERIFICATION_GAS_LIMIT \
+                AA_PRE_VERIFICATION_GAS     optional: set all three to bypass `eth_estimateUserOperationGas`
+                                            (workaround for bundlers that mis-simulate). Typical for
+                                            Arbitrum gasless: 500_000 / 150_000 / 100_000.
                 ARKADE_URL              Arkade arkd gRPC endpoint        (flow)
                 ESPLORA_URL             Esplora HTTP endpoint            (flow)
                 ARKADE_MNEMONIC         BIP-39 mnemonic for the Arkade identity (flow)
@@ -533,11 +539,27 @@ internal static class FlowCommand
                 paymaster = new PaymasterConfig(paymasterUrl, context);
             }
 
+            // Optional gas-overrides — set all three of
+            // AA_CALL_GAS_LIMIT / AA_VERIFICATION_GAS_LIMIT /
+            // AA_PRE_VERIFICATION_GAS to bypass the bundler's
+            // estimation RPC (workaround for alto's flaky
+            // simulation).
+            GasOverrides? gasOverrides;
+            try
+            {
+                gasOverrides = ParseGasOverridesFromEnv();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"error: {ex.Message}");
+                return 2;
+            }
             var aa = new AaConfig(
                 bundlerUrl,
                 nodeRpcUrl,
                 paymaster,
-                BundlerCasing.CamelCase);
+                BundlerCasing.CamelCase,
+                gasOverrides);
             var fund = await client.FundSwapAsync(swap.Id, aa).ConfigureAwait(false);
             Console.WriteLine($"  user_op_hash   : {fund.UserOpHash}");
             Console.WriteLine($"  tx_hash        : {fund.TransactionHash ?? "<poll exhausted>"}");
@@ -603,6 +625,35 @@ internal static class FlowCommand
             return null;
         }
         return value;
+    }
+
+    /// <summary>
+    /// Read AA_CALL_GAS_LIMIT / AA_VERIFICATION_GAS_LIMIT /
+    /// AA_PRE_VERIFICATION_GAS as a unit. Returns null when all three
+    /// are unset (default — let the bundler estimate). Partial-set is
+    /// an error: a stray missing variable would silently fall back to
+    /// estimation, defeating the workaround.
+    /// </summary>
+    private static GasOverrides? ParseGasOverridesFromEnv()
+    {
+        var call = Environment.GetEnvironmentVariable("AA_CALL_GAS_LIMIT");
+        var verification = Environment.GetEnvironmentVariable("AA_VERIFICATION_GAS_LIMIT");
+        var preVerification = Environment.GetEnvironmentVariable("AA_PRE_VERIFICATION_GAS");
+
+        var setCount = (string.IsNullOrWhiteSpace(call) ? 0 : 1)
+            + (string.IsNullOrWhiteSpace(verification) ? 0 : 1)
+            + (string.IsNullOrWhiteSpace(preVerification) ? 0 : 1);
+        if (setCount == 0) return null;
+        if (setCount != 3)
+        {
+            throw new ArgumentException(
+                "AA_CALL_GAS_LIMIT / AA_VERIFICATION_GAS_LIMIT / AA_PRE_VERIFICATION_GAS " +
+                "must all be set together (or all unset to let the bundler estimate).");
+        }
+        return new GasOverrides(
+            ulong.Parse(call!, System.Globalization.CultureInfo.InvariantCulture),
+            ulong.Parse(verification!, System.Globalization.CultureInfo.InvariantCulture),
+            ulong.Parse(preVerification!, System.Globalization.CultureInfo.InvariantCulture));
     }
 
     private static string TakeValue(string[] args, ref int i, string flag)

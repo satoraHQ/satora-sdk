@@ -39,6 +39,7 @@ use crate::aa::abi::PermitTransferFrom;
 use crate::aa::abi::TokenPermissions;
 use crate::aa::bundler::BundlerClient;
 use crate::aa::bundler::SignedEip7702Authorization;
+use crate::aa::client_ext::GasOverrides;
 use crate::aa::kernel;
 use crate::aa::paymaster::PaymasterClient;
 use crate::aa::permit2::PERMIT2_ADDRESS;
@@ -132,6 +133,12 @@ pub struct FundSwapInputs {
     pub secret_key: [u8; 32],
     pub eoa_address: Address,
     pub chain_id: u64,
+
+    /// Skip `eth_estimateUserOperationGas` when `Some`. Set by
+    /// [`crate::Client::fund_swap_gasless`] when
+    /// [`crate::aa::AaConfig::gas_overrides`] is configured. See the
+    /// field docs there for sizing guidance.
+    pub gas_overrides: Option<GasOverrides>,
 }
 
 /// The clients + optional paymaster the orchestration needs. Passed by
@@ -296,21 +303,37 @@ pub async fn fund_swap(
     userop.max_priority_fee_per_gas = U256::from(max_priority_fee);
     info!(max_fee, max_priority_fee, "fund_swap: gas prices set");
 
-    // 8. Gas estimation.
-    info!("fund_swap: estimating gas (eth_estimateUserOperationGas)");
-    let gas = clients
-        .bundler
-        .estimate_user_operation_gas(&userop, inputs.entry_point, Some(&signed_auth))
-        .await?;
-    userop.call_gas_limit = gas.call_gas_limit;
-    userop.verification_gas_limit = gas.verification_gas_limit;
-    userop.pre_verification_gas = gas.pre_verification_gas;
-    info!(
-        call_gas_limit = %userop.call_gas_limit,
-        verification_gas_limit = %userop.verification_gas_limit,
-        pre_verification_gas = %userop.pre_verification_gas,
-        "fund_swap: gas estimated"
-    );
+    // 8. Gas limits — either bypass the bundler's estimation with caller-supplied values, or call
+    //    `eth_estimateUserOperationGas`. The bypass exists because some bundlers (alto in
+    //    particular) intermittently mis-simulate the userOp and return a misleading
+    //    `TRANSFER_FROM_FAILED` from a perfectly valid batch — see the alto-estimation-flake
+    //    feedback memo.
+    if let Some(overrides) = inputs.gas_overrides {
+        userop.call_gas_limit = U256::from(overrides.call_gas_limit);
+        userop.verification_gas_limit = U256::from(overrides.verification_gas_limit);
+        userop.pre_verification_gas = U256::from(overrides.pre_verification_gas);
+        info!(
+            call_gas_limit = %userop.call_gas_limit,
+            verification_gas_limit = %userop.verification_gas_limit,
+            pre_verification_gas = %userop.pre_verification_gas,
+            "fund_swap: gas overrides applied (estimation skipped)"
+        );
+    } else {
+        info!("fund_swap: estimating gas (eth_estimateUserOperationGas)");
+        let gas = clients
+            .bundler
+            .estimate_user_operation_gas(&userop, inputs.entry_point, Some(&signed_auth))
+            .await?;
+        userop.call_gas_limit = gas.call_gas_limit;
+        userop.verification_gas_limit = gas.verification_gas_limit;
+        userop.pre_verification_gas = gas.pre_verification_gas;
+        info!(
+            call_gas_limit = %userop.call_gas_limit,
+            verification_gas_limit = %userop.verification_gas_limit,
+            pre_verification_gas = %userop.pre_verification_gas,
+            "fund_swap: gas estimated"
+        );
+    }
 
     // 9. Final paymaster data (skip if no paymaster, or stub said it was final).
     if let Some(pm) = clients.paymaster.as_ref().filter(|_| !stub_is_final) {

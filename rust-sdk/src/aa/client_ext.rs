@@ -42,6 +42,34 @@ pub struct AaConfig {
     pub node_rpc_url: Url,
     pub paymaster: Option<PaymasterConfig>,
     pub bundler_casing: BundlerCasing,
+    /// When `Some`, skip the bundler's `eth_estimateUserOperationGas`
+    /// call entirely and use these values directly. The intended use
+    /// is to work around bundlers (alto in particular) that
+    /// intermittently mis-simulate the userOp — see the long
+    /// debugging story in commits `eeedef55` / `8df0bf5e` / the
+    /// feedback memo on alto's estimation flake.
+    ///
+    /// Pass values with headroom over the SDK's observed peaks (e.g.
+    /// `call_gas_limit ~ 500_000`, `verification_gas_limit ~ 150_000`,
+    /// `pre_verification_gas ~ 100_000` for a USDC→tBTC swap on
+    /// Arbitrum). Underestimating any of these reverts the userOp
+    /// on-chain — overestimating just over-prefunds and refunds the
+    /// excess.
+    pub gas_overrides: Option<GasOverrides>,
+}
+
+/// Explicit gas limits that bypass the bundler's gas-estimation RPC.
+/// Mirrors the three fields `eth_estimateUserOperationGas` normally
+/// returns; using them inline skips the call entirely.
+///
+/// All three values are `u64` — typical userOp gas limits sit in the
+/// 100k–500k range, well inside `u64`. The SDK widens them to
+/// `U256` before assigning to the userOp.
+#[derive(Debug, Clone, Copy)]
+pub struct GasOverrides {
+    pub call_gas_limit: u64,
+    pub verification_gas_limit: u64,
+    pub pre_verification_gas: u64,
 }
 
 /// Optional paymaster sponsorship — URL + context as a unit, since one
@@ -94,7 +122,10 @@ impl Client {
         // 2. Backend payload fetch.
         let backend = self.fetch_userop_calldata(swap_id).await?;
 
-        // 3. RPC clients.
+        // 3. RPC clients. Capture `gas_overrides` first because the field-by-field moves of
+        //    `aa_config` below would consume the value (Option<GasOverrides> is Copy via its inner
+        //    Copy derive, so this is cheap).
+        let gas_overrides = aa_config.gas_overrides;
         let bundler = BundlerClient::new(aa_config.bundler_url, aa_config.bundler_casing)?;
         let paymaster_client = aa_config
             .paymaster
@@ -108,7 +139,13 @@ impl Client {
             .map_err(|e| Error::Transport(format!("eth_chainId: {e}")))?;
 
         // 4. Map backend wire types onto the orchestration input.
-        let inputs = build_fund_swap_inputs(backend, evm_key.secret_key, eoa_address, chain_id)?;
+        let inputs = build_fund_swap_inputs(
+            backend,
+            evm_key.secret_key,
+            eoa_address,
+            chain_id,
+            gas_overrides,
+        )?;
 
         // 5. Drive the orchestration. The PaymasterRef borrows both the client and the
         //    user-supplied context — bundled so the orchestrate layer can't see one without the
@@ -197,6 +234,7 @@ fn build_fund_swap_inputs(
     secret_key: [u8; 32],
     eoa_address: Address,
     chain_id: u64,
+    gas_overrides: Option<GasOverrides>,
 ) -> Result<FundSwapInputs> {
     let calls = backend
         .calls
@@ -226,6 +264,7 @@ fn build_fund_swap_inputs(
         secret_key,
         eoa_address,
         chain_id,
+        gas_overrides,
     })
 }
 
