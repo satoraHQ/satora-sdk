@@ -47,12 +47,14 @@ use url::Url;
 /// Bundler-specific JSON casing for the `eip7702Auth` object's *inner*
 /// field names. Defaults to [`Self::CamelCase`] — what ZeroDev and
 /// Pimlico both accept.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 pub enum BundlerCasing {
     /// `chainId`, `yParity`, … — Pimlico, ZeroDev.
     #[default]
+    #[serde(rename = "camel")]
     CamelCase,
     /// `chain_id`, `y_parity`, … — Alchemy.
+    #[serde(rename = "snake")]
     SnakeCase,
 }
 

@@ -26,6 +26,7 @@ pub mod kernel;
 pub mod orchestrate;
 pub mod paymaster;
 pub mod permit2;
+pub mod remote_config;
 pub mod signing;
 pub mod userop;
 
@@ -33,3 +34,5 @@ pub use client_ext::AaConfig;
 pub use client_ext::GasOverrides;
 pub use client_ext::PaymasterConfig;
 pub use orchestrate::FundSwapReceipt;
+pub use remote_config::AaConfigRequest;
+pub use remote_config::RemoteAaConfig;
