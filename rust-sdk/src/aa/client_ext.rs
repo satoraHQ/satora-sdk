@@ -88,6 +88,25 @@ pub struct PaymasterConfig {
 }
 
 impl Client {
+    /// `GET /aa/config?chain={id}` — fetch the server-managed bundler
+    /// (and optional paymaster) details for an EVM chain.
+    ///
+    /// Lets consumers avoid hard-coding bundler URLs (which embed a
+    /// provider API key the server rotates). Use
+    /// [`RemoteAaConfig::into_config`] to combine the response with the
+    /// caller-supplied node RPC, paymaster context, and gas overrides
+    /// into the full [`AaConfig`] [`Self::fund_swap_gasless`] expects.
+    ///
+    /// Returns [`Error::Api`] with HTTP 404 when the server has no
+    /// bundler configured for `chain`, or HTTP 400 for non-EVM chains.
+    pub async fn fetch_aa_config(
+        &self,
+        chain: crate::types::Chain,
+    ) -> Result<crate::aa::remote_config::RemoteAaConfig> {
+        self.send(crate::aa::remote_config::AaConfigRequest::new(chain))
+            .await
+    }
+
     /// Submit a gasless EVM funding UserOp for `swap_id`.
     ///
     /// Looks up the per-swap `key_index` from storage, derives the
