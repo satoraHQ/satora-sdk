@@ -62,13 +62,11 @@ generate-bindings: build-native
         -e 's/^internal record Swap (/public record Swap (/' \
         -e 's/^internal record Version (/public record Version (/' \
         -e 's/^internal record QuoteResult (/public record QuoteResult (/' \
-        -e 's/^internal record AaConfig (/public record AaConfig (/' \
-        -e 's/^internal record PaymasterConfig (/public record PaymasterConfig (/' \
+        -e 's/^internal record GaslessOpts (/public record GaslessOpts (/' \
         -e 's/^internal record FundSwapReceipt (/public record FundSwapReceipt (/' \
         -e 's/^internal record GasOverrides (/public record GasOverrides (/' \
         -e 's/^internal record ArkadeConfig (/public record ArkadeConfig (/' \
         -e 's/^internal record ClaimReceipt (/public record ClaimReceipt (/' \
-        -e 's/^internal enum BundlerCasing: int/public enum BundlerCasing: int/' \
         -e 's/^internal enum BitcoinNetwork: int/public enum BitcoinNetwork: int/' \
         -e 's/^internal interface ILendaswapClient {/public interface ILendaswapClient {/' \
         -e 's/^internal class LendaswapClient : ILendaswapClient/public class LendaswapClient : ILendaswapClient/' \

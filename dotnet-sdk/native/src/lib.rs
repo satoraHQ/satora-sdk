@@ -20,10 +20,8 @@ use lendaswap_sdk::Client;
 use lendaswap_sdk::Error as SdkErrorInner;
 use lendaswap_sdk::Swap as SdkSwap;
 use lendaswap_sdk::SwapFunding as SdkSwapFunding;
-use lendaswap_sdk::aa::AaConfig as SdkAaConfig;
 use lendaswap_sdk::aa::GasOverrides as SdkGasOverrides;
-use lendaswap_sdk::aa::PaymasterConfig as SdkPaymasterConfig;
-use lendaswap_sdk::aa::bundler::BundlerCasing as SdkBundlerCasing;
+use lendaswap_sdk::aa::GaslessOpts as SdkGaslessOpts;
 use lendaswap_sdk::arkade::ArkadeConfig as SdkArkadeConfig;
 use lendaswap_sdk::types::Address as SdkAddress;
 use lendaswap_sdk::types::Chain as SdkChain;
@@ -511,55 +509,28 @@ impl LendaswapClient {
 
 // ─── Gasless funding ───────────────────────────────────────────────────
 
-/// Bundler RPC field-casing dialect. Mirrors `lendaswap_sdk::aa::bundler::BundlerCasing`.
-#[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum BundlerCasing {
-    /// Pimlico / ZeroDev — camelCase 7702-auth fields.
-    CamelCase,
-    /// Alchemy — snake_case 7702-auth fields.
-    SnakeCase,
-}
-
-impl From<BundlerCasing> for SdkBundlerCasing {
-    fn from(c: BundlerCasing) -> Self {
-        match c {
-            BundlerCasing::CamelCase => SdkBundlerCasing::CamelCase,
-            BundlerCasing::SnakeCase => SdkBundlerCasing::SnakeCase,
-        }
-    }
-}
-
-/// Optional paymaster sponsorship. `context_json` is the paymaster-
-/// specific context as a JSON string so it crosses the FFI boundary
-/// cleanly (uniffi has no `serde_json::Value` type). For Alchemy Gas
-/// Manager: `{"policyId":"<uuid>"}`. For paymasters that don't take
-/// a context, pass `"null"`.
+/// Caller-supplied bits for the gasless funding flow. Bundler URL,
+/// paymaster URL, EntryPoint, delegation target, and Permit2 address
+/// all come from the backend's `/aa/config` endpoint — they don't
+/// appear here. What the SDK can't infer:
+/// - which EVM node to talk to (depends on the consumer's provider stack);
+/// - paymaster context as a JSON string (depends on the paymaster's policy);
+/// - whether to bypass `eth_estimateUserOperationGas` and with what limits.
 #[derive(uniffi::Record, Clone, Debug)]
-pub struct PaymasterConfig {
-    pub url: String,
-    pub context_json: String,
-}
-
-/// AA / gasless-funding configuration. URL strings rather than typed
-/// `Url` since uniffi doesn't bridge the alloy/url type. Invalid URLs
-/// produce an `SdkError::Internal` from the SDK at construction time.
-#[derive(uniffi::Record, Clone, Debug)]
-pub struct AaConfig {
-    pub bundler_url: String,
+pub struct GaslessOpts {
+    /// EVM node RPC URL (e.g. Alchemy / Infura). Required.
     pub node_rpc_url: String,
-    /// `None` (default) means the depositor EOA pays its own gas;
-    /// `Some(...)` enables a real paymaster to sponsor the userOp.
-    pub paymaster: Option<PaymasterConfig>,
-    /// Bundler casing default mirrors the SDK's: CamelCase works for
-    /// Pimlico + ZeroDev (and any bundler accepting camelCase).
-    pub bundler_casing: BundlerCasing,
-    /// `Some(...)` to skip `eth_estimateUserOperationGas` and use
-    /// the provided limits directly. Workaround for bundlers (alto
-    /// in particular) that intermittently mis-simulate the userOp.
+    /// Paymaster context as a JSON string (e.g.
+    /// `'{"policyId":"<uuid>"}'` for Alchemy Gas Manager). Ignored when
+    /// the backend returns no paymaster. `None` => JSON null.
+    pub paymaster_context_json: Option<String>,
+    /// Bypass `eth_estimateUserOperationGas` with explicit limits.
+    /// Useful when the bundler's simulator mis-estimates (notably
+    /// alto in dev). `None` => let the bundler estimate.
     pub gas_overrides: Option<GasOverrides>,
 }
 
-/// Explicit gas limits for the userOp. When set on [`AaConfig`], the
+/// Explicit gas limits for the userOp. When set on [`GaslessOpts`], the
 /// SDK skips the bundler's gas estimation entirely. Typical values
 /// for a USDC→tBTC gasless swap on Arbitrum: call ~500_000,
 /// verification ~150_000, pre_verification ~100_000.
@@ -589,36 +560,29 @@ pub struct FundSwapReceipt {
     pub transaction_hash: Option<String>,
 }
 
-/// Translate the FFI's URL-string config into the SDK's typed shape.
-/// Returns `SdkError::Internal` for malformed URLs / JSON.
-fn aa_config_into_sdk(c: AaConfig) -> Result<SdkAaConfig, SdkError> {
+/// Translate the FFI's URL-string opts into the SDK's typed shape.
+/// Returns `SdkError::Internal` for malformed URL / paymaster JSON.
+fn gasless_opts_into_sdk(o: GaslessOpts) -> Result<SdkGaslessOpts, SdkError> {
     use url::Url;
-    let bundler_url = Url::parse(&c.bundler_url).map_err(|e| SdkError::Internal {
-        message: format!("AaConfig.bundler_url parse: {e}"),
+    let node_rpc_url = Url::parse(&o.node_rpc_url).map_err(|e| SdkError::Internal {
+        message: format!("GaslessOpts.node_rpc_url parse: {e}"),
     })?;
-    let node_rpc_url = Url::parse(&c.node_rpc_url).map_err(|e| SdkError::Internal {
-        message: format!("AaConfig.node_rpc_url parse: {e}"),
-    })?;
-    let paymaster = c
-        .paymaster
-        .map(|pm| -> Result<SdkPaymasterConfig, SdkError> {
-            let url = Url::parse(&pm.url).map_err(|e| SdkError::Internal {
-                message: format!("PaymasterConfig.url parse: {e}"),
-            })?;
-            let context: serde_json::Value =
-                serde_json::from_str(&pm.context_json).map_err(|e| SdkError::Internal {
-                    message: format!("PaymasterConfig.context_json parse: {e}"),
-                })?;
-            Ok(SdkPaymasterConfig { url, context })
-        })
-        .transpose()?;
-    Ok(SdkAaConfig {
-        bundler_url,
-        node_rpc_url,
-        paymaster,
-        bundler_casing: c.bundler_casing.into(),
-        gas_overrides: c.gas_overrides.map(Into::into),
-    })
+    let paymaster_context = o
+        .paymaster_context_json
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|e: serde_json::Error| SdkError::Internal {
+            message: format!("GaslessOpts.paymaster_context_json parse: {e}"),
+        })?;
+    let mut sdk_opts = SdkGaslessOpts::new(node_rpc_url);
+    if let Some(ctx) = paymaster_context {
+        sdk_opts = sdk_opts.with_paymaster_context(ctx);
+    }
+    if let Some(g) = o.gas_overrides {
+        sdk_opts = sdk_opts.with_gas_overrides(g.into());
+    }
+    Ok(sdk_opts)
 }
 
 #[uniffi::export]
@@ -636,16 +600,19 @@ impl LendaswapClient {
     pub fn wait_for_deposit_funding(
         &self,
         swap_id: String,
-        aa_config: AaConfig,
+        node_rpc_url: String,
         min_eth_wei: u64,
         timeout_seconds: u64,
     ) -> Result<(), SdkError> {
-        let sdk_config = aa_config_into_sdk(aa_config)?;
+        use url::Url;
+        let node_rpc_url = Url::parse(&node_rpc_url).map_err(|e| SdkError::Internal {
+            message: format!("node_rpc_url parse: {e}"),
+        })?;
         runtime().block_on(async {
             self.inner
                 .wait_for_deposit_funding(
                     &swap_id,
-                    &sdk_config,
+                    &node_rpc_url,
                     min_eth_wei,
                     std::time::Duration::from_secs(timeout_seconds),
                 )
@@ -665,11 +632,11 @@ impl LendaswapClient {
     pub fn fund_swap_gasless(
         &self,
         swap_id: String,
-        aa_config: AaConfig,
+        opts: GaslessOpts,
     ) -> Result<FundSwapReceipt, SdkError> {
-        let sdk_config = aa_config_into_sdk(aa_config)?;
+        let sdk_opts = gasless_opts_into_sdk(opts)?;
         runtime().block_on(async {
-            let receipt = self.inner.fund_swap_gasless(&swap_id, sdk_config).await?;
+            let receipt = self.inner.fund_swap_gasless(&swap_id, sdk_opts).await?;
             Ok(FundSwapReceipt {
                 user_op_hash: format!("{:#x}", receipt.user_op_hash),
                 transaction_hash: receipt.transaction_hash.map(|h| format!("{h:#x}")),

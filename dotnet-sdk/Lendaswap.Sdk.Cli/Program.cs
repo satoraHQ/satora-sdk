@@ -22,9 +22,7 @@ using ChainId = uniffi.lendaswap_sdk_ffi.ChainId;
 using TokenId = uniffi.lendaswap_sdk_ffi.TokenId;
 using QuoteAmount = uniffi.lendaswap_sdk_ffi.QuoteAmount;
 using Address = uniffi.lendaswap_sdk_ffi.Address;
-using AaConfig = uniffi.lendaswap_sdk_ffi.AaConfig;
-using PaymasterConfig = uniffi.lendaswap_sdk_ffi.PaymasterConfig;
-using BundlerCasing = uniffi.lendaswap_sdk_ffi.BundlerCasing;
+using GaslessOpts = uniffi.lendaswap_sdk_ffi.GaslessOpts;
 using GasOverrides = uniffi.lendaswap_sdk_ffi.GasOverrides;
 using ArkadeConfig = uniffi.lendaswap_sdk_ffi.ArkadeConfig;
 using BitcoinNetwork = uniffi.lendaswap_sdk_ffi.BitcoinNetwork;
@@ -522,31 +520,19 @@ internal static class FlowCommand
             // both balances every 5s and proceeds when thresholds are
             // met (or throws on timeout).
             //
-            // The CLI defaults LENDASWAP_API_URL / AA_BUNDLER_URL /
-            // AA_NODE_RPC_URL to the local dev stack when unset — same
-            // defaults the Rust e2e uses.
-            var bundlerUrl = Environment.GetEnvironmentVariable("AA_BUNDLER_URL") ?? "http://localhost:4337";
+            // Bundler + paymaster URLs come from the backend's
+            // `/aa/config` endpoint — the CLI only supplies the node RPC
+            // URL (provider-specific) and the optional paymaster
+            // context. Defaults match the local dev stack.
             var nodeRpcUrl = Environment.GetEnvironmentVariable("AA_NODE_RPC_URL") ?? "http://localhost:8546";
-
-            PaymasterConfig? paymaster = null;
-            var paymasterUrl = Environment.GetEnvironmentVariable("AA_PAYMASTER_URL");
-            if (!string.IsNullOrWhiteSpace(paymasterUrl))
-            {
-                var context = Environment.GetEnvironmentVariable("AA_PAYMASTER_CONTEXT") ?? "null";
-                paymaster = new PaymasterConfig(paymasterUrl, context);
-            }
+            var paymasterContext = Environment.GetEnvironmentVariable("AA_PAYMASTER_CONTEXT");
 
             // Hardcoded gas-overrides — bypass alto's flaky estimation
             // call (~1.7-1.9× headroom over observed peaks for a
             // USDC→tBTC swap on Arbitrum).
             var gasOverrides = new GasOverrides(800_000UL, 200_000UL, 150_000UL);
 
-            var aa = new AaConfig(
-                bundlerUrl,
-                nodeRpcUrl,
-                paymaster,
-                BundlerCasing.CamelCase,
-                gasOverrides);
+            var opts = new GaslessOpts(nodeRpcUrl, paymasterContext, gasOverrides);
 
             // ETH headroom for the userOp prefund. The actual cost is
             // `(call + verify + preVerify) × maxFeePerGas` — with our
@@ -570,17 +556,17 @@ internal static class FlowCommand
             Console.WriteLine("[2/5] waiting for deposit");
             Console.WriteLine($"  Send to        : {depositAddress}");
             Console.WriteLine($"  Token amount   : {swap.DepositAmount} (smallest units of {swap.DepositToken})");
-            Console.WriteLine($"  ETH gas        : at least {MinEthWei} wei (~0.001 ETH){(paymaster is null ? "" : " — set to 0 if paymaster covers gas")}");
+            Console.WriteLine($"  ETH gas        : at least {MinEthWei} wei (~0.01 ETH; set 0 if a paymaster sponsors)");
             Console.WriteLine($"  Polling node   : {nodeRpcUrl} every 5s");
             Console.WriteLine();
             await client.WaitForDepositFundingAsync(
-                swap.Id, aa, MinEthWei, TimeSpan.FromMinutes(30)).ConfigureAwait(false);
+                swap.Id, nodeRpcUrl, MinEthWei, TimeSpan.FromMinutes(30)).ConfigureAwait(false);
             Console.WriteLine("  ✓ funding observed; submitting userOp");
 
             // ── 3. Fund via the gasless ERC-4337 + EIP-7702 flow ──
             Console.WriteLine();
             Console.WriteLine("[3/5] submit userOp");
-            var fund = await client.FundSwapAsync(swap.Id, aa).ConfigureAwait(false);
+            var fund = await client.FundSwapAsync(swap.Id, opts).ConfigureAwait(false);
             Console.WriteLine($"  user_op_hash   : {fund.UserOpHash}");
             Console.WriteLine($"  tx_hash        : {fund.TransactionHash ?? "<poll exhausted>"}");
 
