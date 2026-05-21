@@ -46,6 +46,10 @@ on:
         description: 'Push the resulting .nupkg to GitHub Packages'
         type: boolean
         default: true
+      publish_nuget_org:
+        description: 'Also push to the public nuget.org feed (use only for tagged releases)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -264,7 +268,7 @@ jobs:
       - name: Upload .nupkg artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Lendaswap.Sdk-${{ steps.version.outputs.version }}
+          name: Satora.Sdk-${{ steps.version.outputs.version }}
           path: dotnet-sdk/dist/*.nupkg
           if-no-files-found: error
 
@@ -279,4 +283,21 @@ jobs:
           dotnet nuget push dist/*.nupkg \
             --source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" \
             --api-key "${{ secrets.GITHUB_TOKEN }}" \
+            --skip-duplicate
+
+      # Public nuget.org publish — opt-in via workflow_dispatch only.
+      # GitHub Packages requires auth even for public packages, which
+      # blocks third-party plugin builders (e.g. BTCPay); nuget.org is
+      # the canonical anonymous-read feed.
+      #
+      # The NUGET_API_KEY secret is scoped to the `Satora.*` glob, so
+      # the published PackageId (`Satora.Sdk`, set in the csproj) must
+      # match that prefix.
+      - name: Push to nuget.org
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_nuget_org
+        working-directory: dotnet-sdk
+        run: |
+          dotnet nuget push dist/*.nupkg \
+            --source "https://api.nuget.org/v3/index.json" \
+            --api-key "${{ secrets.NUGET_API_KEY }}" \
             --skip-duplicate
