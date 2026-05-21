@@ -28,7 +28,14 @@
     </Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/satoraHQ/lendaswap-sdk</RepositoryUrl>
+    <!-- README shown on nuget.org. Consumer-focused (install + quick
+         start); the dev/contributor README lives at ../README.md. -->
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
   <!-- Surface the uniffi-generated tagged enums under our public
        Lendaswap.Sdk namespace via global type aliases. Callers write
