@@ -1,7 +1,7 @@
 # Satora.Sdk
 
-.NET bindings for the [Lendaswap](https://github.com/satoraHQ/lendaswap-sdk)
-Client SDK. A thin idiomatic-C# wrapper over a Rust core via
+.NET bindings for the [Satora](https://github.com/satoraHQ/lendaswap-sdk)
+swap SDK. A thin idiomatic-C# wrapper over a Rust core via
 [UniFFI](https://github.com/mozilla/uniffi-rs); native libraries are shipped
 per-RID inside the package.
 
@@ -11,16 +11,14 @@ per-RID inside the package.
 dotnet add package Satora.Sdk --prerelease
 ```
 
-The C# namespace is `Lendaswap.Sdk`:
-
 ```csharp
-using Lendaswap.Sdk;
+using Satora.Sdk;
 ```
 
 ## Quick start
 
 ```csharp
-using Lendaswap.Sdk;
+using Satora.Sdk;
 
 // Read-only client — version, quotes, status lookups.
 using var client = new Client("https://api.satora.io");

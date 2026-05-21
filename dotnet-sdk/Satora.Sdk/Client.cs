@@ -1,24 +1,24 @@
 // Idiomatic C# facade over the UniFFI-generated bindings. The generated
-// code lives in Generated/lendaswap_sdk_ffi.cs and exposes everything
-// under the `uniffi.lendaswap_sdk_ffi` namespace; we re-expose a curated
-// surface under `Lendaswap.Sdk` so consumers don't import generated
+// code lives in Generated/satora_sdk_ffi.cs and exposes everything
+// under the `uniffi.satora_sdk_ffi` namespace; we re-expose a curated
+// surface under `Satora.Sdk` so consumers don't import generated
 // namespaces directly and we can evolve the Rust side without leaking
 // the changes into the consumer's call sites.
 
-namespace Lendaswap.Sdk;
+namespace Satora.Sdk;
 
-using Ffi = uniffi.lendaswap_sdk_ffi;
+using Ffi = uniffi.satora_sdk_ffi;
 
 // Re-export the FFI-generated tagged enums under the friendly
-// Lendaswap.Sdk namespace so callers write `ChainId.Arbitrum` instead
-// of `uniffi.lendaswap_sdk_ffi.ChainId.Arbitrum`. C# type aliases at
+// Satora.Sdk namespace so callers write `ChainId.Arbitrum` instead
+// of `uniffi.satora_sdk_ffi.ChainId.Arbitrum`. C# type aliases at
 // the file level only apply to this file, so we expose these globally
 // via `global using` in the csproj.
 //
-// (Aliases live in Lendaswap.Sdk.csproj — see <ItemGroup><Using…/>.)
+// (Aliases live in Satora.Sdk.csproj — see <ItemGroup><Using…/>.)
 
 /// <summary>
-/// Wraps every error surfaced by the Lendaswap SDK across the FFI
+/// Wraps every error surfaced by the Satora SDK across the FFI
 /// boundary. uniffi-bindgen-cs marks its own <c>SdkException</c> base
 /// class as <c>internal</c> (only the concrete variant subclasses are
 /// public), so this public type lets callers catch SDK errors without
@@ -31,7 +31,7 @@ public sealed class SdkException : Exception
 }
 
 /// <summary>
-/// Version reported by the Lendaswap backend (<c>GET /version</c>).
+/// Version reported by the Satora backend (<c>GET /version</c>).
 /// </summary>
 public sealed record Version(string Tag, string CommitHash)
 {
@@ -157,7 +157,7 @@ public sealed class Client : IDisposable
     /// doesn't leak into the public surface, but exposed via interface
     /// for tests / extension code that wants to drop down.
     /// </summary>
-    internal readonly Ffi.LendaswapClient _ffi;
+    internal readonly Ffi.SatoraClient _ffi;
     private readonly bool _hasMnemonic;
 
     /// <summary>
@@ -170,7 +170,7 @@ public sealed class Client : IDisposable
         // uniffi-bindgen-cs maps the first `#[uniffi::constructor]` to
         // a normal C# `new T(...)`; secondary constructors become static
         // factories (`NewSigning` below).
-        _ffi = TryOrThrow(() => new Ffi.LendaswapClient(baseUrl));
+        _ffi = TryOrThrow(() => new Ffi.SatoraClient(baseUrl));
         _hasMnemonic = false;
     }
 
@@ -182,7 +182,7 @@ public sealed class Client : IDisposable
     /// </summary>
     public Client(string baseUrl, string mnemonic)
     {
-        _ffi = TryOrThrow(() => Ffi.LendaswapClient.NewSigning(baseUrl, mnemonic));
+        _ffi = TryOrThrow(() => Ffi.SatoraClient.NewSigning(baseUrl, mnemonic));
         _hasMnemonic = true;
     }
 

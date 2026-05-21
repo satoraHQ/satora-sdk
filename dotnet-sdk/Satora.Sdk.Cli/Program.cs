@@ -1,33 +1,33 @@
-// Tiny sample CLI demonstrating the Lendaswap.Sdk surface.
+// Tiny sample CLI demonstrating the Satora.Sdk surface.
 //
 // Today only one subcommand exists: `quote`. It demonstrates the
 // friendly-name → typed-enum translation (`Arb:USDT` → ChainId.Arbitrum
 // + TokenId.Usdt0Arbitrum) plus human-unit → smallest-unit scaling
 // (`10 USD` → 10_000_000 because USDT has 6 decimals).
 //
-//   lendaswap quote --source Arb:USDT --target Arkade:BTC --source-amount "10 USD"
-//   lendaswap quote --source Arb:USDT --target Arkade:BTC --target-amount "1000 sats"
+//   satora quote --source Arb:USDT --target Arkade:BTC --source-amount "10 USD"
+//   satora quote --source Arb:USDT --target Arkade:BTC --target-amount "1000 sats"
 //
 // The CLI keeps the friendly-name lookup table here, NOT in the SDK
 // itself, because they're presentation concerns — different
 // applications will want different aliases (a wallet UI calling tokens
 // by symbol, an admin tool calling them by contract address, etc.).
 
-using Lendaswap.Sdk;
+using Satora.Sdk;
 
 // The SDK's public surface re-exposes these uniffi-generated tagged
 // enums. We re-alias them here so the CLI can write `ChainId.Arbitrum`
 // without depending on the generated-namespace path.
-using ChainId = uniffi.lendaswap_sdk_ffi.ChainId;
-using TokenId = uniffi.lendaswap_sdk_ffi.TokenId;
-using QuoteAmount = uniffi.lendaswap_sdk_ffi.QuoteAmount;
-using Address = uniffi.lendaswap_sdk_ffi.Address;
-using GaslessOpts = uniffi.lendaswap_sdk_ffi.GaslessOpts;
-using GasOverrides = uniffi.lendaswap_sdk_ffi.GasOverrides;
-using ArkadeConfig = uniffi.lendaswap_sdk_ffi.ArkadeConfig;
-using BitcoinNetwork = uniffi.lendaswap_sdk_ffi.BitcoinNetwork;
-using SwapStatus = uniffi.lendaswap_sdk_ffi.SwapStatus;
-using SwapFunding = uniffi.lendaswap_sdk_ffi.SwapFunding;
+using ChainId = uniffi.satora_sdk_ffi.ChainId;
+using TokenId = uniffi.satora_sdk_ffi.TokenId;
+using QuoteAmount = uniffi.satora_sdk_ffi.QuoteAmount;
+using Address = uniffi.satora_sdk_ffi.Address;
+using GaslessOpts = uniffi.satora_sdk_ffi.GaslessOpts;
+using GasOverrides = uniffi.satora_sdk_ffi.GasOverrides;
+using ArkadeConfig = uniffi.satora_sdk_ffi.ArkadeConfig;
+using BitcoinNetwork = uniffi.satora_sdk_ffi.BitcoinNetwork;
+using SwapStatus = uniffi.satora_sdk_ffi.SwapStatus;
+using SwapFunding = uniffi.satora_sdk_ffi.SwapFunding;
 
 return await Cli.RunAsync(args).ConfigureAwait(false);
 
@@ -75,20 +75,20 @@ internal static class Cli
     private static void PrintUsage()
     {
         Console.Error.WriteLine("""
-            lendaswap — Lendaswap SDK sample CLI
+            satora — Satora SDK sample CLI
 
             USAGE:
-                lendaswap quote        --source <chain:token> --target <chain:token> --source-amount "<value> <unit>"
-                lendaswap quote        --source <chain:token> --target <chain:token> --target-amount "<value> <unit>"
-                lendaswap create-swap  --source <chain:token> --target <chain:token> --target-amount "<value> <unit>" --receive-to "<addr>" [--gasless]
-                lendaswap status       <swap-id>
-                lendaswap flow         --source <chain:token> --target <chain:token> --target-amount "<value> <unit>" --receive-to "<addr>" [--gasless]
+                satora quote        --source <chain:token> --target <chain:token> --source-amount "<value> <unit>"
+                satora quote        --source <chain:token> --target <chain:token> --target-amount "<value> <unit>"
+                satora create-swap  --source <chain:token> --target <chain:token> --target-amount "<value> <unit>" --receive-to "<addr>" [--gasless]
+                satora status       <swap-id>
+                satora flow         --source <chain:token> --target <chain:token> --target-amount "<value> <unit>" --receive-to "<addr>" [--gasless]
 
             EXAMPLES:
-                lendaswap quote        --source Arb:USDT --target Arkade:BTC --source-amount "10 USD"
-                lendaswap create-swap  --source Arb:USDC --target Arkade:BTC --target-amount "10000 sats" --receive-to "tark1q..." --gasless
-                lendaswap status       38da340b-784d-4132-bc50-6218a7af9872
-                lendaswap flow         --source Arb:USDC --target Arkade:BTC --target-amount "10000 sats" --receive-to "tark1q..." --gasless
+                satora quote        --source Arb:USDT --target Arkade:BTC --source-amount "10 USD"
+                satora create-swap  --source Arb:USDC --target Arkade:BTC --target-amount "10000 sats" --receive-to "tark1q..." --gasless
+                satora status       38da340b-784d-4132-bc50-6218a7af9872
+                satora flow         --source Arb:USDC --target Arkade:BTC --target-amount "10000 sats" --receive-to "tark1q..." --gasless
 
             CHAIN ALIASES: Arb, Eth, Pol, Arkade, Lightning, Bitcoin
             TOKEN ALIASES: USDC, USDT, USDT0, WBTC, BTC
@@ -476,7 +476,7 @@ internal static class FlowCommand
             return 2;
         }
 
-        var mnemonic = RequireEnv("MNEMONIC", "lendaswap signing mnemonic");
+        var mnemonic = RequireEnv("MNEMONIC", "satora signing mnemonic");
         if (mnemonic is null) return 2;
 
         var (sourceChain, sourceToken) = QuoteCommand.ResolvePairInternal(source);

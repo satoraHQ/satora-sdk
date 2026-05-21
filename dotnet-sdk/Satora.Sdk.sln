@@ -1,11 +1,11 @@
 
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Lendaswap.Sdk", "Lendaswap.Sdk\Lendaswap.Sdk.csproj", "{1B7E0DCF-0001-4001-8001-000000000001}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Satora.Sdk", "Satora.Sdk\Satora.Sdk.csproj", "{1B7E0DCF-0001-4001-8001-000000000001}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Lendaswap.Sdk.Tests", "Lendaswap.Sdk.Tests\Lendaswap.Sdk.Tests.csproj", "{1B7E0DCF-0001-4001-8001-000000000002}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Satora.Sdk.Tests", "Satora.Sdk.Tests\Satora.Sdk.Tests.csproj", "{1B7E0DCF-0001-4001-8001-000000000002}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Lendaswap.Sdk.Cli", "Lendaswap.Sdk.Cli\Lendaswap.Sdk.Cli.csproj", "{1B7E0DCF-0001-4001-8001-000000000003}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Satora.Sdk.Cli", "Satora.Sdk.Cli\Satora.Sdk.Cli.csproj", "{1B7E0DCF-0001-4001-8001-000000000003}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

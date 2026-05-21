@@ -1,12 +1,12 @@
 // Smoke tests for the C# facade. The `live_` tests require a running
-// Lendaswap server (default http://localhost:3333) and are marked with
+// Satora server (default http://localhost:3333) and are marked with
 // Trait("Category", "Live") so they're easy to filter out of normal
 // `dotnet test` runs.
 
-using Lendaswap.Sdk;
+using Satora.Sdk;
 using Xunit;
 
-namespace Lendaswap.Sdk.Tests;
+namespace Satora.Sdk.Tests;
 
 public class ClientTests
 {

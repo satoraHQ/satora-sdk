@@ -2,7 +2,7 @@
 [workspace]
 
 [package]
-name = "lendaswap-sdk-ffi"
+name = "satora-sdk-ffi"
 version = "0.0.1"
 edition = "2024"
 license = "MIT"
@@ -12,7 +12,7 @@ description = "C-ABI/UniFFI bindings to lendaswap-sdk. Internal — consumed by 
 # `cdylib` for the dynamic .dylib/.so/.dll the .NET project P/Invokes into.
 # `staticlib` for any future scenarios that need a static archive (e.g. iOS).
 # `lib` so we can also pull this crate into other Rust code (test harnesses).
-name = "lendaswap_sdk_ffi"
+name = "satora_sdk_ffi"
 crate-type = ["cdylib", "staticlib", "lib"]
 
 [dependencies]
