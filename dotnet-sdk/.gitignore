@@ -12,7 +12,7 @@ dist/
 # build to always produce them fresh. We track-and-regenerate so PR
 # diffs show binding changes alongside Rust changes.
 # (Uncomment the next line to switch to generate-only.)
-# Lendaswap.Sdk/Generated/
+# Satora.Sdk/Generated/
 
 .idea/
 .vscode/

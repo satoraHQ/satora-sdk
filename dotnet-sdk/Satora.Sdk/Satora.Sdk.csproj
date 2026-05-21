@@ -8,23 +8,20 @@
          lines stay focused on the project's own namespaces. -->
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
-    <RootNamespace>Lendaswap.Sdk</RootNamespace>
-    <AssemblyName>Lendaswap.Sdk</AssemblyName>
+    <RootNamespace>Satora.Sdk</RootNamespace>
+    <AssemblyName>Satora.Sdk</AssemblyName>
     <!-- uniffi-bindgen-cs's generated bindings use `unsafe` blocks for
          the FFI pointer marshalling layer (RustBuffer, raw P/Invoke
          glue). Required by the codegen — not by our own code. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
-    <!-- NuGet package metadata (preliminary; bump on publish).
-         PackageId is the nuget.org-visible name (post-rebrand to
-         Satora). The C# namespace stays `Lendaswap.Sdk` so existing
-         consumer code (`using Lendaswap.Sdk;`) keeps compiling. -->
+    <!-- NuGet package metadata (preliminary; bump on publish). -->
     <PackageId>Satora.Sdk</PackageId>
     <Version>0.0.1-alpha</Version>
-    <Authors>Satora / Lendasat</Authors>
+    <Authors>Satora</Authors>
     <Description>
-      .NET bindings for the Lendaswap Client SDK. Thin wrapper over a
-      Rust core via UniFFI; native libraries shipped per-RID.
+      .NET bindings for the Satora SDK. Thin wrapper over a Rust core
+      via UniFFI; native libraries shipped per-RID.
     </Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/satoraHQ/lendaswap-sdk</RepositoryUrl>
@@ -38,22 +35,22 @@
   </ItemGroup>
 
   <!-- Surface the uniffi-generated tagged enums under our public
-       Lendaswap.Sdk namespace via global type aliases. Callers write
+       Satora.Sdk namespace via global type aliases. Callers write
        `ChainId.Arbitrum` / `TokenId.Usdt0Arbitrum` / `QuoteAmount.Source`
        without importing the generated namespace. -->
   <ItemGroup>
-    <Using Include="uniffi.lendaswap_sdk_ffi.ChainId" Alias="ChainId" />
-    <Using Include="uniffi.lendaswap_sdk_ffi.TokenId" Alias="TokenId" />
-    <Using Include="uniffi.lendaswap_sdk_ffi.QuoteAmount" Alias="QuoteAmount" />
-    <Using Include="uniffi.lendaswap_sdk_ffi.Address" Alias="Address" />
-    <Using Include="uniffi.lendaswap_sdk_ffi.SwapStatus" Alias="SwapStatus" />
-    <Using Include="uniffi.lendaswap_sdk_ffi.SwapFunding" Alias="SwapFunding" />
-    <Using Include="uniffi.lendaswap_sdk_ffi.GaslessOpts" Alias="GaslessOpts" />
-    <Using Include="uniffi.lendaswap_sdk_ffi.GasOverrides" Alias="GasOverrides" />
-    <Using Include="uniffi.lendaswap_sdk_ffi.FundSwapReceipt" Alias="FundSwapReceiptRaw" />
-    <Using Include="uniffi.lendaswap_sdk_ffi.ArkadeConfig" Alias="ArkadeConfig" />
-    <Using Include="uniffi.lendaswap_sdk_ffi.BitcoinNetwork" Alias="BitcoinNetwork" />
-    <Using Include="uniffi.lendaswap_sdk_ffi.ClaimReceipt" Alias="ClaimReceiptRaw" />
+    <Using Include="uniffi.satora_sdk_ffi.ChainId" Alias="ChainId" />
+    <Using Include="uniffi.satora_sdk_ffi.TokenId" Alias="TokenId" />
+    <Using Include="uniffi.satora_sdk_ffi.QuoteAmount" Alias="QuoteAmount" />
+    <Using Include="uniffi.satora_sdk_ffi.Address" Alias="Address" />
+    <Using Include="uniffi.satora_sdk_ffi.SwapStatus" Alias="SwapStatus" />
+    <Using Include="uniffi.satora_sdk_ffi.SwapFunding" Alias="SwapFunding" />
+    <Using Include="uniffi.satora_sdk_ffi.GaslessOpts" Alias="GaslessOpts" />
+    <Using Include="uniffi.satora_sdk_ffi.GasOverrides" Alias="GasOverrides" />
+    <Using Include="uniffi.satora_sdk_ffi.FundSwapReceipt" Alias="FundSwapReceiptRaw" />
+    <Using Include="uniffi.satora_sdk_ffi.ArkadeConfig" Alias="ArkadeConfig" />
+    <Using Include="uniffi.satora_sdk_ffi.BitcoinNetwork" Alias="BitcoinNetwork" />
+    <Using Include="uniffi.satora_sdk_ffi.ClaimReceipt" Alias="ClaimReceiptRaw" />
   </ItemGroup>
 
   <!-- Native libraries: at pack time these go under runtimes/{rid}/native
@@ -69,24 +66,24 @@
        so `dotnet test` / `dotnet run` find it without a publish step.
        Gated to Debug so they don't fight the Release ItemGroups below
        during `dotnet pack -c Release`. -->
-  <ItemGroup Condition="'$(Configuration)' == 'Debug' And Exists('..\native\target\debug\liblendaswap_sdk_ffi.dylib')">
-    <None Include="..\native\target\debug\liblendaswap_sdk_ffi.dylib"
+  <ItemGroup Condition="'$(Configuration)' == 'Debug' And Exists('..\native\target\debug\libsatora_sdk_ffi.dylib')">
+    <None Include="..\native\target\debug\libsatora_sdk_ffi.dylib"
           Pack="true"
-          PackagePath="runtimes/osx-arm64/native/liblendaswap_sdk_ffi.dylib"
+          PackagePath="runtimes/osx-arm64/native/libsatora_sdk_ffi.dylib"
           CopyToOutputDirectory="PreserveNewest"
           Visible="false" />
   </ItemGroup>
-  <ItemGroup Condition="'$(Configuration)' == 'Debug' And Exists('..\native\target\debug\liblendaswap_sdk_ffi.so')">
-    <None Include="..\native\target\debug\liblendaswap_sdk_ffi.so"
+  <ItemGroup Condition="'$(Configuration)' == 'Debug' And Exists('..\native\target\debug\libsatora_sdk_ffi.so')">
+    <None Include="..\native\target\debug\libsatora_sdk_ffi.so"
           Pack="true"
-          PackagePath="runtimes/linux-x64/native/liblendaswap_sdk_ffi.so"
+          PackagePath="runtimes/linux-x64/native/libsatora_sdk_ffi.so"
           CopyToOutputDirectory="PreserveNewest"
           Visible="false" />
   </ItemGroup>
-  <ItemGroup Condition="'$(Configuration)' == 'Debug' And Exists('..\native\target\debug\lendaswap_sdk_ffi.dll')">
-    <None Include="..\native\target\debug\lendaswap_sdk_ffi.dll"
+  <ItemGroup Condition="'$(Configuration)' == 'Debug' And Exists('..\native\target\debug\satora_sdk_ffi.dll')">
+    <None Include="..\native\target\debug\satora_sdk_ffi.dll"
           Pack="true"
-          PackagePath="runtimes/win-x64/native/lendaswap_sdk_ffi.dll"
+          PackagePath="runtimes/win-x64/native/satora_sdk_ffi.dll"
           CopyToOutputDirectory="PreserveNewest"
           Visible="false" />
   </ItemGroup>
@@ -97,22 +94,22 @@
        into the .nupkg under `runtimes/<rid>/native/`. The ItemGroups
        are Exists-gated so local Debug builds (which don't have these
        paths) stay unaffected. -->
-  <ItemGroup Condition="Exists('..\native\target\aarch64-apple-darwin\release\liblendaswap_sdk_ffi.dylib')">
-    <None Include="..\native\target\aarch64-apple-darwin\release\liblendaswap_sdk_ffi.dylib"
+  <ItemGroup Condition="Exists('..\native\target\aarch64-apple-darwin\release\libsatora_sdk_ffi.dylib')">
+    <None Include="..\native\target\aarch64-apple-darwin\release\libsatora_sdk_ffi.dylib"
           Pack="true"
-          PackagePath="runtimes/osx-arm64/native/liblendaswap_sdk_ffi.dylib"
+          PackagePath="runtimes/osx-arm64/native/libsatora_sdk_ffi.dylib"
           Visible="false" />
   </ItemGroup>
-  <ItemGroup Condition="Exists('..\native\target\x86_64-unknown-linux-gnu\release\liblendaswap_sdk_ffi.so')">
-    <None Include="..\native\target\x86_64-unknown-linux-gnu\release\liblendaswap_sdk_ffi.so"
+  <ItemGroup Condition="Exists('..\native\target\x86_64-unknown-linux-gnu\release\libsatora_sdk_ffi.so')">
+    <None Include="..\native\target\x86_64-unknown-linux-gnu\release\libsatora_sdk_ffi.so"
           Pack="true"
-          PackagePath="runtimes/linux-x64/native/liblendaswap_sdk_ffi.so"
+          PackagePath="runtimes/linux-x64/native/libsatora_sdk_ffi.so"
           Visible="false" />
   </ItemGroup>
-  <ItemGroup Condition="Exists('..\native\target\x86_64-pc-windows-msvc\release\lendaswap_sdk_ffi.dll')">
-    <None Include="..\native\target\x86_64-pc-windows-msvc\release\lendaswap_sdk_ffi.dll"
+  <ItemGroup Condition="Exists('..\native\target\x86_64-pc-windows-msvc\release\satora_sdk_ffi.dll')">
+    <None Include="..\native\target\x86_64-pc-windows-msvc\release\satora_sdk_ffi.dll"
           Pack="true"
-          PackagePath="runtimes/win-x64/native/lendaswap_sdk_ffi.dll"
+          PackagePath="runtimes/win-x64/native/satora_sdk_ffi.dll"
           Visible="false" />
   </ItemGroup>
 

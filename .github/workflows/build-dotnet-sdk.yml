@@ -1,4 +1,4 @@
-# Build + publish the Lendaswap .NET SDK NuGet package.
+# Build + publish the Satora .NET SDK NuGet package.
 #
 # IMPORTANT: this workflow file lives in the *source* repo under
 # `client-sdk/.github/workflows/` so the existing client-sdk subtree
@@ -9,7 +9,7 @@
 #
 # Layout assumption (post-subtree-push):
 #   ./dotnet-sdk/native/               # Rust cdylib source
-#   ./dotnet-sdk/Lendaswap.Sdk/        # C# project
+#   ./dotnet-sdk/Satora.Sdk/        # C# project
 #   ./rust-sdk/                        # pure-Rust SDK (path-dep of native/)
 #
 # Per-push behaviour:
@@ -22,7 +22,7 @@
 #      org that owns this (mirrored) repo.
 #
 # Consumers install with:
-#   dotnet add package Lendaswap.Sdk --prerelease \
+#   dotnet add package Satora.Sdk --prerelease \
 #       --source https://nuget.pkg.github.com/lendasat/index.json
 # (with a PAT that has `read:packages`).
 
@@ -74,15 +74,15 @@ jobs:
           - rid: osx-arm64
             os: macos-14
             target: aarch64-apple-darwin
-            lib: liblendaswap_sdk_ffi.dylib
+            lib: libsatora_sdk_ffi.dylib
           - rid: linux-x64
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            lib: liblendaswap_sdk_ffi.so
+            lib: libsatora_sdk_ffi.so
           - rid: win-x64
             os: windows-latest
             target: x86_64-pc-windows-msvc
-            lib: lendaswap_sdk_ffi.dll
+            lib: satora_sdk_ffi.dll
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -211,8 +211,8 @@ jobs:
         run: |
           set -euo pipefail
           (cd native && uniffi-bindgen-cs \
-            --library target/x86_64-unknown-linux-gnu/release/liblendaswap_sdk_ffi.so \
-            --out-dir ../Lendaswap.Sdk/Generated)
+            --library target/x86_64-unknown-linux-gnu/release/libsatora_sdk_ffi.so \
+            --out-dir ../Satora.Sdk/Generated)
           # Mirror the Justfile post-process: tagged-enum base records
           # (and the SDK error / client types) ship as `internal` by
           # default, which makes them unreachable from consumer
@@ -234,10 +234,10 @@ jobs:
             -e 's/^internal record ArkadeConfig (/public record ArkadeConfig (/' \
             -e 's/^internal record ClaimReceipt (/public record ClaimReceipt (/' \
             -e 's/^internal enum BitcoinNetwork: int/public enum BitcoinNetwork: int/' \
-            -e 's/^internal interface ILendaswapClient {/public interface ILendaswapClient {/' \
-            -e 's/^internal class LendaswapClient : ILendaswapClient/public class LendaswapClient : ILendaswapClient/' \
-            Lendaswap.Sdk/Generated/lendaswap_sdk_ffi.cs
-          rm Lendaswap.Sdk/Generated/lendaswap_sdk_ffi.cs.bak
+            -e 's/^internal interface ISatoraClient {/public interface ISatoraClient {/' \
+            -e 's/^internal class SatoraClient : ISatoraClient/public class SatoraClient : ISatoraClient/' \
+            Satora.Sdk/Generated/satora_sdk_ffi.cs
+          rm Satora.Sdk/Generated/satora_sdk_ffi.cs.bak
 
       # SemVer-prerelease string derived from CI metadata:
       #   <base>-ci.<YYYYMMDD>.<run_number>.sha-<short>
@@ -248,7 +248,7 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          BASE=$(grep -oE '<Version>[^<]+' dotnet-sdk/Lendaswap.Sdk/Lendaswap.Sdk.csproj \
+          BASE=$(grep -oE '<Version>[^<]+' dotnet-sdk/Satora.Sdk/Satora.Sdk.csproj \
             | head -n1 | sed -E 's,<Version>,,; s,-.*,,')
           DATE=$(date -u +%Y%m%d)
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
@@ -259,7 +259,7 @@ jobs:
       - name: dotnet pack
         working-directory: dotnet-sdk
         run: |
-          dotnet pack Lendaswap.Sdk/Lendaswap.Sdk.csproj \
+          dotnet pack Satora.Sdk/Satora.Sdk.csproj \
             -c Release \
             -p:Version=${{ steps.version.outputs.version }} \
             -p:RepositoryCommit=${{ github.sha }} \

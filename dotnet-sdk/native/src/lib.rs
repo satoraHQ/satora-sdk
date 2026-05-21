@@ -41,9 +41,9 @@ fn runtime() -> &'static tokio::runtime::Runtime {
     RT.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
-            .thread_name("lendaswap-sdk-ffi")
+            .thread_name("satora-sdk-ffi")
             .build()
-            .expect("failed to build tokio runtime for lendaswap-sdk-ffi")
+            .expect("failed to build tokio runtime for satora-sdk-ffi")
     })
 }
 
@@ -89,12 +89,12 @@ impl From<SdkErrorInner> for SdkError {
 /// in-memory swap storage; the FFI doesn't expose a way to plug in a
 /// custom backend yet.
 #[derive(uniffi::Object)]
-pub struct LendaswapClient {
+pub struct SatoraClient {
     inner: Client,
 }
 
 #[uniffi::export]
-impl LendaswapClient {
+impl SatoraClient {
     /// Read-only client. Supports [`Self::version`] and
     /// [`Self::quote`]; any signer-requiring method (`create_swap`,
     /// `fund_swap_gasless`, `claim`) errors with `InvalidSigner` when
@@ -249,7 +249,7 @@ impl From<QuoteAmount> for SdkQuoteAmount {
 // (uniffi::export only sees one impl block at a time, but rustc is
 // fine with multiple).
 #[uniffi::export]
-impl LendaswapClient {
+impl SatoraClient {
     /// Fetch a swap quote. Chain / token / amount are typed enums;
     /// the "exactly one of source/target" invariant is enforced by
     /// the `QuoteAmount` discriminator instead of runtime validation.
@@ -458,7 +458,7 @@ fn token_id_from_sdk(t: SdkTokenId) -> TokenId {
 /// version / quote impls above so the new-types-then-method shape
 /// reads top-down.
 #[uniffi::export]
-impl LendaswapClient {
+impl SatoraClient {
     /// Create a swap. Today the SDK only supports EVM stablecoin →
     /// BTC on Arkade. The dispatcher in `Client::create_swap`
     /// validates the direction and errors with `Error::InvalidSwap`
@@ -470,7 +470,7 @@ impl LendaswapClient {
     /// State note: `create_swap` writes the per-swap `key_index` into
     /// the inner client's storage. Subsequent [`Self::fund_swap_gasless`]
     /// / [`Self::claim`] calls on THIS instance recover it. A new
-    /// `LendaswapClient` instance won't see it — the FFI doesn't
+    /// `SatoraClient` instance won't see it — the FFI doesn't
     /// expose a persistent storage backend yet.
     #[allow(
         clippy::too_many_arguments,
@@ -586,7 +586,7 @@ fn gasless_opts_into_sdk(o: GaslessOpts) -> Result<SdkGaslessOpts, SdkError> {
 }
 
 #[uniffi::export]
-impl LendaswapClient {
+impl SatoraClient {
     /// Poll until the gasless deposit address holds enough source
     /// token AND enough native gas. Resolves the deposit address +
     /// required token amount from the swap response itself; the
@@ -648,7 +648,7 @@ impl LendaswapClient {
 // ─── Status polling ────────────────────────────────────────────────────
 
 #[uniffi::export]
-impl LendaswapClient {
+impl SatoraClient {
     /// `GET /swap/{id}` — fetch a swap's current state. Returns the
     /// same `Swap` shape `create_swap` does, so callers can re-read
     /// after the backend transitions states (e.g. ServerFunded).
@@ -710,7 +710,7 @@ impl From<BitcoinNetwork> for bitcoin::Network {
     }
 }
 
-/// Arkade-side configuration for [`LendaswapClient::claim`]. The
+/// Arkade-side configuration for [`SatoraClient::claim`]. The
 /// mnemonic here is the user's Arkade identity (BIP-85 derivation
 /// under the SDK's hard-coded path) — distinct from the lendaswap
 /// signing mnemonic the client was constructed with.
@@ -750,7 +750,7 @@ pub struct ClaimReceipt {
 }
 
 #[uniffi::export]
-impl LendaswapClient {
+impl SatoraClient {
     /// Redeem the Arkade VHTLC for an EVM→Arkade swap that has
     /// reached (or passed) ServerFunded. Sweeps the BTC to
     /// `destination`. Requires a signing client; the Arkade identity

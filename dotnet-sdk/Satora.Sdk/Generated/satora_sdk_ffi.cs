@@ -14,7 +14,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
-namespace uniffi.lendaswap_sdk_ffi;
+namespace uniffi.satora_sdk_ffi;
 
 
 
@@ -30,7 +30,7 @@ internal struct RustBuffer {
 
     public static RustBuffer Alloc(int size) {
         return _UniffiHelpers.RustCall((ref UniffiRustCallStatus status) => {
-            var buffer = _UniFFILib.ffi_lendaswap_sdk_ffi_rustbuffer_alloc(Convert.ToUInt64(size), ref status);
+            var buffer = _UniFFILib.ffi_satora_sdk_ffi_rustbuffer_alloc(Convert.ToUInt64(size), ref status);
             if (buffer.data == IntPtr.Zero) {
                 throw new AllocationException($"RustBuffer.Alloc() returned null data pointer (size={size})");
             }
@@ -40,7 +40,7 @@ internal struct RustBuffer {
 
     public static void Free(RustBuffer buffer) {
         _UniffiHelpers.RustCall((ref UniffiRustCallStatus status) => {
-            _UniFFILib.ffi_lendaswap_sdk_ffi_rustbuffer_free(buffer, ref status);
+            _UniFFILib.ffi_satora_sdk_ffi_rustbuffer_free(buffer, ref status);
         });
     }
 
@@ -772,390 +772,390 @@ static class _UniFFILib {
         
         }
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern IntPtr uniffi_lendaswap_sdk_ffi_fn_clone_lendaswapclient(IntPtr @ptr,ref UniffiRustCallStatus _uniffi_out_err
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr uniffi_satora_sdk_ffi_fn_clone_satoraclient(IntPtr @ptr,ref UniffiRustCallStatus _uniffi_out_err
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void uniffi_lendaswap_sdk_ffi_fn_free_lendaswapclient(IntPtr @ptr,ref UniffiRustCallStatus _uniffi_out_err
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void uniffi_satora_sdk_ffi_fn_free_satoraclient(IntPtr @ptr,ref UniffiRustCallStatus _uniffi_out_err
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern IntPtr uniffi_lendaswap_sdk_ffi_fn_constructor_lendaswapclient_new(RustBuffer @baseUrl,ref UniffiRustCallStatus _uniffi_out_err
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr uniffi_satora_sdk_ffi_fn_constructor_satoraclient_new(RustBuffer @baseUrl,ref UniffiRustCallStatus _uniffi_out_err
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern IntPtr uniffi_lendaswap_sdk_ffi_fn_constructor_lendaswapclient_new_signing(RustBuffer @baseUrl,RustBuffer @mnemonic,ref UniffiRustCallStatus _uniffi_out_err
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr uniffi_satora_sdk_ffi_fn_constructor_satoraclient_new_signing(RustBuffer @baseUrl,RustBuffer @mnemonic,ref UniffiRustCallStatus _uniffi_out_err
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern RustBuffer uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_claim(IntPtr @ptr,RustBuffer @swapId,RustBuffer @destination,RustBuffer @config,ref UniffiRustCallStatus _uniffi_out_err
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_claim(IntPtr @ptr,RustBuffer @swapId,RustBuffer @destination,RustBuffer @config,ref UniffiRustCallStatus _uniffi_out_err
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern RustBuffer uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_create_swap(IntPtr @ptr,RustBuffer @sourceChain,RustBuffer @sourceToken,RustBuffer @targetChain,RustBuffer @targetToken,RustBuffer @amount,RustBuffer @receiveTo,sbyte @gasless,ref UniffiRustCallStatus _uniffi_out_err
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_create_swap(IntPtr @ptr,RustBuffer @sourceChain,RustBuffer @sourceToken,RustBuffer @targetChain,RustBuffer @targetToken,RustBuffer @amount,RustBuffer @receiveTo,sbyte @gasless,ref UniffiRustCallStatus _uniffi_out_err
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern RustBuffer uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_fund_swap_gasless(IntPtr @ptr,RustBuffer @swapId,RustBuffer @opts,ref UniffiRustCallStatus _uniffi_out_err
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_fund_swap_gasless(IntPtr @ptr,RustBuffer @swapId,RustBuffer @opts,ref UniffiRustCallStatus _uniffi_out_err
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern RustBuffer uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_get_swap(IntPtr @ptr,RustBuffer @swapId,ref UniffiRustCallStatus _uniffi_out_err
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_get_swap(IntPtr @ptr,RustBuffer @swapId,ref UniffiRustCallStatus _uniffi_out_err
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern RustBuffer uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_quote(IntPtr @ptr,RustBuffer @sourceChain,RustBuffer @sourceToken,RustBuffer @targetChain,RustBuffer @targetToken,RustBuffer @amount,ref UniffiRustCallStatus _uniffi_out_err
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_quote(IntPtr @ptr,RustBuffer @sourceChain,RustBuffer @sourceToken,RustBuffer @targetChain,RustBuffer @targetToken,RustBuffer @amount,ref UniffiRustCallStatus _uniffi_out_err
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern RustBuffer uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_version(IntPtr @ptr,ref UniffiRustCallStatus _uniffi_out_err
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_version(IntPtr @ptr,ref UniffiRustCallStatus _uniffi_out_err
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_wait_for_deposit_funding(IntPtr @ptr,RustBuffer @swapId,RustBuffer @nodeRpcUrl,ulong @minEthWei,ulong @timeoutSeconds,ref UniffiRustCallStatus _uniffi_out_err
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void uniffi_satora_sdk_ffi_fn_method_satoraclient_wait_for_deposit_funding(IntPtr @ptr,RustBuffer @swapId,RustBuffer @nodeRpcUrl,ulong @minEthWei,ulong @timeoutSeconds,ref UniffiRustCallStatus _uniffi_out_err
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern RustBuffer uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_wait_for_swap_status(IntPtr @ptr,RustBuffer @swapId,RustBuffer @targets,ulong @timeoutSeconds,ref UniffiRustCallStatus _uniffi_out_err
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_wait_for_swap_status(IntPtr @ptr,RustBuffer @swapId,RustBuffer @targets,ulong @timeoutSeconds,ref UniffiRustCallStatus _uniffi_out_err
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern RustBuffer ffi_lendaswap_sdk_ffi_rustbuffer_alloc(ulong @size,ref UniffiRustCallStatus _uniffi_out_err
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer ffi_satora_sdk_ffi_rustbuffer_alloc(ulong @size,ref UniffiRustCallStatus _uniffi_out_err
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern RustBuffer ffi_lendaswap_sdk_ffi_rustbuffer_from_bytes(ForeignBytes @bytes,ref UniffiRustCallStatus _uniffi_out_err
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer ffi_satora_sdk_ffi_rustbuffer_from_bytes(ForeignBytes @bytes,ref UniffiRustCallStatus _uniffi_out_err
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rustbuffer_free(RustBuffer @buf,ref UniffiRustCallStatus _uniffi_out_err
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rustbuffer_free(RustBuffer @buf,ref UniffiRustCallStatus _uniffi_out_err
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern RustBuffer ffi_lendaswap_sdk_ffi_rustbuffer_reserve(RustBuffer @buf,ulong @additional,ref UniffiRustCallStatus _uniffi_out_err
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer ffi_satora_sdk_ffi_rustbuffer_reserve(RustBuffer @buf,ulong @additional,ref UniffiRustCallStatus _uniffi_out_err
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_poll_u8(IntPtr @handle,IntPtr @callback,IntPtr @callbackData
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_poll_u8(IntPtr @handle,IntPtr @callback,IntPtr @callbackData
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_cancel_u8(IntPtr @handle
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_cancel_u8(IntPtr @handle
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_free_u8(IntPtr @handle
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_free_u8(IntPtr @handle
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern byte ffi_lendaswap_sdk_ffi_rust_future_complete_u8(IntPtr @handle,ref UniffiRustCallStatus _uniffi_out_err
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern byte ffi_satora_sdk_ffi_rust_future_complete_u8(IntPtr @handle,ref UniffiRustCallStatus _uniffi_out_err
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_poll_i8(IntPtr @handle,IntPtr @callback,IntPtr @callbackData
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_poll_i8(IntPtr @handle,IntPtr @callback,IntPtr @callbackData
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_cancel_i8(IntPtr @handle
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_cancel_i8(IntPtr @handle
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_free_i8(IntPtr @handle
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_free_i8(IntPtr @handle
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern sbyte ffi_lendaswap_sdk_ffi_rust_future_complete_i8(IntPtr @handle,ref UniffiRustCallStatus _uniffi_out_err
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern sbyte ffi_satora_sdk_ffi_rust_future_complete_i8(IntPtr @handle,ref UniffiRustCallStatus _uniffi_out_err
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_poll_u16(IntPtr @handle,IntPtr @callback,IntPtr @callbackData
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_poll_u16(IntPtr @handle,IntPtr @callback,IntPtr @callbackData
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_cancel_u16(IntPtr @handle
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_cancel_u16(IntPtr @handle
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_free_u16(IntPtr @handle
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_free_u16(IntPtr @handle
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern ushort ffi_lendaswap_sdk_ffi_rust_future_complete_u16(IntPtr @handle,ref UniffiRustCallStatus _uniffi_out_err
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort ffi_satora_sdk_ffi_rust_future_complete_u16(IntPtr @handle,ref UniffiRustCallStatus _uniffi_out_err
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_poll_i16(IntPtr @handle,IntPtr @callback,IntPtr @callbackData
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_poll_i16(IntPtr @handle,IntPtr @callback,IntPtr @callbackData
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_cancel_i16(IntPtr @handle
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_cancel_i16(IntPtr @handle
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_free_i16(IntPtr @handle
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_free_i16(IntPtr @handle
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern short ffi_lendaswap_sdk_ffi_rust_future_complete_i16(IntPtr @handle,ref UniffiRustCallStatus _uniffi_out_err
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern short ffi_satora_sdk_ffi_rust_future_complete_i16(IntPtr @handle,ref UniffiRustCallStatus _uniffi_out_err
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_poll_u32(IntPtr @handle,IntPtr @callback,IntPtr @callbackData
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_poll_u32(IntPtr @handle,IntPtr @callback,IntPtr @callbackData
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_cancel_u32(IntPtr @handle
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_cancel_u32(IntPtr @handle
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_free_u32(IntPtr @handle
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_free_u32(IntPtr @handle
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern uint ffi_lendaswap_sdk_ffi_rust_future_complete_u32(IntPtr @handle,ref UniffiRustCallStatus _uniffi_out_err
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern uint ffi_satora_sdk_ffi_rust_future_complete_u32(IntPtr @handle,ref UniffiRustCallStatus _uniffi_out_err
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_poll_i32(IntPtr @handle,IntPtr @callback,IntPtr @callbackData
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_poll_i32(IntPtr @handle,IntPtr @callback,IntPtr @callbackData
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_cancel_i32(IntPtr @handle
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_cancel_i32(IntPtr @handle
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_free_i32(IntPtr @handle
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_free_i32(IntPtr @handle
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern int ffi_lendaswap_sdk_ffi_rust_future_complete_i32(IntPtr @handle,ref UniffiRustCallStatus _uniffi_out_err
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern int ffi_satora_sdk_ffi_rust_future_complete_i32(IntPtr @handle,ref UniffiRustCallStatus _uniffi_out_err
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_poll_u64(IntPtr @handle,IntPtr @callback,IntPtr @callbackData
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_poll_u64(IntPtr @handle,IntPtr @callback,IntPtr @callbackData
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_cancel_u64(IntPtr @handle
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_cancel_u64(IntPtr @handle
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_free_u64(IntPtr @handle
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_free_u64(IntPtr @handle
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern ulong ffi_lendaswap_sdk_ffi_rust_future_complete_u64(IntPtr @handle,ref UniffiRustCallStatus _uniffi_out_err
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ulong ffi_satora_sdk_ffi_rust_future_complete_u64(IntPtr @handle,ref UniffiRustCallStatus _uniffi_out_err
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_poll_i64(IntPtr @handle,IntPtr @callback,IntPtr @callbackData
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_poll_i64(IntPtr @handle,IntPtr @callback,IntPtr @callbackData
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_cancel_i64(IntPtr @handle
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_cancel_i64(IntPtr @handle
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_free_i64(IntPtr @handle
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_free_i64(IntPtr @handle
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern long ffi_lendaswap_sdk_ffi_rust_future_complete_i64(IntPtr @handle,ref UniffiRustCallStatus _uniffi_out_err
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern long ffi_satora_sdk_ffi_rust_future_complete_i64(IntPtr @handle,ref UniffiRustCallStatus _uniffi_out_err
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_poll_f32(IntPtr @handle,IntPtr @callback,IntPtr @callbackData
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_poll_f32(IntPtr @handle,IntPtr @callback,IntPtr @callbackData
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_cancel_f32(IntPtr @handle
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_cancel_f32(IntPtr @handle
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_free_f32(IntPtr @handle
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_free_f32(IntPtr @handle
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern float ffi_lendaswap_sdk_ffi_rust_future_complete_f32(IntPtr @handle,ref UniffiRustCallStatus _uniffi_out_err
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern float ffi_satora_sdk_ffi_rust_future_complete_f32(IntPtr @handle,ref UniffiRustCallStatus _uniffi_out_err
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_poll_f64(IntPtr @handle,IntPtr @callback,IntPtr @callbackData
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_poll_f64(IntPtr @handle,IntPtr @callback,IntPtr @callbackData
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_cancel_f64(IntPtr @handle
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_cancel_f64(IntPtr @handle
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_free_f64(IntPtr @handle
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_free_f64(IntPtr @handle
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern double ffi_lendaswap_sdk_ffi_rust_future_complete_f64(IntPtr @handle,ref UniffiRustCallStatus _uniffi_out_err
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern double ffi_satora_sdk_ffi_rust_future_complete_f64(IntPtr @handle,ref UniffiRustCallStatus _uniffi_out_err
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_poll_pointer(IntPtr @handle,IntPtr @callback,IntPtr @callbackData
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_poll_pointer(IntPtr @handle,IntPtr @callback,IntPtr @callbackData
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_cancel_pointer(IntPtr @handle
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_cancel_pointer(IntPtr @handle
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_free_pointer(IntPtr @handle
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_free_pointer(IntPtr @handle
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern IntPtr ffi_lendaswap_sdk_ffi_rust_future_complete_pointer(IntPtr @handle,ref UniffiRustCallStatus _uniffi_out_err
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr ffi_satora_sdk_ffi_rust_future_complete_pointer(IntPtr @handle,ref UniffiRustCallStatus _uniffi_out_err
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_poll_rust_buffer(IntPtr @handle,IntPtr @callback,IntPtr @callbackData
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_poll_rust_buffer(IntPtr @handle,IntPtr @callback,IntPtr @callbackData
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_cancel_rust_buffer(IntPtr @handle
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_cancel_rust_buffer(IntPtr @handle
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_free_rust_buffer(IntPtr @handle
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_free_rust_buffer(IntPtr @handle
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern RustBuffer ffi_lendaswap_sdk_ffi_rust_future_complete_rust_buffer(IntPtr @handle,ref UniffiRustCallStatus _uniffi_out_err
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer ffi_satora_sdk_ffi_rust_future_complete_rust_buffer(IntPtr @handle,ref UniffiRustCallStatus _uniffi_out_err
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_poll_void(IntPtr @handle,IntPtr @callback,IntPtr @callbackData
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_poll_void(IntPtr @handle,IntPtr @callback,IntPtr @callbackData
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_cancel_void(IntPtr @handle
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_cancel_void(IntPtr @handle
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_free_void(IntPtr @handle
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_free_void(IntPtr @handle
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void ffi_lendaswap_sdk_ffi_rust_future_complete_void(IntPtr @handle,ref UniffiRustCallStatus _uniffi_out_err
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void ffi_satora_sdk_ffi_rust_future_complete_void(IntPtr @handle,ref UniffiRustCallStatus _uniffi_out_err
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern ushort uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_claim(
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_claim(
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern ushort uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_create_swap(
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_swap(
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern ushort uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_fund_swap_gasless(
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_fund_swap_gasless(
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern ushort uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_get_swap(
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_get_swap(
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern ushort uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_quote(
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_quote(
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern ushort uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_version(
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_version(
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern ushort uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_wait_for_deposit_funding(
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_wait_for_deposit_funding(
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern ushort uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_wait_for_swap_status(
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_wait_for_swap_status(
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern ushort uniffi_lendaswap_sdk_ffi_checksum_constructor_lendaswapclient_new(
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_constructor_satoraclient_new(
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern ushort uniffi_lendaswap_sdk_ffi_checksum_constructor_lendaswapclient_new_signing(
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_constructor_satoraclient_new_signing(
     );
 
-    [DllImport("lendaswap_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern uint ffi_lendaswap_sdk_ffi_uniffi_contract_version(
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern uint ffi_satora_sdk_ffi_uniffi_contract_version(
     );
 
     
 
     static void uniffiCheckContractApiVersion() {
-        var scaffolding_contract_version = _UniFFILib.ffi_lendaswap_sdk_ffi_uniffi_contract_version();
+        var scaffolding_contract_version = _UniFFILib.ffi_satora_sdk_ffi_uniffi_contract_version();
         if (29 != scaffolding_contract_version) {
-            throw new UniffiContractVersionException($"uniffi.lendaswap_sdk_ffi: uniffi bindings expected version `29`, library returned `{scaffolding_contract_version}`");
+            throw new UniffiContractVersionException($"uniffi.satora_sdk_ffi: uniffi bindings expected version `29`, library returned `{scaffolding_contract_version}`");
         }
     }
 
     static void uniffiCheckApiChecksums() {
         {
-            var checksum = _UniFFILib.uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_claim();
-            if (checksum != 38888) {
-                throw new UniffiContractChecksumException($"uniffi.lendaswap_sdk_ffi: uniffi bindings expected function `uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_claim` checksum `38888`, library returned `{checksum}`");
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_claim();
+            if (checksum != 39728) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_claim` checksum `39728`, library returned `{checksum}`");
             }
         }
         {
-            var checksum = _UniFFILib.uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_create_swap();
-            if (checksum != 33227) {
-                throw new UniffiContractChecksumException($"uniffi.lendaswap_sdk_ffi: uniffi bindings expected function `uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_create_swap` checksum `33227`, library returned `{checksum}`");
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_swap();
+            if (checksum != 11462) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_swap` checksum `11462`, library returned `{checksum}`");
             }
         }
         {
-            var checksum = _UniFFILib.uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_fund_swap_gasless();
-            if (checksum != 34297) {
-                throw new UniffiContractChecksumException($"uniffi.lendaswap_sdk_ffi: uniffi bindings expected function `uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_fund_swap_gasless` checksum `34297`, library returned `{checksum}`");
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_fund_swap_gasless();
+            if (checksum != 41022) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_fund_swap_gasless` checksum `41022`, library returned `{checksum}`");
             }
         }
         {
-            var checksum = _UniFFILib.uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_get_swap();
-            if (checksum != 36569) {
-                throw new UniffiContractChecksumException($"uniffi.lendaswap_sdk_ffi: uniffi bindings expected function `uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_get_swap` checksum `36569`, library returned `{checksum}`");
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_get_swap();
+            if (checksum != 9665) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_get_swap` checksum `9665`, library returned `{checksum}`");
             }
         }
         {
-            var checksum = _UniFFILib.uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_quote();
-            if (checksum != 9034) {
-                throw new UniffiContractChecksumException($"uniffi.lendaswap_sdk_ffi: uniffi bindings expected function `uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_quote` checksum `9034`, library returned `{checksum}`");
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_quote();
+            if (checksum != 423) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_quote` checksum `423`, library returned `{checksum}`");
             }
         }
         {
-            var checksum = _UniFFILib.uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_version();
-            if (checksum != 37555) {
-                throw new UniffiContractChecksumException($"uniffi.lendaswap_sdk_ffi: uniffi bindings expected function `uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_version` checksum `37555`, library returned `{checksum}`");
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_version();
+            if (checksum != 8116) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_version` checksum `8116`, library returned `{checksum}`");
             }
         }
         {
-            var checksum = _UniFFILib.uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_wait_for_deposit_funding();
-            if (checksum != 25495) {
-                throw new UniffiContractChecksumException($"uniffi.lendaswap_sdk_ffi: uniffi bindings expected function `uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_wait_for_deposit_funding` checksum `25495`, library returned `{checksum}`");
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_wait_for_deposit_funding();
+            if (checksum != 64852) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_wait_for_deposit_funding` checksum `64852`, library returned `{checksum}`");
             }
         }
         {
-            var checksum = _UniFFILib.uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_wait_for_swap_status();
-            if (checksum != 58005) {
-                throw new UniffiContractChecksumException($"uniffi.lendaswap_sdk_ffi: uniffi bindings expected function `uniffi_lendaswap_sdk_ffi_checksum_method_lendaswapclient_wait_for_swap_status` checksum `58005`, library returned `{checksum}`");
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_wait_for_swap_status();
+            if (checksum != 55186) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_wait_for_swap_status` checksum `55186`, library returned `{checksum}`");
             }
         }
         {
-            var checksum = _UniFFILib.uniffi_lendaswap_sdk_ffi_checksum_constructor_lendaswapclient_new();
-            if (checksum != 14287) {
-                throw new UniffiContractChecksumException($"uniffi.lendaswap_sdk_ffi: uniffi bindings expected function `uniffi_lendaswap_sdk_ffi_checksum_constructor_lendaswapclient_new` checksum `14287`, library returned `{checksum}`");
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_constructor_satoraclient_new();
+            if (checksum != 31930) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_constructor_satoraclient_new` checksum `31930`, library returned `{checksum}`");
             }
         }
         {
-            var checksum = _UniFFILib.uniffi_lendaswap_sdk_ffi_checksum_constructor_lendaswapclient_new_signing();
-            if (checksum != 61480) {
-                throw new UniffiContractChecksumException($"uniffi.lendaswap_sdk_ffi: uniffi bindings expected function `uniffi_lendaswap_sdk_ffi_checksum_constructor_lendaswapclient_new_signing` checksum `61480`, library returned `{checksum}`");
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_constructor_satoraclient_new_signing();
+            if (checksum != 2187) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_constructor_satoraclient_new_signing` checksum `2187`, library returned `{checksum}`");
             }
         }
     }
@@ -1305,7 +1305,7 @@ class FfiConverterString: FfiConverter<string, RustBuffer> {
 /// in-memory swap storage; the FFI doesn't expose a way to plug in a
 /// custom backend yet.
 /// </summary>
-public interface ILendaswapClient {
+public interface ISatoraClient {
     /// <summary>
     /// Redeem the Arkade VHTLC for an EVM→Arkade swap that has
     /// reached (or passed) ServerFunded. Sweeps the BTC to
@@ -1327,7 +1327,7 @@ public interface ILendaswapClient {
     /// State note: `create_swap` writes the per-swap `key_index` into
     /// the inner client's storage. Subsequent [`Self::fund_swap_gasless`]
     /// / [`Self::claim`] calls on THIS instance recover it. A new
-    /// `LendaswapClient` instance won't see it — the FFI doesn't
+    /// `SatoraClient` instance won't see it — the FFI doesn't
     /// expose a persistent storage backend yet.
     /// </summary>
     /// <exception cref="SdkException"></exception>
@@ -1404,16 +1404,16 @@ public interface ILendaswapClient {
 /// in-memory swap storage; the FFI doesn't expose a way to plug in a
 /// custom backend yet.
 /// </summary>
-public class LendaswapClient : ILendaswapClient, IDisposable {
+public class SatoraClient : ISatoraClient, IDisposable {
     protected IntPtr pointer;
     private int _wasDestroyed = 0;
     private long _callCounter = 1;
 
-    public LendaswapClient(IntPtr pointer) {
+    public SatoraClient(IntPtr pointer) {
         this.pointer = pointer;
     }
 
-    ~LendaswapClient() {
+    ~SatoraClient() {
         Destroy();
     }
     /// <summary>
@@ -1422,21 +1422,21 @@ public class LendaswapClient : ILendaswapClient, IDisposable {
     /// `fund_swap_gasless`, `claim`) errors with `InvalidSigner` when
     /// invoked through a non-signing client.
     /// </summary>
-    public LendaswapClient(string @baseUrl) :
+    public SatoraClient(string @baseUrl) :
         this(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
-    _UniFFILib.uniffi_lendaswap_sdk_ffi_fn_constructor_lendaswapclient_new(FfiConverterString.INSTANCE.Lower(@baseUrl), ref _status)
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_constructor_satoraclient_new(FfiConverterString.INSTANCE.Lower(@baseUrl), ref _status)
 )) {}
 
     protected void FreeRustArcPtr() {
         _UniffiHelpers.RustCall((ref UniffiRustCallStatus status) => {
-            _UniFFILib.uniffi_lendaswap_sdk_ffi_fn_free_lendaswapclient(this.pointer, ref status);
+            _UniFFILib.uniffi_satora_sdk_ffi_fn_free_satoraclient(this.pointer, ref status);
         });
     }
 
     protected IntPtr CloneRustArcPtr() {
         return _UniffiHelpers.RustCall((ref UniffiRustCallStatus status) => {
-            return _UniFFILib.uniffi_lendaswap_sdk_ffi_fn_clone_lendaswapclient(this.pointer, ref status);
+            return _UniFFILib.uniffi_satora_sdk_ffi_fn_clone_satoraclient(this.pointer, ref status);
         });
     }
 
@@ -1515,7 +1515,7 @@ public class LendaswapClient : ILendaswapClient, IDisposable {
     public ClaimReceipt Claim(string @swapId, string @destination, ArkadeConfig @config) {
         return CallWithPointer(thisPtr => FfiConverterTypeClaimReceipt.INSTANCE.Lift(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
-    _UniFFILib.uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_claim(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterString.INSTANCE.Lower(@destination), FfiConverterTypeArkadeConfig.INSTANCE.Lower(@config), ref _status)
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_claim(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterString.INSTANCE.Lower(@destination), FfiConverterTypeArkadeConfig.INSTANCE.Lower(@config), ref _status)
 )));
     }
     
@@ -1532,14 +1532,14 @@ public class LendaswapClient : ILendaswapClient, IDisposable {
     /// State note: `create_swap` writes the per-swap `key_index` into
     /// the inner client's storage. Subsequent [`Self::fund_swap_gasless`]
     /// / [`Self::claim`] calls on THIS instance recover it. A new
-    /// `LendaswapClient` instance won't see it — the FFI doesn't
+    /// `SatoraClient` instance won't see it — the FFI doesn't
     /// expose a persistent storage backend yet.
     /// </summary>
     /// <exception cref="SdkException"></exception>
     public Swap CreateSwap(ChainId @sourceChain, TokenId @sourceToken, ChainId @targetChain, TokenId @targetToken, QuoteAmount @amount, Address @receiveTo, bool @gasless) {
         return CallWithPointer(thisPtr => FfiConverterTypeSwap.INSTANCE.Lift(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
-    _UniFFILib.uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_create_swap(thisPtr, FfiConverterTypeChainId.INSTANCE.Lower(@sourceChain), FfiConverterTypeTokenId.INSTANCE.Lower(@sourceToken), FfiConverterTypeChainId.INSTANCE.Lower(@targetChain), FfiConverterTypeTokenId.INSTANCE.Lower(@targetToken), FfiConverterTypeQuoteAmount.INSTANCE.Lower(@amount), FfiConverterTypeAddress.INSTANCE.Lower(@receiveTo), FfiConverterBoolean.INSTANCE.Lower(@gasless), ref _status)
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_create_swap(thisPtr, FfiConverterTypeChainId.INSTANCE.Lower(@sourceChain), FfiConverterTypeTokenId.INSTANCE.Lower(@sourceToken), FfiConverterTypeChainId.INSTANCE.Lower(@targetChain), FfiConverterTypeTokenId.INSTANCE.Lower(@targetToken), FfiConverterTypeQuoteAmount.INSTANCE.Lower(@amount), FfiConverterTypeAddress.INSTANCE.Lower(@receiveTo), FfiConverterBoolean.INSTANCE.Lower(@gasless), ref _status)
 )));
     }
     
@@ -1558,7 +1558,7 @@ public class LendaswapClient : ILendaswapClient, IDisposable {
     public FundSwapReceipt FundSwapGasless(string @swapId, GaslessOpts @opts) {
         return CallWithPointer(thisPtr => FfiConverterTypeFundSwapReceipt.INSTANCE.Lift(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
-    _UniFFILib.uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_fund_swap_gasless(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterTypeGaslessOpts.INSTANCE.Lower(@opts), ref _status)
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_fund_swap_gasless(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterTypeGaslessOpts.INSTANCE.Lower(@opts), ref _status)
 )));
     }
     
@@ -1572,7 +1572,7 @@ public class LendaswapClient : ILendaswapClient, IDisposable {
     public Swap GetSwap(string @swapId) {
         return CallWithPointer(thisPtr => FfiConverterTypeSwap.INSTANCE.Lift(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
-    _UniFFILib.uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_get_swap(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), ref _status)
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_get_swap(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), ref _status)
 )));
     }
     
@@ -1586,7 +1586,7 @@ public class LendaswapClient : ILendaswapClient, IDisposable {
     public QuoteResult Quote(ChainId @sourceChain, TokenId @sourceToken, ChainId @targetChain, TokenId @targetToken, QuoteAmount @amount) {
         return CallWithPointer(thisPtr => FfiConverterTypeQuoteResult.INSTANCE.Lift(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
-    _UniFFILib.uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_quote(thisPtr, FfiConverterTypeChainId.INSTANCE.Lower(@sourceChain), FfiConverterTypeTokenId.INSTANCE.Lower(@sourceToken), FfiConverterTypeChainId.INSTANCE.Lower(@targetChain), FfiConverterTypeTokenId.INSTANCE.Lower(@targetToken), FfiConverterTypeQuoteAmount.INSTANCE.Lower(@amount), ref _status)
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_quote(thisPtr, FfiConverterTypeChainId.INSTANCE.Lower(@sourceChain), FfiConverterTypeTokenId.INSTANCE.Lower(@sourceToken), FfiConverterTypeChainId.INSTANCE.Lower(@targetChain), FfiConverterTypeTokenId.INSTANCE.Lower(@targetToken), FfiConverterTypeQuoteAmount.INSTANCE.Lower(@amount), ref _status)
 )));
     }
     
@@ -1600,7 +1600,7 @@ public class LendaswapClient : ILendaswapClient, IDisposable {
     public Version Version() {
         return CallWithPointer(thisPtr => FfiConverterTypeVersion.INSTANCE.Lift(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
-    _UniFFILib.uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_version(thisPtr,  ref _status)
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_version(thisPtr,  ref _status)
 )));
     }
     
@@ -1621,7 +1621,7 @@ public class LendaswapClient : ILendaswapClient, IDisposable {
     public void WaitForDepositFunding(string @swapId, string @nodeRpcUrl, ulong @minEthWei, ulong @timeoutSeconds) {
         CallWithPointer(thisPtr =>
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
-    _UniFFILib.uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_wait_for_deposit_funding(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterString.INSTANCE.Lower(@nodeRpcUrl), FfiConverterUInt64.INSTANCE.Lower(@minEthWei), FfiConverterUInt64.INSTANCE.Lower(@timeoutSeconds), ref _status)
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_wait_for_deposit_funding(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterString.INSTANCE.Lower(@nodeRpcUrl), FfiConverterUInt64.INSTANCE.Lower(@minEthWei), FfiConverterUInt64.INSTANCE.Lower(@timeoutSeconds), ref _status)
 ));
     }
     
@@ -1641,7 +1641,7 @@ public class LendaswapClient : ILendaswapClient, IDisposable {
     public SwapStatus WaitForSwapStatus(string @swapId, SwapStatus[] @targets, ulong @timeoutSeconds) {
         return CallWithPointer(thisPtr => FfiConverterTypeSwapStatus.INSTANCE.Lift(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
-    _UniFFILib.uniffi_lendaswap_sdk_ffi_fn_method_lendaswapclient_wait_for_swap_status(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterSequenceTypeSwapStatus.INSTANCE.Lower(@targets), FfiConverterUInt64.INSTANCE.Lower(@timeoutSeconds), ref _status)
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_wait_for_swap_status(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterSequenceTypeSwapStatus.INSTANCE.Lower(@targets), FfiConverterUInt64.INSTANCE.Lower(@timeoutSeconds), ref _status)
 )));
     }
     
@@ -1653,36 +1653,36 @@ public class LendaswapClient : ILendaswapClient, IDisposable {
     /// secret material (preimage, EVM key) from the mnemonic.
     /// </summary>
     /// <exception cref="SdkException"></exception>
-    public static LendaswapClient NewSigning(string @baseUrl, string @mnemonic) {
-        return new LendaswapClient(
+    public static SatoraClient NewSigning(string @baseUrl, string @mnemonic) {
+        return new SatoraClient(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
-    _UniFFILib.uniffi_lendaswap_sdk_ffi_fn_constructor_lendaswapclient_new_signing(FfiConverterString.INSTANCE.Lower(@baseUrl), FfiConverterString.INSTANCE.Lower(@mnemonic), ref _status)
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_constructor_satoraclient_new_signing(FfiConverterString.INSTANCE.Lower(@baseUrl), FfiConverterString.INSTANCE.Lower(@mnemonic), ref _status)
 ));
     }
     
     
 }
-class FfiConverterTypeLendaswapClient: FfiConverter<LendaswapClient, IntPtr> {
-    public static FfiConverterTypeLendaswapClient INSTANCE = new FfiConverterTypeLendaswapClient();
+class FfiConverterTypeSatoraClient: FfiConverter<SatoraClient, IntPtr> {
+    public static FfiConverterTypeSatoraClient INSTANCE = new FfiConverterTypeSatoraClient();
 
 
-    public override IntPtr Lower(LendaswapClient value) {
+    public override IntPtr Lower(SatoraClient value) {
         return value.CallWithPointer(thisPtr => thisPtr);
     }
 
-    public override LendaswapClient Lift(IntPtr value) {
-        return new LendaswapClient(value);
+    public override SatoraClient Lift(IntPtr value) {
+        return new SatoraClient(value);
     }
 
-    public override LendaswapClient Read(BigEndianStream stream) {
+    public override SatoraClient Read(BigEndianStream stream) {
         return Lift(new IntPtr(stream.ReadLong()));
     }
 
-    public override int AllocationSize(LendaswapClient value) {
+    public override int AllocationSize(SatoraClient value) {
         return 8;
     }
 
-    public override void Write(LendaswapClient value, BigEndianStream stream) {
+    public override void Write(SatoraClient value, BigEndianStream stream) {
         stream.WriteLong(Lower(value).ToInt64());
     }
 }
@@ -1690,7 +1690,7 @@ class FfiConverterTypeLendaswapClient: FfiConverter<LendaswapClient, IntPtr> {
 
 
 /// <summary>
-/// Arkade-side configuration for [`LendaswapClient::claim`]. The
+/// Arkade-side configuration for [`SatoraClient::claim`]. The
 /// mnemonic here is the user's Arkade identity (BIP-85 derivation
 /// under the SDK's hard-coded path) — distinct from the lendaswap
 /// signing mnemonic the client was constructed with.
@@ -3164,6 +3164,6 @@ class FfiConverterSequenceTypeSwapStatus: FfiConverterRustBuffer<SwapStatus[]> {
     }
 }
 #pragma warning restore 8625
-internal static class LendaswapSdkFfiMethods {
+internal static class SatoraSdkFfiMethods {
 }
 

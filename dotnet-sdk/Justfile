@@ -18,7 +18,7 @@ set positional-arguments := true
 bindgen_tag := "v0.10.0+v0.29.4"
 
 # Where uniffi-bindgen-cs lands the generated `.cs` file.
-generated_dir := "Lendaswap.Sdk/Generated"
+generated_dir := "Satora.Sdk/Generated"
 
 # Install uniffi-bindgen-cs at the pinned tag. Idempotent — `cargo
 # install` is a no-op if the same version is already installed.
@@ -28,7 +28,7 @@ install-bindgen:
         --tag {{ bindgen_tag }} \
         uniffi-bindgen-cs
 
-# Build the Rust cdylib (`liblendaswap_sdk_ffi.dylib` / `.so` / `.dll`).
+# Build the Rust cdylib (`libsatora_sdk_ffi.dylib` / `.so` / `.dll`).
 build-native:
     cd native && cargo build
 
@@ -50,7 +50,7 @@ build-native:
 # Idempotent: running twice is a no-op.
 generate-bindings: build-native
     cd native && uniffi-bindgen-cs \
-        --library target/debug/liblendaswap_sdk_ffi.dylib \
+        --library target/debug/libsatora_sdk_ffi.dylib \
         --out-dir ../{{ generated_dir }}
     sed -i.bak \
         -e 's/^internal record ChainId {/public record ChainId {/' \
@@ -68,10 +68,10 @@ generate-bindings: build-native
         -e 's/^internal record ArkadeConfig (/public record ArkadeConfig (/' \
         -e 's/^internal record ClaimReceipt (/public record ClaimReceipt (/' \
         -e 's/^internal enum BitcoinNetwork: int/public enum BitcoinNetwork: int/' \
-        -e 's/^internal interface ILendaswapClient {/public interface ILendaswapClient {/' \
-        -e 's/^internal class LendaswapClient : ILendaswapClient/public class LendaswapClient : ILendaswapClient/' \
-        {{ generated_dir }}/lendaswap_sdk_ffi.cs
-    rm {{ generated_dir }}/lendaswap_sdk_ffi.cs.bak
+        -e 's/^internal interface ISatoraClient {/public interface ISatoraClient {/' \
+        -e 's/^internal class SatoraClient : ISatoraClient/public class SatoraClient : ISatoraClient/' \
+        {{ generated_dir }}/satora_sdk_ffi.cs
+    rm {{ generated_dir }}/satora_sdk_ffi.cs.bak
 
 # Lint Rust side. Mirrors what the client-sdk top-level Justfile expects.
 lint-rust:
@@ -83,22 +83,22 @@ fmt-rust:
 
 # Build the C# solution. Requires the `dotnet` CLI (8.0+).
 build: generate-bindings
-    dotnet build Lendaswap.Sdk.sln
+    dotnet build Satora.Sdk.sln
 
 # Run xUnit tests. Live tests are skipped unless LENDASWAP_API_URL is set.
 test: generate-bindings
-    dotnet test Lendaswap.Sdk.sln
+    dotnet test Satora.Sdk.sln
 
 # Run live tests too (set LENDASWAP_API_URL or rely on the default).
 test-live api_url="http://localhost:3333":
-    LENDASWAP_API_URL={{ api_url }} dotnet test Lendaswap.Sdk.sln
+    LENDASWAP_API_URL={{ api_url }} dotnet test Satora.Sdk.sln
 
 # Pack the NuGet (.nupkg) using the currently-built native lib. Production
 # packaging will need to drop in cross-compiled binaries for every RID
 # under `native/target/<rid>/release/` before this runs — that part
 # happens in CI, not here.
 pack: build
-    dotnet pack Lendaswap.Sdk/Lendaswap.Sdk.csproj -c Release -o dist
+    dotnet pack Satora.Sdk/Satora.Sdk.csproj -c Release -o dist
 
 # Run the sample CLI. Pass arguments after `--`, e.g.:
 #   just dotnet-cli -- quote --source Arb:USDT --target Arkade:BTC --source-amount "10 USD"
@@ -106,4 +106,4 @@ dotnet-cli *args: generate-bindings
     # No explicit `--` here: the user's `--` (passed at the outermost
     # `just dotnet-cli -- …`) flows through `"$@"` at every hop and
     # serves as `dotnet run`'s program-args separator.
-    dotnet run --project Lendaswap.Sdk.Cli/Lendaswap.Sdk.Cli.csproj "$@"
+    dotnet run --project Satora.Sdk.Cli/Satora.Sdk.Cli.csproj "$@"

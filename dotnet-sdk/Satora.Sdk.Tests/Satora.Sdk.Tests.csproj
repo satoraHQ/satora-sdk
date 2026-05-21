@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
     <IsPackable>false</IsPackable>
-    <RootNamespace>Lendaswap.Sdk.Tests</RootNamespace>
+    <RootNamespace>Satora.Sdk.Tests</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>
@@ -16,7 +16,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Lendaswap.Sdk\Lendaswap.Sdk.csproj" />
+    <ProjectReference Include="..\Satora.Sdk\Satora.Sdk.csproj" />
   </ItemGroup>
 
 </Project>
