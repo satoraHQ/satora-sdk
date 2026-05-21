@@ -76,6 +76,13 @@ pub struct Client {
     /// Optional referral code attached to every swap this client creates.
     /// Set via [`ClientBuilder::referral_code`].
     pub(crate) referral_code: Option<String>,
+    /// Optional Arkade-side config. Required by every method that talks
+    /// to arkd (`claim`, `arkade_balance_sats`, `arkade_settle`,
+    /// `arkade_offchain_address`, and `create_swap` with `receive_to =
+    /// None`). Set once on the builder so per-call sites don't have to
+    /// repeat it; the wallet itself is re-derived from this config on
+    /// every call (cheap, since it's just BIP-85 + connect).
+    pub(crate) arkade_config: Option<crate::arkade::ArkadeConfig>,
 }
 
 impl std::fmt::Debug for Client {
@@ -102,6 +109,7 @@ impl Client {
             signer: None,
             storage: Arc::new(InMemorySwapStorage::new()),
             referral_code: None,
+            arkade_config: None,
         })
     }
 
@@ -158,6 +166,12 @@ impl Client {
     /// (`source` / `target` / `receive_to` combination) and routes to the
     /// direction-specific method below.
     ///
+    /// `receive_to = None` means "send to the SDK's own Arkade wallet" —
+    /// requires the Client to have been built with
+    /// [`ClientBuilder::arkade_config`] so the SDK knows which Arkade
+    /// network to derive the address against. The address-less variant
+    /// only makes sense when `target` is BTC.
+    ///
     /// Supported today: EVM stablecoin → BTC on Arkade. Any other
     /// combination returns [`Error::InvalidSwap`] — additional directions
     /// will land as separate `create_*_to_*_swap` methods.
@@ -166,8 +180,23 @@ impl Client {
         source: TokenId,
         target: TokenId,
         amount: QuoteAmount,
-        receive_to: Address,
+        receive_to: Option<Address>,
     ) -> Result<Swap> {
+        // Resolve `None` receive_to to the SDK's internal Arkade wallet.
+        let receive_to = match receive_to {
+            Some(addr) => addr,
+            None => {
+                if !matches!(target, TokenId::Btc) {
+                    return Err(Error::InvalidSwap(
+                        "receive_to=None only supported when target=BTC (the SDK's internal wallet lives on Arkade)".into(),
+                    ));
+                }
+                let cfg = self.arkade_config()?;
+                let wallet = crate::arkade::ArkadeWallet::connect(cfg).await?;
+                Address::Arkade(wallet.offchain_address()?)
+            }
+        };
+
         let source_is_evm = source.chain().and_then(|c| c.evm_chain_id()).is_some();
         let target_is_btc = matches!(target, TokenId::Btc);
         let target_is_arkade = matches!(&receive_to, Address::Arkade(_));
@@ -388,6 +417,51 @@ impl Client {
     }
 }
 
+/// Arkade-side wallet operations. The SDK doesn't hold a persistent
+/// `ArkadeWallet` instance — each call re-derives one from the
+/// [`ArkadeConfig`] stored on the Client (whose `identity_mnemonic`
+/// field IS the wallet seed). All three calls round-trip to the
+/// Arkade server's gRPC indexer.
+///
+/// Set the config via [`ClientBuilder::arkade_config`] at build time;
+/// these methods return [`Error::InvalidSwap`] when no config is set.
+impl Client {
+    /// Fetch the stored [`crate::arkade::ArkadeConfig`] or error with a
+    /// uniform message. Internal helper so every arkade-touching method
+    /// has the same error wording.
+    pub(crate) fn arkade_config(&self) -> Result<&crate::arkade::ArkadeConfig> {
+        self.arkade_config.as_ref().ok_or_else(|| Error::InvalidSwap(
+            "Client was constructed without an arkade_config — use ClientBuilder::arkade_config(...) at build time".into(),
+        ))
+    }
+
+    /// Total spendable balance of the internal Arkade wallet, in sats.
+    /// Sum of confirmed + pre-confirmed + recoverable VTXOs owned by
+    /// the wallet derived from the configured `identity_mnemonic`.
+    pub async fn arkade_balance_sats(&self) -> Result<u64> {
+        let wallet = crate::arkade::ArkadeWallet::connect(self.arkade_config()?).await?;
+        wallet.offchain_balance_sats().await
+    }
+
+    /// Roll over all spendable VTXOs + boarding outputs into the next
+    /// Arkade batch — the operation users perform before their VTXOs
+    /// expire. Returns `Ok(None)` if there's nothing to settle, or
+    /// `Ok(Some(commitment_txid))` for the batch that absorbed them.
+    pub async fn arkade_settle(&self) -> Result<Option<bitcoin::Txid>> {
+        let wallet = crate::arkade::ArkadeWallet::connect(self.arkade_config()?).await?;
+        wallet.settle().await
+    }
+
+    /// Derive the internal Arkade wallet's offchain address. Useful for
+    /// the caller to know where funds from an address-less
+    /// [`Self::create_swap`] will land, or to display a deposit address
+    /// for arbitrary inbound BTC.
+    pub async fn arkade_offchain_address(&self) -> Result<String> {
+        let wallet = crate::arkade::ArkadeWallet::connect(self.arkade_config()?).await?;
+        wallet.offchain_address()
+    }
+}
+
 /// Builder for [`Client`].
 ///
 /// Required: exactly one of `mnemonic` / `xprv` — every other field has a
@@ -401,6 +475,7 @@ pub struct ClientBuilder {
     storage: Option<Arc<dyn SwapStorage>>,
     http: Option<reqwest::Client>,
     referral_code: Option<String>,
+    arkade_config: Option<crate::arkade::ArkadeConfig>,
 }
 
 impl ClientBuilder {
@@ -446,6 +521,16 @@ impl ClientBuilder {
         self
     }
 
+    /// Arkade-side config. Required by every method that talks to arkd
+    /// (`claim`, `arkade_balance_sats`, `arkade_settle`,
+    /// `arkade_offchain_address`, and `create_swap` with no
+    /// `receive_to`). Omit if the client will only do EVM-side
+    /// operations.
+    pub fn arkade_config(mut self, config: crate::arkade::ArkadeConfig) -> Self {
+        self.arkade_config = Some(config);
+        self
+    }
+
     pub fn build(self) -> Result<Client> {
         let base_url = self
             .base_url
@@ -475,6 +560,7 @@ impl ClientBuilder {
             signer: Some(signer),
             storage,
             referral_code: self.referral_code,
+            arkade_config: self.arkade_config,
         })
     }
 }

@@ -765,6 +765,14 @@ static class _UniFFILib {
     
     
     
+    
+    
+    
+    
+    
+    
+    
+    
 
     static _UniFFILib() {
         _UniFFILib.uniffiCheckContractApiVersion();
@@ -789,7 +797,23 @@ static class _UniFFILib {
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_claim(IntPtr @ptr,RustBuffer @swapId,RustBuffer @destination,RustBuffer @config,ref UniffiRustCallStatus _uniffi_out_err
+    public static extern IntPtr uniffi_satora_sdk_ffi_fn_constructor_satoraclient_new_with_arkade(RustBuffer @baseUrl,RustBuffer @mnemonic,RustBuffer @arkadeConfig,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ulong uniffi_satora_sdk_ffi_fn_method_satoraclient_arkade_balance_sats(IntPtr @ptr,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_arkade_offchain_address(IntPtr @ptr,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_arkade_settle(IntPtr @ptr,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_claim(IntPtr @ptr,RustBuffer @swapId,RustBuffer @destination,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -1045,6 +1069,18 @@ static class _UniFFILib {
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_balance_sats(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_offchain_address(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_settle(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_claim(
     );
 
@@ -1085,6 +1121,10 @@ static class _UniFFILib {
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_constructor_satoraclient_new_with_arkade(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern uint ffi_satora_sdk_ffi_uniffi_contract_version(
     );
 
@@ -1099,15 +1139,33 @@ static class _UniFFILib {
 
     static void uniffiCheckApiChecksums() {
         {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_balance_sats();
+            if (checksum != 48499) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_balance_sats` checksum `48499`, library returned `{checksum}`");
+            }
+        }
+        {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_offchain_address();
+            if (checksum != 21763) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_offchain_address` checksum `21763`, library returned `{checksum}`");
+            }
+        }
+        {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_settle();
+            if (checksum != 11110) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_settle` checksum `11110`, library returned `{checksum}`");
+            }
+        }
+        {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_claim();
-            if (checksum != 39728) {
-                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_claim` checksum `39728`, library returned `{checksum}`");
+            if (checksum != 56598) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_claim` checksum `56598`, library returned `{checksum}`");
             }
         }
         {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_swap();
-            if (checksum != 11462) {
-                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_swap` checksum `11462`, library returned `{checksum}`");
+            if (checksum != 30260) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_swap` checksum `30260`, library returned `{checksum}`");
             }
         }
         {
@@ -1154,8 +1212,14 @@ static class _UniFFILib {
         }
         {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_constructor_satoraclient_new_signing();
-            if (checksum != 2187) {
-                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_constructor_satoraclient_new_signing` checksum `2187`, library returned `{checksum}`");
+            if (checksum != 3459) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_constructor_satoraclient_new_signing` checksum `3459`, library returned `{checksum}`");
+            }
+        }
+        {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_constructor_satoraclient_new_with_arkade();
+            if (checksum != 36509) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_constructor_satoraclient_new_with_arkade` checksum `36509`, library returned `{checksum}`");
             }
         }
     }
@@ -1307,6 +1371,27 @@ class FfiConverterString: FfiConverter<string, RustBuffer> {
 /// </summary>
 public interface ISatoraClient {
     /// <summary>
+    /// Total spendable balance of the SDK's internal Arkade wallet, in
+    /// sats. Hits the Arkade server's gRPC indexer.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    ulong ArkadeBalanceSats();
+    /// <summary>
+    /// Derive the SDK's internal Arkade wallet address. The same
+    /// mnemonic always produces the same address (BIP-85 derivation),
+    /// so this is the destination for funds from an address-less
+    /// [`Self::create_swap`].
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    string ArkadeOffchainAddress();
+    /// <summary>
+    /// Roll over all spendable VTXOs + boarding outputs into the next
+    /// Arkade batch. `None` => nothing to settle; `Some(txid)` => hex
+    /// commitment txid (`0x…`) of the batch that absorbed them.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    string? ArkadeSettle();
+    /// <summary>
     /// Redeem the Arkade VHTLC for an EVM→Arkade swap that has
     /// reached (or passed) ServerFunded. Sweeps the BTC to
     /// `destination`. Requires a signing client; the Arkade identity
@@ -1314,7 +1399,7 @@ public interface ISatoraClient {
     /// it's distinct from the lendaswap signing mnemonic.
     /// </summary>
     /// <exception cref="SdkException"></exception>
-    ClaimReceipt Claim(string @swapId, string @destination, ArkadeConfig @config);
+    ClaimReceipt Claim(string @swapId, string @destination);
     /// <summary>
     /// Create a swap. Today the SDK only supports EVM stablecoin →
     /// BTC on Arkade. The dispatcher in `Client::create_swap`
@@ -1331,7 +1416,7 @@ public interface ISatoraClient {
     /// expose a persistent storage backend yet.
     /// </summary>
     /// <exception cref="SdkException"></exception>
-    Swap CreateSwap(ChainId @sourceChain, TokenId @sourceToken, ChainId @targetChain, TokenId @targetToken, QuoteAmount @amount, Address @receiveTo, bool @gasless);
+    Swap CreateSwap(ChainId @sourceChain, TokenId @sourceToken, ChainId @targetChain, TokenId @targetToken, QuoteAmount @amount, Address? @receiveTo, bool @gasless);
     /// <summary>
     /// Submit the gasless ERC-4337 + EIP-7702 funding userOp for a
     /// previously-created swap. The depositor EOA must already hold
@@ -1505,6 +1590,48 @@ public class SatoraClient : ISatoraClient, IDisposable {
 
     
     /// <summary>
+    /// Total spendable balance of the SDK's internal Arkade wallet, in
+    /// sats. Hits the Arkade server's gRPC indexer.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public ulong ArkadeBalanceSats() {
+        return CallWithPointer(thisPtr => FfiConverterUInt64.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_arkade_balance_sats(thisPtr,  ref _status)
+)));
+    }
+    
+    
+    /// <summary>
+    /// Derive the SDK's internal Arkade wallet address. The same
+    /// mnemonic always produces the same address (BIP-85 derivation),
+    /// so this is the destination for funds from an address-less
+    /// [`Self::create_swap`].
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public string ArkadeOffchainAddress() {
+        return CallWithPointer(thisPtr => FfiConverterString.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_arkade_offchain_address(thisPtr,  ref _status)
+)));
+    }
+    
+    
+    /// <summary>
+    /// Roll over all spendable VTXOs + boarding outputs into the next
+    /// Arkade batch. `None` => nothing to settle; `Some(txid)` => hex
+    /// commitment txid (`0x…`) of the batch that absorbed them.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public string? ArkadeSettle() {
+        return CallWithPointer(thisPtr => FfiConverterOptionalString.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_arkade_settle(thisPtr,  ref _status)
+)));
+    }
+    
+    
+    /// <summary>
     /// Redeem the Arkade VHTLC for an EVM→Arkade swap that has
     /// reached (or passed) ServerFunded. Sweeps the BTC to
     /// `destination`. Requires a signing client; the Arkade identity
@@ -1512,10 +1639,10 @@ public class SatoraClient : ISatoraClient, IDisposable {
     /// it's distinct from the lendaswap signing mnemonic.
     /// </summary>
     /// <exception cref="SdkException"></exception>
-    public ClaimReceipt Claim(string @swapId, string @destination, ArkadeConfig @config) {
+    public ClaimReceipt Claim(string @swapId, string @destination) {
         return CallWithPointer(thisPtr => FfiConverterTypeClaimReceipt.INSTANCE.Lift(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
-    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_claim(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterString.INSTANCE.Lower(@destination), FfiConverterTypeArkadeConfig.INSTANCE.Lower(@config), ref _status)
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_claim(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterString.INSTANCE.Lower(@destination), ref _status)
 )));
     }
     
@@ -1536,10 +1663,10 @@ public class SatoraClient : ISatoraClient, IDisposable {
     /// expose a persistent storage backend yet.
     /// </summary>
     /// <exception cref="SdkException"></exception>
-    public Swap CreateSwap(ChainId @sourceChain, TokenId @sourceToken, ChainId @targetChain, TokenId @targetToken, QuoteAmount @amount, Address @receiveTo, bool @gasless) {
+    public Swap CreateSwap(ChainId @sourceChain, TokenId @sourceToken, ChainId @targetChain, TokenId @targetToken, QuoteAmount @amount, Address? @receiveTo, bool @gasless) {
         return CallWithPointer(thisPtr => FfiConverterTypeSwap.INSTANCE.Lift(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
-    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_create_swap(thisPtr, FfiConverterTypeChainId.INSTANCE.Lower(@sourceChain), FfiConverterTypeTokenId.INSTANCE.Lower(@sourceToken), FfiConverterTypeChainId.INSTANCE.Lower(@targetChain), FfiConverterTypeTokenId.INSTANCE.Lower(@targetToken), FfiConverterTypeQuoteAmount.INSTANCE.Lower(@amount), FfiConverterTypeAddress.INSTANCE.Lower(@receiveTo), FfiConverterBoolean.INSTANCE.Lower(@gasless), ref _status)
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_create_swap(thisPtr, FfiConverterTypeChainId.INSTANCE.Lower(@sourceChain), FfiConverterTypeTokenId.INSTANCE.Lower(@sourceToken), FfiConverterTypeChainId.INSTANCE.Lower(@targetChain), FfiConverterTypeTokenId.INSTANCE.Lower(@targetToken), FfiConverterTypeQuoteAmount.INSTANCE.Lower(@amount), FfiConverterOptionalTypeAddress.INSTANCE.Lower(@receiveTo), FfiConverterBoolean.INSTANCE.Lower(@gasless), ref _status)
 )));
     }
     
@@ -1650,13 +1777,30 @@ public class SatoraClient : ISatoraClient, IDisposable {
     
     /// <summary>
     /// Signing client. Required for any method that derives per-swap
-    /// secret material (preimage, EVM key) from the mnemonic.
+    /// secret material (preimage, EVM key) from the mnemonic. Use
+    /// [`Self::new_with_arkade`] when you need the Arkade-side methods
+    /// too (claim, balance, settle, offchain_address) — those error
+    /// without an arkade_config.
     /// </summary>
     /// <exception cref="SdkException"></exception>
     public static SatoraClient NewSigning(string @baseUrl, string @mnemonic) {
         return new SatoraClient(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
     _UniFFILib.uniffi_satora_sdk_ffi_fn_constructor_satoraclient_new_signing(FfiConverterString.INSTANCE.Lower(@baseUrl), FfiConverterString.INSTANCE.Lower(@mnemonic), ref _status)
+));
+    }
+    
+    /// <summary>
+    /// Signing client + Arkade config. Required for every Arkade-side
+    /// method (`claim`, `arkade_balance_sats`, `arkade_settle`,
+    /// `arkade_offchain_address`, and `create_swap` with
+    /// `receive_to = None`).
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public static SatoraClient NewWithArkade(string @baseUrl, string @mnemonic, ArkadeConfig @arkadeConfig) {
+        return new SatoraClient(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_constructor_satoraclient_new_with_arkade(FfiConverterString.INSTANCE.Lower(@baseUrl), FfiConverterString.INSTANCE.Lower(@mnemonic), FfiConverterTypeArkadeConfig.INSTANCE.Lower(@arkadeConfig), ref _status)
 ));
     }
     
@@ -3114,6 +3258,37 @@ class FfiConverterOptionalTypeGasOverrides: FfiConverterRustBuffer<GasOverrides?
         } else {
             stream.WriteByte(1);
             FfiConverterTypeGasOverrides.INSTANCE.Write((GasOverrides)value, stream);
+        }
+    }
+}
+
+
+
+
+class FfiConverterOptionalTypeAddress: FfiConverterRustBuffer<Address?> {
+    public static FfiConverterOptionalTypeAddress INSTANCE = new FfiConverterOptionalTypeAddress();
+
+    public override Address? Read(BigEndianStream stream) {
+        if (stream.ReadByte() == 0) {
+            return null;
+        }
+        return FfiConverterTypeAddress.INSTANCE.Read(stream);
+    }
+
+    public override int AllocationSize(Address? value) {
+        if (value == null) {
+            return 1;
+        } else {
+            return 1 + FfiConverterTypeAddress.INSTANCE.AllocationSize((Address)value);
+        }
+    }
+
+    public override void Write(Address? value, BigEndianStream stream) {
+        if (value == null) {
+            stream.WriteByte(0);
+        } else {
+            stream.WriteByte(1);
+            FfiConverterTypeAddress.INSTANCE.Write((Address)value, stream);
         }
     }
 }

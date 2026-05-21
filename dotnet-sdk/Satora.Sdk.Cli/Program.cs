@@ -498,7 +498,31 @@ internal static class FlowCommand
         };
 
         var baseUrl = Environment.GetEnvironmentVariable("LENDASWAP_API_URL") ?? "https://api.satora.io";
-        using var client = new Client(baseUrl, mnemonic);
+
+        // If the flow is going to claim against Arkade (gasless + Arkade
+        // target), the Client needs an ArkadeConfig at construction —
+        // it's no longer a per-call param. Read the env vars here so a
+        // missing one fails before we hit the network.
+        ArkadeConfig? arkadeConfig = null;
+        if (gasless && targetChain is ChainId.Arkade)
+        {
+            var arkadeUrl = RequireEnv("ARKADE_URL", "Arkade arkd gRPC endpoint");
+            var esploraUrl = RequireEnv("ESPLORA_URL", "esplora HTTP endpoint");
+            var arkadeMnemonic = RequireEnv("ARKADE_MNEMONIC", "BIP-39 mnemonic for the Arkade identity");
+            if (arkadeUrl is null || esploraUrl is null || arkadeMnemonic is null) return 2;
+            var network = (Environment.GetEnvironmentVariable("ARKADE_NETWORK") ?? "regtest").ToLowerInvariant() switch
+            {
+                "mainnet" or "bitcoin" => BitcoinNetwork.Mainnet,
+                "testnet" => BitcoinNetwork.Testnet,
+                "signet" => BitcoinNetwork.Signet,
+                _ => BitcoinNetwork.Regtest,
+            };
+            arkadeConfig = new ArkadeConfig(arkadeUrl, esploraUrl, arkadeMnemonic, network);
+        }
+
+        using var client = arkadeConfig is not null
+            ? new Client(baseUrl, mnemonic, arkadeConfig)
+            : new Client(baseUrl, mnemonic);
 
         // ── 1. Create the swap ──
         Console.WriteLine("[1/5] create-swap");
@@ -595,20 +619,7 @@ internal static class FlowCommand
             // assume the same mnemonic serves both rails.
             Console.WriteLine();
             Console.WriteLine("[5/5] claim");
-            var arkadeUrl = RequireEnv("ARKADE_URL", "Arkade arkd gRPC endpoint");
-            var esploraUrl = RequireEnv("ESPLORA_URL", "esplora HTTP endpoint");
-            var arkadeMnemonic = RequireEnv("ARKADE_MNEMONIC", "BIP-39 mnemonic for the Arkade identity");
-            if (arkadeUrl is null || esploraUrl is null || arkadeMnemonic is null) return 2;
-            var network = (Environment.GetEnvironmentVariable("ARKADE_NETWORK") ?? "regtest").ToLowerInvariant() switch
-            {
-                "mainnet" or "bitcoin" => BitcoinNetwork.Mainnet,
-                "testnet" => BitcoinNetwork.Testnet,
-                "signet" => BitcoinNetwork.Signet,
-                _ => BitcoinNetwork.Regtest,
-            };
-
-            var arkade = new ArkadeConfig(arkadeUrl, esploraUrl, arkadeMnemonic, network);
-            var claim = await client.ClaimAsync(swap.Id, receiveTo, arkade).ConfigureAwait(false);
+            var claim = await client.ClaimAsync(swap.Id, receiveTo).ConfigureAwait(false);
             Console.WriteLine($"  ark_txid       : {claim.ArkTxid}");
             Console.WriteLine($"  amount_sats    : {claim.ClaimAmountSats}");
         }

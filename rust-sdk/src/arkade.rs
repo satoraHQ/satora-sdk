@@ -19,10 +19,6 @@
 //! This module owns the wiring so a downstream consumer's claim site
 //! collapses to `client.claim(swap_id, destination).await`.
 //!
-//! Gated behind the `arkade-claim` feature — the deps it pulls in
-//! (`ark-rs` with gRPC, `ark-bdk-wallet`, `esplora-client`) cost real
-//! compile time the EVM-only SDK doesn't want to pay for.
-//!
 //! Today this is scaffolding only; the actual claim flow lands in
 //! follow-up commits as we work through the [`Client::claim`] body.
 
@@ -225,6 +221,25 @@ impl ArkadeWallet {
             .map_err(|e| Error::Transport(format!("offchain_balance: {e}")))?;
         Ok(balance.total().to_sat())
     }
+
+    /// Roll over all expired VTXOs + boarding outputs into the next
+    /// Arkade batch. The wallet ends up with fresh confirmed VTXOs at
+    /// the same offchain address, with the exit-window timer reset —
+    /// the operation users perform before their VTXOs expire.
+    ///
+    /// Returns `Ok(None)` if the wallet has nothing to settle (no
+    /// boarding inputs and no VTXOs); otherwise the commitment txid
+    /// of the batch that absorbed them.
+    ///
+    /// Uses [`rand::rngs::OsRng`] internally — the underlying ark-rs
+    /// settle path needs a CSPRNG for nonce generation.
+    pub async fn settle(&self) -> Result<Option<Txid>> {
+        let mut rng = rand::rngs::OsRng;
+        self.client
+            .settle(&mut rng)
+            .await
+            .map_err(|e| Error::Transport(format!("settle: {e}")))
+    }
 }
 
 /// Boarding-output persistence backing `ark-client`. In-memory is fine
@@ -416,12 +431,8 @@ impl Client {
     /// caller hitting a config mismatch fails fast with a clear error
     /// rather than midway through the gRPC handshake.
     #[tracing::instrument(name = "claim", skip_all, fields(%swap_id))]
-    pub async fn claim(
-        &self,
-        swap_id: &str,
-        destination: &str,
-        config: ArkadeConfig,
-    ) -> Result<ClaimReceipt> {
+    pub async fn claim(&self, swap_id: &str, destination: &str) -> Result<ClaimReceipt> {
+        let config = self.arkade_config()?.clone();
         // 1. Re-derive the per-swap secret material from the signer. The preimage isn't persisted
         //    by the SDK; it's deterministic from (signer master seed, key_index), which IS
         //    persisted.

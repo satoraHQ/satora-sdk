@@ -25,7 +25,7 @@ crate-type = ["cdylib", "staticlib", "lib"]
 # Version pinned to lendaswap-sdk's choice (0.32) so the resolver
 # picks one copy.
 bitcoin = { version = "0.32", default-features = false, features = ["std"] }
-lendaswap-sdk = { path = "../../rust-sdk", features = ["gasless", "arkade-claim"] }
+lendaswap-sdk = { path = "../../rust-sdk", features = ["gasless"] }
 serde_json = "1"
 thiserror = "1"
 # Multi-thread runtime so multiple FFI calls don't serialise on a single
