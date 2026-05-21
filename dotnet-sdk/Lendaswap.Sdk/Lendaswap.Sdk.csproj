@@ -15,8 +15,11 @@
          glue). Required by the codegen — not by our own code. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
-    <!-- NuGet package metadata (preliminary; bump on publish). -->
-    <PackageId>Lendaswap.Sdk</PackageId>
+    <!-- NuGet package metadata (preliminary; bump on publish).
+         PackageId is the nuget.org-visible name (post-rebrand to
+         Satora). The C# namespace stays `Lendaswap.Sdk` so existing
+         consumer code (`using Lendaswap.Sdk;`) keeps compiling. -->
+    <PackageId>Satora.Sdk</PackageId>
     <Version>0.0.1-alpha</Version>
     <Authors>Satora / Lendasat</Authors>
     <Description>
