@@ -106,7 +106,10 @@ impl SatoraClient {
     }
 
     /// Signing client. Required for any method that derives per-swap
-    /// secret material (preimage, EVM key) from the mnemonic.
+    /// secret material (preimage, EVM key) from the mnemonic. Use
+    /// [`Self::new_with_arkade`] when you need the Arkade-side methods
+    /// too (claim, balance, settle, offchain_address) — those error
+    /// without an arkade_config.
     #[uniffi::constructor]
     pub fn new_signing(
         base_url: String,
@@ -115,6 +118,24 @@ impl SatoraClient {
         let inner = Client::builder()
             .base_url(&base_url)
             .mnemonic(&mnemonic)
+            .build()?;
+        Ok(std::sync::Arc::new(Self { inner }))
+    }
+
+    /// Signing client + Arkade config. Required for every Arkade-side
+    /// method (`claim`, `arkade_balance_sats`, `arkade_settle`,
+    /// `arkade_offchain_address`, and `create_swap` with
+    /// `receive_to = None`).
+    #[uniffi::constructor]
+    pub fn new_with_arkade(
+        base_url: String,
+        mnemonic: String,
+        arkade_config: ArkadeConfig,
+    ) -> Result<std::sync::Arc<Self>, SdkError> {
+        let inner = Client::builder()
+            .base_url(&base_url)
+            .mnemonic(&mnemonic)
+            .arkade_config(arkade_config.into())
             .build()?;
         Ok(std::sync::Arc::new(Self { inner }))
     }
@@ -483,7 +504,10 @@ impl SatoraClient {
         target_chain: ChainId,
         target_token: TokenId,
         amount: QuoteAmount,
-        receive_to: Address,
+        // `None` => derive the destination from the SDK's internal
+        // Arkade wallet (requires the client to have been built via
+        // `new_with_arkade`). `Some(addr)` => use that address directly.
+        receive_to: Option<Address>,
         gasless: bool,
     ) -> Result<Swap, SdkError> {
         // Direction-validation is the SDK's job — Chain here is only
@@ -493,14 +517,19 @@ impl SatoraClient {
         // FFI signature stays stable as more directions land.
         let _ = (source_chain, target_chain, target_token);
         runtime().block_on(async {
+            let resolved: SdkAddress = match receive_to {
+                Some(addr) => addr.into(),
+                None => {
+                    // The Rust SDK's dispatcher derives this from the
+                    // stored config; we replicate that here so we keep
+                    // exposing `gasless`.
+                    let addr = self.inner.arkade_offchain_address().await?;
+                    SdkAddress::Arkade(addr)
+                }
+            };
             let swap = self
                 .inner
-                .create_evm_to_arkade_swap(
-                    source_token.into(),
-                    amount.into(),
-                    receive_to.into(),
-                    gasless,
-                )
+                .create_evm_to_arkade_swap(source_token.into(), amount.into(), resolved, gasless)
                 .await?;
             Ok(swap.into())
         })
@@ -756,21 +785,42 @@ impl SatoraClient {
     /// `destination`. Requires a signing client; the Arkade identity
     /// mnemonic is provided separately via [`ArkadeConfig`] because
     /// it's distinct from the lendaswap signing mnemonic.
-    pub fn claim(
-        &self,
-        swap_id: String,
-        destination: String,
-        config: ArkadeConfig,
-    ) -> Result<ClaimReceipt, SdkError> {
+    pub fn claim(&self, swap_id: String, destination: String) -> Result<ClaimReceipt, SdkError> {
         runtime().block_on(async {
-            let receipt = self
-                .inner
-                .claim(&swap_id, &destination, config.into())
-                .await?;
+            let receipt = self.inner.claim(&swap_id, &destination).await?;
             Ok(ClaimReceipt {
                 ark_txid: format!("{:#x}", receipt.ark_txid),
                 claim_amount_sats: receipt.claim_amount_sats,
             })
+        })
+    }
+
+    /// Total spendable balance of the SDK's internal Arkade wallet, in
+    /// sats. Hits the Arkade server's gRPC indexer.
+    pub fn arkade_balance_sats(&self) -> Result<u64, SdkError> {
+        runtime().block_on(async { self.inner.arkade_balance_sats().await.map_err(Into::into) })
+    }
+
+    /// Roll over all spendable VTXOs + boarding outputs into the next
+    /// Arkade batch. `None` => nothing to settle; `Some(txid)` => hex
+    /// commitment txid (`0x…`) of the batch that absorbed them.
+    pub fn arkade_settle(&self) -> Result<Option<String>, SdkError> {
+        runtime().block_on(async {
+            let txid = self.inner.arkade_settle().await?;
+            Ok(txid.map(|t| format!("{:#x}", t)))
+        })
+    }
+
+    /// Derive the SDK's internal Arkade wallet address. The same
+    /// mnemonic always produces the same address (BIP-85 derivation),
+    /// so this is the destination for funds from an address-less
+    /// [`Self::create_swap`].
+    pub fn arkade_offchain_address(&self) -> Result<String, SdkError> {
+        runtime().block_on(async {
+            self.inner
+                .arkade_offchain_address()
+                .await
+                .map_err(Into::into)
         })
     }
 }

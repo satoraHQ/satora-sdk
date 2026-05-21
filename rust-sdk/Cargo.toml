@@ -18,12 +18,7 @@ crate-type = ["rlib"]
 # to a ZeroDev Kernel V3.3 implementation. Off by default: pulls in alloy,
 # so the base SDK (quote, create_swap) stays lean and the FFI / dotnet
 # layer can opt out.
-gasless = ["dep:alloy", "dep:alloy-provider", "dep:rand"]
-# Arkade VHTLC claim via ark-rs (offchain spend path). Off by default:
-# pulls in ark-rs (gRPC stack), ark-bdk-wallet, and esplora-client,
-# which together add a few MB of compile time the EVM-only SDK doesn't
-# need to pay for.
-arkade-claim = ["dep:ark-rs", "dep:ark-bdk-wallet", "dep:esplora-client"]
+gasless = ["dep:alloy", "dep:alloy-provider"]
 
 [dependencies]
 # Crypto: HD wallet derivation, secp256k1, hashes.
@@ -49,8 +44,9 @@ url = "2"
 # / `get_user_operation_receipt`).
 alloy = { version = "1", optional = true, features = ["sol-types", "rpc-types", "providers", "transport-http", "signer-local"] }
 alloy-provider = { version = "1", optional = true, features = ["erc4337-api"] }
-# `rand` for Permit2 nonce generation (gasless-only).
-rand = { version = "0.8", optional = true }
+# `rand` is used by both the gasless flow (Permit2 nonces) and the
+# Arkade settle flow (ark-rs `Client::settle` requires a CSPRNG).
+rand = "0.8"
 # `tokio` for timer-based polling (`wait_for_swap_status`) and the
 # gasless receipt-poll sleep. Non-optional because `reqwest` already
 # pulls a tokio runtime in transitively — the `time` feature is tiny
@@ -58,13 +54,13 @@ rand = { version = "0.8", optional = true }
 # primitive.
 tokio = { version = "1", features = ["time"] }
 
-# Arkade VHTLC claim (`arkade-claim` feature only). `ark-rs` for the
-# core VHTLC script + gRPC client to arkd, `ark-bdk-wallet` for the
-# on-chain wallet plumbing ark-client demands, `esplora-client` for
-# chain queries. Versions track `scripts/e2e-rust/Cargo.toml`.
-ark-bdk-wallet = { version = "0.9", optional = true }
-ark-rs = { version = "0.9", optional = true, features = ["client", "grpc"] }
-esplora-client = { version = "0.11", optional = true, default-features = false, features = ["async", "async-https", "tokio"] }
+# Arkade VHTLC claim + balance + settle. `ark-rs` for the core VHTLC
+# script + gRPC client to arkd, `ark-bdk-wallet` for the on-chain
+# wallet plumbing ark-client demands, `esplora-client` for chain
+# queries. Versions track `scripts/e2e-rust/Cargo.toml`.
+ark-bdk-wallet = "0.9"
+ark-rs = { version = "0.9", features = ["client", "grpc"] }
+esplora-client = { version = "0.11", default-features = false, features = ["async", "async-https", "tokio"] }
 
 [dev-dependencies]
 jsonschema = { version = "0.46.4", default-features = false }

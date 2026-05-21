@@ -16,11 +16,9 @@ pub mod types;
 #[cfg(feature = "gasless")]
 pub mod aa;
 
-// Arkade VHTLC claim flow (offchain spend). Feature-gated so the base
-// SDK doesn't pull in ark-rs + gRPC + esplora-client. Owns the
-// boilerplate `ark-client` requires (wallet, blockchain, persistence
-// impls) so consumers don't have to re-implement them.
-#[cfg(feature = "arkade-claim")]
+// Arkade VHTLC claim + balance + settle flow (offchain spend). Owns
+// the boilerplate `ark-client` requires (wallet, blockchain,
+// persistence impls) so consumers don't have to re-implement them.
 pub mod arkade;
 
 // Internal-only: wire-format structs that public types route through via

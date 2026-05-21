@@ -179,10 +179,31 @@ public sealed class Client : IDisposable
     /// per-swap preimage and EVM key for create / fund / claim flows.
     /// Held in memory for the lifetime of this instance — callers
     /// concerned about exposure should keep the client short-lived.
+    ///
+    /// Use <see cref="Client(string, string, ArkadeConfig)"/> when you
+    /// also need the Arkade-side methods (<see cref="ClaimAsync"/>,
+    /// <see cref="GetArkadeBalanceSatsAsync"/>,
+    /// <see cref="SettleArkadeAsync"/>,
+    /// <see cref="GetArkadeAddressAsync"/>, and
+    /// <see cref="CreateSwapAsync"/> with no <c>receiveTo</c>).
     /// </summary>
     public Client(string baseUrl, string mnemonic)
     {
         _ffi = TryOrThrow(() => Ffi.SatoraClient.NewSigning(baseUrl, mnemonic));
+        _hasMnemonic = true;
+    }
+
+    /// <summary>
+    /// Construct a signing client with an Arkade-side config. Required
+    /// for any method that talks to arkd (claim, balance, settle,
+    /// offchain address, and the address-less <see cref="CreateSwapAsync"/>).
+    /// </summary>
+    /// <param name="baseUrl">Satora backend base URL.</param>
+    /// <param name="mnemonic">BIP-39 signing mnemonic.</param>
+    /// <param name="arkadeConfig">gRPC endpoint, esplora URL, identity mnemonic, network.</param>
+    public Client(string baseUrl, string mnemonic, ArkadeConfig arkadeConfig)
+    {
+        _ffi = TryOrThrow(() => Ffi.SatoraClient.NewWithArkade(baseUrl, mnemonic, arkadeConfig));
         _hasMnemonic = true;
     }
 
@@ -258,7 +279,14 @@ public sealed class Client : IDisposable
     /// <param name="targetChain">Target chain enum.</param>
     /// <param name="targetToken">Target token enum.</param>
     /// <param name="amount">Source / target amount mutex.</param>
-    /// <param name="receiveTo">Destination address tagged with its rail.</param>
+    /// <param name="receiveTo">
+    /// Destination address tagged with its rail. Pass <c>null</c> to
+    /// route to the SDK's own internal Arkade wallet — requires the
+    /// client to have been built via
+    /// <see cref="Client(string, string, ArkadeConfig)"/>. The internal
+    /// wallet target is only valid when the target token is BTC on
+    /// Arkade.
+    /// </param>
     /// <param name="gasless">
     /// When <c>true</c>, the backend returns a deposit address the user
     /// funds with a plain ERC-20 transfer; the SDK then relays into the
@@ -271,7 +299,7 @@ public sealed class Client : IDisposable
         ChainId targetChain,
         TokenId targetToken,
         QuoteAmount amount,
-        Address receiveTo,
+        Address? receiveTo,
         bool gasless,
         CancellationToken cancellationToken = default)
     {
@@ -291,6 +319,42 @@ public sealed class Client : IDisposable
                 receiveTo,
                 gasless))),
             cancellationToken);
+    }
+
+    /// <summary>
+    /// Total spendable balance of the SDK's internal Arkade wallet, in
+    /// satoshis. Hits the Arkade server's gRPC indexer. Requires the
+    /// client to have been built via
+    /// <see cref="Client(string, string, ArkadeConfig)"/>.
+    /// </summary>
+    public Task<ulong> GetArkadeBalanceSatsAsync(CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        return Task.Run(() => TryOrThrow(() => ffi.ArkadeBalanceSats()), cancellationToken);
+    }
+
+    /// <summary>
+    /// Roll over all spendable VTXOs + boarding outputs into the next
+    /// Arkade batch — what users do before their VTXOs expire. Returns
+    /// the hex commitment txid of the batch that absorbed them, or
+    /// <c>null</c> if the wallet had nothing to settle.
+    /// </summary>
+    public Task<string?> SettleArkadeAsync(CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        return Task.Run(() => TryOrThrow(() => ffi.ArkadeSettle()), cancellationToken);
+    }
+
+    /// <summary>
+    /// Derive the SDK's internal Arkade wallet address. The same
+    /// identity mnemonic always produces the same address (BIP-85
+    /// derivation), so this is the destination for funds from an
+    /// address-less <see cref="CreateSwapAsync"/>.
+    /// </summary>
+    public Task<string> GetArkadeAddressAsync(CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        return Task.Run(() => TryOrThrow(() => ffi.ArkadeOffchainAddress()), cancellationToken);
     }
 
     /// <summary>
@@ -398,18 +462,17 @@ public sealed class Client : IDisposable
     /// </summary>
     /// <param name="swapId">UUID of a swap whose backend state is at least <see cref="SwapStatus.ServerFunded"/>.</param>
     /// <param name="destination">Arkade address (`tark1…`) to receive the BTC.</param>
-    /// <param name="config">
-    /// Arkade-side configuration. The mnemonic here is the user's Arkade
-    /// identity (BIP-85 derivation) — distinct from the lendaswap signing
-    /// mnemonic the client was constructed with. They MUST match the
+    /// <remarks>
+    /// Requires the client to have been built via
+    /// <see cref="Client(string, string, ArkadeConfig)"/>. The Arkade
+    /// identity mnemonic on the <c>ArkadeConfig</c> MUST match the
     /// mnemonic used to derive the receive address passed to
-    /// <see cref="CreateSwapAsync"/>, otherwise the VHTLC's receiver key
-    /// won't match the claim signer.
-    /// </param>
+    /// <see cref="CreateSwapAsync"/>, otherwise the VHTLC's receiver
+    /// key won't match the claim signer.
+    /// </remarks>
     public Task<ClaimReceipt> ClaimAsync(
         string swapId,
         string destination,
-        ArkadeConfig config,
         CancellationToken cancellationToken = default)
     {
         if (!_hasMnemonic)
@@ -419,7 +482,7 @@ public sealed class Client : IDisposable
         }
         var ffi = _ffi;
         return Task.Run(
-            () => TryOrThrow(() => ClaimReceipt.FromFfi(ffi.Claim(swapId, destination, config))),
+            () => TryOrThrow(() => ClaimReceipt.FromFfi(ffi.Claim(swapId, destination))),
             cancellationToken);
     }
 }
