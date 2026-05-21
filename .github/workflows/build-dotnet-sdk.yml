@@ -30,7 +30,7 @@ name: Build .NET SDK NuGet
 
 on:
   push:
-    branches: [main]
+    branches: [ main ]
     paths:
       - dotnet-sdk/**
       - rust-sdk/**
@@ -294,7 +294,7 @@ jobs:
       # the published PackageId (`Satora.Sdk`, set in the csproj) must
       # match that prefix.
       - name: Push to nuget.org
-        if: github.event_name == 'workflow_dispatch' && inputs.publish_nuget_org
+        if: github.event_name == 'push' || github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.publish)
         working-directory: dotnet-sdk
         run: |
           dotnet nuget push dist/*.nupkg \
