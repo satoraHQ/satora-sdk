@@ -278,6 +278,7 @@ async fn create_evm_to_arkade_swap_posts_high_level_request() {
             QuoteAmount::Source(100_000_000),
             Address::Arkade("ark1qtarget".to_string()),
             true,
+            None,
         )
         .await
         .expect("create_evm_to_arkade_swap succeeds");
@@ -384,6 +385,7 @@ async fn create_swap_dispatcher_routes_to_evm_to_arkade() {
             TokenId::Btc,
             QuoteAmount::Source(100_000_000),
             Some(Address::Arkade("ark1qtarget".to_string())),
+            None,
         )
         .await
         .expect("dispatcher routes to evm_to_arkade");
@@ -405,6 +407,7 @@ async fn create_swap_rejects_unsupported_direction() {
             TokenId::UsdcPolygon,
             QuoteAmount::Source(100_000),
             Some(Address::Evm("0xclient".to_string())),
+            None,
         )
         .await
         .expect_err("unsupported direction must error");

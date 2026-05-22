@@ -147,6 +147,10 @@ pub struct CreateEvmToArkadeSwapRequest {
     pub bridge_source_token_address: Option<String>,
     /// Optional referral code.
     pub referral_code: Option<String>,
+    /// Optional per-swap fee surcharge in basis points
+    /// (0..=`max_extra_fee_bps` configured on the matching developer key).
+    /// When `None`, the key's `default_extra_fee_bps` applies server-side.
+    pub extra_fees_bps: Option<u16>,
 }
 
 impl CreateEvmToArkadeSwapRequest {
@@ -169,6 +173,7 @@ impl CreateEvmToArkadeSwapRequest {
         amount: QuoteAmount,
         gasless: bool,
         referral_code: Option<String>,
+        extra_fees_bps: Option<u16>,
     ) -> Self {
         Self {
             target_address: target_address.into(),
@@ -183,6 +188,7 @@ impl CreateEvmToArkadeSwapRequest {
             bridge_source_chain: None,
             bridge_source_token_address: None,
             referral_code,
+            extra_fees_bps,
         }
     }
 }

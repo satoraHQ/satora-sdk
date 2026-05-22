@@ -118,6 +118,14 @@ impl Client {
         ClientBuilder::default()
     }
 
+    /// Attach (or replace) the referral code attached to every
+    /// swap/quote originating from this client. Pass `None` (or an
+    /// empty string) to clear it. Useful after [`Self::new`], which
+    /// doesn't go through the builder.
+    pub fn set_referral_code(&mut self, code: Option<String>) {
+        self.referral_code = code.filter(|s| !s.is_empty());
+    }
+
     /// Internal dispatch chokepoint for every endpoint described by
     /// [`Endpoint`]. Builds the URL, attaches the payload (query / body /
     /// none), sends, maps non-2xx responses to [`Error::Api`], and decodes
@@ -181,6 +189,7 @@ impl Client {
         target: TokenId,
         amount: QuoteAmount,
         receive_to: Option<Address>,
+        extra_fees_bps: Option<u16>,
     ) -> Result<Swap> {
         // Resolve `None` receive_to to the SDK's internal Arkade wallet.
         let receive_to = match receive_to {
@@ -205,7 +214,7 @@ impl Client {
             // Dispatcher defaults to non-gasless. Callers who need gasless
             // relay invoke `create_evm_to_arkade_swap` directly.
             return self
-                .create_evm_to_arkade_swap(source, amount, receive_to, false)
+                .create_evm_to_arkade_swap(source, amount, receive_to, false, extra_fees_bps)
                 .await;
         }
 
@@ -255,6 +264,7 @@ impl Client {
         amount: QuoteAmount,
         receive_to: Address,
         gasless: bool,
+        extra_fees_bps: Option<u16>,
     ) -> Result<Swap> {
         let source_chain = source.chain().ok_or_else(|| {
             Error::InvalidSwap(format!(
@@ -314,6 +324,7 @@ impl Client {
                 amount.clone(),
                 gasless,
                 self.referral_code.clone(),
+                extra_fees_bps,
             );
             match self.send(req).await {
                 Ok(response) => {
