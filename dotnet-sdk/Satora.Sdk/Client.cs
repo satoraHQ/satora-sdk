@@ -165,12 +165,18 @@ public sealed class Client : IDisposable
     /// and <see cref="GetQuoteAsync"/>. Calls that require a signer (e.g.
     /// <see cref="CreateSwapAsync"/>) throw if invoked from here.
     /// </summary>
-    public Client(string baseUrl)
+    /// <param name="baseUrl">Satora backend base URL.</param>
+    /// <param name="referralCode">
+    /// Optional referral code attached to every swap/quote originated
+    /// through this client. Set it once here instead of repeating it
+    /// per-call. Empty string is treated as null.
+    /// </param>
+    public Client(string baseUrl, string? referralCode = null)
     {
         // uniffi-bindgen-cs maps the first `#[uniffi::constructor]` to
         // a normal C# `new T(...)`; secondary constructors become static
         // factories (`NewSigning` below).
-        _ffi = TryOrThrow(() => new Ffi.SatoraClient(baseUrl));
+        _ffi = TryOrThrow(() => new Ffi.SatoraClient(baseUrl, referralCode));
         _hasMnemonic = false;
     }
 
@@ -180,16 +186,22 @@ public sealed class Client : IDisposable
     /// Held in memory for the lifetime of this instance — callers
     /// concerned about exposure should keep the client short-lived.
     ///
-    /// Use <see cref="Client(string, string, ArkadeConfig)"/> when you
-    /// also need the Arkade-side methods (<see cref="ClaimAsync"/>,
-    /// <see cref="GetArkadeBalanceSatsAsync"/>,
+    /// Use <see cref="Client(string, string, ArkadeConfig, string?)"/>
+    /// when you also need the Arkade-side methods
+    /// (<see cref="ClaimAsync"/>, <see cref="GetArkadeBalanceSatsAsync"/>,
     /// <see cref="SettleArkadeAsync"/>,
     /// <see cref="GetArkadeAddressAsync"/>, and
     /// <see cref="CreateSwapAsync"/> with no <c>receiveTo</c>).
     /// </summary>
-    public Client(string baseUrl, string mnemonic)
+    /// <param name="baseUrl">Satora backend base URL.</param>
+    /// <param name="mnemonic">BIP-39 signing mnemonic.</param>
+    /// <param name="referralCode">
+    /// Optional referral code attached to every swap/quote originated
+    /// through this client.
+    /// </param>
+    public Client(string baseUrl, string mnemonic, string? referralCode = null)
     {
-        _ffi = TryOrThrow(() => Ffi.SatoraClient.NewSigning(baseUrl, mnemonic));
+        _ffi = TryOrThrow(() => Ffi.SatoraClient.NewSigning(baseUrl, mnemonic, referralCode));
         _hasMnemonic = true;
     }
 
@@ -201,9 +213,18 @@ public sealed class Client : IDisposable
     /// <param name="baseUrl">Satora backend base URL.</param>
     /// <param name="mnemonic">BIP-39 signing mnemonic.</param>
     /// <param name="arkadeConfig">gRPC endpoint, esplora URL, identity mnemonic, network.</param>
-    public Client(string baseUrl, string mnemonic, ArkadeConfig arkadeConfig)
+    /// <param name="referralCode">
+    /// Optional referral code attached to every swap/quote originated
+    /// through this client.
+    /// </param>
+    public Client(
+        string baseUrl,
+        string mnemonic,
+        ArkadeConfig arkadeConfig,
+        string? referralCode = null)
     {
-        _ffi = TryOrThrow(() => Ffi.SatoraClient.NewWithArkade(baseUrl, mnemonic, arkadeConfig));
+        _ffi = TryOrThrow(() => Ffi.SatoraClient.NewWithArkade(
+            baseUrl, mnemonic, arkadeConfig, referralCode));
         _hasMnemonic = true;
     }
 
@@ -293,6 +314,12 @@ public sealed class Client : IDisposable
     /// HTLC via a Permit2-signed userOp. When <c>false</c>, funding the
     /// HTLC is the caller's responsibility (out-of-band calldata fetch).
     /// </param>
+    /// <param name="extraFeesBps">
+    /// Optional per-swap fee surcharge in basis points, bounded by the
+    /// <c>max_extra_fee_bps</c> cap on the dev key matched by the
+    /// client's referral code. Pass <c>null</c> to fall back to the
+    /// key's configured default.
+    /// </param>
     public Task<SwapDetails> CreateSwapAsync(
         ChainId sourceChain,
         TokenId sourceToken,
@@ -301,6 +328,7 @@ public sealed class Client : IDisposable
         QuoteAmount amount,
         Address? receiveTo,
         bool gasless,
+        ushort? extraFeesBps = null,
         CancellationToken cancellationToken = default)
     {
         if (!_hasMnemonic)
@@ -317,7 +345,8 @@ public sealed class Client : IDisposable
                 targetToken,
                 amount,
                 receiveTo,
-                gasless))),
+                gasless,
+                extraFeesBps))),
             cancellationToken);
     }
 

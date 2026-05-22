@@ -99,9 +99,17 @@ impl SatoraClient {
     /// [`Self::quote`]; any signer-requiring method (`create_swap`,
     /// `fund_swap_gasless`, `claim`) errors with `InvalidSigner` when
     /// invoked through a non-signing client.
+    ///
+    /// `referral_code` (optional) is attached to every swap/quote
+    /// originated through this client — set it once here instead of
+    /// repeating it per-call.
     #[uniffi::constructor]
-    pub fn new(base_url: String) -> Result<std::sync::Arc<Self>, SdkError> {
-        let inner = Client::new(&base_url)?;
+    pub fn new(
+        base_url: String,
+        referral_code: Option<String>,
+    ) -> Result<std::sync::Arc<Self>, SdkError> {
+        let mut inner = Client::new(&base_url)?;
+        inner.set_referral_code(referral_code);
         Ok(std::sync::Arc::new(Self { inner }))
     }
 
@@ -110,15 +118,20 @@ impl SatoraClient {
     /// [`Self::new_with_arkade`] when you need the Arkade-side methods
     /// too (claim, balance, settle, offchain_address) — those error
     /// without an arkade_config.
+    ///
+    /// `referral_code` (optional) is attached to every swap/quote
+    /// originated through this client.
     #[uniffi::constructor]
     pub fn new_signing(
         base_url: String,
         mnemonic: String,
+        referral_code: Option<String>,
     ) -> Result<std::sync::Arc<Self>, SdkError> {
-        let inner = Client::builder()
-            .base_url(&base_url)
-            .mnemonic(&mnemonic)
-            .build()?;
+        let mut builder = Client::builder().base_url(&base_url).mnemonic(&mnemonic);
+        if let Some(code) = referral_code {
+            builder = builder.referral_code(code);
+        }
+        let inner = builder.build()?;
         Ok(std::sync::Arc::new(Self { inner }))
     }
 
@@ -126,17 +139,24 @@ impl SatoraClient {
     /// method (`claim`, `arkade_balance_sats`, `arkade_settle`,
     /// `arkade_offchain_address`, and `create_swap` with
     /// `receive_to = None`).
+    ///
+    /// `referral_code` (optional) is attached to every swap/quote
+    /// originated through this client.
     #[uniffi::constructor]
     pub fn new_with_arkade(
         base_url: String,
         mnemonic: String,
         arkade_config: ArkadeConfig,
+        referral_code: Option<String>,
     ) -> Result<std::sync::Arc<Self>, SdkError> {
-        let inner = Client::builder()
+        let mut builder = Client::builder()
             .base_url(&base_url)
             .mnemonic(&mnemonic)
-            .arkade_config(arkade_config.into())
-            .build()?;
+            .arkade_config(arkade_config.into());
+        if let Some(code) = referral_code {
+            builder = builder.referral_code(code);
+        }
+        let inner = builder.build()?;
         Ok(std::sync::Arc::new(Self { inner }))
     }
 
@@ -509,6 +529,10 @@ impl SatoraClient {
         // `new_with_arkade`). `Some(addr)` => use that address directly.
         receive_to: Option<Address>,
         gasless: bool,
+        // Optional per-swap fee surcharge in basis points
+        // (0..=max_extra_fee_bps configured on the matching dev key).
+        // `None` => the key's configured default applies server-side.
+        extra_fees_bps: Option<u16>,
     ) -> Result<Swap, SdkError> {
         // Direction-validation is the SDK's job — Chain here is only
         // useful as a sanity check we route correctly downstream.
@@ -529,7 +553,13 @@ impl SatoraClient {
             };
             let swap = self
                 .inner
-                .create_evm_to_arkade_swap(source_token.into(), amount.into(), resolved, gasless)
+                .create_evm_to_arkade_swap(
+                    source_token.into(),
+                    amount.into(),
+                    resolved,
+                    gasless,
+                    extra_fees_bps,
+                )
                 .await?;
             Ok(swap.into())
         })

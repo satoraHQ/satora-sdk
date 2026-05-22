@@ -789,15 +789,15 @@ static class _UniFFILib {
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern IntPtr uniffi_satora_sdk_ffi_fn_constructor_satoraclient_new(RustBuffer @baseUrl,ref UniffiRustCallStatus _uniffi_out_err
+    public static extern IntPtr uniffi_satora_sdk_ffi_fn_constructor_satoraclient_new(RustBuffer @baseUrl,RustBuffer @referralCode,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern IntPtr uniffi_satora_sdk_ffi_fn_constructor_satoraclient_new_signing(RustBuffer @baseUrl,RustBuffer @mnemonic,ref UniffiRustCallStatus _uniffi_out_err
+    public static extern IntPtr uniffi_satora_sdk_ffi_fn_constructor_satoraclient_new_signing(RustBuffer @baseUrl,RustBuffer @mnemonic,RustBuffer @referralCode,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern IntPtr uniffi_satora_sdk_ffi_fn_constructor_satoraclient_new_with_arkade(RustBuffer @baseUrl,RustBuffer @mnemonic,RustBuffer @arkadeConfig,ref UniffiRustCallStatus _uniffi_out_err
+    public static extern IntPtr uniffi_satora_sdk_ffi_fn_constructor_satoraclient_new_with_arkade(RustBuffer @baseUrl,RustBuffer @mnemonic,RustBuffer @arkadeConfig,RustBuffer @referralCode,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -817,7 +817,7 @@ static class _UniFFILib {
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_create_swap(IntPtr @ptr,RustBuffer @sourceChain,RustBuffer @sourceToken,RustBuffer @targetChain,RustBuffer @targetToken,RustBuffer @amount,RustBuffer @receiveTo,sbyte @gasless,ref UniffiRustCallStatus _uniffi_out_err
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_create_swap(IntPtr @ptr,RustBuffer @sourceChain,RustBuffer @sourceToken,RustBuffer @targetChain,RustBuffer @targetToken,RustBuffer @amount,RustBuffer @receiveTo,sbyte @gasless,RustBuffer @extraFeesBps,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -1164,8 +1164,8 @@ static class _UniFFILib {
         }
         {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_swap();
-            if (checksum != 30260) {
-                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_swap` checksum `30260`, library returned `{checksum}`");
+            if (checksum != 25062) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_swap` checksum `25062`, library returned `{checksum}`");
             }
         }
         {
@@ -1206,20 +1206,20 @@ static class _UniFFILib {
         }
         {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_constructor_satoraclient_new();
-            if (checksum != 31930) {
-                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_constructor_satoraclient_new` checksum `31930`, library returned `{checksum}`");
+            if (checksum != 40429) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_constructor_satoraclient_new` checksum `40429`, library returned `{checksum}`");
             }
         }
         {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_constructor_satoraclient_new_signing();
-            if (checksum != 3459) {
-                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_constructor_satoraclient_new_signing` checksum `3459`, library returned `{checksum}`");
+            if (checksum != 61184) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_constructor_satoraclient_new_signing` checksum `61184`, library returned `{checksum}`");
             }
         }
         {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_constructor_satoraclient_new_with_arkade();
-            if (checksum != 36509) {
-                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_constructor_satoraclient_new_with_arkade` checksum `36509`, library returned `{checksum}`");
+            if (checksum != 29393) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_constructor_satoraclient_new_with_arkade` checksum `29393`, library returned `{checksum}`");
             }
         }
     }
@@ -1229,6 +1229,32 @@ static class _UniFFILib {
 
 #pragma warning disable 8625
 
+
+
+
+class FfiConverterUInt16: FfiConverter<ushort, ushort> {
+    public static FfiConverterUInt16 INSTANCE = new FfiConverterUInt16();
+
+    public override ushort Lift(ushort value) {
+        return value;
+    }
+
+    public override ushort Read(BigEndianStream stream) {
+        return stream.ReadUShort();
+    }
+
+    public override ushort Lower(ushort value) {
+        return value;
+    }
+
+    public override int AllocationSize(ushort value) {
+        return 2;
+    }
+
+    public override void Write(ushort value, BigEndianStream stream) {
+        stream.WriteUShort(value);
+    }
+}
 
 
 
@@ -1416,7 +1442,7 @@ public interface ISatoraClient {
     /// expose a persistent storage backend yet.
     /// </summary>
     /// <exception cref="SdkException"></exception>
-    Swap CreateSwap(ChainId @sourceChain, TokenId @sourceToken, ChainId @targetChain, TokenId @targetToken, QuoteAmount @amount, Address? @receiveTo, bool @gasless);
+    Swap CreateSwap(ChainId @sourceChain, TokenId @sourceToken, ChainId @targetChain, TokenId @targetToken, QuoteAmount @amount, Address? @receiveTo, bool @gasless, ushort? @extraFeesBps);
     /// <summary>
     /// Submit the gasless ERC-4337 + EIP-7702 funding userOp for a
     /// previously-created swap. The depositor EOA must already hold
@@ -1506,11 +1532,15 @@ public class SatoraClient : ISatoraClient, IDisposable {
     /// [`Self::quote`]; any signer-requiring method (`create_swap`,
     /// `fund_swap_gasless`, `claim`) errors with `InvalidSigner` when
     /// invoked through a non-signing client.
+    ///
+    /// `referral_code` (optional) is attached to every swap/quote
+    /// originated through this client — set it once here instead of
+    /// repeating it per-call.
     /// </summary>
-    public SatoraClient(string @baseUrl) :
+    public SatoraClient(string @baseUrl, string? @referralCode) :
         this(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
-    _UniFFILib.uniffi_satora_sdk_ffi_fn_constructor_satoraclient_new(FfiConverterString.INSTANCE.Lower(@baseUrl), ref _status)
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_constructor_satoraclient_new(FfiConverterString.INSTANCE.Lower(@baseUrl), FfiConverterOptionalString.INSTANCE.Lower(@referralCode), ref _status)
 )) {}
 
     protected void FreeRustArcPtr() {
@@ -1663,10 +1693,10 @@ public class SatoraClient : ISatoraClient, IDisposable {
     /// expose a persistent storage backend yet.
     /// </summary>
     /// <exception cref="SdkException"></exception>
-    public Swap CreateSwap(ChainId @sourceChain, TokenId @sourceToken, ChainId @targetChain, TokenId @targetToken, QuoteAmount @amount, Address? @receiveTo, bool @gasless) {
+    public Swap CreateSwap(ChainId @sourceChain, TokenId @sourceToken, ChainId @targetChain, TokenId @targetToken, QuoteAmount @amount, Address? @receiveTo, bool @gasless, ushort? @extraFeesBps) {
         return CallWithPointer(thisPtr => FfiConverterTypeSwap.INSTANCE.Lift(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
-    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_create_swap(thisPtr, FfiConverterTypeChainId.INSTANCE.Lower(@sourceChain), FfiConverterTypeTokenId.INSTANCE.Lower(@sourceToken), FfiConverterTypeChainId.INSTANCE.Lower(@targetChain), FfiConverterTypeTokenId.INSTANCE.Lower(@targetToken), FfiConverterTypeQuoteAmount.INSTANCE.Lower(@amount), FfiConverterOptionalTypeAddress.INSTANCE.Lower(@receiveTo), FfiConverterBoolean.INSTANCE.Lower(@gasless), ref _status)
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_create_swap(thisPtr, FfiConverterTypeChainId.INSTANCE.Lower(@sourceChain), FfiConverterTypeTokenId.INSTANCE.Lower(@sourceToken), FfiConverterTypeChainId.INSTANCE.Lower(@targetChain), FfiConverterTypeTokenId.INSTANCE.Lower(@targetToken), FfiConverterTypeQuoteAmount.INSTANCE.Lower(@amount), FfiConverterOptionalTypeAddress.INSTANCE.Lower(@receiveTo), FfiConverterBoolean.INSTANCE.Lower(@gasless), FfiConverterOptionalUInt16.INSTANCE.Lower(@extraFeesBps), ref _status)
 )));
     }
     
@@ -1781,12 +1811,15 @@ public class SatoraClient : ISatoraClient, IDisposable {
     /// [`Self::new_with_arkade`] when you need the Arkade-side methods
     /// too (claim, balance, settle, offchain_address) — those error
     /// without an arkade_config.
+    ///
+    /// `referral_code` (optional) is attached to every swap/quote
+    /// originated through this client.
     /// </summary>
     /// <exception cref="SdkException"></exception>
-    public static SatoraClient NewSigning(string @baseUrl, string @mnemonic) {
+    public static SatoraClient NewSigning(string @baseUrl, string @mnemonic, string? @referralCode) {
         return new SatoraClient(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
-    _UniFFILib.uniffi_satora_sdk_ffi_fn_constructor_satoraclient_new_signing(FfiConverterString.INSTANCE.Lower(@baseUrl), FfiConverterString.INSTANCE.Lower(@mnemonic), ref _status)
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_constructor_satoraclient_new_signing(FfiConverterString.INSTANCE.Lower(@baseUrl), FfiConverterString.INSTANCE.Lower(@mnemonic), FfiConverterOptionalString.INSTANCE.Lower(@referralCode), ref _status)
 ));
     }
     
@@ -1795,12 +1828,15 @@ public class SatoraClient : ISatoraClient, IDisposable {
     /// method (`claim`, `arkade_balance_sats`, `arkade_settle`,
     /// `arkade_offchain_address`, and `create_swap` with
     /// `receive_to = None`).
+    ///
+    /// `referral_code` (optional) is attached to every swap/quote
+    /// originated through this client.
     /// </summary>
     /// <exception cref="SdkException"></exception>
-    public static SatoraClient NewWithArkade(string @baseUrl, string @mnemonic, ArkadeConfig @arkadeConfig) {
+    public static SatoraClient NewWithArkade(string @baseUrl, string @mnemonic, ArkadeConfig @arkadeConfig, string? @referralCode) {
         return new SatoraClient(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
-    _UniFFILib.uniffi_satora_sdk_ffi_fn_constructor_satoraclient_new_with_arkade(FfiConverterString.INSTANCE.Lower(@baseUrl), FfiConverterString.INSTANCE.Lower(@mnemonic), FfiConverterTypeArkadeConfig.INSTANCE.Lower(@arkadeConfig), ref _status)
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_constructor_satoraclient_new_with_arkade(FfiConverterString.INSTANCE.Lower(@baseUrl), FfiConverterString.INSTANCE.Lower(@mnemonic), FfiConverterTypeArkadeConfig.INSTANCE.Lower(@arkadeConfig), FfiConverterOptionalString.INSTANCE.Lower(@referralCode), ref _status)
 ));
     }
     
@@ -3168,6 +3204,37 @@ class FfiConverterTypeTokenId : FfiConverterRustBuffer<TokenId>{
 }
 
 
+
+
+
+
+class FfiConverterOptionalUInt16: FfiConverterRustBuffer<ushort?> {
+    public static FfiConverterOptionalUInt16 INSTANCE = new FfiConverterOptionalUInt16();
+
+    public override ushort? Read(BigEndianStream stream) {
+        if (stream.ReadByte() == 0) {
+            return null;
+        }
+        return FfiConverterUInt16.INSTANCE.Read(stream);
+    }
+
+    public override int AllocationSize(ushort? value) {
+        if (value == null) {
+            return 1;
+        } else {
+            return 1 + FfiConverterUInt16.INSTANCE.AllocationSize((ushort)value);
+        }
+    }
+
+    public override void Write(ushort? value, BigEndianStream stream) {
+        if (value == null) {
+            stream.WriteByte(0);
+        } else {
+            stream.WriteByte(1);
+            FfiConverterUInt16.INSTANCE.Write((ushort)value, stream);
+        }
+    }
+}
 
 
 

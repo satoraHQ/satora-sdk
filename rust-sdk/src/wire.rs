@@ -88,6 +88,10 @@ pub(crate) struct CreateEvmToArkadeSwapRequestWire {
     pub(crate) bridge_source_token_address: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) referral_code: Option<String>,
+    // Server wire field is `extra_fees`; SDK surface uses
+    // `extra_fees_bps` so the unit is unambiguous at call sites.
+    #[serde(rename = "extra_fees", skip_serializing_if = "Option::is_none")]
+    pub(crate) extra_fees_bps: Option<u16>,
 }
 
 impl From<CreateEvmToArkadeSwapRequest> for CreateEvmToArkadeSwapRequestWire {
@@ -110,6 +114,7 @@ impl From<CreateEvmToArkadeSwapRequest> for CreateEvmToArkadeSwapRequestWire {
             bridge_source_chain: r.bridge_source_chain,
             bridge_source_token_address: r.bridge_source_token_address,
             referral_code: r.referral_code,
+            extra_fees_bps: r.extra_fees_bps,
         }
     }
 }
