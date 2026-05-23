@@ -3661,10 +3661,10 @@ export class Client {
         "No secret key found for this swap. Cannot sign collab refund.",
       );
     }
-    const evmKey = this.#getEvmSigningKey();
+    const evmKey = storedSwap.secretKey;
     const sig = signEvmDigest(evmKey, digest);
 
-    // Derive the on-chain depositor address from the EVM signing key
+    // Derive the on-chain depositor address from the per-swap EVM signing key
     const depositorAddress = deriveEvmAddress(evmKey);
 
     // POST to the server
