@@ -13,8 +13,10 @@
 //! counting as a breaking change in the public API.
 
 use crate::types::Chain;
+use crate::types::CreateArkadeToLightningSwapRequest;
 use crate::types::CreateEvmToArkadeSwapRequest;
 use crate::types::CreateLightningToArkadeSwapRequest;
+use crate::types::LightningDestination;
 use crate::types::QuoteAmount;
 use crate::types::QuoteRequest;
 use crate::types::TokenId;
@@ -141,6 +143,48 @@ impl From<CreateLightningToArkadeSwapRequest> for CreateLightningToArkadeSwapReq
             sats_receive: r.sats_receive,
             claim_pk: r.claim_pk,
             hash_lock: r.hash_lock,
+            user_id: r.user_id,
+            referral_code: r.referral_code,
+        }
+    }
+}
+
+/// Wire body for `POST /swap/arkade/lightning`. The server accepts
+/// exactly one of `lightning_invoice` / `lightning_address` / `lnurl`;
+/// the `From` impl below flattens the SDK's typed
+/// [`LightningDestination`] into the matching nullable fields.
+/// `amount_sats` is set only for the address/LNURL variants.
+#[derive(Serialize)]
+pub(crate) struct CreateArkadeToLightningSwapRequestWire {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) lightning_invoice: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) lightning_address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) lnurl: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) amount_sats: Option<u64>,
+    pub(crate) refund_pk: String,
+    pub(crate) user_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) referral_code: Option<String>,
+}
+
+impl From<CreateArkadeToLightningSwapRequest> for CreateArkadeToLightningSwapRequestWire {
+    fn from(r: CreateArkadeToLightningSwapRequest) -> Self {
+        let (lightning_invoice, lightning_address, lnurl, amount_sats) = match r.destination {
+            LightningDestination::Invoice(s) => (Some(s), None, None, None),
+            LightningDestination::Address { address, sats } => {
+                (None, Some(address), None, Some(sats))
+            }
+            LightningDestination::Lnurl { lnurl, sats } => (None, None, Some(lnurl), Some(sats)),
+        };
+        Self {
+            lightning_invoice,
+            lightning_address,
+            lnurl,
+            amount_sats,
+            refund_pk: r.refund_pk,
             user_id: r.user_id,
             referral_code: r.referral_code,
         }

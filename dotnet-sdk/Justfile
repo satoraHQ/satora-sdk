@@ -67,6 +67,8 @@ generate-bindings: build-native
         -e 's/^internal record GasOverrides (/public record GasOverrides (/' \
         -e 's/^internal record ArkadeConfig (/public record ArkadeConfig (/' \
         -e 's/^internal record ClaimReceipt (/public record ClaimReceipt (/' \
+        -e 's/^internal record ArkadeBalance (/public record ArkadeBalance (/' \
+        -e 's/^internal record LightningDestination {/public record LightningDestination {/' \
         -e 's/^internal enum BitcoinNetwork: int/public enum BitcoinNetwork: int/' \
         -e 's/^internal interface ISatoraClient {/public interface ISatoraClient {/' \
         -e 's/^internal class SatoraClient : ISatoraClient/public class SatoraClient : ISatoraClient/' \

@@ -351,15 +351,22 @@ public sealed class Client : IDisposable
     }
 
     /// <summary>
-    /// Total spendable balance of the SDK's internal Arkade wallet, in
-    /// satoshis. Hits the Arkade server's gRPC indexer. Requires the
-    /// client to have been built via
-    /// <see cref="Client(string, string, ArkadeConfig)"/>.
+    /// Offchain VTXO balance of the SDK's internal Arkade wallet,
+    /// broken into the three buckets ark-client distinguishes — see
+    /// <see cref="ArkadeBalance"/>. Hits the Arkade server's gRPC
+    /// indexer. Requires the client to have been built via
+    /// <see cref="Client(string, string, ArkadeConfig, string?)"/>.
     /// </summary>
-    public Task<ulong> GetArkadeBalanceSatsAsync(CancellationToken cancellationToken = default)
+    /// <remarks>
+    /// For "what can I send right now?" use
+    /// <c>balance.confirmedSats</c>. <c>total_sats()</c>
+    /// (confirmed + pre-confirmed + recoverable) over-reports
+    /// spendable funds.
+    /// </remarks>
+    public Task<ArkadeBalance> GetArkadeBalanceAsync(CancellationToken cancellationToken = default)
     {
         var ffi = _ffi;
-        return Task.Run(() => TryOrThrow(() => ffi.ArkadeBalanceSats()), cancellationToken);
+        return Task.Run(() => TryOrThrow(() => ffi.ArkadeBalance()), cancellationToken);
     }
 
     /// <summary>
@@ -384,6 +391,57 @@ public sealed class Client : IDisposable
     {
         var ffi = _ffi;
         return Task.Run(() => TryOrThrow(() => ffi.ArkadeOffchainAddress()), cancellationToken);
+    }
+
+    /// <summary>
+    /// Send <paramref name="amountSats"/> from the SDK's internal
+    /// Arkade wallet to <paramref name="destination"/> (any
+    /// <c>tark1q…</c> Arkade address) via an offchain Ark transaction.
+    /// Returns the Ark txid as <c>0x…</c> hex.
+    ///
+    /// Primary use case: funding the Arkade VHTLC returned by
+    /// <see cref="CreateArkadeToLightningSwapAsync"/>.
+    /// </summary>
+    public Task<string> SendArkadeAsync(
+        string destination,
+        ulong amountSats,
+        CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        return Task.Run(
+            () => TryOrThrow(() => ffi.ArkadeSend(destination, amountSats)),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Create an Arkade → Lightning swap. The user funds the returned
+    /// Arkade VHTLC address (in <c>swap.Funding</c> as
+    /// <c>SwapFunding.ArkadeAddress</c>); the server pays the
+    /// Lightning destination via Boltz and claims the VHTLC with the
+    /// resulting preimage. <b>No client-side claim path</b> —
+    /// <see cref="ClaimAsync"/> doesn't apply for this direction.
+    /// </summary>
+    /// <param name="destination">
+    /// Lightning destination. Use <c>LightningDestination.Invoice</c>
+    /// for a BOLT11 (amount embedded), or
+    /// <c>LightningDestination.Address</c> /
+    /// <c>LightningDestination.Lnurl</c> with an explicit <c>sats</c>
+    /// — the server resolves LNURL-pay itself, no client-side LNURL
+    /// resolver needed.
+    /// </param>
+    public Task<SwapDetails> CreateArkadeToLightningSwapAsync(
+        LightningDestination destination,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_hasMnemonic)
+        {
+            throw new InvalidOperationException(
+                "CreateArkadeToLightningSwapAsync requires a mnemonic — construct the client with `new Client(baseUrl, mnemonic, ...)`.");
+        }
+        var ffi = _ffi;
+        return Task.Run(
+            () => TryOrThrow(() => SwapDetails.FromFfi(ffi.CreateArkadeToLightningSwap(destination))),
+            cancellationToken);
     }
 
     /// <summary>

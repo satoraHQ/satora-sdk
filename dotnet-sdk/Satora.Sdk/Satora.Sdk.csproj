@@ -51,6 +51,8 @@
     <Using Include="uniffi.satora_sdk_ffi.ArkadeConfig" Alias="ArkadeConfig" />
     <Using Include="uniffi.satora_sdk_ffi.BitcoinNetwork" Alias="BitcoinNetwork" />
     <Using Include="uniffi.satora_sdk_ffi.ClaimReceipt" Alias="ClaimReceiptRaw" />
+    <Using Include="uniffi.satora_sdk_ffi.LightningDestination" Alias="LightningDestination" />
+    <Using Include="uniffi.satora_sdk_ffi.ArkadeBalance" Alias="ArkadeBalance" />
   </ItemGroup>
 
   <!-- Native libraries: at pack time these go under runtimes/{rid}/native

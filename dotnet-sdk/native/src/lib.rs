@@ -26,6 +26,7 @@ use lendaswap_sdk::arkade::ArkadeConfig as SdkArkadeConfig;
 use lendaswap_sdk::types::Address as SdkAddress;
 use lendaswap_sdk::types::Chain as SdkChain;
 use lendaswap_sdk::types::KnownChain as SdkKnownChain;
+use lendaswap_sdk::types::LightningDestination as SdkLightningDestination;
 use lendaswap_sdk::types::QuoteAmount as SdkQuoteAmount;
 use lendaswap_sdk::types::QuoteRequest;
 use lendaswap_sdk::types::SwapStatus as SdkSwapStatus;
@@ -422,9 +423,17 @@ impl From<SdkSwapStatus> for SwapStatus {
 /// invoice over their Lightning wallet, then claims the Arkade VHTLC.
 #[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SwapFunding {
-    Gasless { deposit_address: String },
+    Gasless {
+        deposit_address: String,
+    },
     UserSubmitted,
-    Bolt11Invoice { invoice: String },
+    Bolt11Invoice {
+        invoice: String,
+    },
+    /// Arkade → Lightning: user funds this Arkade VHTLC address.
+    ArkadeAddress {
+        address: String,
+    },
 }
 
 impl From<SdkSwapFunding> for SwapFunding {
@@ -433,6 +442,7 @@ impl From<SdkSwapFunding> for SwapFunding {
             SdkSwapFunding::Gasless { deposit_address } => Self::Gasless { deposit_address },
             SdkSwapFunding::UserSubmitted { .. } => Self::UserSubmitted,
             SdkSwapFunding::Bolt11Invoice { invoice } => Self::Bolt11Invoice { invoice },
+            SdkSwapFunding::ArkadeAddress { address } => Self::ArkadeAddress { address },
             // `SdkSwapFunding` is `#[non_exhaustive]` upstream. Mapping
             // an unknown variant to `UserSubmitted` is wrong, but the
             // closed-set today makes the arm unreachable; keep the
@@ -592,6 +602,57 @@ impl SatoraClient {
                     )
                     .await?
             };
+            Ok(swap.into())
+        })
+    }
+}
+
+// ─── Arkade → Lightning ───────────────────────────────────────────────
+
+/// Lightning destination for an Arkade → Lightning swap. The server
+/// resolves `Address` / `Lnurl` via LNURL-pay using `sats`; `Invoice`
+/// carries its amount in the BOLT11 payload.
+#[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum LightningDestination {
+    /// BOLT11 invoice. Server pays this exact invoice.
+    Invoice { invoice: String },
+    /// Lightning address (`user@host`). Server resolves via LUD-16.
+    Address { address: String, sats: u64 },
+    /// Raw LNURL (`lnurl1…`). Server bech32-decodes + resolves via
+    /// LNURL-pay.
+    Lnurl { lnurl: String, sats: u64 },
+}
+
+impl From<LightningDestination> for SdkLightningDestination {
+    fn from(d: LightningDestination) -> Self {
+        match d {
+            LightningDestination::Invoice { invoice } => SdkLightningDestination::Invoice(invoice),
+            LightningDestination::Address { address, sats } => {
+                SdkLightningDestination::Address { address, sats }
+            }
+            LightningDestination::Lnurl { lnurl, sats } => {
+                SdkLightningDestination::Lnurl { lnurl, sats }
+            }
+        }
+    }
+}
+
+#[uniffi::export]
+impl SatoraClient {
+    /// Create an Arkade → Lightning swap. The server returns the
+    /// Arkade VHTLC address the user must fund (in `swap.funding` as
+    /// `SwapFunding::ArkadeAddress`); the server (via Boltz) then pays
+    /// the Lightning destination and claims the VHTLC. No client-side
+    /// claim — see the underlying SDK doc.
+    pub fn create_arkade_to_lightning_swap(
+        &self,
+        destination: LightningDestination,
+    ) -> Result<Swap, SdkError> {
+        runtime().block_on(async {
+            let swap = self
+                .inner
+                .create_arkade_to_lightning_swap(destination.into())
+                .await?;
             Ok(swap.into())
         })
     }
@@ -839,6 +900,20 @@ pub struct ClaimReceipt {
     pub claim_amount_sats: u64,
 }
 
+/// Offchain VTXO balance broken into the three buckets `ark-client`
+/// distinguishes. Mirrors `lendaswap_sdk::arkade::ArkadeBalance`.
+///
+/// The number callers normally want for "what can I spend right now?"
+/// is `confirmed_sats` — coin selection in `arkade_send` only draws
+/// from that bucket, so basing UX on `confirmed + pre_confirmed +
+/// recoverable` lies about what the wallet can actually do.
+#[derive(uniffi::Record, Clone, Debug, Default, PartialEq, Eq)]
+pub struct ArkadeBalance {
+    pub confirmed_sats: u64,
+    pub pre_confirmed_sats: u64,
+    pub recoverable_sats: u64,
+}
+
 #[uniffi::export]
 impl SatoraClient {
     /// Redeem the Arkade VHTLC for an EVM→Arkade swap that has
@@ -856,10 +931,18 @@ impl SatoraClient {
         })
     }
 
-    /// Total spendable balance of the SDK's internal Arkade wallet, in
-    /// sats. Hits the Arkade server's gRPC indexer.
-    pub fn arkade_balance_sats(&self) -> Result<u64, SdkError> {
-        runtime().block_on(async { self.inner.arkade_balance_sats().await.map_err(Into::into) })
+    /// Offchain VTXO balance of the SDK's internal Arkade wallet,
+    /// broken into the three buckets ark-client distinguishes — see
+    /// [`ArkadeBalance`]. Hits the Arkade server's gRPC indexer.
+    pub fn arkade_balance(&self) -> Result<ArkadeBalance, SdkError> {
+        runtime().block_on(async {
+            let b = self.inner.arkade_balance().await?;
+            Ok(ArkadeBalance {
+                confirmed_sats: b.confirmed_sats,
+                pre_confirmed_sats: b.pre_confirmed_sats,
+                recoverable_sats: b.recoverable_sats,
+            })
+        })
     }
 
     /// Roll over all spendable VTXOs + boarding outputs into the next
@@ -882,6 +965,19 @@ impl SatoraClient {
                 .arkade_offchain_address()
                 .await
                 .map_err(Into::into)
+        })
+    }
+
+    /// Send `amount_sats` from the SDK's internal Arkade wallet to
+    /// `destination` (any `tark1q…` Arkade address) via an offchain
+    /// Ark transaction. Returns the Ark txid as `0x…` hex.
+    ///
+    /// Primary use case: funding the Arkade VHTLC returned by
+    /// [`Self::create_arkade_to_lightning_swap`].
+    pub fn arkade_send(&self, destination: String, amount_sats: u64) -> Result<String, SdkError> {
+        runtime().block_on(async {
+            let txid = self.inner.arkade_send(&destination, amount_sats).await?;
+            Ok(format!("{:#x}", txid))
         })
     }
 }
