@@ -79,12 +79,19 @@ pub struct Client {
     /// Set via [`ClientBuilder::referral_code`].
     pub(crate) referral_code: Option<String>,
     /// Optional Arkade-side config. Required by every method that talks
-    /// to arkd (`claim`, `arkade_balance_sats`, `arkade_settle`,
+    /// to arkd (`claim`, `arkade_balance`, `arkade_settle`,
     /// `arkade_offchain_address`, and `create_swap` with `receive_to =
-    /// None`). Set once on the builder so per-call sites don't have to
-    /// repeat it; the wallet itself is re-derived from this config on
-    /// every call (cheap, since it's just BIP-85 + connect).
+    /// None`).
     pub(crate) arkade_config: Option<crate::arkade::ArkadeConfig>,
+    /// Cached, lazily-initialised Arkade wallet. Held on the Client so
+    /// stateful bits — saved boarding-output descriptors (`new_boarding_output`
+    /// writes to a per-wallet in-memory DB), the BDK chain index, and
+    /// the gRPC connection — survive across Client method calls.
+    /// Without this, a `boarding_address` call and a follow-up
+    /// `settle` would each construct a fresh wallet with an empty
+    /// DB, so settle would never see the boarding output the user
+    /// just funded.
+    pub(crate) arkade_wallet: Arc<tokio::sync::OnceCell<crate::arkade::ArkadeWallet>>,
 }
 
 impl std::fmt::Debug for Client {
@@ -112,6 +119,7 @@ impl Client {
             storage: Arc::new(InMemorySwapStorage::new()),
             referral_code: None,
             arkade_config: None,
+            arkade_wallet: Arc::new(tokio::sync::OnceCell::new()),
         })
     }
 
@@ -225,8 +233,7 @@ impl Client {
                         "receive_to=None only supported when target=BTC (the SDK's internal wallet lives on Arkade)".into(),
                     ));
                 }
-                let cfg = self.arkade_config()?;
-                let wallet = crate::arkade::ArkadeWallet::connect(cfg).await?;
+                let wallet = self.arkade_wallet().await?;
                 Address::Arkade(wallet.offchain_address()?)
             }
         };
@@ -640,6 +647,18 @@ impl Client {
         ))
     }
 
+    /// Get the shared, lazily-connected [`crate::arkade::ArkadeWallet`].
+    /// First call does the gRPC handshake; subsequent calls reuse the
+    /// same wallet so its in-memory state (boarding-output descriptors,
+    /// BDK chain index) is preserved across method calls.
+    pub(crate) async fn arkade_wallet(&self) -> Result<&crate::arkade::ArkadeWallet> {
+        self.arkade_wallet
+            .get_or_try_init(|| async {
+                crate::arkade::ArkadeWallet::connect(self.arkade_config()?).await
+            })
+            .await
+    }
+
     /// Offchain VTXO balance of the internal Arkade wallet, broken
     /// into confirmed / pre-confirmed / recoverable buckets — see
     /// [`crate::arkade::ArkadeBalance`]. The headline number a caller
@@ -647,7 +666,7 @@ impl Client {
     /// via [`Self::arkade_send`]); `total_sats()` adds the other two
     /// for "are funds in flight?" checks.
     pub async fn arkade_balance(&self) -> Result<crate::arkade::ArkadeBalance> {
-        let wallet = crate::arkade::ArkadeWallet::connect(self.arkade_config()?).await?;
+        let wallet = self.arkade_wallet().await?;
         wallet.offchain_balance().await
     }
 
@@ -656,7 +675,7 @@ impl Client {
     /// expire. Returns `Ok(None)` if there's nothing to settle, or
     /// `Ok(Some(commitment_txid))` for the batch that absorbed them.
     pub async fn arkade_settle(&self) -> Result<Option<bitcoin::Txid>> {
-        let wallet = crate::arkade::ArkadeWallet::connect(self.arkade_config()?).await?;
+        let wallet = self.arkade_wallet().await?;
         wallet.settle().await
     }
 
@@ -665,7 +684,7 @@ impl Client {
     /// [`Self::create_swap`] will land, or to display a deposit address
     /// for arbitrary inbound BTC.
     pub async fn arkade_offchain_address(&self) -> Result<String> {
-        let wallet = crate::arkade::ArkadeWallet::connect(self.arkade_config()?).await?;
+        let wallet = self.arkade_wallet().await?;
         wallet.offchain_address()
     }
 
@@ -674,8 +693,19 @@ impl Client {
     /// txid. Primary use case: funding the Arkade VHTLC returned by
     /// [`Self::create_arkade_to_lightning_swap`].
     pub async fn arkade_send(&self, destination: &str, amount_sats: u64) -> Result<bitcoin::Txid> {
-        let wallet = crate::arkade::ArkadeWallet::connect(self.arkade_config()?).await?;
+        let wallet = self.arkade_wallet().await?;
         wallet.send_offchain(destination, amount_sats).await
+    }
+
+    /// On-chain Bitcoin boarding address for the internal Arkade
+    /// wallet. Funding flow: send L1 BTC here, mine a confirmation,
+    /// then call [`Self::arkade_settle`] to promote the boarding
+    /// output into a confirmed VTXO. Use this when you want to fund
+    /// the SDK's Arkade wallet from a regular Bitcoin wallet rather
+    /// than via a swap.
+    pub async fn arkade_boarding_address(&self) -> Result<String> {
+        let wallet = self.arkade_wallet().await?;
+        wallet.boarding_address()
     }
 }
 
@@ -778,6 +808,7 @@ impl ClientBuilder {
             storage,
             referral_code: self.referral_code,
             arkade_config: self.arkade_config,
+            arkade_wallet: Arc::new(tokio::sync::OnceCell::new()),
         })
     }
 }

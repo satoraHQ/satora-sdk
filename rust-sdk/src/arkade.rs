@@ -275,12 +275,43 @@ impl ArkadeWallet {
     ///
     /// Uses [`rand::rngs::OsRng`] internally — the underlying ark-rs
     /// settle path needs a CSPRNG for nonce generation.
+    ///
+    /// Boarding-output discovery in ark-client's
+    /// `fetch_commitment_transaction_inputs` uses
+    /// `blockchain().find_outpoints(addr)` — a direct esplora call,
+    /// not a BDK chain-index lookup — so no `wallet.sync()` is needed
+    /// here. The wallet's in-memory DB only needs to hold the
+    /// boarding-output *descriptor*, which is persisted by an earlier
+    /// `get_boarding_address` call on the same Client-held wallet
+    /// instance (the wallet is shared across calls via
+    /// `tokio::sync::OnceCell` — see [`crate::Client`]).
+    ///
+    /// If we later add operations that read from BDK's on-chain UTXO
+    /// set (e.g. unilateral exit), those will need to `wallet.sync()`
+    /// first.
     pub async fn settle(&self) -> Result<Option<Txid>> {
         let mut rng = rand::rngs::OsRng;
         self.client
             .settle(&mut rng)
             .await
             .map_err(|e| Error::Transport(format!("settle: {e}")))
+    }
+
+    /// On-chain Bitcoin "boarding" address for this wallet — send L1
+    /// BTC here, then call [`Self::settle`] to promote the boarding
+    /// output into a confirmed Arkade VTXO. This is the canonical
+    /// "fund my Arkade wallet from regular Bitcoin" path; no
+    /// server-mediated swap is involved.
+    ///
+    /// The address is deterministic per wallet identity (ark-client
+    /// always derives the same one for a given signer + server pair),
+    /// so it's safe to display once and reuse.
+    pub fn boarding_address(&self) -> Result<String> {
+        let address = self
+            .client
+            .get_boarding_address()
+            .map_err(|e| Error::Transport(format!("get_boarding_address: {e}")))?;
+        Ok(address.to_string())
     }
 
     /// Send `amount_sats` from this wallet to the given Arkade

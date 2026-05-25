@@ -52,7 +52,7 @@ rand = "0.8"
 # pulls a tokio runtime in transitively — the `time` feature is tiny
 # and gating it would force a feature flag onto a fundamental client
 # primitive.
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["sync", "time"] }
 
 # Arkade VHTLC claim + balance + settle. `ark-rs` for the core VHTLC
 # script + gRPC client to arkd, `ark-bdk-wallet` for the on-chain

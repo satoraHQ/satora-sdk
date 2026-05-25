@@ -414,6 +414,23 @@ public sealed class Client : IDisposable
     }
 
     /// <summary>
+    /// On-chain Bitcoin boarding address for the SDK's internal
+    /// Arkade wallet. Funding flow: send L1 BTC to the returned
+    /// address, mine a confirmation, then call
+    /// <see cref="SettleArkadeAsync"/> to promote the boarding output
+    /// into a confirmed VTXO. The address is deterministic per wallet
+    /// identity, so safe to display once and reuse.
+    /// </summary>
+    public Task<string> GetArkadeBoardingAddressAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        return Task.Run(
+            () => TryOrThrow(() => ffi.ArkadeBoardingAddress()),
+            cancellationToken);
+    }
+
+    /// <summary>
     /// Create an Arkade → Lightning swap. The user funds the returned
     /// Arkade VHTLC address (in <c>swap.Funding</c> as
     /// <c>SwapFunding.ArkadeAddress</c>); the server pays the
