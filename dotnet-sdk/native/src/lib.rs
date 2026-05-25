@@ -418,10 +418,13 @@ impl From<SdkSwapStatus> for SwapStatus {
 /// the SDK relays into the HTLC via a Permit2-signed userOp.
 /// `UserSubmitted` is the non-gasless path — caller fetches HTLC calldata
 /// out-of-band and broadcasts the funding tx themselves.
+/// `Bolt11Invoice` is the Lightning → Arkade path — caller pays the
+/// invoice over their Lightning wallet, then claims the Arkade VHTLC.
 #[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SwapFunding {
     Gasless { deposit_address: String },
     UserSubmitted,
+    Bolt11Invoice { invoice: String },
 }
 
 impl From<SdkSwapFunding> for SwapFunding {
@@ -429,6 +432,7 @@ impl From<SdkSwapFunding> for SwapFunding {
         match f {
             SdkSwapFunding::Gasless { deposit_address } => Self::Gasless { deposit_address },
             SdkSwapFunding::UserSubmitted { .. } => Self::UserSubmitted,
+            SdkSwapFunding::Bolt11Invoice { invoice } => Self::Bolt11Invoice { invoice },
             // `SdkSwapFunding` is `#[non_exhaustive]` upstream. Mapping
             // an unknown variant to `UserSubmitted` is wrong, but the
             // closed-set today makes the arm unreachable; keep the
@@ -500,13 +504,16 @@ fn token_id_from_sdk(t: SdkTokenId) -> TokenId {
 /// reads top-down.
 #[uniffi::export]
 impl SatoraClient {
-    /// Create a swap. Today the SDK only supports EVM stablecoin →
-    /// BTC on Arkade. The dispatcher in `Client::create_swap`
-    /// validates the direction and errors with `Error::InvalidSwap`
-    /// for anything else. We surface `gasless` here (the dispatcher
-    /// hard-codes it to `false`) so FFI callers can opt into the
-    /// gasless funding flow without dropping down to a direction-
-    /// specific entry point.
+    /// Create a swap. Thin forward to the Rust SDK's dispatcher
+    /// ([`lendaswap_sdk::Client::create_swap`]). Direction is resolved
+    /// from `source_chain` (Lightning vs EVM) plus the target. See the
+    /// underlying SDK doc for the supported directions today.
+    ///
+    /// `gasless` is honoured only when the routed direction is EVM →
+    /// Arkade — the Lightning rail doesn't model gasless funding (the
+    /// user just pays the Bolt11 invoice from their own wallet). The
+    /// FFI signature stays uniform so the C# surface doesn't need an
+    /// overload per direction; the inner dispatcher does the routing.
     ///
     /// State note: `create_swap` writes the per-swap `key_index` into
     /// the inner client's storage. Subsequent [`Self::fund_swap_gasless`]
@@ -532,35 +539,59 @@ impl SatoraClient {
         // Optional per-swap fee surcharge in basis points
         // (0..=max_extra_fee_bps configured on the matching dev key).
         // `None` => the key's configured default applies server-side.
+        // Currently EVM-only — ignored for the Lightning rail.
         extra_fees_bps: Option<u16>,
     ) -> Result<Swap, SdkError> {
-        // Direction-validation is the SDK's job — Chain here is only
-        // useful as a sanity check we route correctly downstream.
-        // Today only EVM-stable → Arkade-BTC is wired; the source /
-        // target chain args are accepted for API symmetry and so the
-        // FFI signature stays stable as more directions land.
-        let _ = (source_chain, target_chain, target_token);
+        // target_chain / target_token are accepted for FFI symmetry but
+        // not used for routing today (only Arkade-BTC is a valid target).
+        let _ = (target_chain, target_token);
+        // The dispatcher hard-codes `gasless = false`. To preserve the
+        // FFI's `gasless` knob we drop to the direction-specific EVM
+        // method for the EVM rail; Lightning routes through the
+        // dispatcher (which doesn't take `gasless`).
+        let sdk_source_chain = match source_chain {
+            ChainId::Polygon => SdkKnownChain::Polygon,
+            ChainId::Ethereum => SdkKnownChain::Ethereum,
+            ChainId::Arbitrum => SdkKnownChain::Arbitrum,
+            ChainId::Arkade => SdkKnownChain::Arkade,
+            ChainId::Lightning => SdkKnownChain::Lightning,
+            ChainId::Bitcoin => SdkKnownChain::Bitcoin,
+            ChainId::Other { ref wire } => {
+                return Err(SdkError::Internal {
+                    message: format!("unsupported source_chain Other({wire})"),
+                });
+            }
+        };
         runtime().block_on(async {
-            let resolved: SdkAddress = match receive_to {
-                Some(addr) => addr.into(),
-                None => {
-                    // The Rust SDK's dispatcher derives this from the
-                    // stored config; we replicate that here so we keep
-                    // exposing `gasless`.
-                    let addr = self.inner.arkade_offchain_address().await?;
-                    SdkAddress::Arkade(addr)
-                }
+            let swap = if matches!(source_chain, ChainId::Lightning) {
+                self.inner
+                    .create_swap(
+                        sdk_source_chain,
+                        source_token.into(),
+                        SdkTokenId::Btc,
+                        amount.into(),
+                        receive_to.map(Into::into),
+                        extra_fees_bps,
+                    )
+                    .await?
+            } else {
+                let resolved: SdkAddress = match receive_to {
+                    Some(addr) => addr.into(),
+                    None => {
+                        let addr = self.inner.arkade_offchain_address().await?;
+                        SdkAddress::Arkade(addr)
+                    }
+                };
+                self.inner
+                    .create_evm_to_arkade_swap(
+                        source_token.into(),
+                        amount.into(),
+                        resolved,
+                        gasless,
+                        extra_fees_bps,
+                    )
+                    .await?
             };
-            let swap = self
-                .inner
-                .create_evm_to_arkade_swap(
-                    source_token.into(),
-                    amount.into(),
-                    resolved,
-                    gasless,
-                    extra_fees_bps,
-                )
-                .await?;
             Ok(swap.into())
         })
     }

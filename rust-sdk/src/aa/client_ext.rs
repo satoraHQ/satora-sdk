@@ -279,7 +279,16 @@ impl Client {
     ) -> Result<()> {
         const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
-        let resp = self.fetch_swap_response(swap_id).await?;
+        // Gasless deposit funding is EVM-only; the LN → Arkade rail
+        // uses a Bolt11 invoice instead of an EOA deposit address.
+        let resp = match self.fetch_swap_response(swap_id).await? {
+            crate::types::GetSwapResponse::EvmToArkade(r) => r,
+            crate::types::GetSwapResponse::LightningToArkade(_) => {
+                return Err(crate::Error::InvalidSwap(format!(
+                    "wait_for_deposit_funding called on a Lightning→Arkade swap ({swap_id}) — Lightning swaps don't have an EVM deposit address",
+                )));
+            }
+        };
         let deposit_address = parse_address(&resp.client_evm_address, "client_evm_address")?;
         let token_address = parse_address(
             resp.source_token.token_id.as_wire_str(),

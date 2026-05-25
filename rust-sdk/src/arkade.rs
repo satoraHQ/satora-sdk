@@ -450,18 +450,21 @@ impl Client {
         let swap_params = signer.derive_swap_params(key_index)?;
 
         // 2. Fetch the backend's current view of the swap — `Swap` drops the VHTLC pubkeys +
-        //    locktimes we need for the script.
+        //    locktimes we need for the script. The response is direction-tagged; both EVM → Arkade
+        //    and Lightning → Arkade share the same VHTLC mechanics, so we project both into a
+        //    common `VhtlcClaimContext` and proceed.
         let resp = self.fetch_swap_response(swap_id).await?;
+        let ctx = VhtlcClaimContext::from_response(resp)?;
 
         // Sanity: SDK-derived hash_lock must match the backend's. A
         // mismatch means a different mnemonic / wrong key_index — the
         // claim would silently fail later when Permit2 verifies our
         // sig against an unexpected pubkey.
-        let backend_hash_lock = parse_hash_lock(&resp.hash_lock)?;
+        let backend_hash_lock = parse_hash_lock(&ctx.hash_lock)?;
         if backend_hash_lock != swap_params.hash_lock {
             return Err(Error::InvalidSwap(format!(
                 "hash_lock mismatch: backend has {} but signer/key_index derived a different preimage",
-                resp.hash_lock,
+                ctx.hash_lock,
             )));
         }
 
@@ -469,16 +472,16 @@ impl Client {
         //    sender / server pubkeys come from the backend; the receiver pubkey we trust comes from
         //    our local signer (matches `receiver_pk` on the response by construction, but it's
         //    safer to use the local one for signing later).
-        let vhtlc = build_vhtlc_script(&resp, &swap_params, config.network)?;
+        let vhtlc = build_vhtlc_script(&ctx, &swap_params, config.network)?;
 
         // Sanity: computed VHTLC address must match what the backend
         // told us. If not, we're rebuilding the wrong script — bail
         // before spending anything.
         let computed_address = vhtlc.address().encode();
-        if computed_address != resp.btc_vhtlc_address {
+        if computed_address != ctx.vhtlc_address {
             return Err(Error::InvalidSwap(format!(
                 "VHTLC address mismatch: computed `{computed_address}`, backend says `{}`",
-                resp.btc_vhtlc_address,
+                ctx.vhtlc_address,
             )));
         }
 
@@ -503,7 +506,7 @@ impl Client {
             .ok_or_else(|| {
                 Error::InvalidSwap(format!(
                     "no unspent VTXO at VHTLC address {} — funding not yet visible to the Arkade indexer",
-                    resp.btc_vhtlc_address,
+                    ctx.vhtlc_address,
                 ))
             })?
             .clone();
@@ -694,14 +697,61 @@ fn parse_xonly_pubkey(hex_str: &str, field: &str) -> Result<XOnlyPublicKey> {
 ///
 /// `preimage_hash` is `HASH160(preimage) = RIPEMD160(SHA256(preimage))`
 /// — distinct from the EVM HTLC's `hash_lock = SHA256(preimage)`.
+/// Fields needed to rebuild + locate the Arkade VHTLC for a claim,
+/// shared between EVM → Arkade and Lightning → Arkade. Projected from
+/// `GetSwapResponse` so the claim flow stays direction-agnostic.
+pub(crate) struct VhtlcClaimContext {
+    pub hash_lock: String,
+    pub vhtlc_address: String,
+    pub sender_pk: String,
+    pub receiver_pk: String,
+    pub arkade_server_pk: String,
+    pub vhtlc_refund_locktime: u64,
+    pub unilateral_claim_delay: u64,
+    pub unilateral_refund_delay: u64,
+    pub unilateral_refund_without_receiver_delay: u64,
+}
+
+impl VhtlcClaimContext {
+    pub(crate) fn from_response(r: crate::types::GetSwapResponse) -> Result<Self> {
+        use crate::types::GetSwapResponse;
+        Ok(match r {
+            GetSwapResponse::EvmToArkade(r) => Self {
+                hash_lock: r.hash_lock,
+                vhtlc_address: r.btc_vhtlc_address,
+                sender_pk: r.sender_pk,
+                receiver_pk: r.receiver_pk,
+                arkade_server_pk: r.arkade_server_pk,
+                vhtlc_refund_locktime: r.vhtlc_refund_locktime,
+                unilateral_claim_delay: r.unilateral_claim_delay,
+                unilateral_refund_delay: r.unilateral_refund_delay,
+                unilateral_refund_without_receiver_delay: r
+                    .unilateral_refund_without_receiver_delay,
+            },
+            GetSwapResponse::LightningToArkade(r) => Self {
+                hash_lock: r.hash_lock,
+                vhtlc_address: r.arkade_vhtlc_address,
+                sender_pk: r.sender_pk,
+                receiver_pk: r.receiver_pk,
+                arkade_server_pk: r.arkade_server_pk,
+                vhtlc_refund_locktime: r.vhtlc_refund_locktime,
+                unilateral_claim_delay: r.unilateral_claim_delay,
+                unilateral_refund_delay: r.unilateral_refund_delay,
+                unilateral_refund_without_receiver_delay: r
+                    .unilateral_refund_without_receiver_delay,
+            },
+        })
+    }
+}
+
 fn build_vhtlc_script(
-    resp: &crate::types::EvmToArkadeSwapResponse,
+    ctx: &VhtlcClaimContext,
     swap_params: &crate::signer::SwapParams,
     network: Network,
 ) -> Result<VhtlcScript> {
-    let sender = parse_xonly_pubkey(&resp.sender_pk, "sender_pk")?;
-    let receiver = parse_xonly_pubkey(&resp.receiver_pk, "receiver_pk")?;
-    let server = parse_xonly_pubkey(&resp.arkade_server_pk, "arkade_server_pk")?;
+    let sender = parse_xonly_pubkey(&ctx.sender_pk, "sender_pk")?;
+    let receiver = parse_xonly_pubkey(&ctx.receiver_pk, "receiver_pk")?;
+    let server = parse_xonly_pubkey(&ctx.arkade_server_pk, "arkade_server_pk")?;
 
     // Backend's `receiver_pk` should match what we derive from the
     // signer — if not, this client can't sign the claim regardless of
@@ -713,7 +763,7 @@ fn build_vhtlc_script(
     if derived_receiver != receiver {
         return Err(Error::InvalidSwap(format!(
             "receiver_pk mismatch: backend `{}` vs locally-derived",
-            resp.receiver_pk,
+            ctx.receiver_pk,
         )));
     }
 
@@ -723,18 +773,18 @@ fn build_vhtlc_script(
             .as_slice(),
     );
 
-    let refund_locktime = u32::try_from(resp.vhtlc_refund_locktime).map_err(|_| {
+    let refund_locktime = u32::try_from(ctx.vhtlc_refund_locktime).map_err(|_| {
         Error::Decode(format!(
             "vhtlc_refund_locktime {} doesn't fit in u32",
-            resp.vhtlc_refund_locktime,
+            ctx.vhtlc_refund_locktime,
         ))
     })?;
-    let unilateral_claim_delay = parse_sequence_number(resp.unilateral_claim_delay as i64)
+    let unilateral_claim_delay = parse_sequence_number(ctx.unilateral_claim_delay as i64)
         .map_err(|e| Error::Decode(format!("unilateral_claim_delay: {e}")))?;
-    let unilateral_refund_delay = parse_sequence_number(resp.unilateral_refund_delay as i64)
+    let unilateral_refund_delay = parse_sequence_number(ctx.unilateral_refund_delay as i64)
         .map_err(|e| Error::Decode(format!("unilateral_refund_delay: {e}")))?;
     let unilateral_refund_without_receiver_delay =
-        parse_sequence_number(resp.unilateral_refund_without_receiver_delay as i64)
+        parse_sequence_number(ctx.unilateral_refund_without_receiver_delay as i64)
             .map_err(|e| Error::Decode(format!("unilateral_refund_without_receiver_delay: {e}")))?;
 
     VhtlcScript::new(

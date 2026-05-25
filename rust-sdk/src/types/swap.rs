@@ -11,6 +11,7 @@ use super::token::TokenId;
 use crate::request::Endpoint;
 use crate::request::PayloadKind;
 use crate::wire::CreateEvmToArkadeSwapRequestWire;
+use crate::wire::CreateLightningToArkadeSwapRequestWire;
 use reqwest::Method;
 use serde::Deserialize;
 use serde::Serialize;
@@ -200,6 +201,50 @@ impl Endpoint for CreateEvmToArkadeSwapRequest {
     const PAYLOAD: PayloadKind = PayloadKind::JsonBody;
 }
 
+/// Wire body for `POST /swap/lightning/arkade`. Server-side counterpart:
+/// `swap::api::lightning_to_arkade::LightningToArkadeSwapRequest`.
+/// `claim_pk` and `user_id` are hex pubkeys derived from the signer
+/// (see [`crate::Client::create_lightning_to_arkade_swap`]).
+#[derive(Clone, Debug, Serialize)]
+#[serde(into = "CreateLightningToArkadeSwapRequestWire")]
+#[non_exhaustive]
+pub struct CreateLightningToArkadeSwapRequest {
+    pub target_arkade_address: String,
+    pub sats_receive: u64,
+    pub claim_pk: String,
+    pub hash_lock: String,
+    pub user_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub referral_code: Option<String>,
+}
+
+impl CreateLightningToArkadeSwapRequest {
+    pub fn new(
+        target_arkade_address: impl Into<String>,
+        sats_receive: u64,
+        claim_pk: impl Into<String>,
+        hash_lock: impl Into<String>,
+        user_id: impl Into<String>,
+        referral_code: Option<String>,
+    ) -> Self {
+        Self {
+            target_arkade_address: target_arkade_address.into(),
+            sats_receive,
+            claim_pk: claim_pk.into(),
+            hash_lock: hash_lock.into(),
+            user_id: user_id.into(),
+            referral_code,
+        }
+    }
+}
+
+impl Endpoint for CreateLightningToArkadeSwapRequest {
+    type Response = LightningToArkadeSwapResponse;
+    const METHOD: Method = Method::POST;
+    const PATH: &'static str = "swap/lightning/arkade";
+    const PAYLOAD: PayloadKind = PayloadKind::JsonBody;
+}
+
 /// Response from `POST /swap/evm/arkade`. Maps to the
 /// `EvmToArkadeSwapResponse` component schema.
 ///
@@ -249,4 +294,71 @@ pub struct EvmToArkadeSwapResponse {
     pub evm_claim_txid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evm_fund_txid: Option<String>,
+}
+
+/// Response shape for `GET /swap/{id}`. Mirrors the server's
+/// `direction`-tagged `GetSwapResponse` enum, but only carries the
+/// variants the SDK can fully model today (EVM → Arkade and Lightning
+/// → Arkade). Other directions on the wire will fail to deserialize
+/// here with a clear serde error — fine for now, since the SDK can't
+/// do anything useful with them either.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(tag = "direction", rename_all = "snake_case")]
+pub enum GetSwapResponse {
+    EvmToArkade(EvmToArkadeSwapResponse),
+    LightningToArkade(LightningToArkadeSwapResponse),
+}
+
+impl GetSwapResponse {
+    /// Status of the swap, regardless of direction. Useful for the
+    /// polling loop in `Client::wait_for_swap_status`.
+    pub fn status(&self) -> &SwapStatus {
+        match self {
+            Self::EvmToArkade(r) => &r.status,
+            Self::LightningToArkade(r) => &r.status,
+        }
+    }
+}
+
+/// Response from `POST /swap/lightning/arkade`. Maps to the
+/// `LightningToArkadeSwapResponse` component schema.
+///
+/// Amount strings come back over the wire as decimal strings (server
+/// uses `#[serde(with = "serde_string")]` on `i64` for `source_amount`
+/// / `target_amount`) — keeping them as `String` here matches the EVM
+/// response shape and avoids JS-side precision issues. VHTLC params
+/// (`vhtlc_refund_locktime`, `unilateral_*_delay`) are plain JSON
+/// numbers on both sides.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct LightningToArkadeSwapResponse {
+    pub id: String,
+    pub status: SwapStatus,
+    pub fee_sats: u64,
+    pub hash_lock: String,
+    pub source_token: TokenInfo,
+    pub target_token: TokenInfo,
+    pub created_at: String,
+    pub source_amount: String,
+    pub target_amount: String,
+    /// Bolt11 invoice the user must pay over Lightning.
+    pub bolt11_invoice: String,
+    pub boltz_swap_id: String,
+    /// Arkade VHTLC address the server locks BTC at — the user
+    /// offchain-spends from here via the preimage path.
+    pub arkade_vhtlc_address: String,
+    pub target_arkade_address: String,
+    pub sender_pk: String,
+    pub receiver_pk: String,
+    pub arkade_server_pk: String,
+    pub vhtlc_refund_locktime: u64,
+    pub unilateral_claim_delay: u64,
+    pub unilateral_refund_delay: u64,
+    pub unilateral_refund_without_receiver_delay: u64,
+    pub network: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arkade_fund_txid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arkade_claim_txid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub btc_claim_txid: Option<String>,
 }

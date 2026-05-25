@@ -7,6 +7,7 @@ use lendaswap_sdk::Error;
 use lendaswap_sdk::SwapFunding;
 use lendaswap_sdk::types::Address;
 use lendaswap_sdk::types::Chain;
+use lendaswap_sdk::types::KnownChain;
 use lendaswap_sdk::types::QuoteAmount;
 use lendaswap_sdk::types::QuoteRequest;
 use lendaswap_sdk::types::SwapStatus;
@@ -381,6 +382,7 @@ async fn create_swap_dispatcher_routes_to_evm_to_arkade() {
 
     let swap = client
         .create_swap(
+            KnownChain::Polygon,
             TokenId::UsdcPolygon,
             TokenId::Btc,
             QuoteAmount::Source(100_000_000),
@@ -400,9 +402,10 @@ async fn create_swap_rejects_unsupported_direction() {
         .build()
         .expect("client builds");
 
-    // BTC source -> EVM target is not wired today.
+    // Bitcoin (on-chain) source -> EVM target is not wired today.
     let err = client
         .create_swap(
+            KnownChain::Bitcoin,
             TokenId::Btc,
             TokenId::UsdcPolygon,
             QuoteAmount::Source(100_000),

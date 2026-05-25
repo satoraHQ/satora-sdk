@@ -1164,8 +1164,8 @@ static class _UniFFILib {
         }
         {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_swap();
-            if (checksum != 25062) {
-                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_swap` checksum `25062`, library returned `{checksum}`");
+            if (checksum != 44192) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_swap` checksum `44192`, library returned `{checksum}`");
             }
         }
         {
@@ -1427,13 +1427,16 @@ public interface ISatoraClient {
     /// <exception cref="SdkException"></exception>
     ClaimReceipt Claim(string @swapId, string @destination);
     /// <summary>
-    /// Create a swap. Today the SDK only supports EVM stablecoin →
-    /// BTC on Arkade. The dispatcher in `Client::create_swap`
-    /// validates the direction and errors with `Error::InvalidSwap`
-    /// for anything else. We surface `gasless` here (the dispatcher
-    /// hard-codes it to `false`) so FFI callers can opt into the
-    /// gasless funding flow without dropping down to a direction-
-    /// specific entry point.
+    /// Create a swap. Thin forward to the Rust SDK's dispatcher
+    /// ([`lendaswap_sdk::Client::create_swap`]). Direction is resolved
+    /// from `source_chain` (Lightning vs EVM) plus the target. See the
+    /// underlying SDK doc for the supported directions today.
+    ///
+    /// `gasless` is honoured only when the routed direction is EVM →
+    /// Arkade — the Lightning rail doesn't model gasless funding (the
+    /// user just pays the Bolt11 invoice from their own wallet). The
+    /// FFI signature stays uniform so the C# surface doesn't need an
+    /// overload per direction; the inner dispatcher does the routing.
     ///
     /// State note: `create_swap` writes the per-swap `key_index` into
     /// the inner client's storage. Subsequent [`Self::fund_swap_gasless`]
@@ -1678,13 +1681,16 @@ public class SatoraClient : ISatoraClient, IDisposable {
     
     
     /// <summary>
-    /// Create a swap. Today the SDK only supports EVM stablecoin →
-    /// BTC on Arkade. The dispatcher in `Client::create_swap`
-    /// validates the direction and errors with `Error::InvalidSwap`
-    /// for anything else. We surface `gasless` here (the dispatcher
-    /// hard-codes it to `false`) so FFI callers can opt into the
-    /// gasless funding flow without dropping down to a direction-
-    /// specific entry point.
+    /// Create a swap. Thin forward to the Rust SDK's dispatcher
+    /// ([`lendaswap_sdk::Client::create_swap`]). Direction is resolved
+    /// from `source_chain` (Lightning vs EVM) plus the target. See the
+    /// underlying SDK doc for the supported directions today.
+    ///
+    /// `gasless` is honoured only when the routed direction is EVM →
+    /// Arkade — the Lightning rail doesn't model gasless funding (the
+    /// user just pays the Bolt11 invoice from their own wallet). The
+    /// FFI signature stays uniform so the C# surface doesn't need an
+    /// overload per direction; the inner dispatcher does the routing.
     ///
     /// State note: `create_swap` writes the per-swap `key_index` into
     /// the inner client's storage. Subsequent [`Self::fund_swap_gasless`]
@@ -2738,6 +2744,8 @@ class FfiConverterTypeSdkError : FfiConverterRustBuffer<SdkException>, CallStatu
 /// the SDK relays into the HTLC via a Permit2-signed userOp.
 /// `UserSubmitted` is the non-gasless path — caller fetches HTLC calldata
 /// out-of-band and broadcasts the funding tx themselves.
+/// `Bolt11Invoice` is the Lightning → Arkade path — caller pays the
+/// invoice over their Lightning wallet, then claims the Arkade VHTLC.
 /// </summary>
 public record SwapFunding {
     
@@ -2747,6 +2755,10 @@ public record SwapFunding {
     
     public record UserSubmitted: SwapFunding {}
     
+    
+    public record Bolt11Invoice (
+        string @invoice
+    ) : SwapFunding {}
     
 
     
@@ -2765,6 +2777,10 @@ class FfiConverterTypeSwapFunding : FfiConverterRustBuffer<SwapFunding>{
             case 2:
                 return new SwapFunding.UserSubmitted(
                 );
+            case 3:
+                return new SwapFunding.Bolt11Invoice(
+                    FfiConverterString.INSTANCE.Read(stream)
+                );
             default:
                 throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeSwapFunding.Read()", value));
         }
@@ -2777,6 +2793,9 @@ class FfiConverterTypeSwapFunding : FfiConverterRustBuffer<SwapFunding>{
                     + FfiConverterString.INSTANCE.AllocationSize(variant_value.@depositAddress);
             case SwapFunding.UserSubmitted variant_value:
                 return 4;
+            case SwapFunding.Bolt11Invoice variant_value:
+                return 4
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@invoice);
             default:
                 throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeSwapFunding.AllocationSize()", value));
         }
@@ -2790,6 +2809,10 @@ class FfiConverterTypeSwapFunding : FfiConverterRustBuffer<SwapFunding>{
                 break;
             case SwapFunding.UserSubmitted variant_value:
                 stream.WriteInt(2);
+                break;
+            case SwapFunding.Bolt11Invoice variant_value:
+                stream.WriteInt(3);
+                FfiConverterString.INSTANCE.Write(variant_value.@invoice, stream);
                 break;
             default:
                 throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeSwapFunding.Write()", value));

@@ -26,6 +26,8 @@ use crate::types::Address;
 use crate::types::CreateEvmToArkadeSwapRequest;
 use crate::types::ErrorResponse;
 use crate::types::EvmToArkadeSwapResponse;
+use crate::types::GetSwapResponse;
+use crate::types::KnownChain;
 use crate::types::QuoteAmount;
 use crate::types::QuoteRequest;
 use crate::types::QuoteResponse;
@@ -180,17 +182,40 @@ impl Client {
     /// network to derive the address against. The address-less variant
     /// only makes sense when `target` is BTC.
     ///
-    /// Supported today: EVM stablecoin → BTC on Arkade. Any other
-    /// combination returns [`Error::InvalidSwap`] — additional directions
-    /// will land as separate `create_*_to_*_swap` methods.
+    /// `source_chain` is required (not inferred from `source`) because
+    /// [`TokenId::Btc`] is rail-ambiguous — `Lightning` and `Bitcoin`
+    /// both source BTC. For EVM-side stablecoin sources where the
+    /// `TokenId` already carries chain info (`UsdcPolygon`, etc.) the
+    /// two must agree; mismatches return [`Error::InvalidSwap`].
+    ///
+    /// Supported today:
+    /// - EVM stablecoin (Polygon / Arbitrum / Ethereum) → BTC on Arkade
+    /// - Lightning → BTC on Arkade (uses a Bolt11 invoice; `gasless` + `extra_fees_bps` are ignored
+    ///   — the Lightning rail doesn't model them server-side today, and the amount must be a target
+    ///   `QuoteAmount::Target(sats_receive)`).
+    ///
+    /// Any other source / target combination returns
+    /// [`Error::InvalidSwap`].
     pub async fn create_swap(
         &self,
+        source_chain: KnownChain,
         source: TokenId,
         target: TokenId,
         amount: QuoteAmount,
         receive_to: Option<Address>,
         extra_fees_bps: Option<u16>,
     ) -> Result<Swap> {
+        // For EVM-side stablecoins the `TokenId` carries the chain;
+        // catch a mismatch with the caller-supplied `source_chain` early
+        // so we don't silently route to the wrong direction.
+        if let Some(token_chain) = source.chain()
+            && token_chain != source_chain
+        {
+            return Err(Error::InvalidSwap(format!(
+                "source_chain ({source_chain:?}) disagrees with source token's native chain ({token_chain:?}) — TokenId::{source:?} lives on {token_chain:?}",
+            )));
+        }
+
         // Resolve `None` receive_to to the SDK's internal Arkade wallet.
         let receive_to = match receive_to {
             Some(addr) => addr,
@@ -206,20 +231,46 @@ impl Client {
             }
         };
 
-        let source_is_evm = source.chain().and_then(|c| c.evm_chain_id()).is_some();
         let target_is_btc = matches!(target, TokenId::Btc);
         let target_is_arkade = matches!(&receive_to, Address::Arkade(_));
+        let source_is_evm = source_chain.evm_chain_id().is_some();
+        let source_is_lightning = matches!(source_chain, KnownChain::Lightning);
 
-        if source_is_evm && target_is_btc && target_is_arkade {
-            // Dispatcher defaults to non-gasless. Callers who need gasless
-            // relay invoke `create_evm_to_arkade_swap` directly.
-            return self
-                .create_evm_to_arkade_swap(source, amount, receive_to, false, extra_fees_bps)
-                .await;
+        if target_is_btc && target_is_arkade {
+            if source_is_evm {
+                // Dispatcher defaults to non-gasless. Callers who need
+                // gasless relay invoke `create_evm_to_arkade_swap`
+                // directly.
+                return self
+                    .create_evm_to_arkade_swap(source, amount, receive_to, false, extra_fees_bps)
+                    .await;
+            }
+            if source_is_lightning {
+                if !matches!(source, TokenId::Btc) {
+                    return Err(Error::InvalidSwap(format!(
+                        "Lightning source must use TokenId::Btc, got {source:?}",
+                    )));
+                }
+                let sats_receive = match amount {
+                    QuoteAmount::Target(v) => v,
+                    QuoteAmount::Source(_) => {
+                        return Err(Error::InvalidSwap(
+                            "Lightning→Arkade requires QuoteAmount::Target — the server only accepts a target (sats_receive) amount".into(),
+                        ));
+                    }
+                };
+                // `extra_fees_bps` is intentionally dropped: the
+                // server's LN→Arkade request body doesn't model it
+                // today. Will plumb through when the field lands.
+                let _ = extra_fees_bps;
+                return self
+                    .create_lightning_to_arkade_swap(sats_receive, receive_to)
+                    .await;
+            }
         }
 
         Err(Error::InvalidSwap(format!(
-            "unsupported swap direction: {source:?} -> {target:?} (receive_to={receive_to:?}) — only EVM stablecoin -> BTC on Arkade is wired today",
+            "unsupported swap direction: {source_chain:?}/{source:?} -> {target:?} (receive_to={receive_to:?})",
         )))
     }
 
@@ -331,7 +382,85 @@ impl Client {
                     // Persist the key_index so claim/refund can re-derive every
                     // secret from `(signer, key_index)`.
                     self.storage.put_swap_key_index(&response.id, key_index)?;
-                    return Ok(Swap::from_response(response));
+                    return Ok(Swap::from_evm_response(response));
+                }
+                Err(err) if is_preimage_collision(&err) => {
+                    tracing::warn!(
+                        key_index,
+                        attempt = attempt + 1,
+                        "preimage collision — grinding next key_index",
+                    );
+                    continue;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err(Error::InvalidSwap(format!(
+            "exhausted {MAX_KEY_INDEX_GRIND_ATTEMPTS} key_index attempts looking for an unused preimage — \
+             the backend rejected every derived index. If you recently recovered this wallet from a seed, \
+             try again; otherwise this is a bug.",
+        )))
+    }
+
+    /// Create a Lightning → BTC-on-Arkade swap.
+    ///
+    /// The user pays the returned Bolt11 invoice over Lightning; the
+    /// server (via Boltz) observes the payment, locks BTC in an Arkade
+    /// VHTLC, and the user claims it via [`Self::claim`] using the
+    /// preimage the SDK re-derives from the signer.
+    ///
+    /// Mirrors [`Self::create_evm_to_arkade_swap`]'s key-index grind so
+    /// recovered wallets transparently skip used indices. The on-chain
+    /// EVM-derived fields (EOA, chain id) aren't needed for the
+    /// Lightning rail — the user funds via their own Lightning wallet,
+    /// not an EVM EOA.
+    ///
+    /// `sats_receive` is what the user wants to *receive* on Arkade.
+    /// The server quotes the corresponding Bolt11 amount internally and
+    /// embeds it in the invoice.
+    pub async fn create_lightning_to_arkade_swap(
+        &self,
+        sats_receive: u64,
+        receive_to: Address,
+    ) -> Result<Swap> {
+        let arkade_target_address = match &receive_to {
+            Address::Arkade(s) => s.clone(),
+            other => {
+                return Err(Error::InvalidSwap(format!(
+                    "Lightning->Arkade swap requires an Arkade receive address, got {other:?}",
+                )));
+            }
+        };
+
+        let signer = self.signer.as_ref().ok_or_else(|| {
+            Error::InvalidSigner(
+                "Client constructed without a signer — use Client::builder() with .mnemonic / .xprv"
+                    .to_string(),
+            )
+        })?;
+
+        // Same grind loop as the EVM path: a recovered wallet starts at
+        // key_index 0 and the backend rejects every preimage hash it
+        // already knows. We bump through indices until one lands.
+        for attempt in 0..MAX_KEY_INDEX_GRIND_ATTEMPTS {
+            let key_index = self.storage.next_key_index()?;
+            let swap_params = signer.derive_swap_params(key_index)?;
+            let hash_lock = format!("0x{}", hex::encode(swap_params.hash_lock));
+            let claim_pk = hex::encode(swap_params.public_key);
+            let user_id = hex::encode(swap_params.user_id);
+
+            let req = crate::types::CreateLightningToArkadeSwapRequest::new(
+                arkade_target_address.clone(),
+                sats_receive,
+                claim_pk,
+                hash_lock,
+                user_id,
+                self.referral_code.clone(),
+            );
+            match self.send(req).await {
+                Ok(response) => {
+                    self.storage.put_swap_key_index(&response.id, key_index)?;
+                    return Ok(Swap::from_lightning_response(response));
                 }
                 Err(err) if is_preimage_collision(&err) => {
                     tracing::warn!(
@@ -355,8 +484,9 @@ impl Client {
     ///
     /// Not routed through [`Self::send`] because the endpoint has a
     /// path parameter and [`Endpoint::PATH`] is a `&'static str`. The
-    /// shape mirrors the create-swap response, so we reuse
-    /// [`Swap::from_response`] for the projection.
+    /// shape varies per direction (the server wraps it in a
+    /// `direction`-tagged enum); the projection in [`Swap::from_response`]
+    /// dispatches on the variant.
     #[tracing::instrument(name = "get_swap", skip_all, fields(%swap_id))]
     pub async fn get_swap(&self, swap_id: &str) -> Result<Swap> {
         let body = self.fetch_swap_response(swap_id).await?;
@@ -366,15 +496,13 @@ impl Client {
     /// Private: fetch the raw backend response without projection.
     /// `get_swap` consumers see the trimmed [`Swap`]; internal callers
     /// (e.g. the Arkade claim flow) need access to fields the public
-    /// projection drops (VHTLC pubkeys, locktimes, network, …).
-    pub(crate) async fn fetch_swap_response(
-        &self,
-        swap_id: &str,
-    ) -> Result<EvmToArkadeSwapResponse> {
+    /// projection drops (VHTLC pubkeys, locktimes, network, …) and
+    /// must dispatch on the variant themselves.
+    pub(crate) async fn fetch_swap_response(&self, swap_id: &str) -> Result<GetSwapResponse> {
         let url = self.url(&format!("swap/{swap_id}"))?;
         let resp = self.http.get(url).send().await?;
         let resp = check_status(resp).await?;
-        Ok(resp.json::<EvmToArkadeSwapResponse>().await?)
+        Ok(resp.json::<GetSwapResponse>().await?)
     }
 
     /// Poll `GET /swap/{id}` until the swap reaches one of `targets`
@@ -632,10 +760,28 @@ pub enum SwapFunding {
     /// non-gasless swap and need to do the funding step yourself."
     #[non_exhaustive]
     UserSubmitted {},
+    /// Lightning → Arkade flow: the user must pay this Bolt11 invoice
+    /// over Lightning. The server (via Boltz) observes the payment and
+    /// then funds the Arkade VHTLC; the user offchain-claims with the
+    /// preimage via [`Client::claim`].
+    Bolt11Invoice {
+        /// Bolt11-encoded Lightning invoice (`lnbc…` / `lnbcrt…` /
+        /// `lntb…` depending on network).
+        invoice: String,
+    },
 }
 
 impl Swap {
-    fn from_response(r: EvmToArkadeSwapResponse) -> Self {
+    /// Project a `GetSwapResponse` (direction-tagged) into the
+    /// per-direction-agnostic public [`Swap`] surface.
+    fn from_response(r: GetSwapResponse) -> Self {
+        match r {
+            GetSwapResponse::EvmToArkade(r) => Self::from_evm_response(r),
+            GetSwapResponse::LightningToArkade(r) => Self::from_lightning_response(r),
+        }
+    }
+
+    fn from_evm_response(r: EvmToArkadeSwapResponse) -> Self {
         // `client_evm_address` is the address the SDK derives from the
         // signer's EVM key and echoes back in the response. In the
         // gasless flow it's where the user deposits their tokens.
@@ -650,6 +796,21 @@ impl Swap {
             id: r.id,
             status: r.status,
             funding,
+            deposit_amount: r.source_amount,
+            deposit_token: r.source_token.token_id,
+            receive_address: r.target_arkade_address,
+            receive_amount: r.target_amount,
+            receive_token: r.target_token.token_id,
+        }
+    }
+
+    fn from_lightning_response(r: crate::types::LightningToArkadeSwapResponse) -> Self {
+        Self {
+            id: r.id,
+            status: r.status,
+            funding: SwapFunding::Bolt11Invoice {
+                invoice: r.bolt11_invoice,
+            },
             deposit_amount: r.source_amount,
             deposit_token: r.source_token.token_id,
             receive_address: r.target_arkade_address,
