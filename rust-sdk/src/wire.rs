@@ -14,6 +14,7 @@
 
 use crate::types::Chain;
 use crate::types::CreateEvmToArkadeSwapRequest;
+use crate::types::CreateLightningToArkadeSwapRequest;
 use crate::types::QuoteAmount;
 use crate::types::QuoteRequest;
 use crate::types::TokenId;
@@ -115,6 +116,33 @@ impl From<CreateEvmToArkadeSwapRequest> for CreateEvmToArkadeSwapRequestWire {
             bridge_source_token_address: r.bridge_source_token_address,
             referral_code: r.referral_code,
             extra_fees_bps: r.extra_fees_bps,
+        }
+    }
+}
+
+/// Wire body for `POST /swap/lightning/arkade`. The public struct has
+/// the same shape, but we keep a separate wire type so the
+/// `skip_serializing_if` annotations stay an internal concern.
+#[derive(Serialize)]
+pub(crate) struct CreateLightningToArkadeSwapRequestWire {
+    pub(crate) target_arkade_address: String,
+    pub(crate) sats_receive: u64,
+    pub(crate) claim_pk: String,
+    pub(crate) hash_lock: String,
+    pub(crate) user_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) referral_code: Option<String>,
+}
+
+impl From<CreateLightningToArkadeSwapRequest> for CreateLightningToArkadeSwapRequestWire {
+    fn from(r: CreateLightningToArkadeSwapRequest) -> Self {
+        Self {
+            target_arkade_address: r.target_arkade_address,
+            sats_receive: r.sats_receive,
+            claim_pk: r.claim_pk,
+            hash_lock: r.hash_lock,
+            user_id: r.user_id,
+            referral_code: r.referral_code,
         }
     }
 }
