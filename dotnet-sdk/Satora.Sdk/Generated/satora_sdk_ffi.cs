@@ -773,6 +773,10 @@ static class _UniFFILib {
     
     
     
+    
+    
+    
+    
 
     static _UniFFILib() {
         _UniFFILib.uniffiCheckContractApiVersion();
@@ -801,11 +805,15 @@ static class _UniFFILib {
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern ulong uniffi_satora_sdk_ffi_fn_method_satoraclient_arkade_balance_sats(IntPtr @ptr,ref UniffiRustCallStatus _uniffi_out_err
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_arkade_balance(IntPtr @ptr,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_arkade_offchain_address(IntPtr @ptr,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_arkade_send(IntPtr @ptr,RustBuffer @destination,ulong @amountSats,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -814,6 +822,10 @@ static class _UniFFILib {
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_claim(IntPtr @ptr,RustBuffer @swapId,RustBuffer @destination,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_create_arkade_to_lightning_swap(IntPtr @ptr,RustBuffer @destination,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -1069,11 +1081,15 @@ static class _UniFFILib {
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_balance_sats(
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_balance(
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_offchain_address(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_send(
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -1082,6 +1098,10 @@ static class _UniFFILib {
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_claim(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_arkade_to_lightning_swap(
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -1139,15 +1159,21 @@ static class _UniFFILib {
 
     static void uniffiCheckApiChecksums() {
         {
-            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_balance_sats();
-            if (checksum != 48499) {
-                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_balance_sats` checksum `48499`, library returned `{checksum}`");
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_balance();
+            if (checksum != 49598) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_balance` checksum `49598`, library returned `{checksum}`");
             }
         }
         {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_offchain_address();
             if (checksum != 21763) {
                 throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_offchain_address` checksum `21763`, library returned `{checksum}`");
+            }
+        }
+        {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_send();
+            if (checksum != 50820) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_send` checksum `50820`, library returned `{checksum}`");
             }
         }
         {
@@ -1160,6 +1186,12 @@ static class _UniFFILib {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_claim();
             if (checksum != 56598) {
                 throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_claim` checksum `56598`, library returned `{checksum}`");
+            }
+        }
+        {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_arkade_to_lightning_swap();
+            if (checksum != 55337) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_arkade_to_lightning_swap` checksum `55337`, library returned `{checksum}`");
             }
         }
         {
@@ -1397,11 +1429,12 @@ class FfiConverterString: FfiConverter<string, RustBuffer> {
 /// </summary>
 public interface ISatoraClient {
     /// <summary>
-    /// Total spendable balance of the SDK's internal Arkade wallet, in
-    /// sats. Hits the Arkade server's gRPC indexer.
+    /// Offchain VTXO balance of the SDK's internal Arkade wallet,
+    /// broken into the three buckets ark-client distinguishes — see
+    /// [`ArkadeBalance`]. Hits the Arkade server's gRPC indexer.
     /// </summary>
     /// <exception cref="SdkException"></exception>
-    ulong ArkadeBalanceSats();
+    ArkadeBalance ArkadeBalance();
     /// <summary>
     /// Derive the SDK's internal Arkade wallet address. The same
     /// mnemonic always produces the same address (BIP-85 derivation),
@@ -1410,6 +1443,16 @@ public interface ISatoraClient {
     /// </summary>
     /// <exception cref="SdkException"></exception>
     string ArkadeOffchainAddress();
+    /// <summary>
+    /// Send `amount_sats` from the SDK's internal Arkade wallet to
+    /// `destination` (any `tark1q…` Arkade address) via an offchain
+    /// Ark transaction. Returns the Ark txid as `0x…` hex.
+    ///
+    /// Primary use case: funding the Arkade VHTLC returned by
+    /// [`Self::create_arkade_to_lightning_swap`].
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    string ArkadeSend(string @destination, ulong @amountSats);
     /// <summary>
     /// Roll over all spendable VTXOs + boarding outputs into the next
     /// Arkade batch. `None` => nothing to settle; `Some(txid)` => hex
@@ -1426,6 +1469,15 @@ public interface ISatoraClient {
     /// </summary>
     /// <exception cref="SdkException"></exception>
     ClaimReceipt Claim(string @swapId, string @destination);
+    /// <summary>
+    /// Create an Arkade → Lightning swap. The server returns the
+    /// Arkade VHTLC address the user must fund (in `swap.funding` as
+    /// `SwapFunding::ArkadeAddress`); the server (via Boltz) then pays
+    /// the Lightning destination and claims the VHTLC. No client-side
+    /// claim — see the underlying SDK doc.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    Swap CreateArkadeToLightningSwap(LightningDestination @destination);
     /// <summary>
     /// Create a swap. Thin forward to the Rust SDK's dispatcher
     /// ([`lendaswap_sdk::Client::create_swap`]). Direction is resolved
@@ -1623,14 +1675,15 @@ public class SatoraClient : ISatoraClient, IDisposable {
 
     
     /// <summary>
-    /// Total spendable balance of the SDK's internal Arkade wallet, in
-    /// sats. Hits the Arkade server's gRPC indexer.
+    /// Offchain VTXO balance of the SDK's internal Arkade wallet,
+    /// broken into the three buckets ark-client distinguishes — see
+    /// [`ArkadeBalance`]. Hits the Arkade server's gRPC indexer.
     /// </summary>
     /// <exception cref="SdkException"></exception>
-    public ulong ArkadeBalanceSats() {
-        return CallWithPointer(thisPtr => FfiConverterUInt64.INSTANCE.Lift(
+    public ArkadeBalance ArkadeBalance() {
+        return CallWithPointer(thisPtr => FfiConverterTypeArkadeBalance.INSTANCE.Lift(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
-    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_arkade_balance_sats(thisPtr,  ref _status)
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_arkade_balance(thisPtr,  ref _status)
 )));
     }
     
@@ -1646,6 +1699,23 @@ public class SatoraClient : ISatoraClient, IDisposable {
         return CallWithPointer(thisPtr => FfiConverterString.INSTANCE.Lift(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
     _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_arkade_offchain_address(thisPtr,  ref _status)
+)));
+    }
+    
+    
+    /// <summary>
+    /// Send `amount_sats` from the SDK's internal Arkade wallet to
+    /// `destination` (any `tark1q…` Arkade address) via an offchain
+    /// Ark transaction. Returns the Ark txid as `0x…` hex.
+    ///
+    /// Primary use case: funding the Arkade VHTLC returned by
+    /// [`Self::create_arkade_to_lightning_swap`].
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public string ArkadeSend(string @destination, ulong @amountSats) {
+        return CallWithPointer(thisPtr => FfiConverterString.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_arkade_send(thisPtr, FfiConverterString.INSTANCE.Lower(@destination), FfiConverterUInt64.INSTANCE.Lower(@amountSats), ref _status)
 )));
     }
     
@@ -1676,6 +1746,22 @@ public class SatoraClient : ISatoraClient, IDisposable {
         return CallWithPointer(thisPtr => FfiConverterTypeClaimReceipt.INSTANCE.Lift(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
     _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_claim(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterString.INSTANCE.Lower(@destination), ref _status)
+)));
+    }
+    
+    
+    /// <summary>
+    /// Create an Arkade → Lightning swap. The server returns the
+    /// Arkade VHTLC address the user must fund (in `swap.funding` as
+    /// `SwapFunding::ArkadeAddress`); the server (via Boltz) then pays
+    /// the Lightning destination and claims the VHTLC. No client-side
+    /// claim — see the underlying SDK doc.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public Swap CreateArkadeToLightningSwap(LightningDestination @destination) {
+        return CallWithPointer(thisPtr => FfiConverterTypeSwap.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_create_arkade_to_lightning_swap(thisPtr, FfiConverterTypeLightningDestination.INSTANCE.Lower(@destination), ref _status)
 )));
     }
     
@@ -1870,6 +1956,49 @@ class FfiConverterTypeSatoraClient: FfiConverter<SatoraClient, IntPtr> {
 
     public override void Write(SatoraClient value, BigEndianStream stream) {
         stream.WriteLong(Lower(value).ToInt64());
+    }
+}
+
+
+
+/// <summary>
+/// Offchain VTXO balance broken into the three buckets `ark-client`
+/// distinguishes. Mirrors `lendaswap_sdk::arkade::ArkadeBalance`.
+///
+/// The number callers normally want for "what can I spend right now?"
+/// is `confirmed_sats` — coin selection in `arkade_send` only draws
+/// from that bucket, so basing UX on `confirmed + pre_confirmed +
+/// recoverable` lies about what the wallet can actually do.
+/// </summary>
+public record ArkadeBalance (
+    ulong @confirmedSats, 
+    ulong @preConfirmedSats, 
+    ulong @recoverableSats
+) {
+}
+
+class FfiConverterTypeArkadeBalance: FfiConverterRustBuffer<ArkadeBalance> {
+    public static FfiConverterTypeArkadeBalance INSTANCE = new FfiConverterTypeArkadeBalance();
+
+    public override ArkadeBalance Read(BigEndianStream stream) {
+        return new ArkadeBalance(
+            @confirmedSats: FfiConverterUInt64.INSTANCE.Read(stream),
+            @preConfirmedSats: FfiConverterUInt64.INSTANCE.Read(stream),
+            @recoverableSats: FfiConverterUInt64.INSTANCE.Read(stream)
+        );
+    }
+
+    public override int AllocationSize(ArkadeBalance value) {
+        return 0
+            + FfiConverterUInt64.INSTANCE.AllocationSize(value.@confirmedSats)
+            + FfiConverterUInt64.INSTANCE.AllocationSize(value.@preConfirmedSats)
+            + FfiConverterUInt64.INSTANCE.AllocationSize(value.@recoverableSats);
+    }
+
+    public override void Write(ArkadeBalance value, BigEndianStream stream) {
+            FfiConverterUInt64.INSTANCE.Write(value.@confirmedSats, stream);
+            FfiConverterUInt64.INSTANCE.Write(value.@preConfirmedSats, stream);
+            FfiConverterUInt64.INSTANCE.Write(value.@recoverableSats, stream);
     }
 }
 
@@ -2585,6 +2714,112 @@ class FfiConverterTypeChainId : FfiConverterRustBuffer<ChainId>{
 
 
 /// <summary>
+/// Lightning destination for an Arkade → Lightning swap. The server
+/// resolves `Address` / `Lnurl` via LNURL-pay using `sats`; `Invoice`
+/// carries its amount in the BOLT11 payload.
+/// </summary>
+public record LightningDestination {
+    
+    /// <summary>
+    /// BOLT11 invoice. Server pays this exact invoice.
+    /// </summary>
+    public record Invoice (
+        string @invoice
+    ) : LightningDestination {}
+    
+    /// <summary>
+    /// Lightning address (`user@host`). Server resolves via LUD-16.
+    /// </summary>
+    public record Address (
+        string @address,
+        ulong @sats
+    ) : LightningDestination {}
+    
+    /// <summary>
+    /// Raw LNURL (`lnurl1…`). Server bech32-decodes + resolves via
+    /// LNURL-pay.
+    /// </summary>
+    public record Lnurl (
+        string @lnurl,
+        ulong @sats
+    ) : LightningDestination {}
+    
+
+    
+}
+
+class FfiConverterTypeLightningDestination : FfiConverterRustBuffer<LightningDestination>{
+    public static FfiConverterRustBuffer<LightningDestination> INSTANCE = new FfiConverterTypeLightningDestination();
+
+    public override LightningDestination Read(BigEndianStream stream) {
+        var value = stream.ReadInt();
+        switch (value) {
+            case 1:
+                return new LightningDestination.Invoice(
+                    FfiConverterString.INSTANCE.Read(stream)
+                );
+            case 2:
+                return new LightningDestination.Address(
+                    FfiConverterString.INSTANCE.Read(stream),
+                    FfiConverterUInt64.INSTANCE.Read(stream)
+                );
+            case 3:
+                return new LightningDestination.Lnurl(
+                    FfiConverterString.INSTANCE.Read(stream),
+                    FfiConverterUInt64.INSTANCE.Read(stream)
+                );
+            default:
+                throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeLightningDestination.Read()", value));
+        }
+    }
+
+    public override int AllocationSize(LightningDestination value) {
+        switch (value) {
+            case LightningDestination.Invoice variant_value:
+                return 4
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@invoice);
+            case LightningDestination.Address variant_value:
+                return 4
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@address)
+                    + FfiConverterUInt64.INSTANCE.AllocationSize(variant_value.@sats);
+            case LightningDestination.Lnurl variant_value:
+                return 4
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@lnurl)
+                    + FfiConverterUInt64.INSTANCE.AllocationSize(variant_value.@sats);
+            default:
+                throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeLightningDestination.AllocationSize()", value));
+        }
+    }
+
+    public override void Write(LightningDestination value, BigEndianStream stream) {
+        switch (value) {
+            case LightningDestination.Invoice variant_value:
+                stream.WriteInt(1);
+                FfiConverterString.INSTANCE.Write(variant_value.@invoice, stream);
+                break;
+            case LightningDestination.Address variant_value:
+                stream.WriteInt(2);
+                FfiConverterString.INSTANCE.Write(variant_value.@address, stream);
+                FfiConverterUInt64.INSTANCE.Write(variant_value.@sats, stream);
+                break;
+            case LightningDestination.Lnurl variant_value:
+                stream.WriteInt(3);
+                FfiConverterString.INSTANCE.Write(variant_value.@lnurl, stream);
+                FfiConverterUInt64.INSTANCE.Write(variant_value.@sats, stream);
+                break;
+            default:
+                throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeLightningDestination.Write()", value));
+        }
+    }
+}
+
+
+
+
+
+
+
+/// <summary>
 /// Source / target amount mutex. Mirrors `lendaswap_sdk::types::QuoteAmount`
 /// — encoding the invariant at the type level means the FFI surface no
 /// longer needs the "exactly one of two Options" runtime check.
@@ -2760,6 +2995,13 @@ public record SwapFunding {
         string @invoice
     ) : SwapFunding {}
     
+    /// <summary>
+    /// Arkade → Lightning: user funds this Arkade VHTLC address.
+    /// </summary>
+    public record ArkadeAddress (
+        string @address
+    ) : SwapFunding {}
+    
 
     
 }
@@ -2781,6 +3023,10 @@ class FfiConverterTypeSwapFunding : FfiConverterRustBuffer<SwapFunding>{
                 return new SwapFunding.Bolt11Invoice(
                     FfiConverterString.INSTANCE.Read(stream)
                 );
+            case 4:
+                return new SwapFunding.ArkadeAddress(
+                    FfiConverterString.INSTANCE.Read(stream)
+                );
             default:
                 throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeSwapFunding.Read()", value));
         }
@@ -2796,6 +3042,9 @@ class FfiConverterTypeSwapFunding : FfiConverterRustBuffer<SwapFunding>{
             case SwapFunding.Bolt11Invoice variant_value:
                 return 4
                     + FfiConverterString.INSTANCE.AllocationSize(variant_value.@invoice);
+            case SwapFunding.ArkadeAddress variant_value:
+                return 4
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@address);
             default:
                 throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeSwapFunding.AllocationSize()", value));
         }
@@ -2813,6 +3062,10 @@ class FfiConverterTypeSwapFunding : FfiConverterRustBuffer<SwapFunding>{
             case SwapFunding.Bolt11Invoice variant_value:
                 stream.WriteInt(3);
                 FfiConverterString.INSTANCE.Write(variant_value.@invoice, stream);
+                break;
+            case SwapFunding.ArkadeAddress variant_value:
+                stream.WriteInt(4);
+                FfiConverterString.INSTANCE.Write(variant_value.@address, stream);
                 break;
             default:
                 throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeSwapFunding.Write()", value));

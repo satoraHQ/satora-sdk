@@ -111,6 +111,40 @@ pub struct ArkadeConfig {
     pub network: Network,
 }
 
+/// Offchain VTXO balance broken into the three buckets `ark-client`
+/// distinguishes — what coin selection (`send_offchain`) can use,
+/// what's still in-flight, and what can only be recovered via settle.
+///
+/// Returning all three separately (rather than just `total`) is
+/// deliberate: callers that try to send must look at `confirmed_sats`
+/// since pre-confirmed/recoverable VTXOs aren't selectable, so a
+/// "total"-only view silently bites you with `insufficient funds`
+/// even though the headline number looks fine.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ArkadeBalance {
+    /// VTXOs that have been included in a settled batch — the only
+    /// bucket coin selection draws from.
+    pub confirmed_sats: u64,
+    /// VTXOs that exist in an Ark transaction the server has
+    /// accepted but that hasn't been confirmed via a settle batch
+    /// yet. Become `confirmed_sats` after the next batch finalises.
+    pub pre_confirmed_sats: u64,
+    /// VTXOs past their settle window — spendable only by joining a
+    /// settle batch (no forfeit-tx path). Call `Client::arkade_settle`
+    /// to roll them forward.
+    pub recoverable_sats: u64,
+}
+
+impl ArkadeBalance {
+    /// `confirmed + pre_confirmed + recoverable`. Useful for "did funds
+    /// arrive at all?" assertions, but **not** the right number for
+    /// deciding whether a send will succeed — use `confirmed_sats` for
+    /// that.
+    pub fn total_sats(&self) -> u64 {
+        self.confirmed_sats + self.pre_confirmed_sats + self.recoverable_sats
+    }
+}
+
 /// Result of a successful Arkade claim.
 #[derive(Debug, Clone)]
 pub struct ClaimReceipt {
@@ -208,18 +242,26 @@ impl ArkadeWallet {
         Ok(address.encode())
     }
 
-    /// Sum of confirmed + pre-confirmed + recoverable VTXOs owned by
-    /// this wallet, in satoshis. Used by the e2e to assert the claim
-    /// actually moved BTC — snapshot before [`crate::Client::claim`],
-    /// snapshot again after, compare deltas. Hits the Arkade server's
-    /// indexer over gRPC each call.
-    pub async fn offchain_balance_sats(&self) -> Result<u64> {
+    /// Offchain VTXO balance broken down into the three buckets
+    /// `ark-client` distinguishes — see [`ArkadeBalance`] for details.
+    /// Hits the Arkade server's gRPC indexer each call.
+    ///
+    /// The headline number a caller usually wants is
+    /// `confirmed_sats` — that's what coin selection (e.g.
+    /// [`Self::send_offchain`]) actually spends. `total_sats()` adds
+    /// the in-flight + recoverable buckets so it can over-report what
+    /// the wallet can *do right now*.
+    pub async fn offchain_balance(&self) -> Result<ArkadeBalance> {
         let balance = self
             .client
             .offchain_balance()
             .await
             .map_err(|e| Error::Transport(format!("offchain_balance: {e}")))?;
-        Ok(balance.total().to_sat())
+        Ok(ArkadeBalance {
+            confirmed_sats: balance.confirmed().to_sat(),
+            pre_confirmed_sats: balance.pre_confirmed().to_sat(),
+            recoverable_sats: balance.recoverable().to_sat(),
+        })
     }
 
     /// Roll over all expired VTXOs + boarding outputs into the next
@@ -239,6 +281,26 @@ impl ArkadeWallet {
             .settle(&mut rng)
             .await
             .map_err(|e| Error::Transport(format!("settle: {e}")))
+    }
+
+    /// Send `amount_sats` from this wallet to the given Arkade
+    /// `destination` address via a single-recipient offchain Ark
+    /// transaction. Returns the Ark txid of the offchain spend (NOT a
+    /// batch commitment txid — settle is the thing that anchors on L1).
+    ///
+    /// Used to fund the Arkade VHTLC returned by
+    /// [`crate::Client::create_arkade_to_lightning_swap`], but works
+    /// for any Arkade destination — including a plain `tark1q…`
+    /// address you got from someone else.
+    pub async fn send_offchain(&self, destination: &str, amount_sats: u64) -> Result<Txid> {
+        let address = ArkAddress::decode(destination).map_err(|e| {
+            Error::InvalidSwap(format!("invalid Arkade address `{destination}`: {e}"))
+        })?;
+        let amount = Amount::from_sat(amount_sats);
+        self.client
+            .send(vec![SendReceiver::bitcoin(address, amount)])
+            .await
+            .map_err(|e| Error::Transport(format!("send_offchain: {e}")))
     }
 }
 
@@ -740,6 +802,17 @@ impl VhtlcClaimContext {
                 unilateral_refund_without_receiver_delay: r
                     .unilateral_refund_without_receiver_delay,
             },
+            // Arkade → Lightning is server-claimed: the user funds the
+            // Arkade VHTLC, the server pays the LN invoice via Boltz
+            // and claims the VHTLC with the resulting preimage. There
+            // is no client-side claim, so we reject this variant up
+            // front rather than silently rebuilding a script the user
+            // can never spend from.
+            GetSwapResponse::ArkadeToLightning(_) => {
+                return Err(Error::InvalidSwap(
+                    "claim() called on an Arkade→Lightning swap — that direction is server-claimed; the SDK has no client-side claim path for it".into(),
+                ));
+            }
         })
     }
 }

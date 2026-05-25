@@ -480,6 +480,72 @@ impl Client {
         )))
     }
 
+    /// Create an Arkade → BTC-on-Lightning swap.
+    ///
+    /// The user funds an Arkade VHTLC; the server uses Boltz to pay the
+    /// user-provided Lightning [`LightningDestination`] and claims the
+    /// VHTLC with the resulting preimage. **No client-side claim path**
+    /// — once the user funds the returned [`SwapFunding::ArkadeAddress`],
+    /// the server owns the rest of the flow.
+    ///
+    /// The destination can be a BOLT11 invoice (amount embedded), a
+    /// Lightning address (`user@host`), or a raw LNURL — the server
+    /// resolves the latter two using LNURL-pay. The SDK passes the
+    /// caller's choice through verbatim; no LNURL resolver is bundled.
+    ///
+    /// Same key-index grind pattern as the other directions so a
+    /// recovered wallet skips already-used indices.
+    ///
+    /// Not reachable through the [`Self::create_swap`] dispatcher: the
+    /// destination shape (3-variant input + sometimes-needed `sats`)
+    /// doesn't fit cleanly into the dispatcher's `Address` +
+    /// `QuoteAmount` arguments.
+    pub async fn create_arkade_to_lightning_swap(
+        &self,
+        destination: crate::types::LightningDestination,
+    ) -> Result<Swap> {
+        let signer = self.signer.as_ref().ok_or_else(|| {
+            Error::InvalidSigner(
+                "Client constructed without a signer — use Client::builder() with .mnemonic / .xprv"
+                    .to_string(),
+            )
+        })?;
+
+        for attempt in 0..MAX_KEY_INDEX_GRIND_ATTEMPTS {
+            let key_index = self.storage.next_key_index()?;
+            let swap_params = signer.derive_swap_params(key_index)?;
+            let refund_pk = hex::encode(swap_params.public_key);
+            let user_id = hex::encode(swap_params.user_id);
+
+            let req = crate::types::CreateArkadeToLightningSwapRequest::new(
+                destination.clone(),
+                refund_pk,
+                user_id,
+                self.referral_code.clone(),
+            );
+            match self.send(req).await {
+                Ok(response) => {
+                    self.storage.put_swap_key_index(&response.id, key_index)?;
+                    return Ok(Swap::from_arkade_to_lightning_response(response));
+                }
+                Err(err) if is_preimage_collision(&err) => {
+                    tracing::warn!(
+                        key_index,
+                        attempt = attempt + 1,
+                        "preimage collision — grinding next key_index",
+                    );
+                    continue;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err(Error::InvalidSwap(format!(
+            "exhausted {MAX_KEY_INDEX_GRIND_ATTEMPTS} key_index attempts looking for an unused preimage — \
+             the backend rejected every derived index. If you recently recovered this wallet from a seed, \
+             try again; otherwise this is a bug.",
+        )))
+    }
+
     /// `GET /swap/{id}` — fetch the current state of a swap by id.
     ///
     /// Not routed through [`Self::send`] because the endpoint has a
@@ -574,12 +640,15 @@ impl Client {
         ))
     }
 
-    /// Total spendable balance of the internal Arkade wallet, in sats.
-    /// Sum of confirmed + pre-confirmed + recoverable VTXOs owned by
-    /// the wallet derived from the configured `identity_mnemonic`.
-    pub async fn arkade_balance_sats(&self) -> Result<u64> {
+    /// Offchain VTXO balance of the internal Arkade wallet, broken
+    /// into confirmed / pre-confirmed / recoverable buckets — see
+    /// [`crate::arkade::ArkadeBalance`]. The headline number a caller
+    /// usually wants is `confirmed_sats` (what's actually spendable
+    /// via [`Self::arkade_send`]); `total_sats()` adds the other two
+    /// for "are funds in flight?" checks.
+    pub async fn arkade_balance(&self) -> Result<crate::arkade::ArkadeBalance> {
         let wallet = crate::arkade::ArkadeWallet::connect(self.arkade_config()?).await?;
-        wallet.offchain_balance_sats().await
+        wallet.offchain_balance().await
     }
 
     /// Roll over all spendable VTXOs + boarding outputs into the next
@@ -598,6 +667,15 @@ impl Client {
     pub async fn arkade_offchain_address(&self) -> Result<String> {
         let wallet = crate::arkade::ArkadeWallet::connect(self.arkade_config()?).await?;
         wallet.offchain_address()
+    }
+
+    /// Send `amount_sats` from the internal Arkade wallet to
+    /// `destination` via an offchain Ark transaction. Returns the Ark
+    /// txid. Primary use case: funding the Arkade VHTLC returned by
+    /// [`Self::create_arkade_to_lightning_swap`].
+    pub async fn arkade_send(&self, destination: &str, amount_sats: u64) -> Result<bitcoin::Txid> {
+        let wallet = crate::arkade::ArkadeWallet::connect(self.arkade_config()?).await?;
+        wallet.send_offchain(destination, amount_sats).await
     }
 }
 
@@ -769,6 +847,15 @@ pub enum SwapFunding {
         /// `lntb…` depending on network).
         invoice: String,
     },
+    /// Arkade → Lightning flow: the user must fund this Arkade VHTLC
+    /// address with `deposit_amount` sats. Once funded, the server
+    /// (via Boltz) pays the user's Lightning invoice and claims the
+    /// VHTLC with the resulting preimage — no client-side claim
+    /// needed.
+    ArkadeAddress {
+        /// Arkade VHTLC address (`tark1q…`) the user funds.
+        address: String,
+    },
 }
 
 impl Swap {
@@ -778,6 +865,7 @@ impl Swap {
         match r {
             GetSwapResponse::EvmToArkade(r) => Self::from_evm_response(r),
             GetSwapResponse::LightningToArkade(r) => Self::from_lightning_response(r),
+            GetSwapResponse::ArkadeToLightning(r) => Self::from_arkade_to_lightning_response(r),
         }
     }
 
@@ -814,6 +902,24 @@ impl Swap {
             deposit_amount: r.source_amount,
             deposit_token: r.source_token.token_id,
             receive_address: r.target_arkade_address,
+            receive_amount: r.target_amount,
+            receive_token: r.target_token.token_id,
+        }
+    }
+
+    fn from_arkade_to_lightning_response(r: crate::types::ArkadeToLightningSwapResponse) -> Self {
+        Self {
+            id: r.id,
+            status: r.status,
+            funding: SwapFunding::ArkadeAddress {
+                address: r.arkade_vhtlc_address,
+            },
+            deposit_amount: r.source_amount,
+            deposit_token: r.source_token.token_id,
+            // The Lightning side has no on-chain address; surface the
+            // resolved invoice instead so callers can display
+            // "you'll pay this invoice" to the user.
+            receive_address: r.client_lightning_invoice,
             receive_amount: r.target_amount,
             receive_token: r.target_token.token_id,
         }
