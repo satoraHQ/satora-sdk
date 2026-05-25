@@ -980,6 +980,20 @@ impl SatoraClient {
             Ok(format!("{:#x}", txid))
         })
     }
+
+    /// On-chain Bitcoin boarding address for the SDK's internal
+    /// Arkade wallet. Send L1 BTC here, then call
+    /// [`Self::arkade_settle`] to promote the boarding output into a
+    /// confirmed VTXO. The address is deterministic per wallet
+    /// identity.
+    pub fn arkade_boarding_address(&self) -> Result<String, SdkError> {
+        runtime().block_on(async {
+            self.inner
+                .arkade_boarding_address()
+                .await
+                .map_err(Into::into)
+        })
+    }
 }
 
 /// Reverse of the existing `From<SdkSwapStatus> for SwapStatus`. Needed

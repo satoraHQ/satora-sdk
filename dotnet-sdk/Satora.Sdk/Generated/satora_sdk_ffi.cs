@@ -777,6 +777,8 @@ static class _UniFFILib {
     
     
     
+    
+    
 
     static _UniFFILib() {
         _UniFFILib.uniffiCheckContractApiVersion();
@@ -806,6 +808,10 @@ static class _UniFFILib {
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_arkade_balance(IntPtr @ptr,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_arkade_boarding_address(IntPtr @ptr,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -1085,6 +1091,10 @@ static class _UniFFILib {
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_boarding_address(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_offchain_address(
     );
 
@@ -1162,6 +1172,12 @@ static class _UniFFILib {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_balance();
             if (checksum != 49598) {
                 throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_balance` checksum `49598`, library returned `{checksum}`");
+            }
+        }
+        {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_boarding_address();
+            if (checksum != 43759) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_boarding_address` checksum `43759`, library returned `{checksum}`");
             }
         }
         {
@@ -1436,6 +1452,15 @@ public interface ISatoraClient {
     /// <exception cref="SdkException"></exception>
     ArkadeBalance ArkadeBalance();
     /// <summary>
+    /// On-chain Bitcoin boarding address for the SDK's internal
+    /// Arkade wallet. Send L1 BTC here, then call
+    /// [`Self::arkade_settle`] to promote the boarding output into a
+    /// confirmed VTXO. The address is deterministic per wallet
+    /// identity.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    string ArkadeBoardingAddress();
+    /// <summary>
     /// Derive the SDK's internal Arkade wallet address. The same
     /// mnemonic always produces the same address (BIP-85 derivation),
     /// so this is the destination for funds from an address-less
@@ -1684,6 +1709,22 @@ public class SatoraClient : ISatoraClient, IDisposable {
         return CallWithPointer(thisPtr => FfiConverterTypeArkadeBalance.INSTANCE.Lift(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
     _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_arkade_balance(thisPtr,  ref _status)
+)));
+    }
+    
+    
+    /// <summary>
+    /// On-chain Bitcoin boarding address for the SDK's internal
+    /// Arkade wallet. Send L1 BTC here, then call
+    /// [`Self::arkade_settle`] to promote the boarding output into a
+    /// confirmed VTXO. The address is deterministic per wallet
+    /// identity.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public string ArkadeBoardingAddress() {
+        return CallWithPointer(thisPtr => FfiConverterString.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_arkade_boarding_address(thisPtr,  ref _status)
 )));
     }
     
