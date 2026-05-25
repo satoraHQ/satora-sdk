@@ -37,6 +37,37 @@ using var client = new Client(
 // ... CreateSwapAsync / FundSwapAsync / ClaimAsync / etc.
 ```
 
+## Supported swap pairs
+
+The SDK currently exposes **EVM-stablecoin → BTC on Arkade** through
+`CreateSwapAsync`. Other directions the backend supports (Lightning ↔
+Arkade, Bitcoin ↔ EVM, Arkade → EVM, etc.) will land as we add
+direction-specific entry points — open an issue if you need one
+prioritised.
+
+Source tokens (use as `sourceToken` with the matching `sourceChain`):
+
+| Token | Chain    | TokenId                 | ChainId            |
+| ----- | -------- | ----------------------- | ------------------ |
+| USDC  | Polygon  | `TokenId.UsdcPolygon`   | `ChainId.Polygon`  |
+| USDC  | Arbitrum | `TokenId.UsdcArbitrum`  | `ChainId.Arbitrum` |
+| USDC  | Ethereum | `TokenId.UsdcEthereum`  | `ChainId.Ethereum` |
+| USDT  | Polygon  | `TokenId.UsdtPolygon`   | `ChainId.Polygon`  |
+| USDT  | Ethereum | `TokenId.UsdtEthereum`  | `ChainId.Ethereum` |
+| USDT0 | Arbitrum | `TokenId.Usdt0Arbitrum` | `ChainId.Arbitrum` |
+| WBTC  | Polygon  | `TokenId.WbtcPolygon`   | `ChainId.Polygon`  |
+| WBTC  | Arbitrum | `TokenId.WbtcArbitrum`  | `ChainId.Arbitrum` |
+| WBTC  | Ethereum | `TokenId.WbtcEthereum`  | `ChainId.Ethereum` |
+
+Target is always `TokenId.Btc` on `ChainId.Arkade`. `gasless: true` is
+supported on every pair.
+
+Notes:
+
+- Pass `receiveTo: null` to `CreateSwapAsync` to land funds in the
+  SDK's own Arkade wallet (requires the 3-arg client constructor that
+  takes an `ArkadeConfig`). Otherwise pass an `Address.Arkade("tark1q…")`.
+
 ## Supported runtimes
 
 The package ships native cdylibs for:

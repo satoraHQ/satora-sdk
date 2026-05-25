@@ -7,20 +7,20 @@ core (`../rust-sdk`) via [UniFFI](https://github.com/mozilla/uniffi-rs).
 
 ```
 +----------------------------+
-|  Satora.Sdk (C#)        |   ← idiomatic C# facade
+|  Satora.Sdk (C#)           |   ← idiomatic C# facade
 |  Client / Version / ...    |
 +----------------------------+
               │ (Task.Run wrap)
               ▼
 +----------------------------+
 |  Generated/                |   ← uniffi-bindgen-cs output
-|  satora_sdk_ffi.cs      |     (regenerated from the cdylib)
+|  satora_sdk_ffi.cs         |     (regenerated from the cdylib)
 +----------------------------+
               │ P/Invoke
               ▼
 +----------------------------+
 |  native/  (Rust cdylib)    |   ← UniFFI exports
-|  libsatora_sdk_ffi.*    |
+|  libsatora_sdk_ffi.*       |
 +----------------------------+
               │ Rust path dep
               ▼
@@ -28,6 +28,16 @@ core (`../rust-sdk`) via [UniFFI](https://github.com/mozilla/uniffi-rs).
 |  ../rust-sdk               |   ← pure Rust SDK
 +----------------------------+
 ```
+
+## Supported swap pairs
+
+`Client::CreateSwapAsync` currently routes only **EVM-stablecoin → BTC
+on Arkade** — the dispatcher in `client.rs` rejects anything else with
+`Error::InvalidSwap`. Sources: USDC / USDT / USDT0 / WBTC on Polygon,
+Arbitrum, or Ethereum (whichever pairs are wired in `TokenId` —
+canonical list in `client-sdk/rust-sdk/src/types/token.rs`). The full
+matrix lives in the nuget README (`Satora.Sdk/README.md`); update both
+in lockstep when you add a direction.
 
 ## Prerequisites
 
