@@ -779,6 +779,8 @@ static class _UniFFILib {
     
     
     
+    
+    
 
     static _UniFFILib() {
         _UniFFILib.uniffiCheckContractApiVersion();
@@ -824,6 +826,10 @@ static class _UniFFILib {
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_arkade_settle(IntPtr @ptr,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_check_deposit_funding(IntPtr @ptr,RustBuffer @swapId,RustBuffer @nodeRpcUrl,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -1107,6 +1113,10 @@ static class _UniFFILib {
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_check_deposit_funding(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_claim(
     );
 
@@ -1196,6 +1206,12 @@ static class _UniFFILib {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_settle();
             if (checksum != 11110) {
                 throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_settle` checksum `11110`, library returned `{checksum}`");
+            }
+        }
+        {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_check_deposit_funding();
+            if (checksum != 3398) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_check_deposit_funding` checksum `3398`, library returned `{checksum}`");
             }
         }
         {
@@ -1486,6 +1502,16 @@ public interface ISatoraClient {
     /// <exception cref="SdkException"></exception>
     string? ArkadeSettle();
     /// <summary>
+    /// Single-shot read of the depositor EOA's funding state — no
+    /// polling, no waiting, no throw on "not funded yet". Use this
+    /// for "is `fund_swap_gasless` ready?" branching.
+    ///
+    /// `node_rpc_url` defaults to the chain-specific public RPC when
+    /// `None` (same defaults the fund call uses).
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    DepositStatus CheckDepositFunding(string @swapId, string? @nodeRpcUrl);
+    /// <summary>
     /// Redeem the Arkade VHTLC for an EVM→Arkade swap that has
     /// reached (or passed) ServerFunded. Sweeps the BTC to
     /// `destination`. Requires a signing client; the Arkade identity
@@ -1771,6 +1797,23 @@ public class SatoraClient : ISatoraClient, IDisposable {
         return CallWithPointer(thisPtr => FfiConverterOptionalString.INSTANCE.Lift(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
     _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_arkade_settle(thisPtr,  ref _status)
+)));
+    }
+    
+    
+    /// <summary>
+    /// Single-shot read of the depositor EOA's funding state — no
+    /// polling, no waiting, no throw on "not funded yet". Use this
+    /// for "is `fund_swap_gasless` ready?" branching.
+    ///
+    /// `node_rpc_url` defaults to the chain-specific public RPC when
+    /// `None` (same defaults the fund call uses).
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public DepositStatus CheckDepositFunding(string @swapId, string? @nodeRpcUrl) {
+        return CallWithPointer(thisPtr => FfiConverterTypeDepositStatus.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_check_deposit_funding(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterOptionalString.INSTANCE.Lower(@nodeRpcUrl), ref _status)
 )));
     }
     
@@ -2155,6 +2198,76 @@ class FfiConverterTypeClaimReceipt: FfiConverterRustBuffer<ClaimReceipt> {
     public override void Write(ClaimReceipt value, BigEndianStream stream) {
             FfiConverterString.INSTANCE.Write(value.@arkTxid, stream);
             FfiConverterUInt64.INSTANCE.Write(value.@claimAmountSats, stream);
+    }
+}
+
+
+
+/// <summary>
+/// Single-shot snapshot of the depositor EOA's funding state.
+/// `source_token_balance` and `source_token_required` are decimal
+/// strings (U256 doesn't fit in a uniffi-native int); native balance
+/// fits in u64 in practice.
+/// </summary>
+/// <param name="source_token_balance">
+/// Current source-token balance at the depositor EOA, smallest unit.
+/// </param>
+/// <param name="source_token_required">
+/// Amount the depositor EOA must hold before the funding userOp
+/// can be submitted, smallest unit.
+/// </param>
+/// <param name="native_balance_wei">
+/// Native (ETH / MATIC / …) balance at the depositor EOA, wei.
+/// </param>
+/// <param name="has_sufficient_source_token">
+/// `source_token_balance >= source_token_required`.
+/// </param>
+public record DepositStatus (
+    /// <summary>
+    /// Current source-token balance at the depositor EOA, smallest unit.
+    /// </summary>
+    string @sourceTokenBalance, 
+    /// <summary>
+    /// Amount the depositor EOA must hold before the funding userOp
+    /// can be submitted, smallest unit.
+    /// </summary>
+    string @sourceTokenRequired, 
+    /// <summary>
+    /// Native (ETH / MATIC / …) balance at the depositor EOA, wei.
+    /// </summary>
+    ulong @nativeBalanceWei, 
+    /// <summary>
+    /// `source_token_balance >= source_token_required`.
+    /// </summary>
+    bool @hasSufficientSourceToken
+) {
+}
+
+class FfiConverterTypeDepositStatus: FfiConverterRustBuffer<DepositStatus> {
+    public static FfiConverterTypeDepositStatus INSTANCE = new FfiConverterTypeDepositStatus();
+
+    public override DepositStatus Read(BigEndianStream stream) {
+        return new DepositStatus(
+            @sourceTokenBalance: FfiConverterString.INSTANCE.Read(stream),
+            @sourceTokenRequired: FfiConverterString.INSTANCE.Read(stream),
+            @nativeBalanceWei: FfiConverterUInt64.INSTANCE.Read(stream),
+            @hasSufficientSourceToken: FfiConverterBoolean.INSTANCE.Read(stream)
+        );
+    }
+
+    public override int AllocationSize(DepositStatus value) {
+        return 0
+            + FfiConverterString.INSTANCE.AllocationSize(value.@sourceTokenBalance)
+            + FfiConverterString.INSTANCE.AllocationSize(value.@sourceTokenRequired)
+            + FfiConverterUInt64.INSTANCE.AllocationSize(value.@nativeBalanceWei)
+            + FfiConverterBoolean.INSTANCE.AllocationSize(value.@hasSufficientSourceToken);
+    }
+
+    public override void Write(DepositStatus value, BigEndianStream stream) {
+            FfiConverterString.INSTANCE.Write(value.@sourceTokenBalance, stream);
+            FfiConverterString.INSTANCE.Write(value.@sourceTokenRequired, stream);
+            FfiConverterUInt64.INSTANCE.Write(value.@nativeBalanceWei, stream);
+            FfiConverterBoolean.INSTANCE.Write(value.@hasSufficientSourceToken, stream);
     }
 }
 
