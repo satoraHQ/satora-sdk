@@ -76,8 +76,11 @@ impl KnownChain {
     pub fn default_node_rpc_url(&self) -> Option<&'static str> {
         match self {
             Self::Arbitrum => Some("https://arb1.arbitrum.io/rpc"),
-            Self::Ethereum => Some("https://eth.llamarpc.com"),
-            Self::Polygon => Some("https://polygon-rpc.com"),
+            // publicnode also publishes a wss:// endpoint at the same
+            // host — switch to alloy's WS transport if we ever need
+            // pub/sub. For request/response the https URL is fine.
+            Self::Ethereum => Some("https://ethereum-rpc.publicnode.com"),
+            Self::Polygon => Some("https://polygon.drpc.org"),
             Self::Bitcoin | Self::Lightning | Self::Arkade => None,
         }
     }
@@ -186,11 +189,11 @@ mod tests {
         );
         assert_eq!(
             KnownChain::Ethereum.default_node_rpc_url(),
-            Some("https://eth.llamarpc.com"),
+            Some("https://ethereum-rpc.publicnode.com"),
         );
         assert_eq!(
             KnownChain::Polygon.default_node_rpc_url(),
-            Some("https://polygon-rpc.com"),
+            Some("https://polygon.drpc.org"),
         );
     }
 
