@@ -86,6 +86,29 @@ Notes:
   SDK's own Arkade wallet (the identity derived from your mnemonic).
   Otherwise pass an `Address.Arkade("tark1q…")`.
 
+## Funding swaps (gasless)
+
+The simplest path for an EVM-funded swap — let the SDK pick the
+node RPC URL from the swap's deposit chain:
+
+```csharp
+var receipt = await client.FundSwapAsync(swapId);
+```
+
+Defaults come from the Rust core (`KnownChain::default_node_rpc_url`),
+which currently points at the public RPCs for Arbitrum / Ethereum /
+Polygon — fine for low-volume use. For production volume, custom
+paymaster context, or gas overrides, use the explicit overload:
+
+```csharp
+var receipt = await client.FundSwapAsync(
+    swapId,
+    new GaslessOpts(
+        nodeRpcUrl: "https://your-private-rpc.example/v3/<key>",
+        paymasterContextJson: null,
+        gasOverrides: null));
+```
+
 ## Supported runtimes
 
 The package ships native cdylibs for:

@@ -81,13 +81,15 @@ pub struct GasOverrides {
 /// - which EVM node to talk to (depends on the consumer's provider stack);
 /// - paymaster context (depends on the paymaster's policy ID etc);
 /// - whether to bypass `eth_estimateUserOperationGas` and with what limits.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct GaslessOpts {
     /// EVM node RPC URL the SDK uses for `eth_chainId`, balance reads,
-    /// etc. Required because most stacks split bundler + node (alto +
-    /// Anvil locally; Alchemy in prod is the exception where bundler +
-    /// node share a URL).
-    pub node_rpc_url: Url,
+    /// etc. `None` means "pick the chain's default" — the fund function
+    /// resolves it via
+    /// [`KnownChain::default_node_rpc_url`](crate::types::KnownChain::default_node_rpc_url)
+    /// for the swap's deposit chain. Override with a private provider
+    /// (Alchemy / Infura / a self-hosted node) for production volume.
+    pub node_rpc_url: Option<Url>,
     /// Paymaster context (e.g. `{"policyId":"<uuid>"}` for Alchemy Gas
     /// Manager). Ignored when the backend returns no paymaster.
     /// `None` => `Value::Null`.
@@ -98,12 +100,19 @@ pub struct GaslessOpts {
 }
 
 impl GaslessOpts {
-    /// Minimal constructor — only the EVM node RPC URL is required.
+    /// All-default opts — the fund function picks the node RPC URL
+    /// from the swap's deposit chain. Equivalent to
+    /// `GaslessOpts::default()`; named for discoverability.
+    pub fn defaults() -> Self {
+        Self::default()
+    }
+
+    /// Construct with an explicit node RPC URL. Convenience for the
+    /// common "override the default" case.
     pub fn new(node_rpc_url: Url) -> Self {
         Self {
-            node_rpc_url,
-            paymaster_context: None,
-            gas_overrides: None,
+            node_rpc_url: Some(node_rpc_url),
+            ..Self::default()
         }
     }
 
@@ -183,9 +192,31 @@ impl Client {
                 swap.deposit_token.as_wire_str(),
             ))
         })?;
-        let remote = self.fetch_aa_config(chain.into()).await?;
+        let remote = self.fetch_aa_config(chain.clone().into()).await?;
+        // Resolve the node RPC URL: explicit override wins; otherwise
+        // use the per-chain default. Error if the chain has no default
+        // and the caller didn't supply one (shouldn't happen for the
+        // 3 EVM chains we support, but stays defensive against future
+        // chains landing without a default URL set).
+        let node_rpc_url = match opts.node_rpc_url {
+            Some(url) => url,
+            None => {
+                let default = chain.default_node_rpc_url().ok_or_else(|| {
+                    Error::InvalidSwap(format!(
+                        "swap `{swap_id}` deposit chain `{}` has no default node RPC URL — pass GaslessOpts::new(url) with one explicitly",
+                        chain.as_wire_str(),
+                    ))
+                })?;
+                Url::parse(default).map_err(|e| {
+                    Error::InvalidSwap(format!(
+                        "internal: default node RPC URL `{default}` for chain `{}` failed to parse: {e}",
+                        chain.as_wire_str(),
+                    ))
+                })?
+            }
+        };
         let aa_config = remote.into_config(
-            opts.node_rpc_url,
+            node_rpc_url,
             opts.paymaster_context.unwrap_or(Value::Null),
             opts.gas_overrides,
         );

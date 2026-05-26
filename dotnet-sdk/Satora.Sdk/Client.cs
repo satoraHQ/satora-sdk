@@ -465,6 +465,23 @@ public sealed class Client : IDisposable
     }
 
     /// <summary>
+    /// Convenience overload: submits the gasless funding userOp with
+    /// all-default options. The Rust core picks the node RPC URL from
+    /// the swap's deposit chain (public RPC per chain — fine for
+    /// low-volume use). Use the
+    /// <see cref="FundSwapAsync(string, GaslessOpts, CancellationToken)"/>
+    /// overload when you need a custom RPC provider, paymaster context,
+    /// or gas overrides.
+    /// </summary>
+    public Task<FundReceipt> FundSwapAsync(
+        string swapId,
+        CancellationToken cancellationToken = default)
+        => FundSwapAsync(
+            swapId,
+            new GaslessOpts(nodeRpcUrl: null, paymasterContextJson: null, gasOverrides: null),
+            cancellationToken);
+
+    /// <summary>
     /// Fetch a swap's current state. Works on any client (signing or
     /// read-only). Returns the same shape <see cref="CreateSwapAsync"/>
     /// does, so callers can re-read after the backend transitions

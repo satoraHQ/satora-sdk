@@ -669,8 +669,11 @@ impl SatoraClient {
 /// - whether to bypass `eth_estimateUserOperationGas` and with what limits.
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct GaslessOpts {
-    /// EVM node RPC URL (e.g. Alchemy / Infura). Required.
-    pub node_rpc_url: String,
+    /// EVM node RPC URL (e.g. Alchemy / Infura). `None` means
+    /// "pick the chain's default" — the SDK resolves it at fund
+    /// time from the swap's deposit chain. Set explicitly only
+    /// when overriding the public-RPC default.
+    pub node_rpc_url: Option<String>,
     /// Paymaster context as a JSON string (e.g.
     /// `'{"policyId":"<uuid>"}'` for Alchemy Gas Manager). Ignored when
     /// the backend returns no paymaster. `None` => JSON null.
@@ -713,11 +716,18 @@ pub struct FundSwapReceipt {
 
 /// Translate the FFI's URL-string opts into the SDK's typed shape.
 /// Returns `SdkError::Internal` for malformed URL / paymaster JSON.
+/// A `None` node_rpc_url passes through — the SDK fund function
+/// resolves the per-chain default at fund time.
 fn gasless_opts_into_sdk(o: GaslessOpts) -> Result<SdkGaslessOpts, SdkError> {
     use url::Url;
-    let node_rpc_url = Url::parse(&o.node_rpc_url).map_err(|e| SdkError::Internal {
-        message: format!("GaslessOpts.node_rpc_url parse: {e}"),
-    })?;
+    let node_rpc_url = o
+        .node_rpc_url
+        .as_deref()
+        .map(Url::parse)
+        .transpose()
+        .map_err(|e| SdkError::Internal {
+            message: format!("GaslessOpts.node_rpc_url parse: {e}"),
+        })?;
     let paymaster_context = o
         .paymaster_context_json
         .as_deref()
@@ -726,7 +736,10 @@ fn gasless_opts_into_sdk(o: GaslessOpts) -> Result<SdkGaslessOpts, SdkError> {
         .map_err(|e: serde_json::Error| SdkError::Internal {
             message: format!("GaslessOpts.paymaster_context_json parse: {e}"),
         })?;
-    let mut sdk_opts = SdkGaslessOpts::new(node_rpc_url);
+    let mut sdk_opts = SdkGaslessOpts {
+        node_rpc_url,
+        ..Default::default()
+    };
     if let Some(ctx) = paymaster_context {
         sdk_opts = sdk_opts.with_paymaster_context(ctx);
     }
