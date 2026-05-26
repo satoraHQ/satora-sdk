@@ -88,7 +88,14 @@ jobs:
             target: aarch64-unknown-linux-gnu
             lib: libsatora_sdk_ffi.so
           - rid: osx-x64
-            os: macos-13
+            # Cross-compile from the arm64 macos-14 host: GitHub deprecated
+            # macos-13 (Intel) runners and jobs targeting that label sit
+            # queued indefinitely. The `Install Rust toolchain` step already
+            # runs `rustup target add ${{ matrix.target }}`, and Apple's
+            # clang on arm64 ships the x86_64 SDK out of the box — so a
+            # plain `cargo build --target x86_64-apple-darwin` produces the
+            # Intel dylib without extra setup.
+            os: macos-14
             target: x86_64-apple-darwin
             lib: libsatora_sdk_ffi.dylib
     runs-on: ${{ matrix.os }}
