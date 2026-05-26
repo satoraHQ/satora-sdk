@@ -158,74 +158,40 @@ public sealed class Client : IDisposable
     /// for tests / extension code that wants to drop down.
     /// </summary>
     internal readonly Ffi.SatoraClient _ffi;
-    private readonly bool _hasMnemonic;
 
     /// <summary>
-    /// Construct a read-only client — supports <see cref="GetVersionAsync"/>
-    /// and <see cref="GetQuoteAsync"/>. Calls that require a signer (e.g.
-    /// <see cref="CreateSwapAsync"/>) throw if invoked from here.
+    /// Construct a client. Mnemonic is required (drives EVM signing
+    /// and the Arkade identity — they're always derived from the same
+    /// seed, consumers don't get to mismatch them). Every other knob
+    /// has a sensible default keyed off <paramref name="network"/>;
+    /// pass overrides only for dev/test setups.
     /// </summary>
-    /// <param name="baseUrl">Satora backend base URL.</param>
+    /// <param name="mnemonic">BIP-39 signing mnemonic. Also used as the Arkade identity.</param>
+    /// <param name="network">Target Bitcoin network. Selects the default URL set.</param>
+    /// <param name="baseUrl">Override the Satora backend base URL.</param>
+    /// <param name="arkadeServerUrl">Override the Arkade arkd gRPC endpoint.</param>
+    /// <param name="esploraUrl">Override the esplora HTTP endpoint.</param>
     /// <param name="referralCode">
     /// Optional referral code attached to every swap/quote originated
     /// through this client. Set it once here instead of repeating it
     /// per-call. Empty string is treated as null.
     /// </param>
-    public Client(string baseUrl, string? referralCode = null)
-    {
-        // uniffi-bindgen-cs maps the first `#[uniffi::constructor]` to
-        // a normal C# `new T(...)`; secondary constructors become static
-        // factories (`NewSigning` below).
-        _ffi = TryOrThrow(() => new Ffi.SatoraClient(baseUrl, referralCode));
-        _hasMnemonic = false;
-    }
-
-    /// <summary>
-    /// Construct a signing client. The mnemonic is needed to derive the
-    /// per-swap preimage and EVM key for create / fund / claim flows.
-    /// Held in memory for the lifetime of this instance — callers
-    /// concerned about exposure should keep the client short-lived.
-    ///
-    /// Use <see cref="Client(string, string, ArkadeConfig, string?)"/>
-    /// when you also need the Arkade-side methods
-    /// (<see cref="ClaimAsync"/>, <see cref="GetArkadeBalanceSatsAsync"/>,
-    /// <see cref="SettleArkadeAsync"/>,
-    /// <see cref="GetArkadeAddressAsync"/>, and
-    /// <see cref="CreateSwapAsync"/> with no <c>receiveTo</c>).
-    /// </summary>
-    /// <param name="baseUrl">Satora backend base URL.</param>
-    /// <param name="mnemonic">BIP-39 signing mnemonic.</param>
-    /// <param name="referralCode">
-    /// Optional referral code attached to every swap/quote originated
-    /// through this client.
-    /// </param>
-    public Client(string baseUrl, string mnemonic, string? referralCode = null)
-    {
-        _ffi = TryOrThrow(() => Ffi.SatoraClient.NewSigning(baseUrl, mnemonic, referralCode));
-        _hasMnemonic = true;
-    }
-
-    /// <summary>
-    /// Construct a signing client with an Arkade-side config. Required
-    /// for any method that talks to arkd (claim, balance, settle,
-    /// offchain address, and the address-less <see cref="CreateSwapAsync"/>).
-    /// </summary>
-    /// <param name="baseUrl">Satora backend base URL.</param>
-    /// <param name="mnemonic">BIP-39 signing mnemonic.</param>
-    /// <param name="arkadeConfig">gRPC endpoint, esplora URL, identity mnemonic, network.</param>
-    /// <param name="referralCode">
-    /// Optional referral code attached to every swap/quote originated
-    /// through this client.
-    /// </param>
     public Client(
-        string baseUrl,
         string mnemonic,
-        ArkadeConfig arkadeConfig,
+        BitcoinNetwork network = BitcoinNetwork.Mainnet,
+        string? baseUrl = null,
+        string? arkadeServerUrl = null,
+        string? esploraUrl = null,
         string? referralCode = null)
     {
+        var defaults = Defaults.For(network);
+        var arkadeConfig = new Ffi.ArkadeConfig(
+            arkadeServerUrl ?? defaults.ArkadeServerUrl,
+            esploraUrl ?? defaults.EsploraUrl,
+            mnemonic,
+            network);
         _ffi = TryOrThrow(() => Ffi.SatoraClient.NewWithArkade(
-            baseUrl, mnemonic, arkadeConfig, referralCode));
-        _hasMnemonic = true;
+            baseUrl ?? defaults.BaseUrl, mnemonic, arkadeConfig, referralCode));
     }
 
     /// <summary>Releases the FFI handle. Idempotent.</summary>
@@ -302,11 +268,8 @@ public sealed class Client : IDisposable
     /// <param name="amount">Source / target amount mutex.</param>
     /// <param name="receiveTo">
     /// Destination address tagged with its rail. Pass <c>null</c> to
-    /// route to the SDK's own internal Arkade wallet — requires the
-    /// client to have been built via
-    /// <see cref="Client(string, string, ArkadeConfig)"/>. The internal
-    /// wallet target is only valid when the target token is BTC on
-    /// Arkade.
+    /// route to the SDK's own internal Arkade wallet — only valid when
+    /// the target token is BTC on Arkade.
     /// </param>
     /// <param name="gasless">
     /// When <c>true</c>, the backend returns a deposit address the user
@@ -331,11 +294,6 @@ public sealed class Client : IDisposable
         ushort? extraFeesBps = null,
         CancellationToken cancellationToken = default)
     {
-        if (!_hasMnemonic)
-        {
-            throw new InvalidOperationException(
-                "CreateSwapAsync requires a mnemonic — construct the client with `new Client(baseUrl, mnemonic)`.");
-        }
         var ffi = _ffi;
         return Task.Run(
             () => TryOrThrow(() => SwapDetails.FromFfi(ffi.CreateSwap(
@@ -354,8 +312,7 @@ public sealed class Client : IDisposable
     /// Offchain VTXO balance of the SDK's internal Arkade wallet,
     /// broken into the three buckets ark-client distinguishes — see
     /// <see cref="ArkadeBalance"/>. Hits the Arkade server's gRPC
-    /// indexer. Requires the client to have been built via
-    /// <see cref="Client(string, string, ArkadeConfig, string?)"/>.
+    /// indexer.
     /// </summary>
     /// <remarks>
     /// For "what can I send right now?" use
@@ -450,11 +407,6 @@ public sealed class Client : IDisposable
         LightningDestination destination,
         CancellationToken cancellationToken = default)
     {
-        if (!_hasMnemonic)
-        {
-            throw new InvalidOperationException(
-                "CreateArkadeToLightningSwapAsync requires a mnemonic — construct the client with `new Client(baseUrl, mnemonic, ...)`.");
-        }
         var ffi = _ffi;
         return Task.Run(
             () => TryOrThrow(() => SwapDetails.FromFfi(ffi.CreateArkadeToLightningSwap(destination))),
@@ -506,11 +458,6 @@ public sealed class Client : IDisposable
         GaslessOpts opts,
         CancellationToken cancellationToken = default)
     {
-        if (!_hasMnemonic)
-        {
-            throw new InvalidOperationException(
-                "FundSwapAsync requires a mnemonic — construct the client with `new Client(baseUrl, mnemonic)`.");
-        }
         var ffi = _ffi;
         return Task.Run(
             () => TryOrThrow(() => FundReceipt.FromFfi(ffi.FundSwapGasless(swapId, opts))),
@@ -566,27 +513,45 @@ public sealed class Client : IDisposable
     /// </summary>
     /// <param name="swapId">UUID of a swap whose backend state is at least <see cref="SwapStatus.ServerFunded"/>.</param>
     /// <param name="destination">Arkade address (`tark1…`) to receive the BTC.</param>
-    /// <remarks>
-    /// Requires the client to have been built via
-    /// <see cref="Client(string, string, ArkadeConfig)"/>. The Arkade
-    /// identity mnemonic on the <c>ArkadeConfig</c> MUST match the
-    /// mnemonic used to derive the receive address passed to
-    /// <see cref="CreateSwapAsync"/>, otherwise the VHTLC's receiver
-    /// key won't match the claim signer.
-    /// </remarks>
     public Task<ClaimReceipt> ClaimAsync(
         string swapId,
         string destination,
         CancellationToken cancellationToken = default)
     {
-        if (!_hasMnemonic)
-        {
-            throw new InvalidOperationException(
-                "ClaimAsync requires a mnemonic — construct the client with `new Client(baseUrl, mnemonic)`.");
-        }
         var ffi = _ffi;
         return Task.Run(
             () => TryOrThrow(() => ClaimReceipt.FromFfi(ffi.Claim(swapId, destination))),
             cancellationToken);
     }
+}
+
+/// <summary>
+/// Network-keyed default endpoints for the <see cref="Client"/>
+/// constructor. Internal so the surface stays one-knob; consumers
+/// that need a non-default URL pass it explicitly.
+/// </summary>
+internal static class Defaults
+{
+    internal readonly record struct Endpoints(string BaseUrl, string ArkadeServerUrl, string EsploraUrl);
+
+    internal static Endpoints For(BitcoinNetwork network) => network switch
+    {
+        BitcoinNetwork.Mainnet => new(
+            "https://api.satora.io",
+            "https://arkade.computer",
+            "https://mempool.space/api"),
+        // Testnet and Signet both route to mutinynet — vanilla Bitcoin
+        // testnet isn't supported by our Arkade infrastructure, and
+        // "testnet" in user-facing language really means "a working
+        // test environment" (= mutinynet, which is technically a Signet).
+        BitcoinNetwork.Testnet or BitcoinNetwork.Signet => new(
+            "https://mutinynetswap.lendasat.com",
+            "https://mutinynet.arkade.sh",
+            "https://mutinynet.com/api"),
+        BitcoinNetwork.Regtest => new(
+            "http://localhost:3333",
+            "http://localhost:7070",
+            "http://localhost:3000"),
+        _ => throw new ArgumentOutOfRangeException(nameof(network), network, "Unsupported network."),
+    };
 }

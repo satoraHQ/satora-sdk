@@ -5,11 +5,17 @@
 
 using Satora.Sdk;
 using Xunit;
+using BitcoinNetwork = uniffi.satora_sdk_ffi.BitcoinNetwork;
 
 namespace Satora.Sdk.Tests;
 
 public class ClientTests
 {
+    // BIP-39 standard test vector. Real key, but never sent on the wire
+    // for the construction-only tests below.
+    private const string TestMnemonic =
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
     /// <summary>
     /// Smoke test that exercises the entire FFI call chain (Rust →
     /// cdylib → uniffi-generated C# → facade) against a real server.
@@ -27,7 +33,7 @@ public class ClientTests
             return;
         }
 
-        var client = new Client(baseUrl);
+        using var client = new Client(TestMnemonic, baseUrl: baseUrl);
         var version = await client.GetVersionAsync();
         Assert.False(string.IsNullOrEmpty(version.Tag));
         Assert.False(string.IsNullOrEmpty(version.CommitHash));
@@ -39,14 +45,31 @@ public class ClientTests
         // Pure construction must not touch the network or block —
         // protects against regressions where someone accidentally
         // pushes the FFI call into the constructor.
-        var client = new Client("https://example.invalid");
+        using var client = new Client(TestMnemonic);
+        Assert.NotNull(client);
+    }
+
+    /// <summary>
+    /// Every BitcoinNetwork variant has a default URL set; construction
+    /// against each must succeed (defaults are wired, no network calls
+    /// happen at ctor time). If a new variant lands in the FFI enum
+    /// without a matching Defaults.For entry, this catches it.
+    /// </summary>
+    [Theory]
+    [InlineData(BitcoinNetwork.Mainnet)]
+    [InlineData(BitcoinNetwork.Testnet)]
+    [InlineData(BitcoinNetwork.Signet)]
+    [InlineData(BitcoinNetwork.Regtest)]
+    public void ConstructionWithEachNetworkSucceeds(BitcoinNetwork network)
+    {
+        using var client = new Client(TestMnemonic, network);
         Assert.NotNull(client);
     }
 
     [Fact]
     public async Task InvalidBaseUrlThrowsSdkException()
     {
-        var client = new Client("not a url");
+        using var client = new Client(TestMnemonic, baseUrl: "not a url");
         // The Rust side returns Error::InvalidBaseUrl, which the FFI
         // maps to SdkException.Internal. We just check that something
         // throws — the message format is implementation detail.

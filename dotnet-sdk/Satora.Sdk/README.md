@@ -20,22 +20,40 @@ using Satora.Sdk;
 ```csharp
 using Satora.Sdk;
 
-// Read-only client — version, quotes, status lookups.
-using var client = new Client("https://api.satora.io");
+// One constructor. Mnemonic is required and drives both the EVM
+// signer and the Arkade identity (consumers don't get to mismatch
+// them). All other knobs default off the chosen network.
+using var client = new Client(
+    mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about");
 
 var version = await client.GetVersionAsync();
 Console.WriteLine($"Server: {version.Tag} ({version.CommitHash})");
 ```
 
-For swap creation, funding, and claiming you need a signing client:
-
 ```csharp
-using var client = new Client(
-    baseUrl: "https://api.satora.io",
-    mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about");
+// Dev / mutinynet
+using var client = new Client(mnemonic, BitcoinNetwork.Signet);
 
-// ... CreateSwapAsync / FundSwapAsync / ClaimAsync / etc.
+// Full override (rare — e.g. pointing at a local stack)
+using var client = new Client(
+    mnemonic,
+    BitcoinNetwork.Regtest,
+    baseUrl: "http://localhost:3333",
+    arkadeServerUrl: "http://localhost:7070",
+    esploraUrl: "http://localhost:3000");
 ```
+
+### Network defaults
+
+| `BitcoinNetwork` | `baseUrl`                            | `arkadeServerUrl`             | `esploraUrl`                |
+| ---------------- | ------------------------------------ | ----------------------------- | --------------------------- |
+| `Mainnet`        | `https://api.satora.io`              | `https://arkade.computer`     | `https://mempool.space/api` |
+| `Testnet`        | `https://mutinynetswap.lendasat.com` | `https://mutinynet.arkade.sh` | `https://mutinynet.com/api` |
+| `Signet`         | `https://mutinynetswap.lendasat.com` | `https://mutinynet.arkade.sh` | `https://mutinynet.com/api` |
+| `Regtest`        | `http://localhost:3333`              | `http://localhost:7070`       | `http://localhost:3000`     |
+
+`Testnet` and `Signet` both route to mutinynet — vanilla Bitcoin testnet
+isn't supported by the Arkade infrastructure.
 
 ## Supported swap pairs
 
@@ -65,8 +83,8 @@ supported on every pair.
 Notes:
 
 - Pass `receiveTo: null` to `CreateSwapAsync` to land funds in the
-  SDK's own Arkade wallet (requires the 3-arg client constructor that
-  takes an `ArkadeConfig`). Otherwise pass an `Address.Arkade("tark1q…")`.
+  SDK's own Arkade wallet (the identity derived from your mnemonic).
+  Otherwise pass an `Address.Arkade("tark1q…")`.
 
 ## Supported runtimes
 
