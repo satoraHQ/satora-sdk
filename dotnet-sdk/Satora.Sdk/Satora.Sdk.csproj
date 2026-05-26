@@ -114,5 +114,11 @@
           PackagePath="runtimes/win-x64/native/satora_sdk_ffi.dll"
           Visible="false" />
   </ItemGroup>
+  <ItemGroup Condition="Exists('..\native\target\aarch64-unknown-linux-gnu\release\libsatora_sdk_ffi.so')">
+    <None Include="..\native\target\aarch64-unknown-linux-gnu\release\libsatora_sdk_ffi.so"
+          Pack="true"
+          PackagePath="runtimes/linux-arm64/native/libsatora_sdk_ffi.so"
+          Visible="false" />
+  </ItemGroup>
 
 </Project>

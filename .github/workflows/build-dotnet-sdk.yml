@@ -83,6 +83,10 @@ jobs:
             os: windows-latest
             target: x86_64-pc-windows-msvc
             lib: satora_sdk_ffi.dll
+          - rid: linux-arm64
+            os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            lib: libsatora_sdk_ffi.so
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -180,8 +184,9 @@ jobs:
             [osx-arm64]=aarch64-apple-darwin
             [linux-x64]=x86_64-unknown-linux-gnu
             [win-x64]=x86_64-pc-windows-msvc
+            [linux-arm64]=aarch64-unknown-linux-gnu
           )
-          for rid in osx-arm64 linux-x64 win-x64; do
+          for rid in osx-arm64 linux-x64 win-x64 linux-arm64; do
             triple="${triple_for_rid[$rid]}"
             mkdir -p "dotnet-sdk/native/target/${triple}/release"
             cp -v native-artifacts/native-${rid}/* \
