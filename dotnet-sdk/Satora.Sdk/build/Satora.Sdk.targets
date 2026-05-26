@@ -1,0 +1,28 @@
+<Project>
+  <!--
+    Opt-in flatten of native libs into $(PublishDir).
+
+    Standard .NET consumers leave this off and the runtime resolves
+    `runtimes/<rid>/native/<lib>` via deps.json automatically.
+
+    Plugin hosts that load the consumer assembly into a custom
+    AssemblyLoadContext (BTCPay Server is one) don't honor the
+    plugin's own deps.json for native resolution — they search flat
+    in the plugin install dir. Those consumers set
+      <SatoraSdkFlattenNativeLibs>true</SatoraSdkFlattenNativeLibs>
+    in their csproj and publish with `-r <rid>` so only the matching
+    native lib ends up in runtimes/ (otherwise linux-x64 and
+    linux-arm64 would collide on the shared `libsatora_sdk_ffi.so`
+    filename when flattened).
+  -->
+  <Target Name="FlattenSatoraSdkNativeLibs"
+          AfterTargets="Publish"
+          Condition="'$(SatoraSdkFlattenNativeLibs)' == 'true'">
+    <ItemGroup>
+      <_SatoraSdkNativeLibs Include="$(PublishDir)runtimes\**\native\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_SatoraSdkNativeLibs)"
+          DestinationFolder="$(PublishDir)"
+          SkipUnchangedFiles="true" />
+  </Target>
+</Project>
