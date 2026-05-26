@@ -32,6 +32,7 @@
 
   <ItemGroup>
     <None Include="README.md" Pack="true" PackagePath="\" />
+    <None Include="build\Satora.Sdk.targets" Pack="true" PackagePath="build\" />
   </ItemGroup>
 
   <!-- Surface the uniffi-generated tagged enums under our public
@@ -118,6 +119,12 @@
     <None Include="..\native\target\aarch64-unknown-linux-gnu\release\libsatora_sdk_ffi.so"
           Pack="true"
           PackagePath="runtimes/linux-arm64/native/libsatora_sdk_ffi.so"
+          Visible="false" />
+  </ItemGroup>
+  <ItemGroup Condition="Exists('..\native\target\x86_64-apple-darwin\release\libsatora_sdk_ffi.dylib')">
+    <None Include="..\native\target\x86_64-apple-darwin\release\libsatora_sdk_ffi.dylib"
+          Pack="true"
+          PackagePath="runtimes/osx-x64/native/libsatora_sdk_ffi.dylib"
           Visible="false" />
   </ItemGroup>
 

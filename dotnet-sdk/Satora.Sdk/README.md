@@ -73,10 +73,34 @@ Notes:
 The package ships native cdylibs for:
 
 - `osx-arm64` (Apple Silicon)
+- `osx-x64` (Intel Mac)
 - `linux-x64`
+- `linux-arm64`
 - `win-x64`
 
 Other RIDs are not yet packaged — open an issue if you need one.
+
+## Plugin-host environments (BTCPay Server, etc.)
+
+If you're consuming this SDK from a plugin loaded by a host that uses
+a custom `AssemblyLoadContext` and doesn't honor `runtimes/<rid>/native/`
+resolution (e.g. BTCPay Server plugins), add this to your csproj and
+publish with an explicit RID:
+
+```xml
+<PropertyGroup>
+  <SatoraSdkFlattenNativeLibs>true</SatoraSdkFlattenNativeLibs>
+</PropertyGroup>
+```
+
+```bash
+dotnet publish -c Release -r linux-arm64 --no-self-contained
+```
+
+This copies `libsatora_sdk_ffi.<so|dylib|dll>` flat into the publish
+output so the plugin loader's flat search can find it. Use an explicit
+RID because `linux-x64` and `linux-arm64` share `libsatora_sdk_ffi.so`
+as a filename and would collide after flattening.
 
 ## Errors
 
