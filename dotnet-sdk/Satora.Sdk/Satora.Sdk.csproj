@@ -17,7 +17,7 @@
 
     <!-- NuGet package metadata (preliminary; bump on publish). -->
     <PackageId>Satora.Sdk</PackageId>
-    <Version>0.0.1-alpha</Version>
+    <Version>0.1.0-alpha</Version>
     <Authors>Satora</Authors>
     <Description>
       .NET bindings for the Satora SDK. Thin wrapper over a Rust core
@@ -49,7 +49,6 @@
     <Using Include="uniffi.satora_sdk_ffi.GaslessOpts" Alias="GaslessOpts" />
     <Using Include="uniffi.satora_sdk_ffi.GasOverrides" Alias="GasOverrides" />
     <Using Include="uniffi.satora_sdk_ffi.FundSwapReceipt" Alias="FundSwapReceiptRaw" />
-    <Using Include="uniffi.satora_sdk_ffi.ArkadeConfig" Alias="ArkadeConfig" />
     <Using Include="uniffi.satora_sdk_ffi.BitcoinNetwork" Alias="BitcoinNetwork" />
     <Using Include="uniffi.satora_sdk_ffi.ClaimReceipt" Alias="ClaimReceiptRaw" />
     <Using Include="uniffi.satora_sdk_ffi.LightningDestination" Alias="LightningDestination" />

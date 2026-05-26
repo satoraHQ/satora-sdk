@@ -24,7 +24,6 @@ using QuoteAmount = uniffi.satora_sdk_ffi.QuoteAmount;
 using Address = uniffi.satora_sdk_ffi.Address;
 using GaslessOpts = uniffi.satora_sdk_ffi.GaslessOpts;
 using GasOverrides = uniffi.satora_sdk_ffi.GasOverrides;
-using ArkadeConfig = uniffi.satora_sdk_ffi.ArkadeConfig;
 using BitcoinNetwork = uniffi.satora_sdk_ffi.BitcoinNetwork;
 using SwapStatus = uniffi.satora_sdk_ffi.SwapStatus;
 using SwapFunding = uniffi.satora_sdk_ffi.SwapFunding;
@@ -33,7 +32,31 @@ return await Cli.RunAsync(args).ConfigureAwait(false);
 
 internal static class Cli
 {
-    private const string DefaultBaseUrl = "https://api.satora.io";
+    /// <summary>
+    /// Sentinel mnemonic for commands that don't actually need to sign
+    /// (today: <c>quote</c>, <c>status</c>). Lets the CLI build a Client
+    /// without a real key; the SDK keeps it in-process and never sends
+    /// it on the wire for read-only calls. Real signing operations
+    /// (<c>create-swap</c>, <c>flow</c>) demand a real MNEMONIC env var.
+    /// </summary>
+    internal const string PlaceholderMnemonic =
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+    /// <summary>
+    /// Read the network choice from <c>ARKADE_NETWORK</c> (or fall back
+    /// to mainnet). Same parsing as the previous FlowCommand block —
+    /// hoisted here so every subcommand uses the same vocabulary.
+    /// </summary>
+    internal static BitcoinNetwork NetworkFromEnv() =>
+        (Environment.GetEnvironmentVariable("ARKADE_NETWORK") ?? "mainnet").ToLowerInvariant() switch
+        {
+            "mainnet" or "bitcoin" => BitcoinNetwork.Mainnet,
+            "testnet" => BitcoinNetwork.Testnet,
+            "signet" => BitcoinNetwork.Signet,
+            "regtest" => BitcoinNetwork.Regtest,
+            var other => throw new ArgumentException(
+                $"unknown ARKADE_NETWORK `{other}` (expected mainnet|testnet|signet|regtest)"),
+        };
 
     internal static async Task<int> RunAsync(string[] args)
     {
@@ -95,18 +118,14 @@ internal static class Cli
             UNITS:         USD (×10^6), sats (×1), raw (×1)
 
             ENV:
-                LENDASWAP_API_URL       override the default backend
-                                        (default: https://api.satora.io)
                 MNEMONIC                BIP-39 mnemonic — required for `create-swap` / `flow`.
                                         Stays in this process's memory only.
-                AA_BUNDLER_URL              ERC-4337 bundler endpoint   default: http://localhost:4337
+                ARKADE_NETWORK          mainnet|testnet|signet|regtest   (default mainnet)
+                LENDASWAP_API_URL       override the network's default backend URL
+                ARKADE_URL              override the network's default arkd gRPC endpoint
+                ESPLORA_URL             override the network's default esplora HTTP endpoint
                 AA_NODE_RPC_URL             EVM node RPC for the AA stack default: http://localhost:8546
-                AA_PAYMASTER_URL            optional paymaster endpoint  (flow --gasless)
                 AA_PAYMASTER_CONTEXT        optional paymaster JSON context  (flow --gasless)
-                ARKADE_URL              Arkade arkd gRPC endpoint        (flow)
-                ESPLORA_URL             Esplora HTTP endpoint            (flow)
-                ARKADE_MNEMONIC         BIP-39 mnemonic for the Arkade identity (flow)
-                ARKADE_NETWORK          mainnet|testnet|signet|regtest   (flow, default regtest)
             """);
     }
 }
@@ -158,8 +177,12 @@ internal static class QuoteCommand
             ? new QuoteAmount.Source(ParseAmount(sourceAmount, sourceToken))
             : new QuoteAmount.Target(ParseAmount(targetAmount!, targetToken));
 
-        var baseUrl = Environment.GetEnvironmentVariable("LENDASWAP_API_URL") ?? "https://api.satora.io";
-        var client = new Client(baseUrl);
+        var client = new Client(
+            mnemonic: Cli.PlaceholderMnemonic,
+            network: Cli.NetworkFromEnv(),
+            baseUrl: Environment.GetEnvironmentVariable("LENDASWAP_API_URL"),
+            arkadeServerUrl: Environment.GetEnvironmentVariable("ARKADE_URL"),
+            esploraUrl: Environment.GetEnvironmentVariable("ESPLORA_URL"));
         var quote = await client.GetQuoteAsync(sourceChain, sourceToken, targetChain, targetToken, amount).ConfigureAwait(false);
 
         Console.WriteLine($"  rate           : {quote.ExchangeRate}");
@@ -367,8 +390,12 @@ internal static class CreateSwapCommand
                 $"cannot infer Address rail for target chain {targetChain} — only Arkade/Bitcoin/Lightning/EVM are supported."),
         };
 
-        var baseUrl = Environment.GetEnvironmentVariable("LENDASWAP_API_URL") ?? "https://api.satora.io";
-        var client = new Client(baseUrl, mnemonic);
+        var client = new Client(
+            mnemonic: mnemonic,
+            network: Cli.NetworkFromEnv(),
+            baseUrl: Environment.GetEnvironmentVariable("LENDASWAP_API_URL"),
+            arkadeServerUrl: Environment.GetEnvironmentVariable("ARKADE_URL"),
+            esploraUrl: Environment.GetEnvironmentVariable("ESPLORA_URL"));
         var swap = await client.CreateSwapAsync(
             sourceChain,
             sourceToken,
@@ -414,8 +441,12 @@ internal static class StatusCommand
             return 2;
         }
         var swapId = args[0];
-        var baseUrl = Environment.GetEnvironmentVariable("LENDASWAP_API_URL") ?? "https://api.satora.io";
-        using var client = new Client(baseUrl);
+        using var client = new Client(
+            mnemonic: Cli.PlaceholderMnemonic,
+            network: Cli.NetworkFromEnv(),
+            baseUrl: Environment.GetEnvironmentVariable("LENDASWAP_API_URL"),
+            arkadeServerUrl: Environment.GetEnvironmentVariable("ARKADE_URL"),
+            esploraUrl: Environment.GetEnvironmentVariable("ESPLORA_URL"));
         var swap = await client.GetSwapAsync(swapId).ConfigureAwait(false);
 
         Console.WriteLine($"  swap_id        : {swap.Id}");
@@ -497,32 +528,12 @@ internal static class FlowCommand
                 $"cannot infer Address rail for target chain {targetChain}"),
         };
 
-        var baseUrl = Environment.GetEnvironmentVariable("LENDASWAP_API_URL") ?? "https://api.satora.io";
-
-        // If the flow is going to claim against Arkade (gasless + Arkade
-        // target), the Client needs an ArkadeConfig at construction —
-        // it's no longer a per-call param. Read the env vars here so a
-        // missing one fails before we hit the network.
-        ArkadeConfig? arkadeConfig = null;
-        if (gasless && targetChain is ChainId.Arkade)
-        {
-            var arkadeUrl = RequireEnv("ARKADE_URL", "Arkade arkd gRPC endpoint");
-            var esploraUrl = RequireEnv("ESPLORA_URL", "esplora HTTP endpoint");
-            var arkadeMnemonic = RequireEnv("ARKADE_MNEMONIC", "BIP-39 mnemonic for the Arkade identity");
-            if (arkadeUrl is null || esploraUrl is null || arkadeMnemonic is null) return 2;
-            var network = (Environment.GetEnvironmentVariable("ARKADE_NETWORK") ?? "regtest").ToLowerInvariant() switch
-            {
-                "mainnet" or "bitcoin" => BitcoinNetwork.Mainnet,
-                "testnet" => BitcoinNetwork.Testnet,
-                "signet" => BitcoinNetwork.Signet,
-                _ => BitcoinNetwork.Regtest,
-            };
-            arkadeConfig = new ArkadeConfig(arkadeUrl, esploraUrl, arkadeMnemonic, network);
-        }
-
-        using var client = arkadeConfig is not null
-            ? new Client(baseUrl, mnemonic, arkadeConfig)
-            : new Client(baseUrl, mnemonic);
+        using var client = new Client(
+            mnemonic: mnemonic,
+            network: Cli.NetworkFromEnv(),
+            baseUrl: Environment.GetEnvironmentVariable("LENDASWAP_API_URL"),
+            arkadeServerUrl: Environment.GetEnvironmentVariable("ARKADE_URL"),
+            esploraUrl: Environment.GetEnvironmentVariable("ESPLORA_URL"));
 
         // ── 1. Create the swap ──
         Console.WriteLine("[1/5] create-swap");
@@ -614,9 +625,10 @@ internal static class FlowCommand
 
             // ── 4. Claim the Arkade VHTLC ──
             //
-            // Claim needs a separate ARKADE_MNEMONIC because the Arkade
-            // identity is a distinct BIP-85 derivation; the SDK doesn't
-            // assume the same mnemonic serves both rails.
+            // The Arkade identity is derived from the same mnemonic the
+            // SDK was constructed with, so no extra setup is needed
+            // here — the receive address used at create-swap time and
+            // the claim signer share a seed.
             Console.WriteLine();
             Console.WriteLine("[5/5] claim");
             var claim = await client.ClaimAsync(swap.Id, receiveTo).ConfigureAwait(false);
