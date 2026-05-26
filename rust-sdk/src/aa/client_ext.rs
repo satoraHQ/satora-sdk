@@ -127,6 +127,29 @@ impl GaslessOpts {
     }
 }
 
+/// Single-shot snapshot of the depositor EOA's funding state for a
+/// swap. Returned by [`Client::check_deposit_funding`].
+///
+/// Use `has_sufficient_source_token` to decide whether
+/// [`Client::fund_swap_gasless`] is ready to call. Native balance is
+/// reported separately so callers without a paymaster can also check
+/// gas headroom before submitting.
+#[derive(Debug, Clone)]
+pub struct DepositStatus {
+    /// Current source-token balance at the depositor EOA, in the
+    /// smallest unit of the source token.
+    pub source_token_balance: U256,
+    /// Amount the depositor EOA must hold before the funding userOp
+    /// can be submitted — same shape, mirrored from the swap response
+    /// for convenient comparison.
+    pub source_token_required: U256,
+    /// Native (ETH / MATIC / …) balance at the depositor EOA, in wei.
+    /// Matters only when the backend has no paymaster.
+    pub native_balance_wei: U256,
+    /// Convenience: `source_token_balance >= source_token_required`.
+    pub has_sufficient_source_token: bool,
+}
+
 /// Optional paymaster sponsorship — URL + context as a unit, since one
 /// without the other doesn't address any real paymaster.
 #[derive(Debug, Clone)]
@@ -284,6 +307,87 @@ impl Client {
             },
         )
         .await
+    }
+
+    /// Single-shot read of the depositor EOA's funding state — no
+    /// polling, no waiting, no throw on "not funded yet". Use this for
+    /// "is FundSwap ready?" branching; for the polling/waiting flow
+    /// use [`Self::wait_for_deposit_funding`].
+    ///
+    /// Resolves the node RPC URL from the swap's deposit chain via
+    /// [`crate::types::KnownChain::default_node_rpc_url`] when
+    /// `node_rpc_url` is `None` — same per-chain defaults as
+    /// [`Self::fund_swap_gasless`].
+    #[tracing::instrument(name = "check_deposit_funding", skip_all, fields(%swap_id))]
+    pub async fn check_deposit_funding(
+        &self,
+        swap_id: &str,
+        node_rpc_url: Option<Url>,
+    ) -> Result<DepositStatus> {
+        let resp = match self.fetch_swap_response(swap_id).await? {
+            crate::types::GetSwapResponse::EvmToArkade(r) => r,
+            other => {
+                return Err(crate::Error::InvalidSwap(format!(
+                    "check_deposit_funding called on a non-EVM swap ({swap_id}) — only EVM→Arkade has an EVM deposit address; got {other:?}",
+                )));
+            }
+        };
+        let deposit_address = parse_address(&resp.client_evm_address, "client_evm_address")?;
+        let token_address = parse_address(
+            resp.source_token.token_id.as_wire_str(),
+            "source_token_address",
+        )?;
+        let min_token_units = parse_u256_dec(&resp.source_amount, "source_amount")?;
+
+        let node_rpc_url = match node_rpc_url {
+            Some(url) => url,
+            None => {
+                let chain = resp.source_token.token_id.chain().ok_or_else(|| {
+                    Error::InvalidSwap(format!(
+                        "swap `{swap_id}` deposit token `{}` has no known EVM chain — pass node_rpc_url explicitly",
+                        resp.source_token.token_id.as_wire_str(),
+                    ))
+                })?;
+                let default = chain.default_node_rpc_url().ok_or_else(|| {
+                    Error::InvalidSwap(format!(
+                        "swap `{swap_id}` deposit chain `{}` has no default node RPC URL — pass node_rpc_url explicitly",
+                        chain.as_wire_str(),
+                    ))
+                })?;
+                Url::parse(default).map_err(|e| {
+                    Error::InvalidSwap(format!(
+                        "internal: default node RPC URL `{default}` for chain `{}` failed to parse: {e}",
+                        chain.as_wire_str(),
+                    ))
+                })?
+            }
+        };
+
+        let node: RootProvider = RootProvider::new_http(node_rpc_url);
+        let balance_calldata = IERC20::balanceOfCall {
+            account: deposit_address,
+        }
+        .abi_encode();
+        let balance_call = alloy::rpc::types::TransactionRequest::default()
+            .to(token_address)
+            .input(balance_calldata.into());
+
+        let eth_bal = node
+            .get_balance(deposit_address)
+            .await
+            .map_err(|e| Error::Transport(format!("eth_getBalance: {e}")))?;
+        let token_bal_bytes = node
+            .call(balance_call)
+            .await
+            .map_err(|e| Error::Transport(format!("balanceOf eth_call: {e}")))?;
+        let token_bal = U256::from_be_slice(token_bal_bytes.as_ref());
+
+        Ok(DepositStatus {
+            source_token_balance: token_bal,
+            source_token_required: min_token_units,
+            native_balance_wei: eth_bal,
+            has_sufficient_source_token: token_bal >= min_token_units,
+        })
     }
 
     /// Poll until the gasless deposit address holds enough source token

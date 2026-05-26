@@ -260,6 +260,7 @@ jobs:
             -e 's/^internal record ArkadeConfig (/public record ArkadeConfig (/' \
             -e 's/^internal record ClaimReceipt (/public record ClaimReceipt (/' \
             -e 's/^internal record ArkadeBalance (/public record ArkadeBalance (/' \
+            -e 's/^internal record DepositStatus (/public record DepositStatus (/' \
             -e 's/^internal record LightningDestination {/public record LightningDestination {/' \
             -e 's/^internal enum BitcoinNetwork: int/public enum BitcoinNetwork: int/' \
             -e 's/^internal interface ISatoraClient {/public interface ISatoraClient {/' \

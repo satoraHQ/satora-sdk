@@ -134,6 +134,30 @@ public sealed record FundReceipt(string UserOpHash, string? TransactionHash)
 }
 
 /// <summary>
+/// Single-shot snapshot of the depositor EOA's funding state for a
+/// swap. Use this to decide whether
+/// <see cref="Client.FundSwapAsync(string, CancellationToken)"/> is
+/// ready to call. For the polling/waiting flow, use
+/// <see cref="Client.WaitForDepositFundingAsync"/>.
+/// </summary>
+/// <param name="SourceTokenBalance">Current balance of the source token at the depositor EOA, in smallest unit. Decimal-as-string to fit U256.</param>
+/// <param name="SourceTokenRequired">Amount the depositor EOA must hold before the funding userOp can be submitted. Decimal-as-string.</param>
+/// <param name="NativeBalanceWei">Native (ETH/MATIC/…) balance at the depositor EOA, in wei. Matters only when the backend has no paymaster.</param>
+/// <param name="HasSufficientSourceToken">Convenience: <c>SourceTokenBalance &gt;= SourceTokenRequired</c>.</param>
+public sealed record DepositStatus(
+    string SourceTokenBalance,
+    string SourceTokenRequired,
+    ulong NativeBalanceWei,
+    bool HasSufficientSourceToken)
+{
+    internal static DepositStatus FromFfi(Ffi.DepositStatus d) => new(
+        d.@sourceTokenBalance,
+        d.@sourceTokenRequired,
+        d.@nativeBalanceWei,
+        d.@hasSufficientSourceToken);
+}
+
+/// <summary>
 /// Result of an Arkade VHTLC claim.
 /// </summary>
 /// <param name="ArkTxid">Ark TX ID of the offchain claim transaction (hex, `0x…`).</param>
@@ -480,6 +504,42 @@ public sealed class Client : IDisposable
             swapId,
             new GaslessOpts(nodeRpcUrl: null, paymasterContextJson: null, gasOverrides: null),
             cancellationToken);
+
+    /// <summary>
+    /// Single-shot probe of the depositor EOA for a swap. Returns
+    /// immediately with the current balances — no polling, no throw
+    /// on "not funded yet". Use this for "is FundSwap ready?"
+    /// branching; use
+    /// <see cref="WaitForDepositFundingAsync"/> for the polling flow.
+    ///
+    /// The Rust core picks the node RPC URL from the swap's deposit
+    /// chain (same defaults as <see cref="FundSwapAsync(string, CancellationToken)"/>).
+    /// Use the
+    /// <see cref="CheckDepositAsync(string, string, CancellationToken)"/>
+    /// overload if you need a custom RPC.
+    /// </summary>
+    public Task<DepositStatus> CheckDepositAsync(
+        string swapId,
+        CancellationToken cancellationToken = default)
+        => CheckDepositAsync(swapId, nodeRpcUrl: null, cancellationToken);
+
+    /// <summary>
+    /// Single-shot probe of the depositor EOA for a swap, against a
+    /// caller-supplied node RPC URL. See
+    /// <see cref="CheckDepositAsync(string, CancellationToken)"/> for
+    /// the auto-defaulted variant.
+    /// </summary>
+    public Task<DepositStatus> CheckDepositAsync(
+        string swapId,
+        string? nodeRpcUrl,
+        CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        return Task.Run(
+            () => TryOrThrow(() => DepositStatus.FromFfi(
+                ffi.CheckDepositFunding(swapId, nodeRpcUrl))),
+            cancellationToken);
+    }
 
     /// <summary>
     /// Fetch a swap's current state. Works on any client (signing or

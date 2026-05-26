@@ -705,6 +705,23 @@ impl From<GasOverrides> for SdkGasOverrides {
     }
 }
 
+/// Single-shot snapshot of the depositor EOA's funding state.
+/// `source_token_balance` and `source_token_required` are decimal
+/// strings (U256 doesn't fit in a uniffi-native int); native balance
+/// fits in u64 in practice.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct DepositStatus {
+    /// Current source-token balance at the depositor EOA, smallest unit.
+    pub source_token_balance: String,
+    /// Amount the depositor EOA must hold before the funding userOp
+    /// can be submitted, smallest unit.
+    pub source_token_required: String,
+    /// Native (ETH / MATIC / …) balance at the depositor EOA, wei.
+    pub native_balance_wei: u64,
+    /// `source_token_balance >= source_token_required`.
+    pub has_sufficient_source_token: bool,
+}
+
 /// Submitted-userOp receipt. `transaction_hash` is `None` when the
 /// SDK's bounded receipt poll ran out — callers can re-poll via
 /// the bundler directly if needed.
@@ -782,6 +799,50 @@ impl SatoraClient {
                 )
                 .await?;
             Ok(())
+        })
+    }
+
+    /// Single-shot read of the depositor EOA's funding state — no
+    /// polling, no waiting, no throw on "not funded yet". Use this
+    /// for "is `fund_swap_gasless` ready?" branching.
+    ///
+    /// `node_rpc_url` defaults to the chain-specific public RPC when
+    /// `None` (same defaults the fund call uses).
+    pub fn check_deposit_funding(
+        &self,
+        swap_id: String,
+        node_rpc_url: Option<String>,
+    ) -> Result<DepositStatus, SdkError> {
+        use url::Url;
+        let node_rpc_url = node_rpc_url
+            .as_deref()
+            .map(Url::parse)
+            .transpose()
+            .map_err(|e| SdkError::Internal {
+                message: format!("node_rpc_url parse: {e}"),
+            })?;
+        runtime().block_on(async {
+            let status = self
+                .inner
+                .check_deposit_funding(&swap_id, node_rpc_url)
+                .await?;
+            // Token amounts go over the wire as decimal strings —
+            // U256 doesn't fit in any uniffi-native integer type.
+            // Native balance fits in u64 in practice (u64::MAX wei ≈
+            // 18.45 ETH; deposit EOAs hold a few millis at most).
+            Ok(DepositStatus {
+                source_token_balance: status.source_token_balance.to_string(),
+                source_token_required: status.source_token_required.to_string(),
+                native_balance_wei: u64::try_from(status.native_balance_wei).map_err(|_| {
+                    SdkError::Internal {
+                        message: format!(
+                            "native_balance_wei {} exceeds u64 — deposit EOA holds > 18.45 ETH which is unexpected",
+                            status.native_balance_wei,
+                        ),
+                    }
+                })?,
+                has_sufficient_source_token: status.has_sufficient_source_token,
+            })
         })
     }
 

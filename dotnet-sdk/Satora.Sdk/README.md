@@ -88,12 +88,29 @@ Notes:
 
 ## Funding swaps (gasless)
 
-The simplest path for an EVM-funded swap — let the SDK pick the
-node RPC URL from the swap's deposit chain:
+For an EVM-funded swap the typical sequence is:
+
+1. `CreateSwapAsync` — backend returns a depositor EOA address.
+2. Tell the customer to send the source token there.
+3. **Poll `CheckDepositAsync(swapId)` until `HasSufficientSourceToken`**
+   — single-shot, returns immediately. No timeout, no throw.
+4. `FundSwapAsync(swapId)` — submits the gasless funding userOp.
 
 ```csharp
-var receipt = await client.FundSwapAsync(swapId);
+var status = await client.CheckDepositAsync(swapId);
+if (status.HasSufficientSourceToken)
+{
+    var receipt = await client.FundSwapAsync(swapId);
+}
+else
+{
+    // show "waiting for customer payment" — try again later
+}
 ```
+
+`FundSwapAsync(swapId)` and `CheckDepositAsync(swapId)` both pick
+the node RPC URL from the swap's deposit chain via the same
+per-chain defaults.
 
 Defaults come from the Rust core (`KnownChain::default_node_rpc_url`),
 which currently points at the public RPCs for Arbitrum / Ethereum /
@@ -101,6 +118,7 @@ Polygon — fine for low-volume use. For production volume, custom
 paymaster context, or gas overrides, use the explicit overload:
 
 ```csharp
+var status  = await client.CheckDepositAsync(swapId, nodeRpcUrl: "https://your-private-rpc.example/v3/<key>");
 var receipt = await client.FundSwapAsync(
     swapId,
     new GaslessOpts(
