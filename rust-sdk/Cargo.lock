@@ -3064,6 +3064,7 @@ dependencies = [
  "jsonschema",
  "rand 0.8.6",
  "reqwest 0.13.3",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",
