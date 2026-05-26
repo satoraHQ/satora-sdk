@@ -2245,7 +2245,10 @@ class FfiConverterTypeGasOverrides: FfiConverterRustBuffer<GasOverrides> {
 /// - whether to bypass `eth_estimateUserOperationGas` and with what limits.
 /// </summary>
 /// <param name="node_rpc_url">
-/// EVM node RPC URL (e.g. Alchemy / Infura). Required.
+/// EVM node RPC URL (e.g. Alchemy / Infura). `None` means
+/// "pick the chain's default" — the SDK resolves it at fund
+/// time from the swap's deposit chain. Set explicitly only
+/// when overriding the public-RPC default.
 /// </param>
 /// <param name="paymaster_context_json">
 /// Paymaster context as a JSON string (e.g.
@@ -2259,9 +2262,12 @@ class FfiConverterTypeGasOverrides: FfiConverterRustBuffer<GasOverrides> {
 /// </param>
 public record GaslessOpts (
     /// <summary>
-    /// EVM node RPC URL (e.g. Alchemy / Infura). Required.
+    /// EVM node RPC URL (e.g. Alchemy / Infura). `None` means
+    /// "pick the chain's default" — the SDK resolves it at fund
+    /// time from the swap's deposit chain. Set explicitly only
+    /// when overriding the public-RPC default.
     /// </summary>
-    string @nodeRpcUrl, 
+    string? @nodeRpcUrl, 
     /// <summary>
     /// Paymaster context as a JSON string (e.g.
     /// `'{"policyId":"<uuid>"}'` for Alchemy Gas Manager). Ignored when
@@ -2282,7 +2288,7 @@ class FfiConverterTypeGaslessOpts: FfiConverterRustBuffer<GaslessOpts> {
 
     public override GaslessOpts Read(BigEndianStream stream) {
         return new GaslessOpts(
-            @nodeRpcUrl: FfiConverterString.INSTANCE.Read(stream),
+            @nodeRpcUrl: FfiConverterOptionalString.INSTANCE.Read(stream),
             @paymasterContextJson: FfiConverterOptionalString.INSTANCE.Read(stream),
             @gasOverrides: FfiConverterOptionalTypeGasOverrides.INSTANCE.Read(stream)
         );
@@ -2290,13 +2296,13 @@ class FfiConverterTypeGaslessOpts: FfiConverterRustBuffer<GaslessOpts> {
 
     public override int AllocationSize(GaslessOpts value) {
         return 0
-            + FfiConverterString.INSTANCE.AllocationSize(value.@nodeRpcUrl)
+            + FfiConverterOptionalString.INSTANCE.AllocationSize(value.@nodeRpcUrl)
             + FfiConverterOptionalString.INSTANCE.AllocationSize(value.@paymasterContextJson)
             + FfiConverterOptionalTypeGasOverrides.INSTANCE.AllocationSize(value.@gasOverrides);
     }
 
     public override void Write(GaslessOpts value, BigEndianStream stream) {
-            FfiConverterString.INSTANCE.Write(value.@nodeRpcUrl, stream);
+            FfiConverterOptionalString.INSTANCE.Write(value.@nodeRpcUrl, stream);
             FfiConverterOptionalString.INSTANCE.Write(value.@paymasterContextJson, stream);
             FfiConverterOptionalTypeGasOverrides.INSTANCE.Write(value.@gasOverrides, stream);
     }

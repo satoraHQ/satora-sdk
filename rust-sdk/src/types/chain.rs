@@ -64,6 +64,23 @@ impl KnownChain {
             Self::Bitcoin | Self::Lightning | Self::Arkade => None,
         }
     }
+
+    /// Default public EVM node RPC URL for this chain. `None` for
+    /// non-EVM rails (Bitcoin / Lightning / Arkade) and for any future
+    /// EVM variant where we haven't picked a default yet.
+    ///
+    /// These are free / public endpoints — fine for low-volume use
+    /// (BTCPay plugin checks, dev runs). Production deployments
+    /// should override via `GaslessOpts.node_rpc_url` if they need
+    /// higher throughput or guaranteed availability.
+    pub fn default_node_rpc_url(&self) -> Option<&'static str> {
+        match self {
+            Self::Arbitrum => Some("https://arb1.arbitrum.io/rpc"),
+            Self::Ethereum => Some("https://eth.llamarpc.com"),
+            Self::Polygon => Some("https://polygon-rpc.com"),
+            Self::Bitcoin | Self::Lightning | Self::Arkade => None,
+        }
+    }
 }
 
 /// A chain identifier. Either a [`KnownChain`] or an opaque wire string.
@@ -159,5 +176,28 @@ mod tests {
     fn deserialising_known_string_prefers_known_variant() {
         let parsed: Chain = serde_json::from_value(serde_json::json!("Arkade")).unwrap();
         assert!(parsed.is_known());
+    }
+
+    #[test]
+    fn default_node_rpc_url_set_for_evm_chains() {
+        assert_eq!(
+            KnownChain::Arbitrum.default_node_rpc_url(),
+            Some("https://arb1.arbitrum.io/rpc"),
+        );
+        assert_eq!(
+            KnownChain::Ethereum.default_node_rpc_url(),
+            Some("https://eth.llamarpc.com"),
+        );
+        assert_eq!(
+            KnownChain::Polygon.default_node_rpc_url(),
+            Some("https://polygon-rpc.com"),
+        );
+    }
+
+    #[test]
+    fn default_node_rpc_url_none_for_non_evm_rails() {
+        assert_eq!(KnownChain::Bitcoin.default_node_rpc_url(), None);
+        assert_eq!(KnownChain::Lightning.default_node_rpc_url(), None);
+        assert_eq!(KnownChain::Arkade.default_node_rpc_url(), None);
     }
 }
