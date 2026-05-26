@@ -82,25 +82,26 @@ Other RIDs are not yet packaged — open an issue if you need one.
 
 ## Plugin-host environments (BTCPay Server, etc.)
 
-If you're consuming this SDK from a plugin loaded by a host that uses
-a custom `AssemblyLoadContext` and doesn't honor `runtimes/<rid>/native/`
-resolution (e.g. BTCPay Server plugins), add this to your csproj and
-publish with an explicit RID:
+The SDK installs a `NativeLibrary.SetDllImportResolver` at module load
+time that finds `satora_sdk_ffi` under `runtimes/<rid>/native/`
+relative to the SDK assembly. A single portable publish works in
+plugin hosts that use a custom `AssemblyLoadContext` and don't honor
+the consumer's `deps.json` for native libs — no special configuration
+needed:
 
-```xml
-<PropertyGroup>
-  <SatoraSdkFlattenNativeLibs>true</SatoraSdkFlattenNativeLibs>
-</PropertyGroup>
+```sh
+dotnet publish -c Release       # all RIDs bundled under runtimes/
 ```
 
-```bash
-dotnet publish -c Release -r linux-arm64 --no-self-contained
-```
+### Legacy: forcing a flat layout
 
-This copies `libsatora_sdk_ffi.<so|dylib|dll>` flat into the publish
-output so the plugin loader's flat search can find it. Use an explicit
-RID because `linux-x64` and `linux-arm64` share `libsatora_sdk_ffi.so`
-as a filename and would collide after flattening.
+The `<SatoraSdkFlattenNativeLibs>true</SatoraSdkFlattenNativeLibs>`
+property and the `build/Satora.Sdk.targets` flatten step are still
+available for consumers who need the native lib directly next to the
+SDK assembly. Note that this forces one-arch-per-bundle on Linux
+because `linux-x64` and `linux-arm64` share the `libsatora_sdk_ffi.so`
+filename. Prefer the RID-scoped layout (no flatten) unless you have a
+specific reason.
 
 ## Errors
 
