@@ -26,6 +26,12 @@ pub mod arkade;
 // never accidentally depend on them.
 mod wire;
 
+// Idempotent rustls CryptoProvider install — fired from every public
+// `Client` entry so the first TLS handshake (Arkade gRPC, esplora,
+// alloy node RPC) doesn't panic on rustls 0.23's missing-provider
+// guard.
+mod crypto_init;
+
 pub use client::Client;
 pub use client::ClientBuilder;
 pub use client::Swap;

@@ -111,6 +111,7 @@ impl Client {
     /// will return [`Error::InvalidSigner`]. Use [`Self::builder`] for the
     /// high-level path.
     pub fn new(base_url: &str) -> Result<Self> {
+        crate::crypto_init::ensure_default_provider_installed();
         let base_url = Url::parse(base_url)?;
         Ok(Self {
             http: reqwest::Client::new(),
@@ -779,6 +780,7 @@ impl ClientBuilder {
     }
 
     pub fn build(self) -> Result<Client> {
+        crate::crypto_init::ensure_default_provider_installed();
         let base_url = self
             .base_url
             .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
