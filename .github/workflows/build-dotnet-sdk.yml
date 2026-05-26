@@ -55,6 +55,15 @@ permissions:
   contents: read
   packages: write
 
+# Cancel any in-flight run for the same ref when a new push arrives.
+# Workflow is matrix-heavy (5 native runners + pack) so superseded
+# runs are expensive — and we just hit a real "stuck job" case where
+# a deprecated runner label left the pipeline hanging until we
+# cancelled it by hand.
+concurrency:
+  group: build-dotnet-sdk-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   DOTNET_NOLOGO: 1
@@ -100,7 +109,7 @@ jobs:
             lib: libsatora_sdk_ffi.dylib
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # On macos-14 the preinstalled rustup sometimes lacks a default
       # toolchain — `cargo` then proxies through rustup-init and errors
@@ -136,7 +145,7 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Upload native artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: native-${{ matrix.rid }}
           path: dotnet-sdk/native/target/${{ matrix.target }}/release/${{ matrix.lib }}
@@ -150,10 +159,10 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '8.0.x'
 
@@ -179,7 +188,7 @@ jobs:
           shared-key: native-host
 
       - name: Download all native artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: native-artifacts
           pattern: native-*
@@ -285,7 +294,7 @@ jobs:
             -o dist
 
       - name: Upload .nupkg artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: Satora.Sdk-${{ steps.version.outputs.version }}
           path: dotnet-sdk/dist/*.nupkg
