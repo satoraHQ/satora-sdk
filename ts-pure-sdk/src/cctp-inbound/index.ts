@@ -66,6 +66,9 @@ export {
   simulateBatchCalls,
 } from "./preflight.js";
 export {
+  type CheckCctpRecoverableParams,
+  type CheckCctpRecoverableResult,
+  checkCctpRecoverable,
   type RecoverCctpInboundContext,
   type RecoverCctpInboundParams,
   type RecoverCctpInboundResult,
