@@ -66,6 +66,13 @@ export {
   simulateBatchCalls,
 } from "./preflight.js";
 export {
+  type RecoverCctpInboundContext,
+  type RecoverCctpInboundParams,
+  type RecoverCctpInboundResult,
+  type RecoveryProgress,
+  recoverCctpInbound,
+} from "./recover.js";
+export {
   type CreateSwapSmartAccountClientParams,
   createSwapSmartAccountClient,
 } from "./smartAccount.js";
