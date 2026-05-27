@@ -61,6 +61,19 @@ function extractNonce(cctpMessage: Hex): Hex {
   return `0x${cctpMessage.slice(26, 26 + 64)}` as Hex;
 }
 
+/**
+ * CCTPv2 message header: the `destinationCaller` is a bytes32 field at
+ * offset 108..140. The address occupies the trailing 20 bytes (left-
+ * padded with zeros). In hex-string coordinates that's chars [242, 282).
+ *
+ * `receiveMessage` reverts with `Invalid caller for message` when
+ * `msg.sender` doesn't match this field, so we check it client-side
+ * before burning a UserOp + paymaster gas on a guaranteed failure.
+ */
+function extractDestinationCaller(cctpMessage: Hex): Address {
+  return `0x${cctpMessage.slice(242, 282)}` as Address;
+}
+
 export type RecoveryProgress =
   | { phase: "attestation" }
   | { phase: "receiving"; userOpHash: Hex }
@@ -178,6 +191,22 @@ export async function recoverCctpInbound(
 
   // 3. Submit receiveMessage UserOp if the burn hasn't been claimed yet.
   if (!skipReceiveMessage) {
+    // Guard: only `destinationCaller` can call receiveMessage. If the
+    // current owner key derives a different account, the on-chain
+    // revert ("Invalid caller for message") is opaque — surface the
+    // mismatch with an actionable message instead.
+    const destinationCaller = extractDestinationCaller(cctpMessage);
+    if (
+      destinationCaller.toLowerCase() !==
+      (accountAddress as string).toLowerCase()
+    ) {
+      throw new Error(
+        `Recovery wallet mismatch: this CCTP burn was sent to ${destinationCaller}, ` +
+          `but your current wallet's smart-account address is ${accountAddress}. ` +
+          `You must recover with the same mnemonic that created the original swap.`,
+      );
+    }
+
     const receiveData = encodeFunctionData({
       abi: MESSAGE_TRANSMITTER_ABI,
       functionName: "receiveMessage",

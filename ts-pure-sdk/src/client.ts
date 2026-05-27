@@ -5489,6 +5489,23 @@ export class Client {
   }
 
   /**
+   * Wallet-level variant of {@link getSwapDepositorKey} — returns the
+   * deterministic EVM signing key for this wallet without requiring a
+   * specific swap to be stored locally.
+   *
+   * Same key, same address as {@link getSwapDepositorKey} (both derive
+   * from `m/44'/60'/0'/0/0`). Intended for standalone recovery tools
+   * where the user supplies the burn details manually and a per-swap
+   * record may no longer exist (e.g. fresh device, cleared site data).
+   */
+  getEvmDepositorKey(): { privateKey: string; address: string } {
+    const evmKey = this.#getEvmSigningKey();
+    const privateKey = evmKey.startsWith("0x") ? evmKey : `0x${evmKey}`;
+    const address = deriveEvmAddress(evmKey);
+    return { privateKey, address };
+  }
+
+  /**
    * Recover ERC-20 tokens stuck in a gasless swap's ephemeral depositor address.
    *
    * When a gasless swap fails after the user transfers tokens to the
