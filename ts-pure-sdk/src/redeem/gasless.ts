@@ -31,6 +31,8 @@ export interface GaslessClaimParams {
   destination: string;
   /** Pre-fetched DEX calldata (for non-WBTC targets) */
   dexCalldata?: { to: string; data: string; value: string };
+  /** Minimum amount of sweepToken to receive, from the redeem-and-swap-calldata endpoint. */
+  minAmountOut: bigint;
   /** keccak256(abi.encode(calls)) from the redeem-and-swap-calldata endpoint.
    *  Required for non-WBTC targets (when dexCalldata is provided). */
   callsHash: string;
@@ -72,6 +74,7 @@ export async function claimViaGasless(
     swap,
     destination,
     dexCalldata,
+    minAmountOut,
     callsHash,
     bridgeRecipient,
     bridgeRecipientWallet,
@@ -104,7 +107,7 @@ export async function claimViaGasless(
     caller: swap.evm_coordinator_address,
     destination,
     sweepToken,
-    minAmountOut: 0n,
+    minAmountOut,
     callsHash,
   });
 

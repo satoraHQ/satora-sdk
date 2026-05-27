@@ -12,6 +12,7 @@ import {
   type LightningToArkadeSwapResponse,
   type LightningToEvmSwapResponse,
   type QuoteResponse,
+  type RedeemAndSwapResponse,
   type StatusResponse,
   type SwapPairsResponse,
   type TokenInfos,
@@ -1765,7 +1766,6 @@ export class Client {
    *
    * @param id - The UUID of the swap.
    * @param destination - The EVM address where tokens should be sent.
-   * @param slippage - Maximum acceptable slippage percentage for the DEX swap (e.g. 1.0 = 1%). Defaults to 1.0.
    * @returns The gasless claim result with transaction hash.
    *
    * @example
@@ -1778,11 +1778,9 @@ export class Client {
     id: string,
     destination: string,
     {
-      slippage = 1.0,
       bridgeRecipient,
       bridgeRecipientWallet,
     }: {
-      slippage?: number;
       bridgeRecipient?: string;
       bridgeRecipientWallet?: string;
     } = {},
@@ -1827,14 +1825,12 @@ export class Client {
           path: { id },
           query: {
             destination,
-            slippage,
             ...(bridgeRecipient ? { bridge_recipient: bridgeRecipient } : {}),
             ...(bridgeRecipientWallet
               ? { bridge_recipient_wallet: bridgeRecipientWallet }
               : {}),
           } as {
             destination: string;
-            slippage?: number;
             bridge_recipient?: string;
             bridge_recipient_wallet?: string;
           },
@@ -1849,11 +1845,7 @@ export class Client {
 
     // Cast to the updated response shape (includes calls_hash and optional dex_calldata).
     // The generated API types may lag behind the server; this will align after regeneration.
-    const responseData = calldataResponse.data as {
-      dex_calldata?: { to: string; data: string; value: string };
-      gasless_fee_sats: number;
-      calls_hash: string;
-    };
+    const responseData = calldataResponse.data as RedeemAndSwapResponse;
 
     const targetTokenAddress = String(swap.target_token.token_id);
     const needsDexSwap =
@@ -1869,6 +1861,7 @@ export class Client {
     }
 
     const callsHash = responseData.calls_hash;
+    const minAmountOut = BigInt(responseData.min_amount_out);
 
     return gaslessClaim({
       baseUrl: this.#config.baseUrl,
@@ -1877,6 +1870,7 @@ export class Client {
       swap,
       destination,
       dexCalldata,
+      minAmountOut,
       callsHash,
       bridgeRecipient,
       bridgeRecipientWallet,

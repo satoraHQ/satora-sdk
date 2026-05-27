@@ -25,6 +25,8 @@ export type EvmToArkadeSwapResponse =
 export type ClaimGaslessRequest = components["schemas"]["ClaimGaslessRequest"];
 export type ClaimGaslessResponse =
   components["schemas"]["ClaimGaslessResponse"];
+export type RedeemAndSwapResponse =
+  components["schemas"]["RedeemAndSwapResponse"];
 
 // Arkade-to-Lightning types
 export type ArkadeToLightningSwapResponse =

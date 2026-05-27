@@ -715,7 +715,7 @@ export interface paths {
          *            address caller,         // HTLCCoordinator contract address
          *            address destination,    // where output tokens go
          *            address sweepToken,     // target token (or WBTC if direct)
-         *            uint256 minAmountOut,   // slippage protection (0 for now)
+         *            uint256 minAmountOut,   // slippage protection from step 2
          *            bytes32 callsHash       // from step 2
          *        )
          *        ```
@@ -731,7 +731,7 @@ export interface paths {
          *        import { ethers } from "ethers";
          *
          *        // 1. Fetch calldata (returns calls_hash + optional dex_calldata)
-         *        const { calls_hash, dex_calldata, gasless_fee_sats } = await fetch(
+         *        const { calls_hash, dex_calldata, gasless_fee_sats, min_amount_out } = await fetch(
          *          `${baseUrl}/swap/${swapId}/redeem-and-swap-calldata?destination=${destination}`
          *        ).then(r => r.json());
          *
@@ -773,7 +773,7 @@ export interface paths {
          *          caller:       swap.evm_coordinator_address,  // HTLCCoordinator contract
          *          destination:  destination,                   // where output tokens go
          *          sweepToken:   sweepToken,
-         *          minAmountOut: 0,                             // no slippage check for now
+         *          minAmountOut: min_amount_out,                // from step 1
          *          callsHash:    calls_hash,                    // from step 1
          *        };
          *
@@ -2803,6 +2803,11 @@ export interface components {
              *     The claim endpoint will deduct this from the HTLC amount via a WBTC transfer.
              */
             gasless_fee_sats: number;
+            /**
+             * @description Minimum amount of sweepToken the coordinator must sweep to the destination.
+             *     This is the value the client must include in the EIP-712 Redeem signature.
+             */
+            min_amount_out: string;
         };
         /** @description Response containing refund calldata for an EVM-to-Arkade swap. */
         RefundCalldataResponse: {
@@ -4667,8 +4672,6 @@ export interface operations {
             query: {
                 /** @description EVM destination address for output tokens */
                 destination: string;
-                /** @description Slippage tolerance percentage (default: 1.0) */
-                slippage?: number;
             };
             header?: never;
             path: {
