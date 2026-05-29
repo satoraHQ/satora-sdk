@@ -111,12 +111,9 @@ export async function composeQuote(
       "composeQuote currently requires exactly one BTC side; foreign-target EVM↔EVM not implemented yet",
     );
   }
-  if (params.sourceAmount == null) {
-    throw new UnsupportedComposeQuotePath(
-      "composeQuote v0 only supports source-amount-pinned quotes; target-amount-pinned coming later",
-    );
-  }
-  if (params.targetAmount != null) {
+  const sourcePinned = params.sourceAmount != null;
+  const targetPinned = params.targetAmount != null;
+  if (sourcePinned === targetPinned) {
     throw new UnsupportedComposeQuotePath(
       "specify exactly one of sourceAmount or targetAmount",
     );
@@ -146,56 +143,37 @@ async function composeBtcToEvm(
     );
   }
 
-  if (params.sourceAmount === undefined) {
-    throw new UnsupportedComposeQuotePath(
-      `composeQuote: target source amount is undefined`,
-    );
-  }
-
-  const btcSats = BigInt(params.sourceAmount);
-
-  // --- primitive 1: /swap-pairs (static) ---
-  const pair = deps.swapPairs.pairs.find(
-    (p) => p.source === params.sourceChain && p.target === params.targetChain,
+  const pair = lookupPair(
+    deps.swapPairs,
+    params.sourceChain,
+    params.targetChain,
   );
-  if (!pair) {
-    throw new UnsupportedComposeQuotePath(
-      `composeQuote: no swap-pair entry for ${params.sourceChain}→${params.targetChain}`,
-    );
-  }
-
-  // --- primitive 2: /network-fees (dynamic, ~15s freshness) ---
-  const feeEntry = deps.networkFees.pairs.find(
-    (p) => p.source === params.sourceChain && p.target === params.targetChain,
+  const feeEntry = lookupFeeEntry(
+    deps.networkFees,
+    params.sourceChain,
+    params.targetChain,
   );
-  if (!feeEntry) {
-    throw new UnsupportedComposeQuotePath(
-      `composeQuote: no network-fee entry for ${params.sourceChain}→${params.targetChain}`,
-    );
-  }
   const networkFeeSats = feeEntry.fees.source_sats + feeEntry.fees.target_sats;
   // L2s (Polygon, Arbitrum) don't charge a gasless overhead; only mainnet
-  // Ethereum does. v0 supports Arbitrum only, so always 0 here.
+  // Ethereum does. composeQuote v0 doesn't ship Ethereum yet so it's
+  // always 0 here, but the field is wired through to the caller's
+  // QuoteResponse for when it does.
   const gaslessNetworkFee = 0;
 
-  // --- primitive 3: /dex-quote (live, debounced in UIs) ---
-  // BTC sats → tBTC base units. tBTC is 18-dec, sat is 8-dec → ×10^10.
-  const pivotInBase = btcSats * 10n ** BigInt(btcPegged.decimals - 8);
-  const dexQuote = await deps.getDexQuote({
-    from: { kind: "evm", chain_id: chainIdNum, address: btcPegged.address },
-    to: {
-      kind: "evm",
-      chain_id: chainIdNum,
-      address: params.targetToken.toLowerCase(),
-    },
-    amount: { kind: "exact_in", value: pivotInBase.toString() },
-    slippageBps: params.slippageBps ?? 100,
-  });
+  // Pivot scale: BTC sats (8-dec) ↔ tBTC/WBTC base units. Direction-agnostic
+  // — same factor used to inflate (source-pinned) or deflate (target-pinned).
+  const pivotScale = 10n ** BigInt(btcPegged.decimals - 8);
 
-  const evmSmallest = BigInt(dexQuote.estimated_amount_out.raw);
-  const evmDecimals = dexQuote.estimated_amount_out.decimals;
+  // Run the DEX leg in whichever direction the caller pinned. Both paths
+  // produce the same shape: (btc_sats, evm_smallest), with the DEX quote
+  // carrying the precise opposite side.
+  const pivot: BtcEvmPivot =
+    params.sourceAmount != null
+      ? await dexSourcePinned(params, deps, btcPegged, chainIdNum, pivotScale)
+      : await dexTargetPinned(params, deps, btcPegged, chainIdNum, pivotScale);
 
-  // --- protocol fee + net-amount composition ---
+  const { btcSats, evmSmallest, evmDecimals } = pivot;
+
   // Protocol fee in sats: floor(btc_sats × fee_percentage). The server
   // uses `rust_decimal` arithmetic on a `Decimal`; we use `BigInt`
   // multiplication after scaling the percentage by 1e18 to dodge
@@ -205,17 +183,24 @@ async function composeBtcToEvm(
     Math.round(pair.fee_percentage * Number(FEE_SCALE)),
   );
   const protocolFee = Number((btcSats * feePctScaled) / FEE_SCALE);
-
   const totalFeeSats = networkFeeSats + gaslessNetworkFee + protocolFee;
 
-  // BTC→EVM, source-pinned: source = btc_sats (unchanged), target =
-  // sats_to_evm(btc_sats − fees). Same shape as
-  // quote_calculator::compute_net_amounts for the (true, Source) arm.
-  const effectiveSats = btcSats - BigInt(totalFeeSats);
-  const netTarget =
-    btcSats === 0n
-      ? 0n
-      : (effectiveSats < 0n ? 0n : effectiveSats * evmSmallest) / btcSats;
+  // Net amounts mirror quote_calculator::compute_net_amounts for the BTC→EVM
+  // arms. Source-pinned: net_target = sats_to_evm(btc_sats − fees).
+  // Target-pinned: net_source = btc_sats + fees, target echoes pinned.
+  let netSource: bigint;
+  let netTarget: bigint;
+  if (params.sourceAmount != null) {
+    const effectiveSats = btcSats - BigInt(totalFeeSats);
+    netSource = btcSats;
+    netTarget =
+      btcSats === 0n
+        ? 0n
+        : (effectiveSats < 0n ? 0n : effectiveSats * evmSmallest) / btcSats;
+  } else {
+    netSource = btcSats + BigInt(totalFeeSats);
+    netTarget = evmSmallest;
+  }
 
   return {
     exchange_rate: calculateExchangeRate(btcSats, evmSmallest, evmDecimals),
@@ -227,10 +212,113 @@ async function composeBtcToEvm(
     max_amount: pair.max_sats,
     source_amount: btcSats.toString(),
     target_amount: evmSmallest.toString(),
-    net_source_amount: btcSats.toString(),
+    net_source_amount: netSource.toString(),
     net_target_amount: netTarget.toString(),
     bridge_fee: undefined,
   };
+}
+
+interface BtcEvmPivot {
+  btcSats: bigint;
+  evmSmallest: bigint;
+  evmDecimals: number;
+}
+
+/**
+ * BTC→EVM, source-pinned: user pins BTC sats; DEX runs exact-input
+ * (tBTC pivot → target token) and returns the receivable target amount.
+ */
+async function dexSourcePinned(
+  params: ComposeQuoteParams,
+  deps: ComposeQuoteDeps,
+  btcPegged: { address: string; decimals: number },
+  chainIdNum: number,
+  pivotScale: bigint,
+): Promise<BtcEvmPivot> {
+  const btcSats = BigInt(params.sourceAmount!);
+  const pivotInBase = btcSats * pivotScale;
+  const dexQuote = await deps.getDexQuote({
+    from: { kind: "evm", chain_id: chainIdNum, address: btcPegged.address },
+    to: {
+      kind: "evm",
+      chain_id: chainIdNum,
+      address: params.targetToken.toLowerCase(),
+    },
+    amount: { kind: "exact_in", value: pivotInBase.toString() },
+    slippageBps: params.slippageBps ?? 100,
+  });
+  return {
+    btcSats,
+    evmSmallest: BigInt(dexQuote.estimated_amount_out.raw),
+    evmDecimals: dexQuote.estimated_amount_out.decimals,
+  };
+}
+
+/**
+ * BTC→EVM, target-pinned: user pins target token amount; DEX runs
+ * exact-output (tBTC pivot → target token) and returns the required
+ * pivot amount. We divide that back into BTC sats for the fee math.
+ *
+ * Integer-floors the sats conversion to match server-side
+ * `token_units_to_sats`. The DEX result is the precise tBTC needed; any
+ * sub-sat dust is absorbed.
+ */
+async function dexTargetPinned(
+  params: ComposeQuoteParams,
+  deps: ComposeQuoteDeps,
+  btcPegged: { address: string; decimals: number },
+  chainIdNum: number,
+  pivotScale: bigint,
+): Promise<BtcEvmPivot> {
+  const evmSmallest = BigInt(params.targetAmount!);
+  const dexQuote = await deps.getDexQuote({
+    from: { kind: "evm", chain_id: chainIdNum, address: btcPegged.address },
+    to: {
+      kind: "evm",
+      chain_id: chainIdNum,
+      address: params.targetToken.toLowerCase(),
+    },
+    amount: { kind: "exact_out", value: evmSmallest.toString() },
+    slippageBps: params.slippageBps ?? 100,
+  });
+  const pivotInBase = BigInt(dexQuote.expected_amount_in.raw);
+  return {
+    btcSats: pivotInBase / pivotScale,
+    evmSmallest,
+    evmDecimals: dexQuote.estimated_amount_out.decimals,
+  };
+}
+
+function lookupPair(
+  swapPairs: SwapPairsResponse,
+  source: Chain,
+  target: Chain,
+) {
+  const pair = swapPairs.pairs.find(
+    (p) => p.source === source && p.target === target,
+  );
+  if (!pair) {
+    throw new UnsupportedComposeQuotePath(
+      `composeQuote: no swap-pair entry for ${source}→${target}`,
+    );
+  }
+  return pair;
+}
+
+function lookupFeeEntry(
+  networkFees: NetworkFeesResponse,
+  source: Chain,
+  target: Chain,
+) {
+  const entry = networkFees.pairs.find(
+    (p) => p.source === source && p.target === target,
+  );
+  if (!entry) {
+    throw new UnsupportedComposeQuotePath(
+      `composeQuote: no network-fee entry for ${source}→${target}`,
+    );
+  }
+  return entry;
 }
 
 async function composeEvmToBtc(
