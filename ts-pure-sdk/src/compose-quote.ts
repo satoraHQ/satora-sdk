@@ -338,37 +338,106 @@ async function composeEvmToBtc(
       `composeQuote: source chain ${evmChain} is not numeric (EVM)`,
     );
   }
-  if (params.sourceAmount === undefined) {
-    throw new UnsupportedComposeQuotePath(
-      `composeQuote: source amount is undefined`,
-    );
-  }
 
-  const evmSmallest = BigInt(params.sourceAmount);
-
-  // --- primitive 1: /swap-pairs (static) ---
-  const pair = deps.swapPairs.pairs.find(
-    (p) => p.source === params.sourceChain && p.target === params.targetChain,
+  const pair = lookupPair(
+    deps.swapPairs,
+    params.sourceChain,
+    params.targetChain,
   );
-  if (!pair) {
-    throw new UnsupportedComposeQuotePath(
-      `composeQuote: no swap-pair entry for ${params.sourceChain}→${params.targetChain}`,
-    );
-  }
-
-  // --- primitive 2: /network-fees (dynamic, ~15s freshness) ---
-  const feeEntry = deps.networkFees.pairs.find(
-    (p) => p.source === params.sourceChain && p.target === params.targetChain,
+  const feeEntry = lookupFeeEntry(
+    deps.networkFees,
+    params.sourceChain,
+    params.targetChain,
   );
-  if (!feeEntry) {
-    throw new UnsupportedComposeQuotePath(
-      `composeQuote: no network-fee entry for ${params.sourceChain}→${params.targetChain}`,
-    );
-  }
   const networkFeeSats = feeEntry.fees.source_sats + feeEntry.fees.target_sats;
   const gaslessNetworkFee = 0;
 
-  // --- primitive 3: /dex-quote (source EVM token → tBTC) ---
+  // Pivot scale: BTC sats (8-dec) ↔ tBTC/WBTC base units. Same direction-
+  // agnostic factor used by composeBtcToEvm.
+  const pivotScale = 10n ** BigInt(btcPegged.decimals - 8);
+
+  const pivot: EvmBtcPivot =
+    params.sourceAmount != null
+      ? await dexEvmToBtcSourcePinned(
+          params,
+          deps,
+          btcPegged,
+          chainIdNum,
+          pivotScale,
+        )
+      : await dexEvmToBtcTargetPinned(
+          params,
+          deps,
+          btcPegged,
+          chainIdNum,
+          pivotScale,
+        );
+
+  const { btcSats, evmSmallest, evmDecimals } = pivot;
+
+  // Protocol fee in sats: floor(btc_sats × fee_percentage). Same fixed-
+  // point trick as composeBtcToEvm.
+  const FEE_SCALE = 10n ** 18n;
+  const feePctScaled = BigInt(
+    Math.round(pair.fee_percentage * Number(FEE_SCALE)),
+  );
+  const protocolFee = Number((btcSats * feePctScaled) / FEE_SCALE);
+  const totalFeeSats = networkFeeSats + gaslessNetworkFee + protocolFee;
+
+  // Net amounts mirror quote_calculator::compute_net_amounts for the
+  // EVM→BTC arms.
+  // - Source-pinned: source echoes pinned, net_target = btc_sats − fees.
+  // - Target-pinned: target echoes pinned, net_source = sats_to_evm(btc_sats + fees).
+  //   `sats_to_evm(s) = s × evm_smallest / btc_sats`, the implicit
+  //   per-sat-to-evm ratio carried by the DEX quote.
+  let netSource: bigint;
+  let netTarget: bigint;
+  if (params.sourceAmount != null) {
+    netSource = evmSmallest;
+    netTarget =
+      btcSats > BigInt(totalFeeSats) ? btcSats - BigInt(totalFeeSats) : 0n;
+  } else {
+    const grossSats = btcSats + BigInt(totalFeeSats);
+    netSource =
+      btcSats === 0n ? 0n : (grossSats * evmSmallest) / btcSats;
+    netTarget = btcSats;
+  }
+
+  return {
+    exchange_rate: calculateExchangeRate(btcSats, evmSmallest, evmDecimals),
+    network_fee: networkFeeSats,
+    gasless_network_fee: gaslessNetworkFee,
+    protocol_fee: protocolFee,
+    protocol_fee_rate: pair.fee_percentage,
+    min_amount: pair.min_sats,
+    max_amount: pair.max_sats,
+    source_amount: evmSmallest.toString(),
+    target_amount: btcSats.toString(),
+    net_source_amount: netSource.toString(),
+    net_target_amount: netTarget.toString(),
+    bridge_fee: undefined,
+  };
+}
+
+interface EvmBtcPivot {
+  btcSats: bigint;
+  evmSmallest: bigint;
+  evmDecimals: number;
+}
+
+/**
+ * EVM→BTC, source-pinned: user pins source token; DEX runs
+ * exact-input (source → tBTC pivot) and returns the receivable pivot
+ * amount, which divides back into BTC sats.
+ */
+async function dexEvmToBtcSourcePinned(
+  params: ComposeQuoteParams,
+  deps: ComposeQuoteDeps,
+  btcPegged: { address: string; decimals: number },
+  chainIdNum: number,
+  pivotScale: bigint,
+): Promise<EvmBtcPivot> {
+  const evmSmallest = BigInt(params.sourceAmount!);
   const dexQuote = await deps.getDexQuote({
     from: {
       kind: "evm",
@@ -379,48 +448,47 @@ async function composeEvmToBtc(
     amount: { kind: "exact_in", value: evmSmallest.toString() },
     slippageBps: params.slippageBps ?? 100,
   });
-
-  // tBTC base units → BTC sats. tBTC is 18-dec, sat is 8-dec → ÷10^10.
-  // The DEX result is the precise tBTC amount; integer-divide trims sub-sat
-  // dust (matching the server's `token_units_to_sats` for the BTC-pegged
-  // token-list entry).
-  const tbtcBase = BigInt(dexQuote.estimated_amount_out.raw);
-  const scale = 10n ** BigInt(btcPegged.decimals - 8);
-  const btcSats = tbtcBase / scale;
-
-  // --- protocol fee + net-amount composition ---
-  const FEE_SCALE = 10n ** 18n;
-  const feePctScaled = BigInt(
-    Math.round(pair.fee_percentage * Number(FEE_SCALE)),
-  );
-  const protocolFee = Number((btcSats * feePctScaled) / FEE_SCALE);
-
-  const totalFeeSats = networkFeeSats + gaslessNetworkFee + protocolFee;
-
-  // EVM→BTC, source-pinned: source = evm_smallest (echoed), target =
-  // btc_sats (pre-fee DEX output), net_target = btc_sats − fees.
-  // Mirrors quote_calculator::compute_net_amounts for the (false, Source)
-  // arm.
-  const netTargetSats =
-    btcSats > BigInt(totalFeeSats) ? btcSats - BigInt(totalFeeSats) : 0n;
-
+  const pivotBase = BigInt(dexQuote.estimated_amount_out.raw);
   return {
-    exchange_rate: calculateExchangeRate(
-      btcSats,
-      evmSmallest,
-      dexQuote.expected_amount_in.decimals,
-    ),
-    network_fee: networkFeeSats,
-    gasless_network_fee: gaslessNetworkFee,
-    protocol_fee: protocolFee,
-    protocol_fee_rate: pair.fee_percentage,
-    min_amount: pair.min_sats,
-    max_amount: pair.max_sats,
-    source_amount: evmSmallest.toString(),
-    target_amount: btcSats.toString(),
-    net_source_amount: evmSmallest.toString(),
-    net_target_amount: netTargetSats.toString(),
-    bridge_fee: undefined,
+    btcSats: pivotBase / pivotScale,
+    evmSmallest,
+    evmDecimals: dexQuote.expected_amount_in.decimals,
+  };
+}
+
+/**
+ * EVM→BTC, target-pinned: user pins target BTC sats; DEX runs
+ * exact-output (source → tBTC pivot) and returns the required source
+ * amount. We inflate the pinned sats into pivot base units, ask the
+ * DEX for the input cost, and use that as the pre-fee `evm_smallest`.
+ *
+ * Net source then re-scales `btc_sats + fees` through the same
+ * implicit ratio (`evm_smallest / btc_sats`) the legacy server's
+ * `sats_to_evm` helper uses, so source-side fee inflation matches.
+ */
+async function dexEvmToBtcTargetPinned(
+  params: ComposeQuoteParams,
+  deps: ComposeQuoteDeps,
+  btcPegged: { address: string; decimals: number },
+  chainIdNum: number,
+  pivotScale: bigint,
+): Promise<EvmBtcPivot> {
+  const btcSats = BigInt(params.targetAmount!);
+  const pivotInBase = btcSats * pivotScale;
+  const dexQuote = await deps.getDexQuote({
+    from: {
+      kind: "evm",
+      chain_id: chainIdNum,
+      address: params.sourceToken.toLowerCase(),
+    },
+    to: { kind: "evm", chain_id: chainIdNum, address: btcPegged.address },
+    amount: { kind: "exact_out", value: pivotInBase.toString() },
+    slippageBps: params.slippageBps ?? 100,
+  });
+  return {
+    btcSats,
+    evmSmallest: BigInt(dexQuote.expected_amount_in.raw),
+    evmDecimals: dexQuote.expected_amount_in.decimals,
   };
 }
 
