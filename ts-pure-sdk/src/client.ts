@@ -3,7 +3,6 @@ import {
   type ArkadeToEvmSwapResponse,
   type ArkadeToLightningSwapResponse,
   type BtcToArkadeSwapResponse,
-  type Chain,
   createApiClient,
   type EvmToArkadeSwapResponse,
   type EvmToBitcoinSwapResponse,
@@ -14,7 +13,6 @@ import {
   type QuoteResponse,
   type RedeemAndSwapResponse,
   type StatusResponse,
-  type SwapPairsResponse,
   type TokenInfos,
 } from "./api/client.js";
 import { getVhtlcAmounts, type VhtlcAmounts } from "./arkade.js";
@@ -30,6 +28,10 @@ import type {
   CctpProgressStep,
 } from "./cctp-inbound/fundSwap.js";
 import type { AaConfig } from "./cctp-inbound/types.js";
+import {
+  type ComposeQuoteParams,
+  composeQuote as composeQuoteHelper,
+} from "./compose-quote.js";
 import {
   type ArkadeToEvmSwapOptions,
   type ArkadeToEvmSwapResult,
@@ -141,6 +143,25 @@ import {
   isSourceEvmChain,
   toChainName,
 } from "./tokens.js";
+import {
+  type Chain,
+  type ChainConfigResponse,
+  type DexQuoteAmount,
+  type DexQuoteResponse,
+  fromWireChainConfigResponse,
+  fromWireDexQuoteResponse,
+  fromWireNetworkFeesResponse,
+  fromWireQuoteResponse,
+  fromWireSwapPairsResponse,
+  type NetworkFeesResponse,
+  type SwapPairsResponse,
+  type Token,
+  type WireChainConfigResponse,
+  type WireDexQuoteResponse,
+  type WireNetworkFeesResponse,
+  type WireQuoteResponse,
+  type WireSwapPairsResponse,
+} from "./types/index.js";
 import { USDT0_ADDRESSES } from "./usdt0-bridge/constants.js";
 import {
   createSwapStatusWatcher,
@@ -1202,7 +1223,98 @@ export class Client {
     if (error || !data) {
       throw new Error(`Failed to get swap pairs: ${JSON.stringify(error)}`);
     }
-    return data;
+    return fromWireSwapPairsResponse(data as WireSwapPairsResponse);
+  }
+
+  /**
+   * Per-EVM-chain configuration — BTC-pegged pivot token today, HTLC
+   * and coordinator contract addresses planned. Static at the
+   * timescale of an SDK session; callers should fetch once and cache.
+   */
+  async getChainConfig(): Promise<ChainConfigResponse> {
+    const { data, error } = await this.#apiClient.GET("/chain-config");
+    if (error || !data) {
+      throw new Error(`Failed to get chain config: ${JSON.stringify(error)}`);
+    }
+    return fromWireChainConfigResponse(data as WireChainConfigResponse);
+  }
+
+  /**
+   * Per-pair network-fee estimates in sats at current gas/mining prices.
+   *
+   * One of three primitives a client combines to compose an end-to-end
+   * quote (alongside `getSwapPairs()` and `getDexQuote()`). The values
+   * come from the server's gas cache, which refreshes every ~15s;
+   * clients can poll at the same cadence.
+   */
+  async getNetworkFees(): Promise<NetworkFeesResponse> {
+    const { data, error } = await this.#apiClient.GET("/network-fees");
+    if (error || !data) {
+      throw new Error(`Failed to get network fees: ${JSON.stringify(error)}`);
+    }
+    return fromWireNetworkFeesResponse(data as WireNetworkFeesResponse);
+  }
+
+  /**
+   * Price-discovery quote for the EVM leg of a foreign-target swap.
+   *
+   * Companion to `/dex-calldata`: same request shape minus the
+   * execution-time fields. The response carries a `cache_ttl_seconds`
+   * hint clients should honour as their cache window.
+   *
+   * @param params.from         Source asset (`Token::Evm` today; `Solana` rejected).
+   * @param params.to           Target asset.
+   * @param params.amount       `{ kind: "exact_in" | "exact_out", value: string }` — `value` is a
+   *   stringified `u256` in smallest units.
+   * @param params.slippageBps  Slippage tolerance the SDK will use at execution. Bounded
+   *   server-side; out-of-range values throw.
+   */
+  async getDexQuote(params: {
+    from: Token;
+    to: Token;
+    amount: DexQuoteAmount;
+    slippageBps: number;
+  }): Promise<DexQuoteResponse> {
+    const { data, error } = await this.#apiClient.POST("/dex-quote", {
+      body: {
+        from: params.from,
+        to: params.to,
+        amount: params.amount,
+        slippage_bps: params.slippageBps,
+      },
+    });
+    if (error || !data) {
+      throw new Error(`Failed to get DEX quote: ${JSON.stringify(error)}`);
+    }
+    return fromWireDexQuoteResponse(data as WireDexQuoteResponse);
+  }
+
+  /**
+   * Compose an end-to-end `QuoteResponse` from the three primitives
+   * (`/swap-pairs` + `/network-fees` + `/dex-quote`) instead of hitting
+   * the server-composed `/quote`.
+   *
+   * Drop-in compatible with the subset of `getQuote()` it supports.
+   * Throws `UnsupportedComposeQuotePath` for paths v0 doesn't handle
+   * (bridges, target-amount-pinned, Lightning/Arkade pivots, etc.) —
+   * callers should fall back to `getQuote()` for those.
+   *
+   * Fetches `/swap-pairs` and `/network-fees` on each call. Hot loops
+   * can use {@link composeQuote} directly (in `compose-quote.ts`),
+   * which takes pre-fetched primitives as a dependency object.
+   */
+  async composeQuote(params: ComposeQuoteParams): Promise<QuoteResponse> {
+    const [swapPairs, networkFees, chainConfig] = await Promise.all([
+      this.getSwapPairs(),
+      this.getNetworkFees(),
+      this.getChainConfig(),
+    ]);
+    return composeQuoteHelper(params, {
+      swapPairs,
+      networkFees,
+      chainConfig,
+      getDexQuote: (p) => this.getDexQuote(p),
+    });
   }
 
   // =========================================================================
@@ -1317,7 +1429,7 @@ export class Client {
       throw new Error("No quote data returned");
     }
 
-    return data;
+    return fromWireQuoteResponse(data as WireQuoteResponse);
   }
 
   // =========================================================================
@@ -4445,7 +4557,7 @@ export class Client {
     if (!data) {
       throw new Error("No quote data returned");
     }
-    return data;
+    return fromWireQuoteResponse(data as WireQuoteResponse);
   }
 
   /**

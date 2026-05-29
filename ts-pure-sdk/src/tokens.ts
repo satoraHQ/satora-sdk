@@ -1,5 +1,6 @@
-import type { Chain, TokenId, TokenInfo } from "./api/client.js";
+import type { TokenId, TokenInfo } from "./api/client.js";
 import { CCTP_DOMAINS, USDC_ADDRESSES } from "./cctp/index.js";
+import type { Chain } from "./types/chain.js";
 import { LZ_EIDS, USDT0_ADDRESSES } from "./usdt0-bridge/index.js";
 
 /** A token identifier: either a plain string TokenId or a TokenInfo object. */

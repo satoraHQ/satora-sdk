@@ -13,8 +13,6 @@ export type TokenInfos = components["schemas"]["TokenInfos"];
 export type SwapStatus = components["schemas"]["SwapStatus"];
 export type ServiceStatus = components["schemas"]["ServiceStatus"];
 export type StatusResponse = components["schemas"]["StatusResponse"];
-export type QuoteResponse = components["schemas"]["QuoteResponse"];
-export type Chain = components["schemas"]["Chain"];
 export type GetSwapResponse = components["schemas"]["GetSwapResponse"];
 export type BtcToArkadeSwapResponse =
   components["schemas"]["BtcToArkadeSwapResponse"];
@@ -67,9 +65,11 @@ export type LightningToEvmSwapResponse =
 export type LightningToArkadeSwapResponse =
   components["schemas"]["LightningToArkadeSwapResponse"];
 
-// Swap pairs types
-export type SwapPairInfo = components["schemas"]["SwapPairInfo"];
-export type SwapPairsResponse = components["schemas"]["SwapPairsResponse"];
+// `SwapPairInfo`, `SwapPairsResponse`, `QuoteResponse`, `Chain`,
+// `Token`, `TokenAmount`, `DexQuote*`, and `NetworkFee*` are now
+// hand-written in `../types/`. Don't re-export them here — the SDK's
+// public type surface is the hand-written module, not the OpenAPI
+// codegen.
 
 export interface ApiClientOptions {
   baseUrl: string;

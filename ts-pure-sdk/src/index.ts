@@ -9,7 +9,6 @@ export type {
   ArkadeToLightningSwapResponse,
   BitcoinToEvmSwapRequest,
   BtcToArkadeSwapResponse,
-  Chain,
   ClaimGaslessRequest,
   ClaimGaslessResponse,
   components,
@@ -22,11 +21,8 @@ export type {
   LightningToEvmSwapResponse,
   // Types
   paths,
-  QuoteResponse,
   ServiceStatus,
   StatusResponse,
-  SwapPairInfo,
-  SwapPairsResponse,
   SwapStatus,
   TokenId,
   TokenInfo,
@@ -298,6 +294,24 @@ export {
   toChain,
   toChainName,
 } from "./tokens.js";
+// Hand-written SDK types (decoupled from OpenAPI codegen).
+export type {
+  Chain,
+  ChainConfigEntry,
+  ChainConfigResponse,
+  DexQuoteAmount,
+  DexQuoteHop,
+  DexQuoteResponse,
+  NetworkFee,
+  NetworkFeePairEntry,
+  NetworkFeesResponse,
+  QuoteResponse,
+  SwapPairInfo,
+  SwapPairsResponse,
+  Token,
+  TokenAmount,
+  TokenRef,
+} from "./types/index.js";
 export { type GetUsdPricesOptions, getUsdPrices } from "./usd-price.js";
 // USDT0 bridge (LayerZero OFT) utilities
 export {
