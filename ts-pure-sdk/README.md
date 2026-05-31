@@ -41,7 +41,7 @@ This SDK supports the following swap directions:
 ### Setup
 
 ```typescript
-import {Client, IdbWalletStorage, IdbSwapStorage} from "@lendasat/lendaswap-sdk-pure";
+import { Client, IdbWalletStorage, IdbSwapStorage } from "@lendasat/lendaswap-sdk-pure";
 
 // Create a client with persistent storage (browser)
 const client = await Client.builder()
@@ -106,7 +106,7 @@ const result = await client.createSwap({
 
 // Or use any token by chain + contract address
 const result = await client.createSwap({
-  source: { chain: "42161", tokenId: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831" }, // USDC on Arbitrum
+  source: {chain: "42161", tokenId: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"}, // USDC on Arbitrum
   target: Asset.BTC_LIGHTNING,
   targetAddress: "lnbc...",      // BOLT11 invoice
 });
@@ -133,13 +133,13 @@ const {txHash} = await client.fundSwapGasless(swapId);
 dependencies:
 
 ```typescript
-import type {EvmSigner} from "@lendasat/lendaswap-sdk-pure";
+import type { EvmSigner } from "@lendasat/lendaswap-sdk-pure";
 ```
 
 **wagmi / viem:**
 
 ```typescript
-import {createPublicClient, http} from "viem";
+import { createPublicClient, http } from "viem";
 
 const publicClient = createPublicClient({chain, transport: http()});
 
@@ -260,7 +260,7 @@ When the backend API changes:
 
 1. Download the latest OpenAPI spec from the backend:
    ```bash
-   curl -o openapi.json https://api.lendaswap.com/api-docs/openapi.json
+   curl -o openapi.json https://api.satora.io/api-docs/openapi.json
    ```
 
 2. Run the generate command:

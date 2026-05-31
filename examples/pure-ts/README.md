@@ -67,14 +67,14 @@ npm run info
 
 ## Environment Variables
 
-| Variable             | Description                                          | Default                      |
-| -------------------- | ---------------------------------------------------- | ---------------------------- |
-| `LENDASWAP_API_URL`  | API base URL                                         | `https://api.lendaswap.com/` |
-| `MNEMONIC`           | BIP39 mnemonic for BTC wallet (auto-generated)       | -                            |
-| `EVM_MNEMONIC`       | BIP39 mnemonic for EVM wallet (required for EVM ops) | -                            |
-| `LENDASWAP_ORG_CODE` | Org code for swap tracking                           | -                            |
-| `LENDASWAP_DB_PATH`  | SQLite database path                                 | `~/.lendaswap/data.db`       |
-| `ESPLORA_URL`        | Esplora API URL for broadcasting                     | `https://mempool.space/api`  |
+| Variable             | Description                                          | Default                     |
+| -------------------- | ---------------------------------------------------- | --------------------------- |
+| `LENDASWAP_API_URL`  | API base URL                                         | `https://api.satora.io/`    |
+| `MNEMONIC`           | BIP39 mnemonic for BTC wallet (auto-generated)       | -                           |
+| `EVM_MNEMONIC`       | BIP39 mnemonic for EVM wallet (required for EVM ops) | -                           |
+| `LENDASWAP_ORG_CODE` | Org code for swap tracking                           | -                           |
+| `LENDASWAP_DB_PATH`  | SQLite database path                                 | `~/.lendaswap/data.db`      |
+| `ESPLORA_URL`        | Esplora API URL for broadcasting                     | `https://mempool.space/api` |
 
 ## Example with Custom Mnemonic
 

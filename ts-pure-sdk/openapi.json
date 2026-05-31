@@ -6,8 +6,13 @@
     "license": {
       "name": ""
     },
-    "version": "0.2.32"
+    "version": "0.2.39"
   },
+  "servers": [
+    {
+      "url": "https://api.satora.io"
+    }
+  ],
   "paths": {
     "/api/delegate/cosigner-pk": {
       "get": {
@@ -616,6 +621,186 @@
           },
           "500": {
             "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dex-calldata/claim": {
+      "post": {
+        "tags": ["dex-calldata"],
+        "summary": "Fetch fresh calldata for the **claim** flow.",
+        "description": "User redeems tBTC from the HTLC and swaps it for the foreign target\nlanding on the same EOA. The server uses `recipient = sender`.\n\nStateless — no swap-id binding, no persistence. The SDK is expected to\ncall this immediately before submitting a user op so the calldata stays\nfresh; on `AA23 reverted` / slippage failure the SDK should retry.",
+        "operationId": "post_dex_calldata_claim",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DexCalldataRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Fresh calldata ready to be embedded in a user op",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DexCalldataResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request (unsupported chain pair, unknown token, malformed amount, slippage out of range)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream router failed or returned no routable path for the requested pair",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dex-calldata/fund": {
+      "post": {
+        "tags": ["dex-calldata"],
+        "summary": "Fetch fresh calldata for the **fund** flow.",
+        "description": "User spends source tokens on their own EOA; the swap output lands on\nthe HTLC coordinator (derived server-side from `to_chain`).\n\nStateless — no swap-id binding, no persistence. The SDK is expected to\ncall this immediately before submitting a user op so the calldata stays\nfresh; on `AA23 reverted` / slippage failure the SDK should retry.",
+        "operationId": "post_dex_calldata_fund",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DexCalldataRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Fresh calldata ready to be embedded in a user op",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DexCalldataResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request (unsupported chain pair, unknown token, malformed amount, slippage out of range)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream router failed or returned no routable path for the requested pair",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dex-quote": {
+      "post": {
+        "tags": ["dex-quote"],
+        "summary": "Quote the EVM leg of a foreign-target swap.",
+        "description": "Read-only price discovery — no calldata is constructed and no slippage\nis applied. For execution, call [`/dex-calldata`] which returns\nslippage-adjusted bounds plus the bytes to submit.",
+        "operationId": "post_dex_quote",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DexQuoteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Price estimate for the requested EVM leg",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DexQuoteResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request (unsupported chain pair, unknown token, malformed amount)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream router failed or returned no routable path for the requested pair",
             "content": {
               "application/json": {
                 "schema": {

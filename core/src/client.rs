@@ -91,7 +91,7 @@ pub struct Client<S: WalletStorage, SS: SwapStorage, VSS: VtxoSwapStorage> {
 /// use lendaswap_core::{ClientBuilder, Network};
 ///
 /// let client = ClientBuilder::new()
-///     .url("https://api.lendaswap.com")
+///     .url("https://api.satora.io")
 ///     .network(Network::Bitcoin)
 ///     .wallet_storage(my_wallet_storage)
 ///     .swap_storage(my_swap_storage)

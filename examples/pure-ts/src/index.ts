@@ -51,7 +51,7 @@ import { deriveSwapEvmAddress } from "./commands/derive-evm-address.js";
 
 // Configuration from environment variables
 export const CONFIG = {
-  apiUrl: process.env.LENDASWAP_API_URL || "https://api.lendaswap.com/",
+  apiUrl: process.env.LENDASWAP_API_URL || "https://api.satora.io/",
   mnemonic: process.env.MNEMONIC,
   evmMnemonic: process.env.EVM_MNEMONIC, // Separate mnemonic for EVM wallet
   orgCode: process.env.LENDASWAP_ORG_CODE,
@@ -165,7 +165,7 @@ Other Examples:
   tsx src/index.ts info
 
 Environment Variables:
-  LENDASWAP_API_URL   API URL (default: https://api.lendaswap.com/)
+  LENDASWAP_API_URL   API URL (default: https://api.satora.io/)
   MNEMONIC            Wallet mnemonic for BTC operations (optional, generates new if not set)
   EVM_MNEMONIC        Wallet mnemonic for EVM operations (required for fund command)
   LENDASWAP_ORG_CODE  Org code for swap tracking (optional)

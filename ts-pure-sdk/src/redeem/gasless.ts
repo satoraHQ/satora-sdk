@@ -19,7 +19,7 @@ export type GaslessSwapResponse =
 
 /** Parameters for a gasless claim */
 export interface GaslessClaimParams {
-  /** Base URL for the API (e.g. "https://api.lendaswap.com") */
+  /** Base URL for the API (e.g. "https://api.satora.io") */
   baseUrl: string;
   /** The swap preimage/secret (hex, with or without 0x prefix) */
   preimage: string;

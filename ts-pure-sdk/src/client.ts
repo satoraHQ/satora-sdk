@@ -470,7 +470,7 @@ interface ArkadeVhtlcParams {
   preimageHash: string;
 }
 
-const DEFAULT_BASE_URL = "https://api.lendaswap.com/";
+const DEFAULT_BASE_URL = "https://api.satora.io/";
 
 /** Default Esplora URLs by network */
 const DEFAULT_ESPLORA_URLS: Record<string, string> = {

@@ -4,7 +4,7 @@ import { createApiClient } from "../src/index.js";
 describe("API Client", () => {
   it("should create a client with base URL", () => {
     const client = createApiClient({
-      baseUrl: "https://api.lendaswap.com",
+      baseUrl: "https://api.satora.io",
     });
 
     expect(client).toBeDefined();
@@ -14,7 +14,7 @@ describe("API Client", () => {
 
   it("should create a client with default headers", () => {
     const client = createApiClient({
-      baseUrl: "https://api.lendaswap.com",
+      baseUrl: "https://api.satora.io",
       defaultHeaders: { "X-Client-Id": "test-client-id" },
     });
 
@@ -25,7 +25,7 @@ describe("API Client", () => {
 describe("API Client - Type Safety", () => {
   it("should have typed GET methods for known endpoints", async () => {
     const client = createApiClient({
-      baseUrl: "https://api.lendaswap.com",
+      baseUrl: "https://api.satora.io",
     });
 
     // These should type-check correctly
@@ -55,7 +55,7 @@ describe("API Client - Type Safety", () => {
 
   it("should have typed POST methods for swap creation", async () => {
     const client = createApiClient({
-      baseUrl: "https://api.lendaswap.com",
+      baseUrl: "https://api.satora.io",
     });
 
     // Verify POST methods exist and type-check
