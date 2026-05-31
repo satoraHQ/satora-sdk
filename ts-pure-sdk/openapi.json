@@ -3430,6 +3430,60 @@
           }
         }
       },
+      "DexAmount": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Spend exactly this much `from_token`; receive at least the\nresponse's `estimated_amount_out` (post-slippage) of `to_token`.",
+            "required": ["value", "kind"],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": ["exact_in"]
+              },
+              "value": {
+                "type": "string",
+                "description": "Spend exactly this much `from_token`; receive at least the\nresponse's `estimated_amount_out` (post-slippage) of `to_token`."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Receive exactly this much `to_token`; spend at most the\nresponse's `expected_amount_in` (post-slippage) of `from_token`.",
+            "required": ["value", "kind"],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": ["exact_out"]
+              },
+              "value": {
+                "type": "string",
+                "description": "Receive exactly this much `to_token`; spend at most the\nresponse's `expected_amount_in` (post-slippage) of `from_token`."
+              }
+            }
+          }
+        ],
+        "description": "Which side the caller is pinning on the requested swap.\n\nStringified `u128` rather than typed integer — matches the rest of the\nAPI (`net_source_amount`, `min_amount_out`, …) and dodges the JS\n`Number` precision cliff at 2^53 for 18-decimal tokens."
+      },
+      "DexCall": {
+        "type": "object",
+        "description": "A single EVM contract call the SDK should embed in its batch user op.\n\nThe list ordering matters — the SDK must submit calls in the order\nreturned. Today this is always `[approve(spender, amount), router.swap(...)]`:\nv1 targets fresh EIP-7702-delegated EOAs that start with zero\nallowance, so the approve is unconditional. When native-ETH inputs\nor stable-allowance paths land, the approve will be dropped when\n`allowance(sender, spender) >= amount` and the response will be a\nsingle-element list.",
+        "required": ["target", "data", "value"],
+        "properties": {
+          "data": {
+            "type": "string",
+            "description": "ABI-encoded calldata to send to `target` (`0x`-prefixed hex)."
+          },
+          "target": {
+            "type": "string",
+            "description": "Contract address the SDK must `call` (with `value`)."
+          },
+          "value": {
+            "type": "string",
+            "description": "`msg.value` to attach, as a stringified `u256`. Almost always\n`\"0\"` for token-only flows; non-zero only when the swap involves\nnative ETH on either leg."
+          }
+        }
+      },
       "DexCallData": {
         "type": "object",
         "description": "DEX swap calldata for the coordinator contract.",
@@ -3462,6 +3516,208 @@
           "value": {
             "type": "string",
             "description": "Native token value (usually \"0\")"
+          }
+        }
+      },
+      "DexCalldataRequest": {
+        "type": "object",
+        "description": "Request shared by both `/dex-calldata/claim` and `/dex-calldata/fund`.\n\nThe flow-specific `recipient` is deliberately not part of this struct —\neach flow's handler resolves it from configuration (fund) or echoes the\nsender (claim).",
+        "required": ["from", "to", "amount", "sender", "slippage_bps"],
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/DexAmount",
+            "description": "Either the input amount (exact-in) or the desired output amount\n(exact-out), both as stringified `u128` smallest-unit values."
+          },
+          "from": {
+            "$ref": "#/components/schemas/Token",
+            "description": "Source asset the SDK will spend. Must be a [`Token::Evm`] variant —\nEOAs only delegate via EIP-7702 on EVM. `Solana` is rejected with\na 400."
+          },
+          "sender": {
+            "type": "string",
+            "description": "Address that holds (and will spend) `from.address` on its chain.\nThis is the address the SDK will sign the user op against — under\nEIP-7702 + Kernel that's the user's 7702-delegated EOA.\n\nRouters bake `sender` assumptions into the calldata (e.g. allowance\nchecks, permit sources, refund destinations), so passing the wrong\naddress here produces calldata that either fails routing\npre-submission or reverts on-chain."
+          },
+          "slippage_bps": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Slippage tolerance in basis points (e.g. `100` = 1%, `50` = 0.5%).\nBounded server-side; out-of-range values return 400.",
+            "minimum": 0
+          },
+          "to": {
+            "$ref": "#/components/schemas/Token",
+            "description": "Target asset the swap will produce."
+          }
+        }
+      },
+      "DexCalldataResponse": {
+        "type": "object",
+        "required": [
+          "chain",
+          "payload",
+          "expected_amount_in",
+          "estimated_amount_out",
+          "estimated_settlement_seconds",
+          "router"
+        ],
+        "properties": {
+          "chain": {
+            "type": "string",
+            "description": "Chain identifier on which the SDK must submit `payload` (always\nequal to the request's `from_chain`; surfaced explicitly so the\nSDK doesn't have to track it across the request/response\nboundary)."
+          },
+          "estimated_amount_out": {
+            "type": "string",
+            "description": "Estimated amount of `to_token` the user will receive on `to_chain`,\nas a stringified `u128` smallest-unit value.\n\n- `ExactIn`: the slippage-adjusted *minimum* output. The swap call will revert on-chain if\n  the actual output is less.\n- `ExactOut`: echoes the pinned output amount from the request."
+          },
+          "estimated_settlement_seconds": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Rough upper bound on how long settlement on `to_chain` takes\nonce the user op lands on `from_chain`. ~1 for same-chain\nswaps, ~15 for CCTP fast-transfer, minutes for slower bridges.\nSDK uses this to size status-poll backoff.",
+            "minimum": 0
+          },
+          "expected_amount_in": {
+            "type": "string",
+            "description": "Amount of `from_token` the user must provide on `from_chain`, as a\nstringified `u128` smallest-unit value.\n\n- `ExactIn`: echoes the pinned input amount from the request.\n- `ExactOut`: the slippage-adjusted *maximum* input the SDK must be willing to spend to\n  guarantee receiving the pinned output. The SDK should fund / approve at least this\n  amount."
+          },
+          "payload": {
+            "$ref": "#/components/schemas/DexCallsPayload",
+            "description": "Chain-native instructions the SDK must submit on `chain`. Today\nalways the `Evm` variant — see [`DexCallsPayload`] for the\nforward-compatibility story when non-EVM source chains are added."
+          },
+          "router": {
+            "type": "string",
+            "description": "Label identifying which router the server selected (`\"lifi\"`,\n`\"uniswap\"`, `\"curve\"`, `\"cctp\"`, …). Informational only — SDK\nbehaviour is router-agnostic."
+          }
+        }
+      },
+      "DexCallsPayload": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Ordered list of EVM contract calls to batch into a Kernel\n`execute(BATCH_MODE, …)` and submit as a single ERC-4337 user op\n(typically EIP-7702-delegated, sponsored by a paymaster).",
+            "required": ["calls", "kind"],
+            "properties": {
+              "calls": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/DexCall"
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": ["evm"]
+              }
+            }
+          }
+        ],
+        "description": "Chain-native instructions the SDK must submit on `chain`.\n\nTagged on `kind` so the response is shape-stable as new source-chain\nkinds are added. Today only `Evm` exists (matching the v1 invariant\nthat `from_chain` is always an EVM chain — the SDK signs via\nEIP-7702 + Kernel, which only works on EVM EOAs).\n\nWhen Solana-source support lands, a new variant — roughly\n`Solana { instructions: Vec<SolanaInstruction>, accounts: Vec<AccountMeta>, recent_blockhash:\nString }` — will be added. Clients that already switch on `kind` keep working;\nonly clients that need to *handle* Solana opt in by adding the new\nmatch arm."
+      },
+      "DexQuoteHop": {
+        "type": "object",
+        "description": "A single hop in the route the server picked.\n\nOne hop == one user op the SDK will need to submit. Multi-hop routes\n(e.g. USDC@Optimism → USDC@Arbitrum via CCTP, then USDC@Arbitrum →\ntBTC@Arbitrum via Uniswap) are represented as multiple entries in\n[`DexQuoteResponse::hops`].",
+        "required": [
+          "from",
+          "to",
+          "expected_amount_in",
+          "estimated_amount_out",
+          "estimated_settlement_seconds",
+          "router"
+        ],
+        "properties": {
+          "estimated_amount_out": {
+            "$ref": "#/components/schemas/TokenAmount"
+          },
+          "estimated_settlement_seconds": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Per-hop settlement time. Sum across `hops` ≈ end-to-end time.",
+            "minimum": 0
+          },
+          "expected_amount_in": {
+            "$ref": "#/components/schemas/TokenAmount",
+            "description": "Per-hop input/output (raw market estimates, no slippage). Useful\nfor showing the user a per-hop fee breakdown in the UI. Each side\ncarries the matching token's decimals for direct human-readable\nformatting."
+          },
+          "from": {
+            "$ref": "#/components/schemas/Token",
+            "description": "Source token for this hop. Carries chain id + address in the same\nshape as the request — round-trips cleanly through the SDK."
+          },
+          "router": {
+            "type": "string",
+            "description": "Per-hop router label (`\"cctp\"`, `\"layerzero\"`, `\"uniswap\"`, …)."
+          },
+          "to": {
+            "$ref": "#/components/schemas/Token",
+            "description": "Destination token for this hop. Equal-chain to `from` for\nsame-chain swaps, different for bridges."
+          }
+        }
+      },
+      "DexQuoteRequest": {
+        "type": "object",
+        "required": ["from", "to", "amount", "slippage_bps"],
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/DexAmount",
+            "description": "Either the input amount (exact-in) or the desired output amount\n(exact-out), both as stringified `u128` smallest-unit values."
+          },
+          "from": {
+            "$ref": "#/components/schemas/Token",
+            "description": "Source asset. Must be a [`Token::Evm`] variant — price discovery\nis rooted in an EVM settlement hub; `Solana` is rejected with a\n400."
+          },
+          "slippage_bps": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Slippage tolerance the SDK will use at execution time, in basis\npoints (e.g. `100` = 1%, `50` = 0.5%). Affects route selection —\nsome pools only quote at higher tolerances — so passing the same\nvalue here that the SDK will later send to `/dex-calldata` keeps\nthe displayed quote consistent with what actually executes.\nBounded server-side; out-of-range values return 400.",
+            "minimum": 0
+          },
+          "to": {
+            "$ref": "#/components/schemas/Token",
+            "description": "Target asset. Same-chain quotes use the same chain id as `from`;\ncross-chain quotes use a different EVM chain id (Solana\ndestinations are reserved for future work)."
+          }
+        }
+      },
+      "DexQuoteResponse": {
+        "type": "object",
+        "required": [
+          "expected_amount_in",
+          "estimated_amount_out",
+          "estimated_settlement_seconds",
+          "hops",
+          "requires_multiple_user_ops",
+          "router",
+          "cache_ttl_seconds"
+        ],
+        "properties": {
+          "cache_ttl_seconds": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How long the SDK can treat this quote as fresh, in seconds. Route\nprices move slowly on the timescale of UI interactions, so\nre-quoting on every keystroke is wasteful; the SDK should cache\nfor at least this long and only refetch when stale.",
+            "minimum": 0
+          },
+          "estimated_amount_out": {
+            "$ref": "#/components/schemas/TokenAmount",
+            "description": "End-to-end output amount across all hops.\n\n- `ExactIn`: the expected (mid-market) output for the pinned input, with the caller's\n  `slippage_bps` already factored into route selection.\n- `ExactOut`: echoes the pinned output amount from the request."
+          },
+          "estimated_settlement_seconds": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Sum of all hops' settlement times. Useful for showing the user a\nrough end-to-end ETA alongside the price.",
+            "minimum": 0
+          },
+          "expected_amount_in": {
+            "$ref": "#/components/schemas/TokenAmount",
+            "description": "End-to-end input amount across all hops.\n\n- `ExactIn`: echoes the pinned input amount from the request.\n- `ExactOut`: the expected (mid-market) input required to receive the pinned output, with\n  the caller's `slippage_bps` already factored into route selection."
+          },
+          "hops": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DexQuoteHop"
+            },
+            "description": "Per-hop breakdown of the route. Always at least one entry.\n\n`hops.len() == 1`: single-hop route, one user op.\n`hops.len() > 1`:  multi-hop route, one user op per hop, submitted\nin order and waiting for settlement between each. The SDK iterates\n`hops` and calls [`/dex-calldata`] once per hop, deriving each\n`/dex-calldata` request from the corresponding `DexQuoteHop`."
+          },
+          "requires_multiple_user_ops": {
+            "type": "boolean",
+            "description": "`true` iff `hops.len() > 1`. Surfaced explicitly so the SDK can\nshow the user a step counter (\"Step 1 of 2\") without iterating."
+          },
+          "router": {
+            "type": "string",
+            "description": "Top-level router label. Usually equals the only hop's router for\nsingle-hop routes (`\"lifi\"`, `\"uniswap\"`, …), or a `+`-joined\ncomposite for multi-hop (`\"cctp+uniswap\"`). Informational only —\nSDK behaviour is driven by `hops`, not this string."
           }
         }
       },
@@ -5342,6 +5598,66 @@
           "serverwontfund",
           "clientredeemedandclientrefunded"
         ]
+      },
+      "Token": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["chain_id", "address", "kind"],
+            "properties": {
+              "address": {
+                "type": "string",
+                "description": "Token contract address, lowercase hex, `0x`-prefixed."
+              },
+              "chain_id": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Numeric EVM chain id (`1` = Ethereum, `137` = Polygon,\n`42161` = Arbitrum, etc.). Not constrained to the [`EvmChain`]\nenum at parse time so we don't have to redeploy to support a\nnew chain.",
+                "minimum": 0
+              },
+              "kind": {
+                "type": "string",
+                "enum": ["evm"]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["address", "kind"],
+            "properties": {
+              "address": {
+                "type": "string",
+                "description": "SPL mint address, base58-encoded. For SPL targets the SDK\ntypically also needs the recipient's associated token account\n— that's a separate request field, not part of the token\nidentity."
+              },
+              "kind": {
+                "type": "string",
+                "enum": ["solana"]
+              }
+            }
+          }
+        ],
+        "description": "A token identified by the chain it lives on plus a chain-native address.\n\nTagged on `kind` so each chain family encodes the address in its own\nnatural format (hex on EVM, base58 on Solana, etc.). Validation is\npost-deserialization — the wire types stay loose (`u64` chain id,\n`String` address) and handlers reject unsupported chain ids or\nmalformed addresses with 400s.\n\nToday only EVM is consumed; `Solana` is reserved for the cross-chain\nclaim flow. Handlers that don't support a variant must error\nexplicitly so callers get a clear message instead of an opaque\ndownstream failure."
+      },
+      "TokenAmount": {
+        "type": "object",
+        "description": "Smallest-unit amount paired with the associated token's symbol and\ndecimal places, so the SDK can format `raw / 10^decimals` for\ndisplay (and label it with the symbol) without a separate lookup.\n\n`raw` is a stringified `u256` to dodge the JS `Number` precision\ncliff at 2^53 (which 18-decimal tokens exceed routinely).",
+        "required": ["raw", "decimals"],
+        "properties": {
+          "decimals": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Decimal places of the associated token (`6` for USDC, `18` for\ntBTC, etc.).",
+            "minimum": 0
+          },
+          "raw": {
+            "type": "string",
+            "description": "Smallest-unit amount, stringified `u256`."
+          },
+          "symbol": {
+            "type": ["string", "null"],
+            "description": "Ticker symbol of the associated token (`\"USDC\"`, `\"tBTC\"`, …),\nwhen known. Omitted from the wire when the server can't resolve\nit — informational only, do not key business logic on this\nstring."
+          }
+        }
       },
       "TokenId": {
         "oneOf": [

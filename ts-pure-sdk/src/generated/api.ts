@@ -224,6 +224,78 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/dex-calldata/claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Fetch fresh calldata for the **claim** flow.
+         * @description User redeems tBTC from the HTLC and swaps it for the foreign target
+         *     landing on the same EOA. The server uses `recipient = sender`.
+         *
+         *     Stateless — no swap-id binding, no persistence. The SDK is expected to
+         *     call this immediately before submitting a user op so the calldata stays
+         *     fresh; on `AA23 reverted` / slippage failure the SDK should retry.
+         */
+        post: operations["post_dex_calldata_claim"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dex-calldata/fund": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Fetch fresh calldata for the **fund** flow.
+         * @description User spends source tokens on their own EOA; the swap output lands on
+         *     the HTLC coordinator (derived server-side from `to_chain`).
+         *
+         *     Stateless — no swap-id binding, no persistence. The SDK is expected to
+         *     call this immediately before submitting a user op so the calldata stays
+         *     fresh; on `AA23 reverted` / slippage failure the SDK should retry.
+         */
+        post: operations["post_dex_calldata_fund"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dex-quote": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Quote the EVM leg of a foreign-target swap.
+         * @description Read-only price discovery — no calldata is constructed and no slippage
+         *     is applied. For execution, call [`/dex-calldata`] which returns
+         *     slippage-adjusted bounds plus the bytes to submit.
+         */
+        post: operations["post_dex_quote"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/evm-tokens": {
         parameters: {
             query?: never;
@@ -1627,6 +1699,53 @@ export interface components {
             /** @description List of VTXO outpoints to refresh */
             vtxos: string[];
         };
+        /**
+         * @description Which side the caller is pinning on the requested swap.
+         *
+         *     Stringified `u128` rather than typed integer — matches the rest of the
+         *     API (`net_source_amount`, `min_amount_out`, …) and dodges the JS
+         *     `Number` precision cliff at 2^53 for 18-decimal tokens.
+         */
+        DexAmount: {
+            /** @enum {string} */
+            kind: "exact_in";
+            /**
+             * @description Spend exactly this much `from_token`; receive at least the
+             *     response's `estimated_amount_out` (post-slippage) of `to_token`.
+             */
+            value: string;
+        } | {
+            /** @enum {string} */
+            kind: "exact_out";
+            /**
+             * @description Receive exactly this much `to_token`; spend at most the
+             *     response's `expected_amount_in` (post-slippage) of `from_token`.
+             */
+            value: string;
+        };
+        /**
+         * @description A single EVM contract call the SDK should embed in its batch user op.
+         *
+         *     The list ordering matters — the SDK must submit calls in the order
+         *     returned. Today this is always `[approve(spender, amount), router.swap(...)]`:
+         *     v1 targets fresh EIP-7702-delegated EOAs that start with zero
+         *     allowance, so the approve is unconditional. When native-ETH inputs
+         *     or stable-allowance paths land, the approve will be dropped when
+         *     `allowance(sender, spender) >= amount` and the response will be a
+         *     single-element list.
+         */
+        DexCall: {
+            /** @description ABI-encoded calldata to send to `target` (`0x`-prefixed hex). */
+            data: string;
+            /** @description Contract address the SDK must `call` (with `value`). */
+            target: string;
+            /**
+             * @description `msg.value` to attach, as a stringified `u256`. Almost always
+             *     `"0"` for token-only flows; non-zero only when the swap involves
+             *     native ETH on either leg.
+             */
+            value: string;
+        };
         /** @description DEX swap calldata for the coordinator contract. */
         DexCallData: {
             data: string;
@@ -1641,6 +1760,230 @@ export interface components {
             to: string;
             /** @description Native token value (usually "0") */
             value?: string;
+        };
+        /**
+         * @description Request shared by both `/dex-calldata/claim` and `/dex-calldata/fund`.
+         *
+         *     The flow-specific `recipient` is deliberately not part of this struct —
+         *     each flow's handler resolves it from configuration (fund) or echoes the
+         *     sender (claim).
+         */
+        DexCalldataRequest: {
+            /**
+             * @description Either the input amount (exact-in) or the desired output amount
+             *     (exact-out), both as stringified `u128` smallest-unit values.
+             */
+            amount: components["schemas"]["DexAmount"];
+            /**
+             * @description Source asset the SDK will spend. Must be a [`Token::Evm`] variant —
+             *     EOAs only delegate via EIP-7702 on EVM. `Solana` is rejected with
+             *     a 400.
+             */
+            from: components["schemas"]["Token"];
+            /**
+             * @description Address that holds (and will spend) `from.address` on its chain.
+             *     This is the address the SDK will sign the user op against — under
+             *     EIP-7702 + Kernel that's the user's 7702-delegated EOA.
+             *
+             *     Routers bake `sender` assumptions into the calldata (e.g. allowance
+             *     checks, permit sources, refund destinations), so passing the wrong
+             *     address here produces calldata that either fails routing
+             *     pre-submission or reverts on-chain.
+             */
+            sender: string;
+            /**
+             * Format: int32
+             * @description Slippage tolerance in basis points (e.g. `100` = 1%, `50` = 0.5%).
+             *     Bounded server-side; out-of-range values return 400.
+             */
+            slippage_bps: number;
+            /** @description Target asset the swap will produce. */
+            to: components["schemas"]["Token"];
+        };
+        DexCalldataResponse: {
+            /**
+             * @description Chain identifier on which the SDK must submit `payload` (always
+             *     equal to the request's `from_chain`; surfaced explicitly so the
+             *     SDK doesn't have to track it across the request/response
+             *     boundary).
+             */
+            chain: string;
+            /**
+             * @description Estimated amount of `to_token` the user will receive on `to_chain`,
+             *     as a stringified `u128` smallest-unit value.
+             *
+             *     - `ExactIn`: the slippage-adjusted *minimum* output. The swap call will revert on-chain if
+             *       the actual output is less.
+             *     - `ExactOut`: echoes the pinned output amount from the request.
+             */
+            estimated_amount_out: string;
+            /**
+             * Format: int32
+             * @description Rough upper bound on how long settlement on `to_chain` takes
+             *     once the user op lands on `from_chain`. ~1 for same-chain
+             *     swaps, ~15 for CCTP fast-transfer, minutes for slower bridges.
+             *     SDK uses this to size status-poll backoff.
+             */
+            estimated_settlement_seconds: number;
+            /**
+             * @description Amount of `from_token` the user must provide on `from_chain`, as a
+             *     stringified `u128` smallest-unit value.
+             *
+             *     - `ExactIn`: echoes the pinned input amount from the request.
+             *     - `ExactOut`: the slippage-adjusted *maximum* input the SDK must be willing to spend to
+             *       guarantee receiving the pinned output. The SDK should fund / approve at least this
+             *       amount.
+             */
+            expected_amount_in: string;
+            /**
+             * @description Chain-native instructions the SDK must submit on `chain`. Today
+             *     always the `Evm` variant — see [`DexCallsPayload`] for the
+             *     forward-compatibility story when non-EVM source chains are added.
+             */
+            payload: components["schemas"]["DexCallsPayload"];
+            /**
+             * @description Label identifying which router the server selected (`"lifi"`,
+             *     `"uniswap"`, `"curve"`, `"cctp"`, …). Informational only — SDK
+             *     behaviour is router-agnostic.
+             */
+            router: string;
+        };
+        /**
+         * @description Chain-native instructions the SDK must submit on `chain`.
+         *
+         *     Tagged on `kind` so the response is shape-stable as new source-chain
+         *     kinds are added. Today only `Evm` exists (matching the v1 invariant
+         *     that `from_chain` is always an EVM chain — the SDK signs via
+         *     EIP-7702 + Kernel, which only works on EVM EOAs).
+         *
+         *     When Solana-source support lands, a new variant — roughly
+         *     `Solana { instructions: Vec<SolanaInstruction>, accounts: Vec<AccountMeta>, recent_blockhash:
+         *     String }` — will be added. Clients that already switch on `kind` keep working;
+         *     only clients that need to *handle* Solana opt in by adding the new
+         *     match arm.
+         */
+        DexCallsPayload: {
+            calls: components["schemas"]["DexCall"][];
+            /** @enum {string} */
+            kind: "evm";
+        };
+        /**
+         * @description A single hop in the route the server picked.
+         *
+         *     One hop == one user op the SDK will need to submit. Multi-hop routes
+         *     (e.g. USDC@Optimism → USDC@Arbitrum via CCTP, then USDC@Arbitrum →
+         *     tBTC@Arbitrum via Uniswap) are represented as multiple entries in
+         *     [`DexQuoteResponse::hops`].
+         */
+        DexQuoteHop: {
+            estimated_amount_out: components["schemas"]["TokenAmount"];
+            /**
+             * Format: int32
+             * @description Per-hop settlement time. Sum across `hops` ≈ end-to-end time.
+             */
+            estimated_settlement_seconds: number;
+            /**
+             * @description Per-hop input/output (raw market estimates, no slippage). Useful
+             *     for showing the user a per-hop fee breakdown in the UI. Each side
+             *     carries the matching token's decimals for direct human-readable
+             *     formatting.
+             */
+            expected_amount_in: components["schemas"]["TokenAmount"];
+            /**
+             * @description Source token for this hop. Carries chain id + address in the same
+             *     shape as the request — round-trips cleanly through the SDK.
+             */
+            from: components["schemas"]["Token"];
+            /** @description Per-hop router label (`"cctp"`, `"layerzero"`, `"uniswap"`, …). */
+            router: string;
+            /**
+             * @description Destination token for this hop. Equal-chain to `from` for
+             *     same-chain swaps, different for bridges.
+             */
+            to: components["schemas"]["Token"];
+        };
+        DexQuoteRequest: {
+            /**
+             * @description Either the input amount (exact-in) or the desired output amount
+             *     (exact-out), both as stringified `u128` smallest-unit values.
+             */
+            amount: components["schemas"]["DexAmount"];
+            /**
+             * @description Source asset. Must be a [`Token::Evm`] variant — price discovery
+             *     is rooted in an EVM settlement hub; `Solana` is rejected with a
+             *     400.
+             */
+            from: components["schemas"]["Token"];
+            /**
+             * Format: int32
+             * @description Slippage tolerance the SDK will use at execution time, in basis
+             *     points (e.g. `100` = 1%, `50` = 0.5%). Affects route selection —
+             *     some pools only quote at higher tolerances — so passing the same
+             *     value here that the SDK will later send to `/dex-calldata` keeps
+             *     the displayed quote consistent with what actually executes.
+             *     Bounded server-side; out-of-range values return 400.
+             */
+            slippage_bps: number;
+            /**
+             * @description Target asset. Same-chain quotes use the same chain id as `from`;
+             *     cross-chain quotes use a different EVM chain id (Solana
+             *     destinations are reserved for future work).
+             */
+            to: components["schemas"]["Token"];
+        };
+        DexQuoteResponse: {
+            /**
+             * Format: int32
+             * @description How long the SDK can treat this quote as fresh, in seconds. Route
+             *     prices move slowly on the timescale of UI interactions, so
+             *     re-quoting on every keystroke is wasteful; the SDK should cache
+             *     for at least this long and only refetch when stale.
+             */
+            cache_ttl_seconds: number;
+            /**
+             * @description End-to-end output amount across all hops.
+             *
+             *     - `ExactIn`: the expected (mid-market) output for the pinned input, with the caller's
+             *       `slippage_bps` already factored into route selection.
+             *     - `ExactOut`: echoes the pinned output amount from the request.
+             */
+            estimated_amount_out: components["schemas"]["TokenAmount"];
+            /**
+             * Format: int32
+             * @description Sum of all hops' settlement times. Useful for showing the user a
+             *     rough end-to-end ETA alongside the price.
+             */
+            estimated_settlement_seconds: number;
+            /**
+             * @description End-to-end input amount across all hops.
+             *
+             *     - `ExactIn`: echoes the pinned input amount from the request.
+             *     - `ExactOut`: the expected (mid-market) input required to receive the pinned output, with
+             *       the caller's `slippage_bps` already factored into route selection.
+             */
+            expected_amount_in: components["schemas"]["TokenAmount"];
+            /**
+             * @description Per-hop breakdown of the route. Always at least one entry.
+             *
+             *     `hops.len() == 1`: single-hop route, one user op.
+             *     `hops.len() > 1`:  multi-hop route, one user op per hop, submitted
+             *     in order and waiting for settlement between each. The SDK iterates
+             *     `hops` and calls [`/dex-calldata`] once per hop, deriving each
+             *     `/dex-calldata` request from the corresponding `DexQuoteHop`.
+             */
+            hops: components["schemas"]["DexQuoteHop"][];
+            /**
+             * @description `true` iff `hops.len() > 1`. Surfaced explicitly so the SDK can
+             *     show the user a step counter ("Step 1 of 2") without iterating.
+             */
+            requires_multiple_user_ops: boolean;
+            /**
+             * @description Top-level router label. Usually equals the only hop's router for
+             *     single-hop routes (`"lifi"`, `"uniswap"`, …), or a `+`-joined
+             *     composite for multi-hop (`"cctp+uniswap"`). Informational only —
+             *     SDK behaviour is driven by `hops`, not this string.
+             */
+            router: string;
         };
         /** @description EIP-2612 permit signature for gasless token->Permit2 approval. */
         Eip2612Permit: {
@@ -2605,6 +2948,69 @@ export interface components {
          * @enum {string}
          */
         SwapStatus: "pending" | "clientfundingseen" | "clientfunded" | "clientrefunded" | "serverfunded" | "clientredeeming" | "clientredeemed" | "serverredeemed" | "clientfundedserverrefunded" | "clientrefundedserverfunded" | "clientrefundedserverrefunded" | "expired" | "clientinvalidfunded" | "clientfundedtoolate" | "serverwontfund" | "clientredeemedandclientrefunded";
+        /**
+         * @description A token identified by the chain it lives on plus a chain-native address.
+         *
+         *     Tagged on `kind` so each chain family encodes the address in its own
+         *     natural format (hex on EVM, base58 on Solana, etc.). Validation is
+         *     post-deserialization — the wire types stay loose (`u64` chain id,
+         *     `String` address) and handlers reject unsupported chain ids or
+         *     malformed addresses with 400s.
+         *
+         *     Today only EVM is consumed; `Solana` is reserved for the cross-chain
+         *     claim flow. Handlers that don't support a variant must error
+         *     explicitly so callers get a clear message instead of an opaque
+         *     downstream failure.
+         */
+        Token: {
+            /** @description Token contract address, lowercase hex, `0x`-prefixed. */
+            address: string;
+            /**
+             * Format: int64
+             * @description Numeric EVM chain id (`1` = Ethereum, `137` = Polygon,
+             *     `42161` = Arbitrum, etc.). Not constrained to the [`EvmChain`]
+             *     enum at parse time so we don't have to redeploy to support a
+             *     new chain.
+             */
+            chain_id: number;
+            /** @enum {string} */
+            kind: "evm";
+        } | {
+            /**
+             * @description SPL mint address, base58-encoded. For SPL targets the SDK
+             *     typically also needs the recipient's associated token account
+             *     — that's a separate request field, not part of the token
+             *     identity.
+             */
+            address: string;
+            /** @enum {string} */
+            kind: "solana";
+        };
+        /**
+         * @description Smallest-unit amount paired with the associated token's symbol and
+         *     decimal places, so the SDK can format `raw / 10^decimals` for
+         *     display (and label it with the symbol) without a separate lookup.
+         *
+         *     `raw` is a stringified `u256` to dodge the JS `Number` precision
+         *     cliff at 2^53 (which 18-decimal tokens exceed routinely).
+         */
+        TokenAmount: {
+            /**
+             * Format: int32
+             * @description Decimal places of the associated token (`6` for USDC, `18` for
+             *     tBTC, etc.).
+             */
+            decimals: number;
+            /** @description Smallest-unit amount, stringified `u256`. */
+            raw: string;
+            /**
+             * @description Ticker symbol of the associated token (`"USDC"`, `"tBTC"`, …),
+             *     when known. Omitted from the wire when the server can't resolve
+             *     it — informational only, do not key business logic on this
+             *     string.
+             */
+            symbol?: string | null;
+        };
         /** @description Token identifier. Known values: btc, 0x123456 */
         TokenId: "btc" | string;
         TokenInfo: {
@@ -3209,6 +3615,159 @@ export interface operations {
             };
             /** @description Internal error */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_dex_calldata_claim: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DexCalldataRequest"];
+            };
+        };
+        responses: {
+            /** @description Fresh calldata ready to be embedded in a user op */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DexCalldataResponse"];
+                };
+            };
+            /** @description Bad request (unsupported chain pair, unknown token, malformed amount, slippage out of range) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Upstream router failed or returned no routable path for the requested pair */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_dex_calldata_fund: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DexCalldataRequest"];
+            };
+        };
+        responses: {
+            /** @description Fresh calldata ready to be embedded in a user op */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DexCalldataResponse"];
+                };
+            };
+            /** @description Bad request (unsupported chain pair, unknown token, malformed amount, slippage out of range) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Upstream router failed or returned no routable path for the requested pair */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_dex_quote: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DexQuoteRequest"];
+            };
+        };
+        responses: {
+            /** @description Price estimate for the requested EVM leg */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DexQuoteResponse"];
+                };
+            };
+            /** @description Bad request (unsupported chain pair, unknown token, malformed amount) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Upstream router failed or returned no routable path for the requested pair */
+            502: {
                 headers: {
                     [name: string]: unknown;
                 };
