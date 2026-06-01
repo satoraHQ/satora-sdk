@@ -463,7 +463,7 @@ dependencies = [
  "alloy-rlp",
  "alloy-serde",
  "alloy-sol-types",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "serde",
  "serde_json",
  "serde_with",
@@ -616,7 +616,7 @@ checksum = "e8597d36d546e1dab822345ad563243ec3920e199322cb554ce56c8ef1a1e2e7"
 dependencies = [
  "alloy-json-rpc",
  "alloy-transport",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "reqwest 0.13.3",
  "serde_json",
  "tower",
@@ -686,9 +686,9 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "ark-bdk-wallet"
-version = "0.9.0"
+version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2041ab286749334c7b0d87135604beffc6b6ae5c3ab6bf259656f85a88ef6b94"
+checksum = "302836638966506bd3e97626109fc93116a817343d62074fe785e34f1afd5472"
 dependencies = [
  "anyhow",
  "ark-client",
@@ -706,9 +706,9 @@ dependencies = [
 
 [[package]]
 name = "ark-client"
-version = "0.9.0"
+version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8cbfc50482345fc86e5ec93a613807527661a6289fc8e0f62502e5b539a6b3e"
+checksum = "5ba0fc3c07cb0a862916c53604c444877a22996236efc9625bee0dde84b4fd08"
 dependencies = [
  "ark-core",
  "ark-delegator",
@@ -745,9 +745,9 @@ dependencies = [
 
 [[package]]
 name = "ark-core"
-version = "0.9.0"
+version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "689744dc3b1decc45ec770609fcd4e5e8c1d5b35c0e685b8f619f1fbb60231d8"
+checksum = "16bcb207d1273c766941abf3316e7dc2f14675dd1f007981cf938f8070f8d7b7"
 dependencies = [
  "bech32",
  "bitcoin",
@@ -767,9 +767,9 @@ dependencies = [
 
 [[package]]
 name = "ark-delegator"
-version = "0.9.0"
+version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "364752fd7a411a344e8b61d66dde7ec1a160edf9954b22e0f5ff8678174ae293"
+checksum = "96fc4ae8598b8cc90a1afff8819a4b227ccc3e29ff25305079098df13dc1670f"
 dependencies = [
  "ark-core",
  "bitcoin",
@@ -781,9 +781,9 @@ dependencies = [
 
 [[package]]
 name = "ark-fees"
-version = "0.9.0"
+version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "00b2ca04c9e5b5d82ed634b27489e4d1625338e210bdf80efe271312c5c6c1c8"
+checksum = "f3deebd83941967877d8b26e56f8e9947c9e5ab87b928a68d7ec1a90cec6b442"
 dependencies = [
  "cel",
 ]
@@ -916,9 +916,9 @@ dependencies = [
 
 [[package]]
 name = "ark-grpc"
-version = "0.9.0"
+version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2933c1f63d83af44b78e96a6dea3a0308116f1e6d7096810be23dc9d1e2aaf37"
+checksum = "feeb9b2d02b73b782585e301c1150677e3db0df37ea9adaa1464109ee211f5cb"
 dependencies = [
  "ark-core",
  "async-stream",
@@ -935,9 +935,9 @@ dependencies = [
 
 [[package]]
 name = "ark-rs"
-version = "0.9.0"
+version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4bccc237bc5790f438544ddd368d1db3f6bf2d0e1cea4c3f7d888d006aa8034b"
+checksum = "ba2b912788536c5ed01637db4a17941dcdd3dc4ac967b0c6c2d89d39903b9938"
 dependencies = [
  "ark-client",
  "ark-core",
@@ -1982,7 +1982,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2841,15 +2841,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "itertools"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
-dependencies = [
- "either",
-]
-
-[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2867,7 +2858,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3272,7 +3263,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3739,7 +3730,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "343d3bd7056eda839b03204e68deff7d1b13aba7af2b2fd16890697274262ee7"
 dependencies = [
  "heck",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "log",
  "multimap",
  "petgraph",
@@ -3760,7 +3751,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -3773,7 +3764,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27c6023962132f4b30eb4c172c91ce92d933da334c59c23cddee82358ddafb0b"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -4289,7 +4280,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4357,7 +4348,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4786,7 +4777,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4962,7 +4953,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5744,7 +5735,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
