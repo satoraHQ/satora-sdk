@@ -67,12 +67,13 @@ public class ClientTests
     }
 
     [Fact]
-    public async Task InvalidBaseUrlThrowsSdkException()
+    public void InvalidBaseUrlThrowsSdkException()
     {
-        using var client = new Client(TestMnemonic, baseUrl: "not a url");
-        // The Rust side returns Error::InvalidBaseUrl, which the FFI
-        // maps to SdkException.Internal. We just check that something
-        // throws — the message format is implementation detail.
-        await Assert.ThrowsAnyAsync<Exception>(() => client.GetVersionAsync());
+        // The base URL is parsed eagerly when the client is constructed
+        // (Rust `Client::new` → `Url::parse`), so an invalid URL surfaces
+        // here as Error::InvalidBaseUrl, which the FFI maps to
+        // SdkException.Internal and the facade re-wraps as SdkException.
+        // The message format is an implementation detail.
+        Assert.Throws<SdkException>(() => new Client(TestMnemonic, baseUrl: "not a url"));
     }
 }
