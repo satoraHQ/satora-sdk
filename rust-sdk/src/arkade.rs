@@ -211,6 +211,8 @@ impl ArkadeWallet {
             // flow. Empty string keeps the field set without ever
             // dialing it.
             String::new(),
+            // boltz_referral_id: no Boltz interaction from this path.
+            None,
             ARK_NETWORK_TIMEOUT,
             // delegator_pk / historical_delegator_pks: only used for
             // the VTXO delegation flow, which the offchain-claim path
