@@ -1,6 +1,6 @@
 {
   "name": "@lendasat/lendaswap-sdk-pure",
-  "version": "0.2.36",
+  "version": "0.2.37",
   "description": "Lendaswap Client SDK - Pure TypeScript, React Native compatible",
   "type": "module",
   "main": "dist/index.js",
