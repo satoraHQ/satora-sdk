@@ -3,8 +3,10 @@
 //! Background: rustls 0.23 made the crypto backend explicit — the
 //! first TLS handshake panics with
 //!
-//!     "Could not automatically determine the process-level
-//!      CryptoProvider from Rustls crate features."
+//! ```text
+//! "Could not automatically determine the process-level
+//!  CryptoProvider from Rustls crate features."
+//! ```
 //!
 //! unless something has called
 //! [`rustls::crypto::CryptoProvider::install_default`] earlier. The
