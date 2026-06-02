@@ -398,8 +398,7 @@ async function composeEvmToBtc(
       btcSats > BigInt(totalFeeSats) ? btcSats - BigInt(totalFeeSats) : 0n;
   } else {
     const grossSats = btcSats + BigInt(totalFeeSats);
-    netSource =
-      btcSats === 0n ? 0n : (grossSats * evmSmallest) / btcSats;
+    netSource = btcSats === 0n ? 0n : (grossSats * evmSmallest) / btcSats;
     netTarget = btcSats;
   }
 
