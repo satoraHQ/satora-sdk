@@ -224,6 +224,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/chain-config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Return per-chain configuration (BTC-pegged token, … more to come). */
+        get: operations["get_chain_config"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/dex-calldata/claim": {
         parameters: {
             query?: never;
@@ -356,6 +373,26 @@ export interface paths {
         };
         /** Return the current cached Median Time Past (MTP) and tip height. */
         get: operations["get_mtp"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/network-fees": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Return per-pair network-fee estimates in sats at current gas / mining
+         *     prices.
+         */
+        get: operations["get_network_fees"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1491,6 +1528,26 @@ export interface components {
          */
         Chain: "Arkade" | "Lightning" | "Bitcoin" | "137" | "1" | "42161";
         /**
+         * @description Per-chain configuration. EVM chains only — Bitcoin / Lightning /
+         *     Arkade don't have a meaningful chain-config shape.
+         */
+        ChainConfigEntry: {
+            /**
+             * @description The chain's BTC-pegged token (tBTC v2 on Arbitrum / Ethereum,
+             *     WBTC on Polygon). Used as the DEX pivot when composing a quote
+             *     for any BTC↔this-chain pair.
+             */
+            btc_pegged_token: components["schemas"]["TokenRef"];
+            /**
+             * @description Chain identifier — EVM chain id as a string (`"1"`, `"137"`,
+             *     `"42161"`), matching the encoding used elsewhere in the API.
+             */
+            chain: components["schemas"]["Chain"];
+        };
+        ChainConfigResponse: {
+            chains: components["schemas"]["ChainConfigEntry"][];
+        };
+        /**
          * @description Request body for `POST /swap/{id}/claim-gasless`.
          *
          *     The client provides the HTLC preimage (secret) and an EIP-712 signature
@@ -1706,30 +1763,6 @@ export interface components {
             vtxos: string[];
         };
         /**
-         * @description Which side the caller is pinning on the requested swap.
-         *
-         *     Stringified `u128` rather than typed integer — matches the rest of the
-         *     API (`net_source_amount`, `min_amount_out`, …) and dodges the JS
-         *     `Number` precision cliff at 2^53 for 18-decimal tokens.
-         */
-        DexAmount: {
-            /** @enum {string} */
-            kind: "exact_in";
-            /**
-             * @description Spend exactly this much `from_token`; receive at least the
-             *     response's `estimated_amount_out` (post-slippage) of `to_token`.
-             */
-            value: string;
-        } | {
-            /** @enum {string} */
-            kind: "exact_out";
-            /**
-             * @description Receive exactly this much `to_token`; spend at most the
-             *     response's `expected_amount_in` (post-slippage) of `from_token`.
-             */
-            value: string;
-        };
-        /**
          * @description A single EVM contract call the SDK should embed in its batch user op.
          *
          *     The list ordering matters — the SDK must submit calls in the order
@@ -1768,6 +1801,30 @@ export interface components {
             value?: string;
         };
         /**
+         * @description Which side the caller is pinning on the requested swap.
+         *
+         *     Stringified `u128` rather than typed integer — matches the rest of the
+         *     API (`net_source_amount`, `min_amount_out`, …) and dodges the JS
+         *     `Number` precision cliff at 2^53 for 18-decimal tokens.
+         */
+        DexCalldataAmount: {
+            /** @enum {string} */
+            kind: "exact_in";
+            /**
+             * @description Spend exactly this much `from_token`; receive at least the
+             *     response's `estimated_amount_out` (post-slippage) of `to_token`.
+             */
+            value: string;
+        } | {
+            /** @enum {string} */
+            kind: "exact_out";
+            /**
+             * @description Receive exactly this much `to_token`; spend at most the
+             *     response's `expected_amount_in` (post-slippage) of `from_token`.
+             */
+            value: string;
+        };
+        /**
          * @description Request shared by both `/dex-calldata/claim` and `/dex-calldata/fund`.
          *
          *     The flow-specific `recipient` is deliberately not part of this struct —
@@ -1779,7 +1836,7 @@ export interface components {
              * @description Either the input amount (exact-in) or the desired output amount
              *     (exact-out), both as stringified `u128` smallest-unit values.
              */
-            amount: components["schemas"]["DexAmount"];
+            amount: components["schemas"]["DexCalldataAmount"];
             /**
              * @description Source asset the SDK will spend. Must be a [`Token::Evm`] variant —
              *     EOAs only delegate via EIP-7702 on EVM. `Solana` is rejected with
@@ -1874,6 +1931,35 @@ export interface components {
             kind: "evm";
         };
         /**
+         * @description Which side the caller is pinning on the requested quote.
+         *
+         *     Stringified `u128` rather than typed integer — matches the rest of the
+         *     API (`net_source_amount`, `min_amount_out`, …) and dodges the JS
+         *     `Number` precision cliff at 2^53 for 18-decimal tokens.
+         *
+         *     Mirrors `dex_calldata::DexAmount` on the wire but kept as a separate
+         *     Rust type so the two endpoints can evolve independently.
+         */
+        DexQuoteAmount: {
+            /** @enum {string} */
+            kind: "exact_in";
+            /**
+             * @description Spend exactly this much `from_token`; the response's
+             *     `estimated_amount_out` is the expected (mid-market) receive
+             *     amount that the requested slippage tolerance covers.
+             */
+            value: string;
+        } | {
+            /** @enum {string} */
+            kind: "exact_out";
+            /**
+             * @description Receive exactly this much `to_token`; the response's
+             *     `expected_amount_in` is the expected (mid-market) required input
+             *     at the requested slippage tolerance.
+             */
+            value: string;
+        };
+        /**
          * @description A single hop in the route the server picked.
          *
          *     One hop == one user op the SDK will need to submit. Multi-hop routes
@@ -1913,7 +1999,7 @@ export interface components {
              * @description Either the input amount (exact-in) or the desired output amount
              *     (exact-out), both as stringified `u128` smallest-unit values.
              */
-            amount: components["schemas"]["DexAmount"];
+            amount: components["schemas"]["DexQuoteAmount"];
             /**
              * @description Source asset. Must be a [`Token::Evm`] variant — price discovery
              *     is rooted in an EVM settlement hub; `Solana` is rejected with a
@@ -2685,6 +2771,42 @@ export interface components {
              */
             tip_height: number;
         };
+        /**
+         * @description Sats the server pays on each side of the pair at *current* gas/mining
+         *     prices. Extensible — future breakouts (`htlc_create_sats`,
+         *     `dex_swap_sats`, …) land alongside.
+         */
+        NetworkFee: {
+            /**
+             * Format: int64
+             * @description Sats the server incurs on the source side of the swap.
+             *
+             *     - **Bitcoin**: BTC mining fee for the HTLC claim transaction.
+             *     - **EVM**: gas-to-sats for the HTLC-claim transaction.
+             */
+            source_sats: number;
+            /**
+             * Format: int64
+             * @description Sats the server incurs on the target side of the swap.
+             *
+             *     - **EVM**: gas-to-sats for the HTLC-create transaction.
+             *     - **Bitcoin**: BTC mining fee.
+             */
+            target_sats: number;
+        };
+        /**
+         * @description One entry in the pair grid. Same shape vocabulary as
+         *     [`crate::api::swap_pairs::SwapPairInfo`] so SDK consumers can join on
+         *     `(source, target)`.
+         */
+        NetworkFeePairEntry: {
+            fees: components["schemas"]["NetworkFee"];
+            source: components["schemas"]["Chain"];
+            target: components["schemas"]["Chain"];
+        };
+        NetworkFeesResponse: {
+            pairs: components["schemas"]["NetworkFeePairEntry"][];
+        };
         QuoteResponse: {
             /**
              * Format: int64
@@ -2893,15 +3015,16 @@ export interface components {
         SupportAgentsResponse: {
             agents: components["schemas"]["SupportAgentInfo"][];
         };
-        /** @description A supported swap pair with its limits and base fee. */
+        /** @description A supported swap pair with its limits and total fee rate. */
         SwapPairInfo: {
             /**
              * Format: double
-             * @description Fee percentage as a decimal (e.g. 0.0025 = 0.25%).
+             * @description User-facing fee rate as a decimal fraction (e.g. 0.0025 = 0.25%).
              *
-             *     For a swap of 100,000 sats at 0.25% fee, the fee would be 250 sats.
-             *     Swaps involving Lightning may incur additional Lightning Network routing fees
-             *     on top of this percentage.
+             *     The single rate consumers should display. Includes any
+             *     percentage components the server passes through on top of the
+             *     protocol fee — those vary by pair but are bundled here so the
+             *     SDK doesn't have to compose them.
              */
             fee_percentage: number;
             /**
@@ -3038,6 +3161,16 @@ export interface components {
         TokenInfos: {
             btc_tokens: components["schemas"]["TokenInfo"][];
             evm_tokens: components["schemas"]["TokenInfo"][];
+        };
+        /**
+         * @description Reference to an ERC-20 token plus the decimals/symbol the SDK needs
+         *     to format amounts. Address is lowercase hex (`0x`-prefixed).
+         */
+        TokenRef: {
+            address: string;
+            /** Format: int32 */
+            decimals: number;
+            symbol: string;
         };
         /**
          * @description Response: same HTLC + DEX payload the Permit2 endpoint returns, plus
@@ -3638,6 +3771,26 @@ export interface operations {
             };
         };
     };
+    get_chain_config: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Per-chain configuration (BTC pivot, contracts, …) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChainConfigResponse"];
+                };
+            };
+        };
+    };
     post_dex_calldata_claim: {
         parameters: {
             query?: never;
@@ -3887,6 +4040,26 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    get_network_fees: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Per-pair network-fee estimates in sats */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NetworkFeesResponse"];
+                };
             };
         };
     };

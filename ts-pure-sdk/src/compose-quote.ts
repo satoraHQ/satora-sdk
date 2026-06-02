@@ -166,11 +166,33 @@ async function composeBtcToEvm(
 
   // Run the DEX leg in whichever direction the caller pinned. Both paths
   // produce the same shape: (btc_sats, evm_smallest), with the DEX quote
-  // carrying the precise opposite side.
-  const pivot: BtcEvmPivot =
-    params.sourceAmount != null
-      ? await dexSourcePinned(params, deps, btcPegged, chainIdNum, pivotScale)
-      : await dexTargetPinned(params, deps, btcPegged, chainIdNum, pivotScale);
+  // carrying the precise opposite side. The entry-point guarantees exactly
+  // one side is pinned; the trailing throw is unreachable but keeps the
+  // amount typed as a non-null `bigint` for each branch.
+  let pivot: BtcEvmPivot;
+  if (params.sourceAmount != null) {
+    pivot = await dexSourcePinned(
+      BigInt(params.sourceAmount),
+      params,
+      deps,
+      btcPegged,
+      chainIdNum,
+      pivotScale,
+    );
+  } else if (params.targetAmount != null) {
+    pivot = await dexTargetPinned(
+      BigInt(params.targetAmount),
+      params,
+      deps,
+      btcPegged,
+      chainIdNum,
+      pivotScale,
+    );
+  } else {
+    throw new UnsupportedComposeQuotePath(
+      "composeQuote: no amount pinned (unreachable)",
+    );
+  }
 
   const { btcSats, evmSmallest, evmDecimals } = pivot;
 
@@ -229,13 +251,13 @@ interface BtcEvmPivot {
  * (tBTC pivot → target token) and returns the receivable target amount.
  */
 async function dexSourcePinned(
+  btcSats: bigint,
   params: ComposeQuoteParams,
   deps: ComposeQuoteDeps,
   btcPegged: { address: string; decimals: number },
   chainIdNum: number,
   pivotScale: bigint,
 ): Promise<BtcEvmPivot> {
-  const btcSats = BigInt(params.sourceAmount!);
   const pivotInBase = btcSats * pivotScale;
   const dexQuote = await deps.getDexQuote({
     from: { kind: "evm", chain_id: chainIdNum, address: btcPegged.address },
@@ -264,13 +286,13 @@ async function dexSourcePinned(
  * sub-sat dust is absorbed.
  */
 async function dexTargetPinned(
+  evmSmallest: bigint,
   params: ComposeQuoteParams,
   deps: ComposeQuoteDeps,
   btcPegged: { address: string; decimals: number },
   chainIdNum: number,
   pivotScale: bigint,
 ): Promise<BtcEvmPivot> {
-  const evmSmallest = BigInt(params.targetAmount!);
   const dexQuote = await deps.getDexQuote({
     from: { kind: "evm", chain_id: chainIdNum, address: btcPegged.address },
     to: {
@@ -356,22 +378,32 @@ async function composeEvmToBtc(
   // agnostic factor used by composeBtcToEvm.
   const pivotScale = 10n ** BigInt(btcPegged.decimals - 8);
 
-  const pivot: EvmBtcPivot =
-    params.sourceAmount != null
-      ? await dexEvmToBtcSourcePinned(
-          params,
-          deps,
-          btcPegged,
-          chainIdNum,
-          pivotScale,
-        )
-      : await dexEvmToBtcTargetPinned(
-          params,
-          deps,
-          btcPegged,
-          chainIdNum,
-          pivotScale,
-        );
+  // Entry-point guarantees exactly one side is pinned; the trailing throw
+  // is unreachable but keeps the amount typed as a non-null `bigint`.
+  let pivot: EvmBtcPivot;
+  if (params.sourceAmount != null) {
+    pivot = await dexEvmToBtcSourcePinned(
+      BigInt(params.sourceAmount),
+      params,
+      deps,
+      btcPegged,
+      chainIdNum,
+      pivotScale,
+    );
+  } else if (params.targetAmount != null) {
+    pivot = await dexEvmToBtcTargetPinned(
+      BigInt(params.targetAmount),
+      params,
+      deps,
+      btcPegged,
+      chainIdNum,
+      pivotScale,
+    );
+  } else {
+    throw new UnsupportedComposeQuotePath(
+      "composeQuote: no amount pinned (unreachable)",
+    );
+  }
 
   const { btcSats, evmSmallest, evmDecimals } = pivot;
 
@@ -430,13 +462,13 @@ interface EvmBtcPivot {
  * amount, which divides back into BTC sats.
  */
 async function dexEvmToBtcSourcePinned(
+  evmSmallest: bigint,
   params: ComposeQuoteParams,
   deps: ComposeQuoteDeps,
   btcPegged: { address: string; decimals: number },
   chainIdNum: number,
   pivotScale: bigint,
 ): Promise<EvmBtcPivot> {
-  const evmSmallest = BigInt(params.sourceAmount!);
   const dexQuote = await deps.getDexQuote({
     from: {
       kind: "evm",
@@ -466,13 +498,13 @@ async function dexEvmToBtcSourcePinned(
  * `sats_to_evm` helper uses, so source-side fee inflation matches.
  */
 async function dexEvmToBtcTargetPinned(
+  btcSats: bigint,
   params: ComposeQuoteParams,
   deps: ComposeQuoteDeps,
   btcPegged: { address: string; decimals: number },
   chainIdNum: number,
   pivotScale: bigint,
 ): Promise<EvmBtcPivot> {
-  const btcSats = BigInt(params.targetAmount!);
   const pivotInBase = btcSats * pivotScale;
   const dexQuote = await deps.getDexQuote({
     from: {

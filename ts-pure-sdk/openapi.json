@@ -632,6 +632,25 @@
         }
       }
     },
+    "/chain-config": {
+      "get": {
+        "tags": ["swap-pairs"],
+        "summary": "Return per-chain configuration (BTC-pegged token, … more to come).",
+        "operationId": "get_chain_config",
+        "responses": {
+          "200": {
+            "description": "Per-chain configuration (BTC pivot, contracts, …)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChainConfigResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/dex-calldata/claim": {
       "post": {
         "tags": ["dex-calldata"],
@@ -910,6 +929,25 @@
           },
           "503": {
             "description": "MTP not available yet (cache not populated)"
+          }
+        }
+      }
+    },
+    "/network-fees": {
+      "get": {
+        "tags": ["swap-pairs"],
+        "summary": "Return per-pair network-fee estimates in sats at current gas / mining\nprices.",
+        "operationId": "get_network_fees",
+        "responses": {
+          "200": {
+            "description": "Per-pair network-fee estimates in sats",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NetworkFeesResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -3081,6 +3119,33 @@
         "description": "Supported blockchain networks.\nEVM chains serialize to their chain ID as a string (e.g. \"137\" for Polygon).",
         "enum": ["Arkade", "Lightning", "Bitcoin", "137", "1", "42161"]
       },
+      "ChainConfigEntry": {
+        "type": "object",
+        "description": "Per-chain configuration. EVM chains only — Bitcoin / Lightning /\nArkade don't have a meaningful chain-config shape.",
+        "required": ["chain", "btc_pegged_token"],
+        "properties": {
+          "btc_pegged_token": {
+            "$ref": "#/components/schemas/TokenRef",
+            "description": "The chain's BTC-pegged token (tBTC v2 on Arbitrum / Ethereum,\nWBTC on Polygon). Used as the DEX pivot when composing a quote\nfor any BTC↔this-chain pair."
+          },
+          "chain": {
+            "$ref": "#/components/schemas/Chain",
+            "description": "Chain identifier — EVM chain id as a string (`\"1\"`, `\"137\"`,\n`\"42161\"`), matching the encoding used elsewhere in the API."
+          }
+        }
+      },
+      "ChainConfigResponse": {
+        "type": "object",
+        "required": ["chains"],
+        "properties": {
+          "chains": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChainConfigEntry"
+            }
+          }
+        }
+      },
       "ClaimGaslessRequest": {
         "type": "object",
         "description": "Request body for `POST /swap/{id}/claim-gasless`.\n\nThe client provides the HTLC preimage (secret) and an EIP-712 signature\nauthorising the server to call `redeemAndExecute` on the coordinator\ncontract on the client's behalf.\n\n# Examples\n\nMinimal request (WBTC-direct target, no DEX swap):\n\n```\nlet request = serde_json::json!({\n    \"secret\": \"0x0101010101010101010101010101010101010101010101010101010101010101\",\n    \"destination\": \"0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045\",\n    \"v\": 27,\n    \"r\": \"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n    \"s\": \"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"\n});\n```\n\nRequest with DEX calldata (non-WBTC target, e.g. USDC):\n\n```\nlet request = serde_json::json!({\n    \"secret\": \"0x0101010101010101010101010101010101010101010101010101010101010101\",\n    \"destination\": \"0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045\",\n    \"v\": 28,\n    \"r\": \"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n    \"s\": \"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n    \"dex_calldata\": {\n        \"to\": \"0x1111111254EEB25477B68fb85Ed929f73A960582\",\n        \"data\": \"0xabcdef0123456789\",\n        \"value\": \"0\"\n    }\n});\n```",
@@ -3420,41 +3485,6 @@
           }
         }
       },
-      "DexAmount": {
-        "oneOf": [
-          {
-            "type": "object",
-            "description": "Spend exactly this much `from_token`; receive at least the\nresponse's `estimated_amount_out` (post-slippage) of `to_token`.",
-            "required": ["value", "kind"],
-            "properties": {
-              "kind": {
-                "type": "string",
-                "enum": ["exact_in"]
-              },
-              "value": {
-                "type": "string",
-                "description": "Spend exactly this much `from_token`; receive at least the\nresponse's `estimated_amount_out` (post-slippage) of `to_token`."
-              }
-            }
-          },
-          {
-            "type": "object",
-            "description": "Receive exactly this much `to_token`; spend at most the\nresponse's `expected_amount_in` (post-slippage) of `from_token`.",
-            "required": ["value", "kind"],
-            "properties": {
-              "kind": {
-                "type": "string",
-                "enum": ["exact_out"]
-              },
-              "value": {
-                "type": "string",
-                "description": "Receive exactly this much `to_token`; spend at most the\nresponse's `expected_amount_in` (post-slippage) of `from_token`."
-              }
-            }
-          }
-        ],
-        "description": "Which side the caller is pinning on the requested swap.\n\nStringified `u128` rather than typed integer — matches the rest of the\nAPI (`net_source_amount`, `min_amount_out`, …) and dodges the JS\n`Number` precision cliff at 2^53 for 18-decimal tokens."
-      },
       "DexCall": {
         "type": "object",
         "description": "A single EVM contract call the SDK should embed in its batch user op.\n\nThe list ordering matters — the SDK must submit calls in the order\nreturned. Today this is always `[approve(spender, amount), router.swap(...)]`:\nv1 targets fresh EIP-7702-delegated EOAs that start with zero\nallowance, so the approve is unconditional. When native-ETH inputs\nor stable-allowance paths land, the approve will be dropped when\n`allowance(sender, spender) >= amount` and the response will be a\nsingle-element list.",
@@ -3509,13 +3539,48 @@
           }
         }
       },
+      "DexCalldataAmount": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Spend exactly this much `from_token`; receive at least the\nresponse's `estimated_amount_out` (post-slippage) of `to_token`.",
+            "required": ["value", "kind"],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": ["exact_in"]
+              },
+              "value": {
+                "type": "string",
+                "description": "Spend exactly this much `from_token`; receive at least the\nresponse's `estimated_amount_out` (post-slippage) of `to_token`."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Receive exactly this much `to_token`; spend at most the\nresponse's `expected_amount_in` (post-slippage) of `from_token`.",
+            "required": ["value", "kind"],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": ["exact_out"]
+              },
+              "value": {
+                "type": "string",
+                "description": "Receive exactly this much `to_token`; spend at most the\nresponse's `expected_amount_in` (post-slippage) of `from_token`."
+              }
+            }
+          }
+        ],
+        "description": "Which side the caller is pinning on the requested swap.\n\nStringified `u128` rather than typed integer — matches the rest of the\nAPI (`net_source_amount`, `min_amount_out`, …) and dodges the JS\n`Number` precision cliff at 2^53 for 18-decimal tokens."
+      },
       "DexCalldataRequest": {
         "type": "object",
         "description": "Request shared by both `/dex-calldata/claim` and `/dex-calldata/fund`.\n\nThe flow-specific `recipient` is deliberately not part of this struct —\neach flow's handler resolves it from configuration (fund) or echoes the\nsender (claim).",
         "required": ["from", "to", "amount", "sender", "slippage_bps"],
         "properties": {
           "amount": {
-            "$ref": "#/components/schemas/DexAmount",
+            "$ref": "#/components/schemas/DexCalldataAmount",
             "description": "Either the input amount (exact-in) or the desired output amount\n(exact-out), both as stringified `u128` smallest-unit values."
           },
           "from": {
@@ -3599,6 +3664,41 @@
         ],
         "description": "Chain-native instructions the SDK must submit on `chain`.\n\nTagged on `kind` so the response is shape-stable as new source-chain\nkinds are added. Today only `Evm` exists (matching the v1 invariant\nthat `from_chain` is always an EVM chain — the SDK signs via\nEIP-7702 + Kernel, which only works on EVM EOAs).\n\nWhen Solana-source support lands, a new variant — roughly\n`Solana { instructions: Vec<SolanaInstruction>, accounts: Vec<AccountMeta>, recent_blockhash:\nString }` — will be added. Clients that already switch on `kind` keep working;\nonly clients that need to *handle* Solana opt in by adding the new\nmatch arm."
       },
+      "DexQuoteAmount": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Spend exactly this much `from_token`; the response's\n`estimated_amount_out` is the expected (mid-market) receive\namount that the requested slippage tolerance covers.",
+            "required": ["value", "kind"],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": ["exact_in"]
+              },
+              "value": {
+                "type": "string",
+                "description": "Spend exactly this much `from_token`; the response's\n`estimated_amount_out` is the expected (mid-market) receive\namount that the requested slippage tolerance covers."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Receive exactly this much `to_token`; the response's\n`expected_amount_in` is the expected (mid-market) required input\nat the requested slippage tolerance.",
+            "required": ["value", "kind"],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": ["exact_out"]
+              },
+              "value": {
+                "type": "string",
+                "description": "Receive exactly this much `to_token`; the response's\n`expected_amount_in` is the expected (mid-market) required input\nat the requested slippage tolerance."
+              }
+            }
+          }
+        ],
+        "description": "Which side the caller is pinning on the requested quote.\n\nStringified `u128` rather than typed integer — matches the rest of the\nAPI (`net_source_amount`, `min_amount_out`, …) and dodges the JS\n`Number` precision cliff at 2^53 for 18-decimal tokens.\n\nMirrors `dex_calldata::DexAmount` on the wire but kept as a separate\nRust type so the two endpoints can evolve independently."
+      },
       "DexQuoteHop": {
         "type": "object",
         "description": "A single hop in the route the server picked.\n\nOne hop == one user op the SDK will need to submit. Multi-hop routes\n(e.g. USDC@Optimism → USDC@Arbitrum via CCTP, then USDC@Arbitrum →\ntBTC@Arbitrum via Uniswap) are represented as multiple entries in\n[`DexQuoteResponse::hops`].",
@@ -3643,7 +3743,7 @@
         "required": ["from", "to", "amount", "slippage_bps"],
         "properties": {
           "amount": {
-            "$ref": "#/components/schemas/DexAmount",
+            "$ref": "#/components/schemas/DexQuoteAmount",
             "description": "Either the input amount (exact-in) or the desired output amount\n(exact-out), both as stringified `u128` smallest-unit values."
           },
           "from": {
@@ -5175,6 +5275,53 @@
           }
         }
       },
+      "NetworkFee": {
+        "type": "object",
+        "description": "Sats the server pays on each side of the pair at *current* gas/mining\nprices. Extensible — future breakouts (`htlc_create_sats`,\n`dex_swap_sats`, …) land alongside.",
+        "required": ["source_sats", "target_sats"],
+        "properties": {
+          "source_sats": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Sats the server incurs on the source side of the swap.\n\n- **Bitcoin**: BTC mining fee for the HTLC claim transaction.\n- **EVM**: gas-to-sats for the HTLC-claim transaction.",
+            "minimum": 0
+          },
+          "target_sats": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Sats the server incurs on the target side of the swap.\n\n- **EVM**: gas-to-sats for the HTLC-create transaction.\n- **Bitcoin**: BTC mining fee.",
+            "minimum": 0
+          }
+        }
+      },
+      "NetworkFeePairEntry": {
+        "type": "object",
+        "description": "One entry in the pair grid. Same shape vocabulary as\n[`crate::api::swap_pairs::SwapPairInfo`] so SDK consumers can join on\n`(source, target)`.",
+        "required": ["source", "target", "fees"],
+        "properties": {
+          "fees": {
+            "$ref": "#/components/schemas/NetworkFee"
+          },
+          "source": {
+            "$ref": "#/components/schemas/Chain"
+          },
+          "target": {
+            "$ref": "#/components/schemas/Chain"
+          }
+        }
+      },
+      "NetworkFeesResponse": {
+        "type": "object",
+        "required": ["pairs"],
+        "properties": {
+          "pairs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NetworkFeePairEntry"
+            }
+          }
+        }
+      },
       "QuoteResponse": {
         "type": "object",
         "required": [
@@ -5524,7 +5671,7 @@
       },
       "SwapPairInfo": {
         "type": "object",
-        "description": "A supported swap pair with its limits and base fee.",
+        "description": "A supported swap pair with its limits and total fee rate.",
         "required": [
           "source",
           "target",
@@ -5536,7 +5683,7 @@
           "fee_percentage": {
             "type": "number",
             "format": "double",
-            "description": "Fee percentage as a decimal (e.g. 0.0025 = 0.25%).\n\nFor a swap of 100,000 sats at 0.25% fee, the fee would be 250 sats.\nSwaps involving Lightning may incur additional Lightning Network routing fees\non top of this percentage."
+            "description": "User-facing fee rate as a decimal fraction (e.g. 0.0025 = 0.25%).\n\nThe single rate consumers should display. Includes any\npercentage components the server passes through on top of the\nprotocol fee — those vary by pair but are bundled here so the\nSDK doesn't have to compose them."
           },
           "max_sats": {
             "type": "integer",
@@ -5703,6 +5850,24 @@
             "items": {
               "$ref": "#/components/schemas/TokenInfo"
             }
+          }
+        }
+      },
+      "TokenRef": {
+        "type": "object",
+        "description": "Reference to an ERC-20 token plus the decimals/symbol the SDK needs\nto format amounts. Address is lowercase hex (`0x`-prefixed).",
+        "required": ["address", "decimals", "symbol"],
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "decimals": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "symbol": {
+            "type": "string"
           }
         }
       },
