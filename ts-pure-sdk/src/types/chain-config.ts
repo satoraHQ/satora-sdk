@@ -23,6 +23,14 @@ export interface ChainConfigEntry {
    * BTC↔this-chain pair.
    */
   btc_pegged_token: TokenRef;
+  /**
+   * How many `btc_pegged_token` units equal 1 BTC, as a decimal string.
+   * `"1"` for tBTC (1:1 redeemable); the live WBTC/BTC rate (~0.998) for
+   * WBTC. Used for the direct BTC↔pegged conversion (the leg with no DEX
+   * hop): multiply BTC sats by this, then scale by the token's decimals.
+   * Slow-moving but not static — refresh on the same cadence as a quote.
+   */
+  btc_peg_rate: string;
 }
 
 export interface ChainConfigResponse {
@@ -40,6 +48,7 @@ export interface WireTokenRef {
 export interface WireChainConfigEntry {
   chain: Chain;
   btc_pegged_token: WireTokenRef;
+  btc_peg_rate: string;
 }
 
 export interface WireChainConfigResponse {
@@ -57,6 +66,7 @@ export function fromWireChainConfigResponse(
         decimals: c.btc_pegged_token.decimals,
         symbol: c.btc_pegged_token.symbol,
       },
+      btc_peg_rate: c.btc_peg_rate,
     })),
   };
 }

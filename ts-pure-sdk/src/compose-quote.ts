@@ -42,16 +42,130 @@ import type {
  * `10^(decimals - 8)`, so any chain whose `btc_pegged_token` is in the
  * range [8, 18] decimals works without further changes.
  */
+interface Pivot {
+  address: string;
+  decimals: number;
+  /** Pegged-token units per 1 BTC (`"1"` for tBTC, WBTC/BTC rate for WBTC). */
+  pegRate: string;
+}
+
 function pivotForChain(
   chainConfig: ChainConfigResponse,
   chain: Chain,
-): { address: string; decimals: number } | undefined {
+): Pivot | undefined {
   const entry = chainConfig.chains.find((c) => c.chain === chain);
   if (!entry) return undefined;
   return {
     address: entry.btc_pegged_token.address,
     decimals: entry.btc_pegged_token.decimals,
+    pegRate: entry.btc_peg_rate,
   };
+}
+
+/**
+ * Parse a decimal rate string ("1", "0.99790000") into an exact
+ * numerator/denominator so the BTC↔pegged conversion is integer-exact
+ * and matches the server's `rust_decimal` arithmetic to the unit.
+ */
+function parseRate(rate: string): { num: bigint; den: bigint } {
+  const [intPart, fracPart = ""] = rate.split(".");
+  const num = BigInt(`${intPart}${fracPart}` || "0");
+  const den = 10n ** BigInt(fracPart.length);
+  return { num, den };
+}
+
+// Direct BTC↔pegged conversions, applying the pivot's `btc_peg_rate` as a
+// *consistent* exchange rate: `pegged = sats × rate` forward,
+// `sats = pegged / rate` inverse — a true inverse, so a round trip is
+// lossless. The server currently reports `btc_peg_rate = "1"` for every
+// chain (BTC pegs treated 1:1), so these reduce to pure decimal scaling;
+// the rate is plumbed through for the day a chain's peg isn't 1:1. (Note:
+// this deliberately does NOT reproduce legacy `calculate_wbtc_amounts`'s
+// symmetric ×rate haircut on WBTC — see the composed-only WBTC tests.)
+
+/** Pegged base units = round(btcSats × rate) × pivotScale. */
+function satsToPeggedBase(
+  btcSats: bigint,
+  pegRate: string,
+  pivotScale: bigint,
+): bigint {
+  const { num, den } = parseRate(pegRate);
+  // round(btcSats × num / den), half away from zero (positive amounts).
+  const peggedSats = (btcSats * num + den / 2n) / den;
+  return peggedSats * pivotScale;
+}
+
+/** BTC sats = trunc((peggedBase / pivotScale) / rate). */
+function peggedBaseToSats(
+  peggedBase: bigint,
+  pegRate: string,
+  pivotScale: bigint,
+): bigint {
+  const { num, den } = parseRate(pegRate);
+  // trunc((peggedBase / pivotScale) / (num / den)) = peggedBase × den / (pivotScale × num)
+  return (peggedBase * den) / (pivotScale * num);
+}
+
+/** True if `token` is the chain's BTC-pegged pivot (case-insensitive). */
+function isPivotToken(token: string, btcPegged: { address: string }): boolean {
+  return token.toLowerCase() === btcPegged.address.toLowerCase();
+}
+
+/**
+ * Direct BTC → pegged-token pivot, no DEX leg — the target token *is* the
+ * pivot (e.g. BTC → tBTC). The BTC↔pegged conversion uses the pivot's
+ * `pegRate` from `/chain-config`: exact 1:1 for tBTC, the live WBTC/BTC
+ * rate for WBTC. Matches the server's `calculate_wbtc_amounts` to the
+ * unit (round-half-up forward, truncating inverse).
+ */
+function directBtcToPeggedPivot(
+  params: ComposeQuoteParams,
+  pivot: Pivot,
+  pivotScale: bigint,
+): BtcEvmPivot {
+  let btcSats: bigint;
+  let evmSmallest: bigint;
+  if (params.sourceAmount != null) {
+    // Source-pinned: BTC sats in, pegged base units out.
+    btcSats = BigInt(params.sourceAmount);
+    evmSmallest = satsToPeggedBase(btcSats, pivot.pegRate, pivotScale);
+  } else if (params.targetAmount != null) {
+    // Target-pinned: pegged base units in, BTC sats out.
+    evmSmallest = BigInt(params.targetAmount);
+    btcSats = peggedBaseToSats(evmSmallest, pivot.pegRate, pivotScale);
+  } else {
+    throw new UnsupportedComposeQuotePath(
+      "composeQuote: no amount pinned (unreachable)",
+    );
+  }
+  return { btcSats, evmSmallest, evmDecimals: pivot.decimals };
+}
+
+/**
+ * Direct pegged-token → BTC pivot, no DEX leg — the source token *is* the
+ * pivot (e.g. tBTC → BTC). Mirror of {@link directBtcToPeggedPivot}.
+ */
+function directPeggedToBtcPivot(
+  params: ComposeQuoteParams,
+  pivot: Pivot,
+  pivotScale: bigint,
+): EvmBtcPivot {
+  let btcSats: bigint;
+  let evmSmallest: bigint;
+  if (params.sourceAmount != null) {
+    // Source-pinned: pegged base units in, BTC sats out.
+    evmSmallest = BigInt(params.sourceAmount);
+    btcSats = peggedBaseToSats(evmSmallest, pivot.pegRate, pivotScale);
+  } else if (params.targetAmount != null) {
+    // Target-pinned: BTC sats in, pegged base units out.
+    btcSats = BigInt(params.targetAmount);
+    evmSmallest = satsToPeggedBase(btcSats, pivot.pegRate, pivotScale);
+  } else {
+    throw new UnsupportedComposeQuotePath(
+      "composeQuote: no amount pinned (unreachable)",
+    );
+  }
+  return { btcSats, evmSmallest, evmDecimals: pivot.decimals };
 }
 
 export class UnsupportedComposeQuotePath extends Error {
@@ -170,7 +284,12 @@ async function composeBtcToEvm(
   // one side is pinned; the trailing throw is unreachable but keeps the
   // amount typed as a non-null `bigint` for each branch.
   let pivot: BtcEvmPivot;
-  if (params.sourceAmount != null) {
+  if (isPivotToken(params.targetToken, btcPegged)) {
+    // Direct BTC → pegged token (e.g. BTC → tBTC): the pegged token *is*
+    // the pivot, so there's no DEX hop — just the 1:1 BTC peg. See
+    // directBtcToPeggedPivot for the tBTC-exact / WBTC caveat.
+    pivot = directBtcToPeggedPivot(params, btcPegged, pivotScale);
+  } else if (params.sourceAmount != null) {
     pivot = await dexSourcePinned(
       BigInt(params.sourceAmount),
       params,
@@ -381,7 +500,11 @@ async function composeEvmToBtc(
   // Entry-point guarantees exactly one side is pinned; the trailing throw
   // is unreachable but keeps the amount typed as a non-null `bigint`.
   let pivot: EvmBtcPivot;
-  if (params.sourceAmount != null) {
+  if (isPivotToken(params.sourceToken, btcPegged)) {
+    // Direct pegged token → BTC (e.g. tBTC → BTC): the source *is* the
+    // pivot, no DEX hop — just the 1:1 BTC peg.
+    pivot = directPeggedToBtcPivot(params, btcPegged, pivotScale);
+  } else if (params.sourceAmount != null) {
     pivot = await dexEvmToBtcSourcePinned(
       BigInt(params.sourceAmount),
       params,

@@ -3122,8 +3122,12 @@
       "ChainConfigEntry": {
         "type": "object",
         "description": "Per-chain configuration. EVM chains only — Bitcoin / Lightning /\nArkade don't have a meaningful chain-config shape.",
-        "required": ["chain", "btc_pegged_token"],
+        "required": ["chain", "btc_pegged_token", "btc_peg_rate"],
         "properties": {
+          "btc_peg_rate": {
+            "type": "string",
+            "description": "How many `btc_pegged_token` units equal 1 BTC, as a decimal\nstring. Multiply BTC sats by this — then scale by the token's\ndecimals — to get pegged-token base units for a direct BTC↔pegged\nconversion (the leg with no DEX hop); divide for the inverse.\n\nCurrently always `\"1\"`: every supported peg (tBTC, WBTC) is treated\n1:1 against BTC. The field is here so a chain whose peg genuinely\ndeviates can report its real rate without a client change. If that\never becomes a live market rate, treat it as a quote input — refresh\non the quote cadence, not as session-permanent config."
+          },
           "btc_pegged_token": {
             "$ref": "#/components/schemas/TokenRef",
             "description": "The chain's BTC-pegged token (tBTC v2 on Arbitrum / Ethereum,\nWBTC on Polygon). Used as the DEX pivot when composing a quote\nfor any BTC↔this-chain pair."

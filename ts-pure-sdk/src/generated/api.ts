@@ -1533,6 +1533,19 @@ export interface components {
          */
         ChainConfigEntry: {
             /**
+             * @description How many `btc_pegged_token` units equal 1 BTC, as a decimal
+             *     string. Multiply BTC sats by this — then scale by the token's
+             *     decimals — to get pegged-token base units for a direct BTC↔pegged
+             *     conversion (the leg with no DEX hop); divide for the inverse.
+             *
+             *     Currently always `"1"`: every supported peg (tBTC, WBTC) is treated
+             *     1:1 against BTC. The field is here so a chain whose peg genuinely
+             *     deviates can report its real rate without a client change. If that
+             *     ever becomes a live market rate, treat it as a quote input — refresh
+             *     on the quote cadence, not as session-permanent config.
+             */
+            btc_peg_rate: string;
+            /**
              * @description The chain's BTC-pegged token (tBTC v2 on Arbitrum / Ethereum,
              *     WBTC on Polygon). Used as the DEX pivot when composing a quote
              *     for any BTC↔this-chain pair.
