@@ -1,0 +1,49 @@
+{
+  "name": "@satora/swap",
+  "version": "0.0.1-alpha.1",
+  "description": "Satora swap client",
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "import": "./dist/node.js"
+    },
+    "./delegate": {
+      "types": "./dist/delegate.d.ts",
+      "import": "./dist/delegate.js"
+    },
+    "./cctp-bridge": {
+      "types": "./dist/cctp-bridge.d.ts",
+      "import": "./dist/cctp-bridge.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "pnpm build",
+    "check-types": "tsc -p tsconfig.json --noEmit",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@lendasat/lendaswap-sdk-pure": "^0.2.38"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.3.15",
+    "typescript": "^5.7.0"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  }
+}
