@@ -28,7 +28,10 @@ import { hex } from "@scure/base";
  */
 export type SwapClient = Pick<
   Client,
-  "createLightningToArkadeSwap" | "claimArkade" | "createArkadeToLightningSwap"
+  | "createLightningToArkadeSwap"
+  | "claimArkade"
+  | "createArkadeToLightningSwap"
+  | "getArkadeToLightningQuote"
 >;
 
 /**
@@ -161,26 +164,57 @@ export class EscrowClient {
   }
 
   /**
+   * Quote a Lightning withdrawal: given how many sats you'd spend from the
+   * payout (`sourceAmountSats`), returns what the recipient receives after the
+   * swap fee and what is actually spent.
+   *
+   * Use `recipientSats` as the `amountSats` for an LNURL / Lightning-address
+   * {@link withdrawToLightning} — e.g. pre-fill the amount from the available
+   * payout balance so the user doesn't have to compute fees by hand.
+   */
+  async quoteLightningWithdrawal(sourceAmountSats: number): Promise<{
+    /** Sats the recipient receives (pass as `amountSats` to withdrawToLightning). */
+    recipientSats: number;
+    /** Sats actually spent from the payout to fund the swap VHTLC. */
+    sourceSats: number;
+  }> {
+    const quote = await this.swap.getArkadeToLightningQuote(sourceAmountSats);
+    // Amounts are serialized as strings over the wire.
+    return {
+      recipientSats: Number(quote.net_target_amount),
+      sourceSats: Number(quote.net_source_amount),
+    };
+  }
+
+  /**
    * Withdraw a released payout to Lightning via an Arkade→Lightning swap.
    *
-   * Creates the swap for `lightningInvoice` and funds its VHTLC from the buyer
-   * wallet's payout. The Lendaswap server then claims the VHTLC and pays the
-   * invoice. Returns the swap id, the VHTLC funding txid, and the sats sent
-   * (the invoice amount plus the swap fee — must be <= the available payout).
+   * `destination` may be a BOLT11 invoice, an LNURL (`lnurl1...`), or a
+   * Lightning address (`user@host`) — the swap backend resolves LNURL /
+   * address itself, so nothing is fetched client-side. `amountSats` (what the
+   * recipient receives) is **required** for LNURL / address and **ignored**
+   * for a BOLT11 invoice (the amount is taken from the invoice).
+   *
+   * Creates the swap and funds its VHTLC from the buyer wallet's payout; the
+   * Lendaswap server then claims the VHTLC and pays the recipient. Returns the
+   * swap id, the VHTLC funding txid, and the sats sent (recipient amount plus
+   * the swap fee — must be <= the available payout).
    */
   async withdrawToLightning(params: {
     /** Buyer wallet holding the released payout VTXO(s). */
     wallet: IWallet;
-    /** BOLT11 invoice to be paid by the swap server. */
-    lightningInvoice: string;
+    /** BOLT11 invoice, LNURL (`lnurl1...`), or Lightning address (`user@host`). */
+    destination: string;
+    /** Recipient amount in sats. Required for LNURL / address; ignored for BOLT11. */
+    amountSats?: number;
   }): Promise<{
     swapId: string;
     fundingTxid: string;
     sourceAmountSats: number;
   }> {
-    const { response } = await this.swap.createArkadeToLightningSwap({
-      lightningInvoice: params.lightningInvoice,
-    });
+    const { response } = await this.swap.createArkadeToLightningSwap(
+      toLightningDestination(params.destination, params.amountSats),
+    );
     // source_amount is serialized as a string over the wire.
     const sourceAmountSats = Number(response.source_amount);
     const fundingTxid = await params.wallet.send({
@@ -219,6 +253,47 @@ export class EscrowClient {
   dispose(): void {
     this.monitor.dispose();
   }
+}
+
+/** Fields of the swap SDK's Arkade→Lightning options we route a destination to. */
+interface LightningDestination {
+  lightningInvoice?: string;
+  lightningAddress?: string;
+  lnurl?: string;
+  amountSats?: number;
+}
+
+/**
+ * Classify a Lightning destination string and map it to the swap SDK's
+ * mutually-exclusive `lightningInvoice` / `lightningAddress` / `lnurl` fields.
+ * Pure string inspection — no network calls; the backend resolves LNURL.
+ */
+function toLightningDestination(
+  destination: string,
+  amountSats?: number,
+): LightningDestination {
+  const input = destination.trim();
+  // BOLT11 on any network: bc / tb / tbs / bcrt / sb. The invoice carries its
+  // own amount, so amountSats is not needed.
+  if (/^ln(bcrt|bc|tbs|tb|sb)/i.test(input)) {
+    return { lightningInvoice: input };
+  }
+  const isAddress = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input);
+  const isLnurl = /^lnurl1[0-9ac-hj-np-z]+$/i.test(input);
+  if (!isAddress && !isLnurl) {
+    throw new Error(
+      "unrecognized Lightning destination: expected a BOLT11 invoice, " +
+        "LNURL (lnurl1...), or Lightning address (user@host)",
+    );
+  }
+  if (amountSats === undefined) {
+    throw new Error(
+      `amountSats is required for a Lightning ${isAddress ? "address" : "LNURL"} destination`,
+    );
+  }
+  return isAddress
+    ? { lightningAddress: input, amountSats }
+    : { lnurl: input, amountSats };
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
