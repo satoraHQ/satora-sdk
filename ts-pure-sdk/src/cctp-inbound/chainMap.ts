@@ -23,6 +23,7 @@ import {
   sonic,
   unichain,
   worldchain,
+  xdc,
 } from "viem/chains";
 import {
   CCTP_DOMAINS,
@@ -46,6 +47,7 @@ export const CHAIN_ID_TO_CCTP_NAME: Record<number, CctpChainName> = {
   57073: "Ink",
   999: "HyperEVM",
   143: "Monad",
+  50: "XDC",
   // Solana lands later (non-EVM, needs a different signer path).
 };
 
@@ -123,6 +125,7 @@ export const CCTP_VIEM_CHAINS: Record<number, Chain> = {
   57073: ink,
   999: hyperEvm,
   143: monad,
+  50: xdc,
 };
 
 /** Look up the viem `Chain` for a CCTP source chain id, or `undefined`. */

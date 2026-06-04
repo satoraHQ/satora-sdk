@@ -32,6 +32,7 @@ export const CCTP_DOMAINS = {
   "World Chain": 14,
   Monad: 15,
   Sei: 16,
+  XDC: 18,
   HyperEVM: 19,
   Ink: 21,
 } as const;
@@ -56,6 +57,7 @@ export const USDC_ADDRESSES: Record<string, string> = {
   Sonic: "0x29219dd400f2bf60e5a23d13be72b486d4038894",
   Sei: "0xe15fC38F6D8c56aF07bbCBe3BAf5708A2Bf42392",
   HyperEVM: "0xb88339CB7199b77E23DB6E890353E22632Ba630f",
+  XDC: "0xfA2958CB79b0491CC627c1557F441eF849Ca8eb1",
   Monad: "0x754704Bc059F8C67012fEd69BC8A327a5aafb603",
   // Solana's USDC is an SPL mint, encoded as a base58 pubkey rather than
   // an EVM `0x...` hex address. Callers that parse the value with viem's
