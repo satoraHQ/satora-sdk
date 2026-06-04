@@ -1,0 +1,44 @@
+{
+  "name": "@satora/escrow-client",
+  "version": "0.0.1-alpha.1",
+  "description": "High-level escrow flows (funding/withdrawing) bundling @satora/escrow with an injected swap client",
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "pnpm build",
+    "check-types": "tsc -p tsconfig.json --noEmit",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@satora/escrow": "workspace:*",
+    "@scure/base": "^2.0.0"
+  },
+  "peerDependencies": {
+    "@arkade-os/sdk": "^0.4.32",
+    "@satora/swap": "*"
+  },
+  "devDependencies": {
+    "@arkade-os/sdk": "^0.4.32",
+    "@biomejs/biome": "2.3.15",
+    "@satora/swap": "workspace:*",
+    "typescript": "^5.7.0"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  }
+}
