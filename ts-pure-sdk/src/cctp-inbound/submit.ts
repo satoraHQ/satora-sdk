@@ -214,6 +214,18 @@ export async function submitCctpInboundUserOp(
   const receipt = await aaClient.waitForUserOperationReceipt({
     hash: userOpHash,
   });
+  // A UserOp can be included on-chain yet revert during execution;
+  // waitForUserOperationReceipt resolves with success=false rather than
+  // throwing. Surface that as an error so callers retry instead of treating a
+  // reverted settlement as done. The batch is atomic, so a reverted attempt
+  // applied nothing and re-submission is safe (receiveMessage is nonce-gated).
+  if (!receipt.success) {
+    throw new Error(
+      `CCTP-inbound settlement UserOp ${userOpHash} reverted on-chain${
+        receipt.reason ? `: ${receipt.reason}` : ""
+      }`,
+    );
+  }
   return {
     userOpHash,
     smartAccountAddress: accountAddress,
