@@ -30,10 +30,12 @@ export {
   encodeDepositForBurn,
 } from "./burn.js";
 export {
+  CCTP_STANDARD_ONLY_CHAIN_IDS,
   CCTP_VIEM_CHAINS,
   CHAIN_ID_TO_CCTP_NAME,
   cctpMetaForChainId,
   DIRECT_SOURCE_CHAIN_IDS,
+  finalityForChainId,
   getCctpViemChain,
   getCctpViemChainByName,
   isCctpOnlySource,

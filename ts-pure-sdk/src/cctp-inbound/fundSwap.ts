@@ -22,7 +22,7 @@ import { fetchAttestation } from "../cctp/attestation.js";
 import { IRIS_API_MAINNET } from "../cctp/constants.js";
 import type { EvmSigner } from "../evm/wallet.js";
 import { approveAndBurn } from "./approveAndBurn.js";
-import { cctpMetaForChainId } from "./chainMap.js";
+import { cctpMetaForChainId, finalityForChainId } from "./chainMap.js";
 import { createSwapSmartAccountClient } from "./smartAccount.js";
 import { submitCctpInboundUserOp } from "./submit.js";
 import type { AaConfig } from "./types.js";
@@ -116,6 +116,11 @@ export async function cctpFundSwap(
   const source = cctpMetaForChainId(signer.chainId);
   const destination = cctpMetaForChainId(settlementChain.id);
 
+  // Sources without Fast Transfer (e.g. XDC) must burn at Standard
+  // finality — requesting fast finality there charges the wrong fee tier
+  // and the attestation never clears at the fast threshold.
+  const minFinalityThreshold = finalityForChainId(signer.chainId);
+
   // Derive the Kernel smart-account address up front. Stable across
   // all three phases — we mint to it on settlement and gate the
   // `receiveMessage` call on it.
@@ -135,6 +140,7 @@ export async function cctpFundSwap(
     destinationDomain: destination.domain,
     smartAccountAddress,
     maxFee,
+    minFinalityThreshold,
   });
   onProgress?.({ phase: "burning", burnTxHash });
   const burnReceipt = await signer.waitForReceipt(burnTxHash);

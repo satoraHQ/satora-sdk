@@ -20,8 +20,12 @@
 import { describe, expect, it } from "vitest";
 import {
   CCTP_DOMAINS,
+  CCTP_STANDARD_ONLY_CHAIN_IDS,
   CCTP_VIEM_CHAINS,
   CHAIN_ID_TO_CCTP_NAME,
+  FINALITY_FAST,
+  FINALITY_STANDARD,
+  finalityForChainId,
   USDC_ADDRESSES,
 } from "../src/index.js";
 
@@ -78,5 +82,24 @@ describe("CCTP chain registry consistency", () => {
     const viemKeys = Object.keys(CCTP_VIEM_CHAINS).sort();
     const nameKeys = Object.keys(CHAIN_ID_TO_CCTP_NAME).sort();
     expect(viemKeys).toEqual(nameKeys);
+  });
+
+  it("standard-only chains are CCTP-supported sources", () => {
+    for (const chainId of CCTP_STANDARD_ONLY_CHAIN_IDS) {
+      expect(
+        CHAIN_ID_TO_CCTP_NAME[chainId],
+        `standard-only chain ${chainId} must be in CHAIN_ID_TO_CCTP_NAME`,
+      ).toBeDefined();
+    }
+  });
+
+  it("finalityForChainId returns standard for standard-only chains, fast otherwise", () => {
+    // XDC has no Fast Transfer support → must burn at standard finality.
+    expect(finalityForChainId(50)).toBe(FINALITY_STANDARD);
+    expect(CCTP_STANDARD_ONLY_CHAIN_IDS.has(50)).toBe(true);
+
+    // A fast-capable source (Base) and an unknown chain both default to fast.
+    expect(finalityForChainId(8453)).toBe(FINALITY_FAST);
+    expect(finalityForChainId(999999)).toBe(FINALITY_FAST);
   });
 });

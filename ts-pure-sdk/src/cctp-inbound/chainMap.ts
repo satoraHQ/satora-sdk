@@ -28,6 +28,8 @@ import {
 import {
   CCTP_DOMAINS,
   type CctpChainName,
+  FINALITY_FAST,
+  FINALITY_STANDARD,
   USDC_ADDRESSES,
 } from "../cctp/constants.js";
 
@@ -72,6 +74,31 @@ export function isCctpOnlySource(chainId: number): boolean {
   return (
     chainId in CHAIN_ID_TO_CCTP_NAME && !DIRECT_SOURCE_CHAIN_IDS.has(chainId)
   );
+}
+
+/**
+ * CCTP source chains that do **not** support Fast Transfer (Circle's
+ * supported-chains/finality docs mark "Fast Transfer: N/A"). Burns from
+ * these chains must request Standard finality (2000); requesting fast
+ * finality (1000) makes the fee/attestation assumptions wrong because no
+ * fast-transfer fee tier exists for the route.
+ */
+export const CCTP_STANDARD_ONLY_CHAIN_IDS: ReadonlySet<number> = new Set([
+  50, // XDC
+]);
+
+/**
+ * The CCTP `minFinalityThreshold` to request when burning *from* `chainId`:
+ * `FINALITY_FAST` (1000) where Fast Transfer is supported, `FINALITY_STANDARD`
+ * (2000) for chains in [`CCTP_STANDARD_ONLY_CHAIN_IDS`].
+ *
+ * Callers should also query the IRIS fee for the returned threshold so the
+ * `maxFee` matches the tier the burn will actually settle at.
+ */
+export function finalityForChainId(chainId: number): number {
+  return CCTP_STANDARD_ONLY_CHAIN_IDS.has(chainId)
+    ? FINALITY_STANDARD
+    : FINALITY_FAST;
 }
 
 /**
