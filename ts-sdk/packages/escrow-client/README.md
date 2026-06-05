@@ -170,6 +170,19 @@ const settlementTxid = await escrowClient.withdrawToL1({
 });
 ```
 
+### To another Arkade address
+
+A plain offchain Ark transfer — the funds stay on Ark, so it's the cheapest and
+fastest withdrawal (no swap, no settlement round):
+
+```ts
+const arkTxid = await escrowClient.withdrawToArkade({
+  wallet,
+  destinationAddress: "ark1…", // or tark1… off mainnet
+  amountSats: 50_000,
+});
+```
+
 ## Escrow primitives
 
 `@satora/escrow-client` re-exports everything from `@satora/escrow`, so you can
@@ -196,12 +209,13 @@ escrowClient.dispose(); // stop watching, clear listeners
 
 ## API summary
 
-| Method                                                      | Purpose                                                                                        |
-| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `EscrowClient.create(config)`                               | Construct with `{ swap, arkProvider, indexerProvider, contractRepository, walletRepository }`. |
-| `fundFromLightning({ escrow, network, amountSats })`        | Create a LN→escrow swap; returns `{ swapId, invoice, escrowAddress, awaitFunded() }`.          |
-| `quoteLightningWithdrawal(sourceAmountSats)`                | `{ recipientSats, sourceSats }` — recipient amount after the swap fee.                         |
-| `withdrawToLightning({ wallet, destination, amountSats? })` | Withdraw the payout to a BOLT11 / LNURL / Lightning address.                                   |
-| `withdrawToL1({ wallet, destinationAddress, amountSats? })` | Withdraw the payout onchain via collaborative offboard.                                        |
-| `escrowMonitor`                                             | The underlying `EscrowMonitor`.                                                                |
-| `dispose()`                                                 | Release monitor resources.                                                                     |
+| Method                                                         | Purpose                                                                                        |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `EscrowClient.create(config)`                                  | Construct with `{ swap, arkProvider, indexerProvider, contractRepository, walletRepository }`. |
+| `fundFromLightning({ escrow, network, amountSats })`           | Create a LN→escrow swap; returns `{ swapId, invoice, escrowAddress, awaitFunded() }`.          |
+| `quoteLightningWithdrawal(sourceAmountSats)`                   | `{ recipientSats, sourceSats }` — recipient amount after the swap fee.                         |
+| `withdrawToLightning({ wallet, destination, amountSats? })`    | Withdraw the payout to a BOLT11 / LNURL / Lightning address.                                   |
+| `withdrawToL1({ wallet, destinationAddress, amountSats? })`    | Withdraw the payout onchain via collaborative offboard.                                        |
+| `withdrawToArkade({ wallet, destinationAddress, amountSats })` | Withdraw the payout to another Arkade address (offchain Ark transfer).                         |
+| `escrowMonitor`                                                | The underlying `EscrowMonitor`.                                                                |
+| `dispose()`                                                    | Release monitor resources.                                                                     |

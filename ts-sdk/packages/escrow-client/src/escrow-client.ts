@@ -249,6 +249,28 @@ export class EscrowClient {
     );
   }
 
+  /**
+   * Withdraw a released payout to another Arkade address — a plain offchain Ark
+   * transfer. The funds stay on Ark (no swap, no settlement round), so this is
+   * the cheapest, fastest withdrawal. Returns the ark txid.
+   *
+   * The buyer holds the released payout as a normal VTXO at their wallet's
+   * address, so this is a plain send — no escrow-specific signing.
+   */
+  async withdrawToArkade(params: {
+    /** Buyer wallet holding the released payout VTXO(s). */
+    wallet: IWallet;
+    /** Destination Arkade address. */
+    destinationAddress: string;
+    /** Amount to send in sats. */
+    amountSats: number;
+  }): Promise<string> {
+    return params.wallet.send({
+      address: params.destinationAddress,
+      amount: params.amountSats,
+    });
+  }
+
   /** Release the monitor's resources (stop watching, clear listeners). */
   dispose(): void {
     this.monitor.dispose();
