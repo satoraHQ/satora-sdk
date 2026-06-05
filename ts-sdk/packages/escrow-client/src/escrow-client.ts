@@ -15,6 +15,7 @@ import {
 } from "@satora/escrow";
 import type { Client } from "@satora/swap";
 import { hex } from "@scure/base";
+import { classifyDestination, toLightningDestination } from "./destination.js";
 
 /**
  * The swap-client surface EscrowClient depends on — just the methods it calls,
@@ -53,6 +54,21 @@ export interface EscrowClientConfig {
   /** Wallet repository (vtxo storage) for the escrow monitor. */
   walletRepository: WalletRepository;
 }
+
+/**
+ * Result of {@link EscrowClient.withdraw}, discriminated by `method`. `txid` is
+ * present on every branch — the VHTLC funding txid (lightning), the offboard
+ * settlement txid (l1), or the Ark transfer txid (arkade).
+ */
+export type WithdrawResult =
+  | {
+      method: "lightning";
+      txid: string;
+      swapId: string;
+      sourceAmountSats: number;
+    }
+  | { method: "l1"; txid: string }
+  | { method: "arkade"; txid: string };
 
 export interface FundFromLightningParams {
   /** The escrow to fund (script params, used to derive the address + watch). */
@@ -271,51 +287,74 @@ export class EscrowClient {
     });
   }
 
+  /**
+   * Smart withdrawal: route the payout to wherever `destination` points by
+   * inspecting the string, dispatching to {@link withdrawToLightning},
+   * {@link withdrawToArkade}, or {@link withdrawToL1}.
+   *
+   * - BOLT11 invoice / LNURL / Lightning address → Lightning
+   * - Arkade address (`ark1…` / `tark1…`)        → offchain Ark transfer
+   * - anything else (a Bitcoin address)          → L1 offboard
+   *
+   * `amountSats` is **required** for an Arkade address and for a Lightning
+   * LNURL/address; **optional** for L1 (omit to offboard everything) and
+   * **ignored** for a BOLT11 invoice. The result is discriminated by `method`;
+   * `txid` is present for every branch.
+   */
+  async withdraw(params: {
+    wallet: IWallet;
+    /** Lightning (invoice/LNURL/address), Arkade, or onchain Bitcoin address. */
+    destination: string;
+    amountSats?: number;
+  }): Promise<WithdrawResult> {
+    const destination = params.destination.trim();
+
+    switch (classifyDestination(destination)) {
+      case "lightning": {
+        const { swapId, fundingTxid, sourceAmountSats } =
+          await this.withdrawToLightning({
+            wallet: params.wallet,
+            destination,
+            amountSats: params.amountSats,
+          });
+        return {
+          method: "lightning",
+          txid: fundingTxid,
+          swapId,
+          sourceAmountSats,
+        };
+      }
+      case "arkade": {
+        if (params.amountSats === undefined) {
+          throw new Error(
+            "amountSats is required to withdraw to an Arkade address",
+          );
+        }
+        const txid = await this.withdrawToArkade({
+          wallet: params.wallet,
+          destinationAddress: destination,
+          amountSats: params.amountSats,
+        });
+        return { method: "arkade", txid };
+      }
+      case "l1": {
+        const txid = await this.withdrawToL1({
+          wallet: params.wallet,
+          destinationAddress: destination,
+          amountSats:
+            params.amountSats === undefined
+              ? undefined
+              : BigInt(params.amountSats),
+        });
+        return { method: "l1", txid };
+      }
+    }
+  }
+
   /** Release the monitor's resources (stop watching, clear listeners). */
   dispose(): void {
     this.monitor.dispose();
   }
-}
-
-/** Fields of the swap SDK's Arkade→Lightning options we route a destination to. */
-interface LightningDestination {
-  lightningInvoice?: string;
-  lightningAddress?: string;
-  lnurl?: string;
-  amountSats?: number;
-}
-
-/**
- * Classify a Lightning destination string and map it to the swap SDK's
- * mutually-exclusive `lightningInvoice` / `lightningAddress` / `lnurl` fields.
- * Pure string inspection — no network calls; the backend resolves LNURL.
- */
-function toLightningDestination(
-  destination: string,
-  amountSats?: number,
-): LightningDestination {
-  const input = destination.trim();
-  // BOLT11 on any network: bc / tb / tbs / bcrt / sb. The invoice carries its
-  // own amount, so amountSats is not needed.
-  if (/^ln(bcrt|bc|tbs|tb|sb)/i.test(input)) {
-    return { lightningInvoice: input };
-  }
-  const isAddress = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input);
-  const isLnurl = /^lnurl1[0-9ac-hj-np-z]+$/i.test(input);
-  if (!isAddress && !isLnurl) {
-    throw new Error(
-      "unrecognized Lightning destination: expected a BOLT11 invoice, " +
-        "LNURL (lnurl1...), or Lightning address (user@host)",
-    );
-  }
-  if (amountSats === undefined) {
-    throw new Error(
-      `amountSats is required for a Lightning ${isAddress ? "address" : "LNURL"} destination`,
-    );
-  }
-  return isAddress
-    ? { lightningAddress: input, amountSats }
-    : { lnurl: input, amountSats };
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {

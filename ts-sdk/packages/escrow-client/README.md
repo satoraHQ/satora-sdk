@@ -131,7 +131,28 @@ const wallet = await Wallet.create({
 });
 ```
 
-Then withdraw it to Lightning or to L1.
+Then withdraw it — either with the smart `withdraw` (which auto-routes by
+inspecting the destination) or with a specific method.
+
+### Smart withdraw (auto-route)
+
+`withdraw` figures out where `destination` points and dispatches accordingly:
+
+```ts
+const result = await escrowClient.withdraw({
+  wallet,
+  destination,        // BOLT11 / LNURL / user@host → Lightning
+                      // ark1… / tark1…             → Arkade transfer
+                      // bc1… / tb1… / 1…           → L1 offboard
+  amountSats,         // required for Arkade + LNURL/address; optional for L1; ignored for BOLT11
+});
+
+result.txid;          // present on every branch
+if (result.method === "lightning") result.swapId; // lightning also has swapId + sourceAmountSats
+```
+
+`result` is discriminated by `method` (`"lightning" | "l1" | "arkade"`). Use the
+specific methods below if you already know the destination type.
 
 ### To Lightning
 
@@ -209,13 +230,14 @@ escrowClient.dispose(); // stop watching, clear listeners
 
 ## API summary
 
-| Method                                                         | Purpose                                                                                        |
-| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `EscrowClient.create(config)`                                  | Construct with `{ swap, arkProvider, indexerProvider, contractRepository, walletRepository }`. |
-| `fundFromLightning({ escrow, network, amountSats })`           | Create a LN→escrow swap; returns `{ swapId, invoice, escrowAddress, awaitFunded() }`.          |
-| `quoteLightningWithdrawal(sourceAmountSats)`                   | `{ recipientSats, sourceSats }` — recipient amount after the swap fee.                         |
-| `withdrawToLightning({ wallet, destination, amountSats? })`    | Withdraw the payout to a BOLT11 / LNURL / Lightning address.                                   |
-| `withdrawToL1({ wallet, destinationAddress, amountSats? })`    | Withdraw the payout onchain via collaborative offboard.                                        |
-| `withdrawToArkade({ wallet, destinationAddress, amountSats })` | Withdraw the payout to another Arkade address (offchain Ark transfer).                         |
-| `escrowMonitor`                                                | The underlying `EscrowMonitor`.                                                                |
-| `dispose()`                                                    | Release monitor resources.                                                                     |
+| Method                                                         | Purpose                                                                                                  |
+| -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `EscrowClient.create(config)`                                  | Construct with `{ swap, arkProvider, indexerProvider, contractRepository, walletRepository }`.           |
+| `fundFromLightning({ escrow, network, amountSats })`           | Create a LN→escrow swap; returns `{ swapId, invoice, escrowAddress, awaitFunded() }`.                    |
+| `withdraw({ wallet, destination, amountSats? })`               | Smart withdrawal — auto-routes to Lightning / L1 / Arkade by destination. Returns `{ method, txid, … }`. |
+| `quoteLightningWithdrawal(sourceAmountSats)`                   | `{ recipientSats, sourceSats }` — recipient amount after the swap fee.                                   |
+| `withdrawToLightning({ wallet, destination, amountSats? })`    | Withdraw the payout to a BOLT11 / LNURL / Lightning address.                                             |
+| `withdrawToL1({ wallet, destinationAddress, amountSats? })`    | Withdraw the payout onchain via collaborative offboard.                                                  |
+| `withdrawToArkade({ wallet, destinationAddress, amountSats })` | Withdraw the payout to another Arkade address (offchain Ark transfer).                                   |
+| `escrowMonitor`                                                | The underlying `EscrowMonitor`.                                                                          |
+| `dispose()`                                                    | Release monitor resources.                                                                               |
