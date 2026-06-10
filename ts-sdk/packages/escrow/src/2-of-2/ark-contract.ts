@@ -61,18 +61,23 @@ export function encodeEscrowArkContract(options: EscrowScriptOptions): string {
  * re-deriving the pkScript and funding address from the embedded parameters.
  *
  * Registers the escrow handler if needed, so the caller does not have to.
- * `aspPubKey` is the ASP x-only key the funding address is built from.
+ * `arkadeServerPubKey` is the Arkade server x-only key the funding address is built from.
  */
 export function decodeEscrowArkContract(
   encoded: string,
-  aspPubKey: Uint8Array,
+  arkadeServerPubKey: Uint8Array,
   network: Network,
   meta: EscrowContractMeta = {},
 ): Contract {
   registerEscrowContractHandler();
-  return contractFromArkContractWithAddress(encoded, aspPubKey, network.hrp, {
-    label: meta.label,
-    state: meta.state,
-    metadata: meta.metadata,
-  });
+  return contractFromArkContractWithAddress(
+    encoded,
+    arkadeServerPubKey,
+    network.hrp,
+    {
+      label: meta.label,
+      state: meta.state,
+      metadata: meta.metadata,
+    },
+  );
 }

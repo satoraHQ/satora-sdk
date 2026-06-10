@@ -45,7 +45,7 @@ export type SwapClient = Pick<
 export interface EscrowClientConfig {
   /** The consumer's swap client (see {@link SwapClient}). */
   swap: SwapClient;
-  /** ASP provider (for fees + release submission). */
+  /** Arkade server provider (for fees + release submission). */
   arkProvider: ArkProvider;
   /** Indexer provider used to watch escrow addresses. */
   indexerProvider: IndexerProvider;
@@ -58,7 +58,7 @@ export interface EscrowClientConfig {
 /**
  * Result of {@link EscrowClient.withdraw}, discriminated by `method`. `txid` is
  * present on every branch — the VHTLC funding txid (lightning), the offboard
- * settlement txid (l1), or the Ark transfer txid (arkade).
+ * settlement txid (l1), or the Arkade transfer txid (arkade).
  */
 export type WithdrawResult =
   | {
@@ -84,7 +84,7 @@ export interface FundFromLightningHandle {
   swapId: string;
   /** BOLT11 invoice the funder pays to start the LN→escrow swap. */
   invoice: string;
-  /** The escrow Ark address being funded. */
+  /** The escrow Arkade address being funded. */
   escrowAddress: string;
   /**
    * Call after the invoice has been paid. Claims the server-funded VHTLC into
@@ -266,9 +266,9 @@ export class EscrowClient {
   }
 
   /**
-   * Withdraw a released payout to another Arkade address — a plain offchain Ark
-   * transfer. The funds stay on Ark (no swap, no settlement round), so this is
-   * the cheapest, fastest withdrawal. Returns the ark txid.
+   * Withdraw a released payout to another Arkade address — a plain offchain Arkade
+   * transfer. The funds stay on Arkade (no swap, no settlement round), so this is
+   * the cheapest, fastest withdrawal. Returns the Arkade transaction ID.
    *
    * The buyer holds the released payout as a normal VTXO at their wallet's
    * address, so this is a plain send — no escrow-specific signing.
@@ -293,7 +293,7 @@ export class EscrowClient {
    * {@link withdrawToArkade}, or {@link withdrawToL1}.
    *
    * - BOLT11 invoice / LNURL / Lightning address → Lightning
-   * - Arkade address (`ark1…` / `tark1…`)        → offchain Ark transfer
+   * - Arkade address (`ark1…` / `tark1…`)        → offchain Arkade transfer
    * - anything else (a Bitcoin address)          → L1 offboard
    *
    * `amountSats` is **required** for an Arkade address and for a Lightning

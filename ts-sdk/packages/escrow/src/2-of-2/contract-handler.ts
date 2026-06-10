@@ -83,7 +83,7 @@ function escapeSequence(contract: Contract): number | undefined {
  * ContractHandler for the cooperative 2-of-2 escrow ({@link EscrowVtxoScript}).
  *
  * Spending paths:
- *  - cooperative (leaf A): 3-of-3 [seller, arbiter, asp]. Available whenever
+ *  - cooperative (leaf A): 3-of-3 [seller, arbiter, Arkade server]. Available whenever
  *    the server cooperates. Returned for ANY role — the witness is completed
  *    by the multi-party signing choreography (see `signEscrowArkTx`), not by a
  *    single wallet. This mirrors how the SDK's VHTLC handler returns its
@@ -106,7 +106,7 @@ export const EscrowContractHandler: ContractHandler<
     return {
       sellerPubKey: hex.encode(params.sellerPubKey),
       arbiterPubKey: hex.encode(params.arbiterPubKey),
-      aspPubKey: hex.encode(params.aspPubKey),
+      arkadeServerPubKey: hex.encode(params.arkadeServerPubKey),
       exitTimelock: timelockToSequence(params.exitTimelock).toString(),
     };
   },
@@ -115,7 +115,7 @@ export const EscrowContractHandler: ContractHandler<
     return {
       sellerPubKey: hex.decode(params.sellerPubKey),
       arbiterPubKey: hex.decode(params.arbiterPubKey),
-      aspPubKey: hex.decode(params.aspPubKey),
+      arkadeServerPubKey: hex.decode(params.arkadeServerPubKey),
       exitTimelock: sequenceToTimelock(Number(params.exitTimelock)),
     };
   },

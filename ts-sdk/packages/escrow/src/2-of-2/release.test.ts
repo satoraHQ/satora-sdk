@@ -19,34 +19,34 @@ function xOnlyPubKey(seed: number): Uint8Array {
 
 const sellerPubKey = xOnlyPubKey(1);
 const arbiterPubKey = xOnlyPubKey(2);
-const aspPubKey = xOnlyPubKey(3);
+const arkadeServerPubKey = xOnlyPubKey(3);
 const exitTimelock = { type: "blocks", value: 4320n } as const;
 const network = networks.regtest;
 
 const options: EscrowScriptOptions = {
   sellerPubKey,
   arbiterPubKey,
-  aspPubKey,
+  arkadeServerPubKey,
   exitTimelock,
 };
 
-/** A valid, distinct Ark address derived from a throwaway escrow script. */
+/** A valid, distinct Arkade address derived from a throwaway escrow script. */
 function arkAddress(seed: number): string {
   return new EscrowVtxoScript({
     sellerPubKey: xOnlyPubKey(seed),
     arbiterPubKey: xOnlyPubKey(seed + 1),
-    aspPubKey,
+    arkadeServerPubKey,
     exitTimelock,
   }).arkAddress(network);
 }
 
 const serverUnrollScript = CSVMultisigTapscript.encode({
   timelock: exitTimelock,
-  pubkeys: [aspPubKey],
+  pubkeys: [arkadeServerPubKey],
 });
 
 const config: EscrowArkConfig = {
-  aspPubKey,
+  arkadeServerPubKey,
   exitTimelock,
   serverUnrollScript,
   dust: 330n,
@@ -63,14 +63,14 @@ const outputs = {
 describe("escrowArkConfigFromInfo", () => {
   it("derives config fields from ArkInfo", () => {
     const info = {
-      signerPubkey: hex.encode(aspPubKey),
+      signerPubkey: hex.encode(arkadeServerPubKey),
       unilateralExitDelay: 144n,
       checkpointTapscript: hex.encode(serverUnrollScript.script),
       dust: 330n,
     } as unknown as ArkInfo;
 
     const cfg = escrowArkConfigFromInfo(info);
-    expect(cfg.aspPubKey).toEqual(aspPubKey);
+    expect(cfg.arkadeServerPubKey).toEqual(arkadeServerPubKey);
     expect(cfg.exitTimelock).toEqual({ type: "blocks", value: 144n });
     expect(cfg.dust).toBe(330n);
     expect(cfg.serverUnrollScript.script).toEqual(serverUnrollScript.script);
@@ -78,7 +78,7 @@ describe("escrowArkConfigFromInfo", () => {
 
   it("throws when checkpointTapscript is missing", () => {
     const info = {
-      signerPubkey: hex.encode(aspPubKey),
+      signerPubkey: hex.encode(arkadeServerPubKey),
       unilateralExitDelay: 144n,
       dust: 330n,
     } as unknown as ArkInfo;
@@ -100,7 +100,7 @@ describe("buildEscrowReleaseTx", () => {
     const built = buildEscrowReleaseTx(escrow, funding, outputs, config);
 
     expect(built.checkpoints.length).toBe(1);
-    // The ark-tx carries buyer + fee + the P2A anchor.
+    // The Arkade transaction carries buyer + fee + the P2A anchor.
     expect(built.arkTx.outputsLength).toBe(3);
     expect(() => verifyReleaseArkTx(built, expectation)).not.toThrow();
   });

@@ -95,13 +95,13 @@ export class EscrowMonitor {
    */
   watchArkContract(
     encoded: string,
-    aspPubKey: Uint8Array,
+    arkadeServerPubKey: Uint8Array,
     network: Network,
     meta?: EscrowContractMeta,
   ): Promise<Contract> {
     const { createdAt: _createdAt, ...params } = decodeEscrowArkContract(
       encoded,
-      aspPubKey,
+      arkadeServerPubKey,
       network,
       meta,
     );

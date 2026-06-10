@@ -16,12 +16,12 @@ function xOnlyPubKey(seed: number): Uint8Array {
   return schnorr.getPublicKey(sk);
 }
 
-const aspPubKey = xOnlyPubKey(3);
+const arkadeServerPubKey = xOnlyPubKey(3);
 const network = networks.regtest;
 const options: EscrowScriptOptions = {
   sellerPubKey: xOnlyPubKey(1),
   arbiterPubKey: xOnlyPubKey(2),
-  aspPubKey,
+  arkadeServerPubKey,
   exitTimelock: { type: "blocks", value: 4320n },
 };
 
@@ -45,7 +45,11 @@ describe("escrow arkcontract handoff", () => {
 
     // decode must work even though the handler is not pre-registered.
     expect(contractHandlers.has(ESCROW_2OF2_CONTRACT_TYPE)).toBe(false);
-    const contract = decodeEscrowArkContract(encoded, aspPubKey, network);
+    const contract = decodeEscrowArkContract(
+      encoded,
+      arkadeServerPubKey,
+      network,
+    );
 
     expect(contract.type).toBe(ESCROW_2OF2_CONTRACT_TYPE);
     expect(contract.script).toBe(hex.encode(expected.pkScript));
@@ -53,7 +57,7 @@ describe("escrow arkcontract handoff", () => {
     expect(contract.params).toEqual({
       sellerPubKey: hex.encode(options.sellerPubKey),
       arbiterPubKey: hex.encode(options.arbiterPubKey),
-      aspPubKey: hex.encode(aspPubKey),
+      arkadeServerPubKey: hex.encode(arkadeServerPubKey),
       exitTimelock: contract.params.exitTimelock,
     });
   });
@@ -72,10 +76,15 @@ describe("escrow arkcontract handoff", () => {
 
   it("carries metadata through decode", () => {
     const encoded = encodeEscrowArkContract(options);
-    const contract = decodeEscrowArkContract(encoded, aspPubKey, network, {
-      label: "lightning-receive",
-      metadata: { offerId: "abc" },
-    });
+    const contract = decodeEscrowArkContract(
+      encoded,
+      arkadeServerPubKey,
+      network,
+      {
+        label: "lightning-receive",
+        metadata: { offerId: "abc" },
+      },
+    );
     expect(contract.label).toBe("lightning-receive");
     expect(contract.metadata).toEqual({ offerId: "abc" });
   });

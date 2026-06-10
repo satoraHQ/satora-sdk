@@ -25,7 +25,7 @@ const L1_BECH32 = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
 const L1_TESTNET = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx";
 const L1_REGTEST = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080";
 const L1_LEGACY = "1BVxNn3T12veSK6DgqwU4Hdn7QHcDDRag7";
-// Taproot (bc1p): bech32m, same encoding family as Ark addresses — a good check
+// Taproot (bc1p): bech32m, same encoding family as Arkade addresses — a good check
 // that classification keys on the hrp, not the encoding.
 const L1_TAPROOT =
   "bc1p6s0nwxu3fhxkffdrddc5ze3qxfjvldkgtk4z0c4cvlql5ak4xqwqfwqd3v";
@@ -80,7 +80,7 @@ describe("isLightningDestination", () => {
     expect(isLightningDestination(LN_ADDRESS)).toBe(true);
     expect(isLightningDestination(`  ${BOLT11_MAINNET}  `)).toBe(true); // trims
   });
-  it("is false for ark / onchain", () => {
+  it("is false for Arkade / onchain", () => {
     expect(isLightningDestination(ARK_TEST)).toBe(false);
     expect(isLightningDestination(L1_BECH32)).toBe(false);
     expect(isLightningDestination(L1_LEGACY)).toBe(false);

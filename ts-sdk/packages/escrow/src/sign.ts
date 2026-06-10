@@ -7,7 +7,7 @@ export interface SignedEscrowTx {
 }
 
 /**
- * Sign input 0 of an Arkade ark-tx PSBT with `secretKey`.
+ * Sign input 0 of an Arkade Arkade transaction PSBT with `secretKey`.
  *
  * Equivalent to `signEscrowArkTx` from `@lendasat/lendaswap-sdk-pure`,
  * lifted into this SDK so consumers don't have to pull in Lendaswap's

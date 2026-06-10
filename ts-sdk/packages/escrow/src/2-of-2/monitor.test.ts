@@ -21,12 +21,12 @@ function xOnlyPubKey(seed: number): Uint8Array {
   return schnorr.getPublicKey(sk);
 }
 
-const aspPubKey = xOnlyPubKey(3);
+const arkadeServerPubKey = xOnlyPubKey(3);
 const network = networks.regtest;
 const options: EscrowScriptOptions = {
   sellerPubKey: xOnlyPubKey(1),
   arbiterPubKey: xOnlyPubKey(2),
-  aspPubKey,
+  arkadeServerPubKey,
   exitTimelock: { type: "blocks", value: 4320n },
 };
 
@@ -119,7 +119,7 @@ describe("EscrowMonitor", () => {
     const encoded = encodeEscrowArkContract(options);
     const contract = await monitor.watchArkContract(
       encoded,
-      aspPubKey,
+      arkadeServerPubKey,
       network,
     );
 

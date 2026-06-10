@@ -4,17 +4,17 @@ import { hex } from "@scure/base";
 export interface ReleaseArkTxExpectations {
   /** The escrow VTXO outpoint that funds the release. */
   escrowOutpoint: { txid: string; vout: number };
-  /** Buyer's payout Ark address (committed to during take). */
+  /** Buyer's payout Arkade address (committed to during take). */
   buyerArkAddress: string;
   /** Buyer payout amount in sats. */
   buyerAmountSats: bigint;
-  /** Escrow fee Ark address. */
+  /** Escrow fee Arkade address. */
   feeArkAddress: string;
   /** Escrow fee amount in sats. */
   feeAmountSats: bigint;
 }
 
-/** The release as the seller receives it: the ark-tx and its checkpoint(s). */
+/** The release as the seller receives it: the Arkade transaction and its checkpoint(s). */
 export interface ReleaseToVerify {
   arkTx: Transaction;
   checkpoints: Transaction[];
@@ -31,12 +31,12 @@ export class ReleaseArkTxValidationError extends Error {
  * Seller-side check before signing the cooperative release.
  *
  * An Arkade offchain spend is a two-tx chain: a **checkpoint** spends the
- * funding VTXO, and the **ark-tx** spends the checkpoint and pays the final
+ * funding VTXO, and the **Arkade transaction** spends the checkpoint and pays the final
  * outputs (plus a zero-value P2A fee-bump anchor). This verifies the whole
  * chain the seller is about to sign:
  *   - the checkpoint spends the escrow funding outpoint,
- *   - the ark-tx spends that checkpoint,
- *   - the ark-tx pays the agreed buyer and fee amounts — and nothing else
+ *   - the Arkade transaction spends that checkpoint,
+ *   - the Arkade transaction pays the agreed buyer and fee amounts — and nothing else
  *     except the anchor (no rogue payout).
  *
  * Throws on any mismatch. Caller must NOT sign if this throws.
@@ -70,24 +70,26 @@ export function verifyReleaseArkTx(
     );
   }
 
-  // (2) The ark-tx must spend that checkpoint.
+  // (2) The Arkade transaction must spend that checkpoint.
   if (arkTx.inputsLength !== 1) {
     throw new ReleaseArkTxValidationError(
-      `expected exactly 1 ark-tx input, got ${arkTx.inputsLength}`,
+      `expected exactly 1 Arkade transaction input, got ${arkTx.inputsLength}`,
     );
   }
   const arkIn = arkTx.getInput(0);
   if (!arkIn.txid) {
-    throw new ReleaseArkTxValidationError("ark-tx input 0 missing prevout");
+    throw new ReleaseArkTxValidationError(
+      "Arkade transaction input 0 missing prevout",
+    );
   }
   const arkInTxid = hex.encode(arkIn.txid);
   if (arkInTxid !== checkpoint.id) {
     throw new ReleaseArkTxValidationError(
-      `ark-tx input ${arkInTxid} does not spend checkpoint ${checkpoint.id}`,
+      `Arkade transaction input ${arkInTxid} does not spend checkpoint ${checkpoint.id}`,
     );
   }
 
-  // (3) The ark-tx must pay buyer + fee, and nothing else but the anchor.
+  // (3) The Arkade transaction must pay buyer + fee, and nothing else but the anchor.
   const buyerAddress = ArkAddress.decode(expected.buyerArkAddress);
   const feeAddress = ArkAddress.decode(expected.feeArkAddress);
   const anchorScriptHex = hex.encode(P2A.script);
@@ -99,7 +101,7 @@ export function verifyReleaseArkTx(
     const output = arkTx.getOutput(i);
     if (!output.script || output.amount === undefined) {
       throw new ReleaseArkTxValidationError(
-        `ark-tx output ${i} missing script or amount`,
+        `Arkade transaction output ${i} missing script or amount`,
       );
     }
 
@@ -120,7 +122,7 @@ export function verifyReleaseArkTx(
       // Zero-value P2A fee-bump anchor — expected.
     } else {
       throw new ReleaseArkTxValidationError(
-        `unexpected ark-tx output ${i}: ${output.amount} sats to ${hex.encode(output.script)}`,
+        `unexpected Arkade transaction output ${i}: ${output.amount} sats to ${hex.encode(output.script)}`,
       );
     }
   }
@@ -137,7 +139,7 @@ export function verifyReleaseArkTx(
   }
 }
 
-/** Match a pkScript against an Ark address, allowing its sub-dust form. */
+/** Match a pkScript against an Arkade address, allowing its sub-dust form. */
 function matchesAddress(script: Uint8Array, address: ArkAddress): boolean {
   return (
     bytesEqual(script, address.pkScript) ||

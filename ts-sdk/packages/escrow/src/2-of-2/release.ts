@@ -13,25 +13,25 @@ import { base64, hex } from "@scure/base";
 import type { EscrowVtxoScript } from "./escrow-script.js";
 
 /**
- * ASP-derived parameters needed to build and submit an escrow release.
+ * Arkade server-derived parameters needed to build and submit an escrow release.
  *
  * Derive once at startup from `ArkProvider.getInfo()` via
- * {@link escrowArkConfigFromInfo}; these values are fixed by the ASP and
+ * {@link escrowArkConfigFromInfo}; these values are fixed by the Arkade server and
  * cannot be chosen by the escrow parties.
  */
 export interface EscrowArkConfig {
-  /** ASP x-only pubkey (32 bytes). */
-  aspPubKey: Uint8Array;
-  /** ASP-mandated unilateral-exit timelock (the escrow escape-leaf CSV). */
+  /** Arkade server x-only pubkey (32 bytes). */
+  arkadeServerPubKey: Uint8Array;
+  /** Arkade server-mandated unilateral-exit timelock (the escrow escape-leaf CSV). */
   exitTimelock: RelativeTimelock;
   /** CSV+multisig tapscript used as the second leaf of every checkpoint VTXO. */
   serverUnrollScript: CSVMultisigTapscript.Type;
-  /** ASP dust threshold (sats). Sub-dust outputs use an OP_RETURN-shaped script. */
+  /** Arkade server dust threshold (sats). Sub-dust outputs use an OP_RETURN-shaped script. */
   dust: bigint;
 }
 
 /**
- * Derive {@link EscrowArkConfig} from the ASP's `getInfo()` response.
+ * Derive {@link EscrowArkConfig} from the Arkade server's `getInfo()` response.
  *
  * Mirrors the connect step every party performs: x-only the signer key,
  * decode the checkpoint tapscript, and map the unilateral-exit delay to a
@@ -39,10 +39,10 @@ export interface EscrowArkConfig {
  */
 export function escrowArkConfigFromInfo(info: ArkInfo): EscrowArkConfig {
   if (!info.checkpointTapscript) {
-    throw new Error("ASP info is missing checkpointTapscript");
+    throw new Error("Arkade server info is missing checkpointTapscript");
   }
   return {
-    aspPubKey: toXOnly(hex.decode(info.signerPubkey)),
+    arkadeServerPubKey: toXOnly(hex.decode(info.signerPubkey)),
     exitTimelock: delayToTimelock(info.unilateralExitDelay),
     serverUnrollScript: CSVMultisigTapscript.decode(
       hex.decode(info.checkpointTapscript),
@@ -60,11 +60,11 @@ export interface EscrowFundingOutpoint {
 
 /** The two release outputs: buyer payout and escrow fee. */
 export interface EscrowReleaseOutputs {
-  /** Buyer's payout Ark address (committed to at take time). */
+  /** Buyer's payout Arkade address (committed to at take time). */
   buyerArkAddress: string;
   /** Sats paid to the buyer. */
   buyerAmountSats: number;
-  /** Fee-collection Ark address. */
+  /** Fee-collection Arkade address. */
   feeArkAddress: string;
   /** Sats paid to the fee output. */
   feeSats: number;
@@ -76,7 +76,7 @@ export interface BuiltEscrowRelease {
 }
 
 /**
- * Build the cooperative release ark-tx and its checkpoint(s) spending the
+ * Build the cooperative release Arkade transaction and its checkpoint(s) spending the
  * escrow funding VTXO to `buyer` and `fee` outputs via the cooperative leaf.
  *
  * Deterministic: identical inputs produce identical PSBT bytes and txids, so
@@ -128,7 +128,7 @@ export function buildEscrowReleaseTx(
 const DETERMINISTIC_AUX_RAND = new Uint8Array(32);
 
 /**
- * Sign input 0 of the ark-tx and every checkpoint with `secretKey`, in place.
+ * Sign input 0 of the Arkade transaction and every checkpoint with `secretKey`, in place.
  *
  * Defaults to a deterministic auxRand (see above). Used by the arbiter, who
  * signs across rounds; a single-shot signer (the seller) can use
@@ -146,16 +146,16 @@ export function signEscrowReleaseInPlace(
 }
 
 /**
- * Submit the fully-signed ark-tx with UNSIGNED checkpoints to the ASP, merge
- * the user (seller+arbiter) checkpoint sigs into the ASP-signed responses, and
+ * Submit the fully-signed Arkade transaction with UNSIGNED checkpoints to the Arkade server, merge
+ * the user (seller+arbiter) checkpoint sigs into the Arkade server-signed responses, and
  * finalize. Returns the arkTxid.
  *
- * The submit/finalize split lets the ASP reject a malformed ark-tx before any
+ * The submit/finalize split lets the Arkade server reject a malformed Arkade transaction before any
  * checkpoint signature is spent. Crash recovery between submit and finalize is
  * the caller's responsibility.
  *
- * @param provider ASP provider used to submit and finalize the ark-tx
- * @param fullySignedArkTx ark-tx carrying both arbiter and seller tapscript sigs
+ * @param provider Arkade server provider used to submit and finalize the Arkade transaction
+ * @param fullySignedArkTx Arkade transaction carrying both arbiter and seller tapscript sigs
  * @param userSignedCheckpoints checkpoints with arbiter+seller sigs (kept aside)
  * @param unsignedCheckpoints fresh-from-build checkpoints (no signatures)
  */
@@ -171,13 +171,13 @@ export async function submitAndFinalizeEscrowRelease(
   );
 
   const finalCheckpoints = signedCheckpointTxs.map((c, i) => {
-    const aspSigned = Transaction.fromPSBT(base64.decode(c));
+    const serverSigned = Transaction.fromPSBT(base64.decode(c));
     const userSigned = userSignedCheckpoints[i];
     if (!userSigned) {
       throw new Error(`missing user-signed checkpoint at index ${i}`);
     }
-    combineTapscriptSigs(userSigned, aspSigned);
-    return base64.encode(aspSigned.toPSBT());
+    combineTapscriptSigs(userSigned, serverSigned);
+    return base64.encode(serverSigned.toPSBT());
   });
 
   await provider.finalizeTx(arkTxid, finalCheckpoints);
@@ -185,7 +185,7 @@ export async function submitAndFinalizeEscrowRelease(
 }
 
 /**
- * The ASP rejects any non-OP_RETURN output below `dust`. Ark addresses expose
+ * The Arkade server rejects any non-OP_RETURN output below `dust`. Arkade addresses expose
  * a {@link ArkAddress.subdustPkScript} encoding the destination as an
  * OP_RETURN-shaped script for amounts the recipient still wants but that are
  * sub-dust on L1 (e.g. a 1-sat fee on a small trade).
@@ -201,7 +201,7 @@ function pkScriptFor(
 /**
  * BIP-68: a relative-timelock value below 512 is encoded as a block height;
  * otherwise it is a 512-second-granularity time value (rounded up to the next
- * valid multiple). ASP-reported values are already valid.
+ * valid multiple). Arkade server-reported values are already valid.
  */
 function delayToTimelock(delay: bigint): RelativeTimelock {
   if (delay < 512n) {
@@ -213,7 +213,7 @@ function delayToTimelock(delay: bigint): RelativeTimelock {
 
 /**
  * Drop the sign byte from a 33-byte compressed secp256k1 pubkey to get the
- * 32-byte x-only form used by BIP-340 / tapscripts. The ASP returns its
+ * 32-byte x-only form used by BIP-340 / tapscripts. The Arkade server returns its
  * `signerPubkey` compressed.
  */
 function toXOnly(pubkey: Uint8Array): Uint8Array {

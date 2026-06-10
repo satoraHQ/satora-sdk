@@ -25,13 +25,13 @@ function xOnlyPubKey(seed: number): Uint8Array {
 
 const sellerPubKey = xOnlyPubKey(1);
 const arbiterPubKey = xOnlyPubKey(2);
-const aspPubKey = xOnlyPubKey(3);
+const arkadeServerPubKey = xOnlyPubKey(3);
 const exitTimelock = { type: "blocks", value: 4320n } as const;
 
 const options: EscrowScriptOptions = {
   sellerPubKey,
   arbiterPubKey,
-  aspPubKey,
+  arkadeServerPubKey,
   exitTimelock,
 };
 
@@ -73,14 +73,14 @@ describe("EscrowContractHandler", () => {
     expect(wire).toEqual({
       sellerPubKey: hex.encode(sellerPubKey),
       arbiterPubKey: hex.encode(arbiterPubKey),
-      aspPubKey: hex.encode(aspPubKey),
+      arkadeServerPubKey: hex.encode(arkadeServerPubKey),
       exitTimelock: escapeSeq.toString(),
     });
 
     const back = EscrowContractHandler.deserializeParams(wire);
     expect(back.sellerPubKey).toEqual(sellerPubKey);
     expect(back.arbiterPubKey).toEqual(arbiterPubKey);
-    expect(back.aspPubKey).toEqual(aspPubKey);
+    expect(back.arkadeServerPubKey).toEqual(arkadeServerPubKey);
     expect(back.exitTimelock).toEqual({ type: "blocks", value: 4320n });
   });
 

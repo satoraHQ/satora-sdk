@@ -1,7 +1,7 @@
 /**
- * Buyer's commitment to a payout Ark address.
+ * Buyer's commitment to a payout Arkade address.
  *
- * The buyer's destination is an Ark address (bech32m wrapping a server
+ * The buyer's destination is an Arkade address (bech32m wrapping a server
  * pubkey + vtxo taproot key), not an L1 P2WPKH/P2TR address, so an L1
  * BIP-322 flow does not apply directly. Instead the buyer Schnorr-signs a
  * deterministic message tying the offer, the destination address, and the

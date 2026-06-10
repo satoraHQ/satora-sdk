@@ -21,7 +21,7 @@ Peer dependencies (you provide these):
 npm install @arkade-os/sdk @satora/swap
 ```
 
-- `@arkade-os/sdk` — Ark providers, repositories, and the `Wallet` used for withdrawals.
+- `@arkade-os/sdk` — Arkade providers, repositories, and the `Wallet` used for withdrawals.
 - `@satora/swap` — the Satora swap client: the Lightning/L1 on/off-ramp. You
   build one (shown below) and inject it; escrow-client only imports its type, so it
   carries none of that bundle's runtime weight.
@@ -45,7 +45,7 @@ const swap = await Client.builder()
 
 ### 2. Build the EscrowClient
 
-It needs the swap client plus Ark providers and repositories. Create one for the
+It needs the swap client plus Arkade providers and repositories. Create one for the
 lifetime of your app.
 
 ```ts
@@ -58,7 +58,7 @@ import {
 } from "@arkade-os/sdk";
 import { EscrowClient } from "@satora/escrow-client";
 
-const ARK_URL = "https://master.arkade.sh"; // the ASP (serves Ark + indexer)
+const ARK_URL = "https://master.arkade.sh"; // the Arkade server (serves Arkade + indexer)
 
 const arkProvider = new RestArkProvider(ARK_URL);
 const indexerProvider = new RestIndexerProvider(ARK_URL);
@@ -71,7 +71,7 @@ const escrowClient = await EscrowClient.create({
   walletRepository: new InMemoryWalletRepository(),
 });
 
-// Resolve the network from the ASP (used for address derivation below).
+// Resolve the network from the Arkade server (used for address derivation below).
 const info = await arkProvider.getInfo();
 const network = networks[info.network as keyof typeof networks];
 ```
@@ -82,7 +82,7 @@ const network = networks[info.network as keyof typeof networks];
 ## Fund an escrow from Lightning
 
 Describe the escrow you want to fund as `EscrowScriptOptions` (x-only 32-byte
-pubkeys; `exitTimelock` is the ASP-mandated CSV). `fundFromLightning` derives the
+pubkeys; `exitTimelock` is the Arkade server-mandated CSV). `fundFromLightning` derives the
 escrow address, starts watching it, and creates a Lightning→Arkade swap whose
 payout claims into that escrow.
 
@@ -92,7 +92,7 @@ import type { EscrowScriptOptions } from "@satora/escrow-client"; // re-exported
 const escrow: EscrowScriptOptions = {
   sellerPubKey,            // Uint8Array(32)
   arbiterPubKey,           // Uint8Array(32)
-  aspPubKey,               // Uint8Array(32) — the ASP's signer pubkey
+  arkadeServerPubKey,               // Uint8Array(32) — the Arkade server's signer pubkey
   exitTimelock: {type: "blocks", value: 144n},
 };
 
@@ -193,7 +193,7 @@ const settlementTxid = await escrowClient.withdrawToL1({
 
 ### To another Arkade address
 
-A plain offchain Ark transfer — the funds stay on Ark, so it's the cheapest and
+A plain offchain Arkade transfer — the funds stay on Arkade, so it's the cheapest and
 fastest withdrawal (no swap, no settlement round):
 
 ```ts
@@ -213,7 +213,7 @@ import:
 ```ts
 import {
   EscrowVtxoScript,        // 2-of-2 escrow VtxoScript
-  buildEscrowReleaseTx,    // build the cooperative release ark-tx
+  buildEscrowReleaseTx,    // build the cooperative release Arkade transaction
   signEscrowArkTx,         // sign a release as a co-party
   verifyReleaseArkTx,      // verify a release pays the agreed outputs
 } from "@satora/escrow-client";
@@ -238,6 +238,6 @@ escrowClient.dispose(); // stop watching, clear listeners
 | `quoteLightningWithdrawal(sourceAmountSats)`                   | `{ recipientSats, sourceSats }` — recipient amount after the swap fee.                                   |
 | `withdrawToLightning({ wallet, destination, amountSats? })`    | Withdraw the payout to a BOLT11 / LNURL / Lightning address.                                             |
 | `withdrawToL1({ wallet, destinationAddress, amountSats? })`    | Withdraw the payout onchain via collaborative offboard.                                                  |
-| `withdrawToArkade({ wallet, destinationAddress, amountSats })` | Withdraw the payout to another Arkade address (offchain Ark transfer).                                   |
+| `withdrawToArkade({ wallet, destinationAddress, amountSats })` | Withdraw the payout to another Arkade address (offchain Arkade transfer).                                |
 | `escrowMonitor`                                                | The underlying `EscrowMonitor`.                                                                          |
 | `dispose()`                                                    | Release monitor resources.                                                                               |
