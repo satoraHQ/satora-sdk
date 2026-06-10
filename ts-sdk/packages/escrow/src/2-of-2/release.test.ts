@@ -117,6 +117,36 @@ describe("buildEscrowReleaseTx", () => {
     ).toThrow();
   });
 
+  it("verifyReleaseArkTx rejects a duplicate buyer output", () => {
+    const escrow = new EscrowVtxoScript(options);
+    const built = buildEscrowReleaseTx(escrow, funding, outputs, config);
+    built.arkTx.addOutput(built.arkTx.getOutput(0));
+
+    expect(() => verifyReleaseArkTx(built, expectation)).toThrow(
+      /expected exactly 1 buyer output/,
+    );
+  });
+
+  it("verifyReleaseArkTx rejects a duplicate fee output", () => {
+    const escrow = new EscrowVtxoScript(options);
+    const built = buildEscrowReleaseTx(escrow, funding, outputs, config);
+    built.arkTx.addOutput(built.arkTx.getOutput(1));
+
+    expect(() => verifyReleaseArkTx(built, expectation)).toThrow(
+      /expected exactly 1 fee output/,
+    );
+  });
+
+  it("verifyReleaseArkTx rejects a duplicate P2A anchor output", () => {
+    const escrow = new EscrowVtxoScript(options);
+    const built = buildEscrowReleaseTx(escrow, funding, outputs, config);
+    built.arkTx.addOutput(built.arkTx.getOutput(2));
+
+    expect(() => verifyReleaseArkTx(built, expectation)).toThrow(
+      /expected exactly 1 P2A anchor output/,
+    );
+  });
+
   it("verifyReleaseArkTx rejects a release that does not spend the funding outpoint", () => {
     const escrow = new EscrowVtxoScript(options);
     const built = buildEscrowReleaseTx(escrow, funding, outputs, config);

@@ -94,8 +94,9 @@ export function verifyReleaseArkTx(
   const feeAddress = ArkAddress.decode(expected.feeArkAddress);
   const anchorScriptHex = hex.encode(P2A.script);
 
-  let foundBuyer = false;
-  let foundFee = false;
+  let buyerOutputs = 0;
+  let feeOutputs = 0;
+  let anchorOutputs = 0;
 
   for (let i = 0; i < arkTx.outputsLength; i++) {
     const output = arkTx.getOutput(i);
@@ -109,17 +110,17 @@ export function verifyReleaseArkTx(
       matchesAddress(output.script, buyerAddress) &&
       output.amount === expected.buyerAmountSats
     ) {
-      foundBuyer = true;
+      buyerOutputs++;
     } else if (
       matchesAddress(output.script, feeAddress) &&
       output.amount === expected.feeAmountSats
     ) {
-      foundFee = true;
+      feeOutputs++;
     } else if (
       hex.encode(output.script) === anchorScriptHex &&
       output.amount === P2A.amount
     ) {
-      // Zero-value P2A fee-bump anchor — expected.
+      anchorOutputs++;
     } else {
       throw new ReleaseArkTxValidationError(
         `unexpected Arkade transaction output ${i}: ${output.amount} sats to ${hex.encode(output.script)}`,
@@ -127,14 +128,19 @@ export function verifyReleaseArkTx(
     }
   }
 
-  if (!foundBuyer) {
+  if (buyerOutputs !== 1) {
     throw new ReleaseArkTxValidationError(
-      `no output paying ${expected.buyerAmountSats} sats to buyer ${expected.buyerArkAddress}`,
+      `expected exactly 1 buyer output paying ${expected.buyerAmountSats} sats to ${expected.buyerArkAddress}, got ${buyerOutputs}`,
     );
   }
-  if (!foundFee) {
+  if (feeOutputs !== 1) {
     throw new ReleaseArkTxValidationError(
-      `no output paying ${expected.feeAmountSats} sats to fee ${expected.feeArkAddress}`,
+      `expected exactly 1 fee output paying ${expected.feeAmountSats} sats to ${expected.feeArkAddress}, got ${feeOutputs}`,
+    );
+  }
+  if (anchorOutputs !== 1) {
+    throw new ReleaseArkTxValidationError(
+      `expected exactly 1 P2A anchor output, got ${anchorOutputs}`,
     );
   }
 }
