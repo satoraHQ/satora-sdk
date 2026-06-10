@@ -1,6 +1,6 @@
 {
   "name": "@satora/escrow-client",
-  "version": "0.0.1-alpha.4",
+  "version": "0.0.1",
   "description": "High-level escrow flows (funding/withdrawing) bundling @satora/escrow with an injected swap client",
   "type": "module",
   "main": "dist/index.js",
