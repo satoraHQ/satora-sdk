@@ -63,7 +63,11 @@ import {
   type LightningToEvmSwapGenericResult,
 } from "./create/index.js";
 import { delegateClaim, delegateRefund } from "./delegate.js";
-import { broadcastTransaction, findOutputByAddress } from "./esplora.js";
+import {
+  broadcastTransaction,
+  broadcastTransactionWithRetry,
+  findOutputByAddress,
+} from "./esplora.js";
 import {
   buildCollabRefundEvmDigest,
   buildCollabRefundEvmTypedData,
@@ -403,6 +407,21 @@ export interface ClaimOptions {
   destinationAddress?: string;
   /** Fee rate in sat/vB for on-chain Bitcoin claims (default: 2) */
   feeRateSatPerVb?: number;
+  /**
+   * For EVM-to-Bitcoin claims: if the funding (HTLC) output has not been
+   * indexed by the block explorer yet, keep polling for up to this many
+   * milliseconds before giving up. The server can broadcast the funding tx
+   * just before the client tries to claim, so the explorer/indexer races
+   * behind; a short wait absorbs that lag without surfacing a transient
+   * error. Set to `0` to fail immediately. Default: 30_000.
+   */
+  waitForFundingMs?: number;
+  /**
+   * For EVM-to-Bitcoin claims: how many times to retry broadcasting the
+   * claim transaction on transient failures (e.g. the broadcast node has
+   * not seen the funding tx yet). Default: 5.
+   */
+  broadcastRetries?: number;
   /**
    * Optional non-EVM bridge recipient (e.g. a Solana base58 SPL pubkey).
    * Required when the swap's `bridge_target_chain` is non-EVM, since the
@@ -2001,6 +2020,85 @@ export class Client {
    * usual case (indexer catches up within a few seconds) feels snappy
    * without hammering the server.
    */
+  /**
+   * Locate the on-chain HTLC funding output once.
+   *
+   * Prefers the funding txid/vout from the API response (works before the
+   * tx is confirmed), falling back to an address UTXO lookup. Returns null
+   * (rather than throwing) when the output is not visible yet, so callers
+   * can poll.
+   */
+  async #findOnchainHtlcOutput(
+    esploraUrl: string,
+    address: string,
+    fundTxid: string | undefined,
+    fundVout: number | undefined,
+  ): Promise<{ txid: string; vout: number; amount: bigint } | null> {
+    // Prefer funding info from the API response (works before confirmation).
+    if (fundTxid && fundVout !== undefined) {
+      try {
+        const txResponse = await fetch(`${esploraUrl}/tx/${fundTxid}`);
+        if (txResponse.ok) {
+          const txData = (await txResponse.json()) as {
+            vout: Array<{ value: number }>;
+          };
+          if (txData.vout?.[fundVout]) {
+            return {
+              txid: fundTxid,
+              vout: fundVout,
+              amount: BigInt(txData.vout[fundVout].value),
+            };
+          }
+        }
+      } catch {
+        // Not indexed yet — fall through to the address lookup.
+      }
+    }
+
+    // Fallback: query the explorer for UTXOs at the HTLC address.
+    try {
+      return await findOutputByAddress(esploraUrl, address);
+    } catch {
+      // Transient explorer/network error — treat as "not found yet".
+      return null;
+    }
+  }
+
+  /**
+   * Poll for the on-chain HTLC funding output until it appears or the
+   * timeout elapses.
+   *
+   * The server can broadcast the funding tx just before the client tries to
+   * claim, so the explorer/indexer races behind. Uses an exponential-ish
+   * backoff capped at 2s (first probe immediate) to absorb that lag without
+   * hammering the explorer.
+   */
+  async #waitForOnchainHtlcOutput(
+    esploraUrl: string,
+    address: string,
+    fundTxid: string | undefined,
+    fundVout: number | undefined,
+    timeoutMs: number,
+  ): Promise<{ txid: string; vout: number; amount: bigint } | null> {
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    let delayMs = 500;
+    while (true) {
+      const output = await this.#findOnchainHtlcOutput(
+        esploraUrl,
+        address,
+        fundTxid,
+        fundVout,
+      );
+      if (output) return output;
+      if (Date.now() >= deadline) return null;
+      const remaining = deadline - Date.now();
+      const sleepMs = Math.min(delayMs, remaining);
+      if (sleepMs <= 0) return null;
+      await new Promise((resolve) => setTimeout(resolve, sleepMs));
+      delayMs = Math.min(delayMs * 2, 2_000);
+    }
+  }
+
   async #waitForVtxoStatus(
     id: string,
     timeoutMs: number,
@@ -2460,40 +2558,21 @@ export class Client {
     const btcFundTxid = (swap as { btc_fund_txid?: string }).btc_fund_txid;
     const btcFundVout = (swap as { btc_fund_vout?: number }).btc_fund_vout;
 
-    let htlcOutput: { txid: string; vout: number; amount: bigint } | null =
-      null;
-
-    if (btcFundTxid && btcFundVout !== undefined) {
-      // We have the funding info from the API, but we need to get the amount
-      // Query the transaction to get the output amount
-      try {
-        const txResponse = await fetch(`${esploraUrl}/tx/${btcFundTxid}`);
-        if (txResponse.ok) {
-          const txData = (await txResponse.json()) as {
-            vout: Array<{ value: number }>;
-          };
-          if (txData.vout?.[btcFundVout]) {
-            htlcOutput = {
-              txid: btcFundTxid,
-              vout: btcFundVout,
-              amount: BigInt(txData.vout[btcFundVout].value),
-            };
-          }
-        }
-      } catch {
-        // Fall through to Esplora lookup
-      }
-    }
-
-    // Fallback: query Esplora for UTXOs at the address (requires confirmation)
-    if (!htlcOutput) {
-      htlcOutput = await findOutputByAddress(esploraUrl, btcHtlcAddress);
-    }
+    // Poll for the funding output: the server can broadcast the funding tx
+    // just before the client claims, so the explorer/indexer may race behind.
+    const waitForFundingMs = options?.waitForFundingMs ?? 30_000;
+    const htlcOutput = await this.#waitForOnchainHtlcOutput(
+      esploraUrl,
+      btcHtlcAddress,
+      btcFundTxid,
+      btcFundVout,
+      waitForFundingMs,
+    );
 
     if (!htlcOutput) {
       return {
         success: false,
-        message: `Could not find UTXO at HTLC address ${btcHtlcAddress}. The server may not have funded the HTLC yet.`,
+        message: `Could not find UTXO at HTLC address ${btcHtlcAddress} after waiting ${waitForFundingMs}ms. The server may not have funded the HTLC yet.`,
       };
     }
 
@@ -2526,9 +2605,14 @@ export class Client {
         network,
       });
 
-      // Broadcast
+      // Broadcast, retrying transient failures (e.g. the broadcast node has
+      // not seen the funding tx yet).
       try {
-        await broadcastTransaction(esploraUrl, result.txHex);
+        await broadcastTransactionWithRetry(
+          esploraUrl,
+          result.txHex,
+          options?.broadcastRetries ?? 5,
+        );
         return {
           success: true,
           message: "BTC claim transaction broadcast successfully!",
@@ -2541,7 +2625,7 @@ export class Client {
             ? broadcastError.message
             : String(broadcastError);
         return {
-          success: true,
+          success: false,
           message: `Claim transaction built but broadcast failed: ${msg}. TxHex: ${result.txHex}`,
           txHash: result.txId,
           // chain: "bitcoin" — not in ClaimChain type
