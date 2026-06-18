@@ -87,9 +87,28 @@ export async function broadcastTransaction(
  * seen the HTLC funding tx, so it rejects the claim's inputs as
  * missing/unknown. Those resolve once the funding tx propagates. Network
  * errors are also treated as transient.
+ *
+ * Inspects the whole error, not just `.message`: in Node/undici a rejected
+ * `fetch` surfaces as `Error("fetch failed")` with the real reason
+ * (`ECONNREFUSED`, `ETIMEDOUT`, …) on `error.cause`, so a message-only check
+ * would miss connection hiccups and fail fast.
  */
-function isTransientBroadcastError(message: string): boolean {
-  const m = message.toLowerCase();
+function isTransientBroadcastError(error: unknown): boolean {
+  const parts: string[] = [];
+  if (error instanceof Error) {
+    parts.push(error.message);
+    if (error.cause != null) {
+      const cause = error.cause;
+      parts.push(
+        cause instanceof Error
+          ? `${cause.message} ${String(cause)}`
+          : String(cause),
+      );
+    }
+  } else {
+    parts.push(String(error));
+  }
+  const m = parts.join(" ").toLowerCase();
   return (
     m.includes("missingorspent") ||
     m.includes("missing-inputs") ||
@@ -99,9 +118,13 @@ function isTransientBroadcastError(message: string): boolean {
     m.includes("no such mempool") ||
     m.includes("not found") ||
     m.includes("failed to fetch") ||
+    m.includes("fetch failed") ||
     m.includes("network") ||
     m.includes("timeout") ||
-    m.includes("econnrefused")
+    m.includes("econnrefused") ||
+    m.includes("econnreset") ||
+    m.includes("etimedout") ||
+    m.includes("eai_again")
   );
 }
 
@@ -130,9 +153,8 @@ export async function broadcastTransactionWithRetry(
       return await broadcastTransaction(esploraUrl, txHex);
     } catch (error) {
       lastError = error;
-      const msg = error instanceof Error ? error.message : String(error);
       // Don't waste attempts on errors that won't clear on their own.
-      if (attempt >= retries || !isTransientBroadcastError(msg)) {
+      if (attempt >= retries || !isTransientBroadcastError(error)) {
         throw error;
       }
       await new Promise((resolve) => setTimeout(resolve, delayMs));
