@@ -6,7 +6,7 @@
     "license": {
       "name": ""
     },
-    "version": "0.2.39"
+    "version": "0.2.46"
   },
   "servers": [
     {
@@ -2276,7 +2276,7 @@
           },
           "target_address": {
             "type": "string",
-            "description": "EVM address where tokens are swept after the claim (user's final destination)."
+            "description": "Recipient where tokens land after the claim (user's final destination).\nAn EVM hex address, or a base58 Solana pubkey for a Solana bridge target."
           },
           "token_address": {
             "type": "string",
@@ -2750,7 +2750,7 @@
           },
           "target_address": {
             "type": "string",
-            "description": "EVM address where tokens are swept after the claim (user's final destination)."
+            "description": "Recipient where tokens land after the claim (user's final destination).\nAn EVM hex address, or a base58 Solana pubkey for a Solana bridge target."
           },
           "token_address": {
             "type": "string",
@@ -4986,7 +4986,7 @@
           },
           "target_address": {
             "type": "string",
-            "description": "EVM address where tokens are swept after the claim (user's final destination)."
+            "description": "Recipient where tokens land after the claim (user's final destination).\nAn EVM hex address, or a base58 Solana pubkey for a Solana bridge target."
           },
           "token_address": {
             "type": "string",

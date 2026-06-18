@@ -1038,7 +1038,10 @@ export interface components {
             referral_code?: string | null;
             /** @description Refund public key used to generate the Arkade VHTLC. */
             refund_pk: string;
-            /** @description EVM address where tokens are swept after the claim (user's final destination). */
+            /**
+             * @description Recipient where tokens land after the claim (user's final destination).
+             *     An EVM hex address, or a base58 Solana pubkey for a Solana bridge target.
+             */
             target_address: string;
             /** @description ERC-20 contract address of the desired token on the target chain. */
             token_address: string;
@@ -1297,7 +1300,10 @@ export interface components {
             referral_code?: string | null;
             /** @description Refund public key used to generate the Arkade VHTLC. */
             refund_pk: string;
-            /** @description EVM address where tokens are swept after the claim (user's final destination). */
+            /**
+             * @description Recipient where tokens land after the claim (user's final destination).
+             *     An EVM hex address, or a base58 Solana pubkey for a Solana bridge target.
+             */
             target_address: string;
             /** @description ERC-20 contract address of the desired token on the target chain. */
             token_address: string;
@@ -2599,7 +2605,10 @@ export interface components {
             referral_code?: string | null;
             /** @description Refund public key used to generate the Arkade VHTLC. */
             refund_pk: string;
-            /** @description EVM address where tokens are swept after the claim (user's final destination). */
+            /**
+             * @description Recipient where tokens land after the claim (user's final destination).
+             *     An EVM hex address, or a base58 Solana pubkey for a Solana bridge target.
+             */
             target_address: string;
             /** @description ERC-20 contract address of the desired token on the target chain. */
             token_address: string;
