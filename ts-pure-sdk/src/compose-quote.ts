@@ -12,13 +12,18 @@
  * `getQuote()` body gets replaced with a call to this and the names
  * swap.
  *
- * # Current scope (v0)
+ * # Supported pairs
  *
- *  - BTC (`Bitcoin` chain, source_token=`"btc"`) ↔ EVM token on **Arbitrum**.
- *  - Source-amount pinned (`sourceAmount` set).
+ *  - A BTC-denominated side (`source_token`/`target_token` = `"btc"`) on
+ *    Bitcoin, Arkade, or Lightning, paired with an EVM token on any chain
+ *    present in `/chain-config` (Arbitrum, Polygon, …).
+ *  - Either direction (BTC-side → EVM, or EVM → BTC-side).
+ *  - Either `sourceAmount` or `targetAmount` pinned.
+ *  - Direct BTC↔pegged-pivot targets (tBTC / WBTC) skip the DEX; other
+ *    targets route through `/dex-quote`.
  *
- * Everything else throws `UnsupportedComposeQuotePath` — callers should
- * fall back to `getQuote()` for those for now.
+ * Foreign-target EVM↔EVM (neither side BTC) is not supported and throws
+ * `UnsupportedComposeQuotePath`.
  */
 
 import type {
@@ -268,10 +273,10 @@ async function composeBtcToEvm(
     params.targetChain,
   );
   const networkFeeSats = feeEntry.fees.source_sats + feeEntry.fees.target_sats;
-  // L2s (Polygon, Arbitrum) don't charge a gasless overhead; only mainnet
-  // Ethereum does. composeQuote v0 doesn't ship Ethereum yet so it's
-  // always 0 here, but the field is wired through to the caller's
-  // QuoteResponse for when it does.
+  // `gasless_network_fee` is always 0: the gasless settlement cost is folded
+  // into `network_fee` upstream (the `/network-fees` values already include it
+  // on chains that pass settlement gas through). The field is kept on the
+  // QuoteResponse for wire compatibility with `getQuote()`.
   const gaslessNetworkFee = 0;
 
   // Pivot scale: BTC sats (8-dec) ↔ tBTC/WBTC base units. Direction-agnostic
