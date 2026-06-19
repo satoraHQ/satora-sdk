@@ -5484,12 +5484,12 @@
       },
       "RedeemAndSwapResponse": {
         "type": "object",
-        "description": "Response containing fresh DEX calldata and the gasless fee that will be deducted at claim time.",
+        "description": "Response containing fresh DEX calldata for an EVM-targeted gasless claim.",
         "required": ["gasless_fee_sats", "min_amount_out", "calls_hash"],
         "properties": {
           "calls_hash": {
             "type": "string",
-            "description": "keccak256(abi.encode(calls)) — the hash of the full calls array (including fee transfer).\nMust be included in the client's EIP-712 redeem signature to prevent call substitution."
+            "description": "keccak256(abi.encode(calls)) — the hash of the full calls array.\nMust be included in the client's EIP-712 redeem signature to prevent call substitution."
           },
           "dex_calldata": {
             "oneOf": [
@@ -5505,7 +5505,7 @@
           "gasless_fee_sats": {
             "type": "integer",
             "format": "int64",
-            "description": "Gasless fee in WBTC sats, estimated at calldata-fetch time.\nThe claim endpoint will deduct this from the HTLC amount via a WBTC transfer.",
+            "description": "Backwards-compatibility only: always 0. The settlement gas is now folded\ninto `network_fee` at quote time, so the claim path no longer deducts a\nseparate fee. Kept on the wire for older clients; intended for removal in\na future version.",
             "minimum": 0
           },
           "min_amount_out": {

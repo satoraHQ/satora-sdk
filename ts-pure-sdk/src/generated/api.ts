@@ -2933,18 +2933,20 @@ export interface components {
             /** @description List of recovered swaps with their derivation indices */
             swaps: components["schemas"]["RecoveredSwap"][];
         };
-        /** @description Response containing fresh DEX calldata and the gasless fee that will be deducted at claim time. */
+        /** @description Response containing fresh DEX calldata for an EVM-targeted gasless claim. */
         RedeemAndSwapResponse: {
             /**
-             * @description keccak256(abi.encode(calls)) — the hash of the full calls array (including fee transfer).
+             * @description keccak256(abi.encode(calls)) — the hash of the full calls array.
              *     Must be included in the client's EIP-712 redeem signature to prevent call substitution.
              */
             calls_hash: string;
             dex_calldata?: null | components["schemas"]["DexCallData"];
             /**
              * Format: int64
-             * @description Gasless fee in WBTC sats, estimated at calldata-fetch time.
-             *     The claim endpoint will deduct this from the HTLC amount via a WBTC transfer.
+             * @description Backwards-compatibility only: always 0. The settlement gas is now folded
+             *     into `network_fee` at quote time, so the claim path no longer deducts a
+             *     separate fee. Kept on the wire for older clients; intended for removal in
+             *     a future version.
              */
             gasless_fee_sats: number;
             /**
