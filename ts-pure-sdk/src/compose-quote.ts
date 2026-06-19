@@ -76,7 +76,7 @@ function parseRate(rate: string): { num: bigint; den: bigint } {
   const [intPart, fracPart = ""] = rate.split(".");
   const num = BigInt(`${intPart}${fracPart}` || "0");
   const den = 10n ** BigInt(fracPart.length);
-  return {num, den};
+  return { num, den };
 }
 
 // Direct BTC↔pegged conversions, applying the pivot's `btc_peg_rate` as a
@@ -94,7 +94,7 @@ function satsToPeggedBase(
   pegRate: string,
   pivotScale: bigint,
 ): bigint {
-  const {num, den} = parseRate(pegRate);
+  const { num, den } = parseRate(pegRate);
   // round(btcSats × num / den), half away from zero (positive amounts).
   const peggedSats = (btcSats * num + den / 2n) / den;
   return peggedSats * pivotScale;
@@ -106,7 +106,7 @@ function peggedBaseToSats(
   pegRate: string,
   pivotScale: bigint,
 ): bigint {
-  const {num, den} = parseRate(pegRate);
+  const { num, den } = parseRate(pegRate);
   // trunc((peggedBase / pivotScale) / (num / den)) = peggedBase × den / (pivotScale × num)
   return (peggedBase * den) / (pivotScale * num);
 }
@@ -143,7 +143,7 @@ function directBtcToPeggedPivot(
       "composeQuote: no amount pinned (unreachable)",
     );
   }
-  return {btcSats, evmSmallest, evmDecimals: pivot.decimals};
+  return { btcSats, evmSmallest, evmDecimals: pivot.decimals };
 }
 
 /**
@@ -170,7 +170,7 @@ function directPeggedToBtcPivot(
       "composeQuote: no amount pinned (unreachable)",
     );
   }
-  return {btcSats, evmSmallest, evmDecimals: pivot.decimals};
+  return { btcSats, evmSmallest, evmDecimals: pivot.decimals };
 }
 
 export class UnsupportedComposeQuotePath extends Error {
@@ -318,7 +318,7 @@ async function composeBtcToEvm(
     );
   }
 
-  const {btcSats, evmSmallest, evmDecimals} = pivot;
+  const { btcSats, evmSmallest, evmDecimals } = pivot;
 
   // Protocol fee in sats: floor(btc_sats × fee_percentage). The server
   // uses `rust_decimal` arithmetic on a `Decimal`; we use `BigInt`
@@ -384,13 +384,13 @@ async function dexSourcePinned(
 ): Promise<BtcEvmPivot> {
   const pivotInBase = btcSats * pivotScale;
   const dexQuote = await deps.getDexQuote({
-    from: {kind: "evm", chain_id: chainIdNum, address: btcPegged.address},
+    from: { kind: "evm", chain_id: chainIdNum, address: btcPegged.address },
     to: {
       kind: "evm",
       chain_id: chainIdNum,
       address: params.targetToken.toLowerCase(),
     },
-    amount: {kind: "exact_in", value: pivotInBase.toString()},
+    amount: { kind: "exact_in", value: pivotInBase.toString() },
     slippageBps: params.slippageBps ?? 100,
   });
   return {
@@ -418,13 +418,13 @@ async function dexTargetPinned(
   pivotScale: bigint,
 ): Promise<BtcEvmPivot> {
   const dexQuote = await deps.getDexQuote({
-    from: {kind: "evm", chain_id: chainIdNum, address: btcPegged.address},
+    from: { kind: "evm", chain_id: chainIdNum, address: btcPegged.address },
     to: {
       kind: "evm",
       chain_id: chainIdNum,
       address: params.targetToken.toLowerCase(),
     },
-    amount: {kind: "exact_out", value: evmSmallest.toString()},
+    amount: { kind: "exact_out", value: evmSmallest.toString() },
     slippageBps: params.slippageBps ?? 100,
   });
   const pivotInBase = BigInt(dexQuote.expected_amount_in.raw);
@@ -533,7 +533,7 @@ async function composeEvmToBtc(
     );
   }
 
-  const {btcSats, evmSmallest, evmDecimals} = pivot;
+  const { btcSats, evmSmallest, evmDecimals } = pivot;
 
   // Protocol fee in sats: floor(btc_sats × fee_percentage). Same fixed-
   // point trick as composeBtcToEvm.
@@ -603,8 +603,8 @@ async function dexEvmToBtcSourcePinned(
       chain_id: chainIdNum,
       address: params.sourceToken.toLowerCase(),
     },
-    to: {kind: "evm", chain_id: chainIdNum, address: btcPegged.address},
-    amount: {kind: "exact_in", value: evmSmallest.toString()},
+    to: { kind: "evm", chain_id: chainIdNum, address: btcPegged.address },
+    amount: { kind: "exact_in", value: evmSmallest.toString() },
     slippageBps: params.slippageBps ?? 100,
   });
   const pivotBase = BigInt(dexQuote.estimated_amount_out.raw);
@@ -640,8 +640,8 @@ async function dexEvmToBtcTargetPinned(
       chain_id: chainIdNum,
       address: params.sourceToken.toLowerCase(),
     },
-    to: {kind: "evm", chain_id: chainIdNum, address: btcPegged.address},
-    amount: {kind: "exact_out", value: pivotInBase.toString()},
+    to: { kind: "evm", chain_id: chainIdNum, address: btcPegged.address },
+    amount: { kind: "exact_out", value: pivotInBase.toString() },
     slippageBps: params.slippageBps ?? 100,
   });
   return {
