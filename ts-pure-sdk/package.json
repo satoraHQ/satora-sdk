@@ -3,25 +3,29 @@
   "version": "0.2.42",
   "description": "Lendaswap Client SDK - Pure TypeScript, React Native compatible",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "dist/index.cjs",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
     },
     "./node": {
       "types": "./dist/node.d.ts",
-      "import": "./dist/node.js"
+      "import": "./dist/node.js",
+      "require": "./dist/node.cjs"
     },
     "./delegate": {
       "types": "./dist/delegate.d.ts",
-      "import": "./dist/delegate.js"
+      "import": "./dist/delegate.js",
+      "require": "./dist/delegate.cjs"
     },
     "./cctp-bridge": {
       "types": "./dist/cctp-bridge/index.d.ts",
-      "import": "./dist/cctp-bridge/index.js"
+      "import": "./dist/cctp-bridge/index.js",
+      "require": "./dist/cctp-bridge/index.cjs"
     }
   },
   "files": [
@@ -32,7 +36,7 @@
     "sync-version": "node scripts/sync-version.mjs",
     "prebuild": "node scripts/sync-version.mjs",
     "version": "node scripts/sync-version.mjs && git add src/version.ts",
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsup && tsc -p tsconfig.build.json --emitDeclarationOnly",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest",
     "test:run": "vitest run",
@@ -76,6 +80,7 @@
     "@types/node": "^22.0.0",
     "@zerodev/sdk": "^5.5.10",
     "openapi-typescript": "^7.10.1",
+    "tsup": "^8.5.1",
     "typescript": "^5.7.0",
     "viem": "2.46.3",
     "vitest": "^3.0.0"

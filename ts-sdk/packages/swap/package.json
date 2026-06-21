@@ -3,32 +3,56 @@
   "version": "0.0.3",
   "description": "Satora swap client",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "dist/index.cjs",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     },
     "./node": {
-      "types": "./dist/node.d.ts",
-      "import": "./dist/node.js"
+      "import": {
+        "types": "./dist/node.d.ts",
+        "default": "./dist/node.js"
+      },
+      "require": {
+        "types": "./dist/node.d.cts",
+        "default": "./dist/node.cjs"
+      }
     },
     "./delegate": {
-      "types": "./dist/delegate.d.ts",
-      "import": "./dist/delegate.js"
+      "import": {
+        "types": "./dist/delegate.d.ts",
+        "default": "./dist/delegate.js"
+      },
+      "require": {
+        "types": "./dist/delegate.d.cts",
+        "default": "./dist/delegate.cjs"
+      }
     },
     "./cctp-bridge": {
-      "types": "./dist/cctp-bridge.d.ts",
-      "import": "./dist/cctp-bridge.js"
+      "import": {
+        "types": "./dist/cctp-bridge.d.ts",
+        "default": "./dist/cctp-bridge.js"
+      },
+      "require": {
+        "types": "./dist/cctp-bridge.d.cts",
+        "default": "./dist/cctp-bridge.cjs"
+      }
     }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsup",
     "prepublishOnly": "pnpm build",
     "check-types": "tsc -p tsconfig.json --noEmit",
     "lint": "biome check .",
@@ -40,6 +64,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.15",
+    "tsup": "^8.5.1",
     "typescript": "^5.7.0"
   },
   "license": "MIT",
