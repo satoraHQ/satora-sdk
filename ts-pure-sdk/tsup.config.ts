@@ -53,4 +53,17 @@ export default defineConfig({
   // Bundle every dependency by default, then carve out the ones above.
   noExternal: [/.*/],
   external,
+  // ESM-only: esbuild's `__require` shim throws "Dynamic require of X is not
+  // supported" for any bundled CommonJS dep that calls require() at load time —
+  // e.g. better-sqlite3's lib (require("fs")/require("path")) reached through the
+  // /node entry. Defining a real `require` via createRequire makes that shim
+  // resolve natively. CJS output already has a runtime require, so scope this to
+  // the esm format only (the import statement would be invalid in CJS).
+  esbuildOptions(options, context) {
+    if (context.format === "esm") {
+      options.banner = {
+        js: "import { createRequire as __cr } from 'module'; const require = __cr(import.meta.url);",
+      };
+    }
+  },
 });
