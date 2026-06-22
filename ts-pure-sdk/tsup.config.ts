@@ -20,11 +20,19 @@ import { defineConfig } from "tsup";
 //
 // Only deps that genuinely cannot or should not be inlined are kept external:
 //  - better-sqlite3: native addon (.node), optional, used by the /node entry
+//  - node-gyp-build / bufferutil / utf-8-validate: native addons (the latter two
+//    are ws's optional speedups). They load their prebuilt .node via
+//    node-gyp-build(__dirname), which only resolves when the package keeps its
+//    real on-disk location — bundling collapses __dirname to the SDK dist dir and
+//    the addon can't be found (and __dirname/__filename are undefined in ESM).
 //  - @circle-fin/*: optional peer deps, used only by the /cctp-bridge entry
 //  - @react-native-async-storage/async-storage: React Native-only; never
 //    loaded in a Node/CJS context
 const external = [
   "better-sqlite3",
+  "node-gyp-build",
+  "bufferutil",
+  "utf-8-validate",
   "@circle-fin/adapter-viem-v2",
   "@circle-fin/bridge-kit",
   "@react-native-async-storage/async-storage",
@@ -60,6 +68,11 @@ export default defineConfig({
   // resolve natively. CJS output already has a runtime require, so scope this to
   // the esm format only (the import statement would be invalid in CJS).
   esbuildOptions(options, context) {
+    // `noExternal: [/.*/]` above force-bundles everything and overrides the
+    // top-level `external`, which silently pulls native addons into the bundle.
+    // Re-assert them here, where esbuild honours `external` directly, so the
+    // native loaders stay external and resolve their .node at runtime.
+    options.external = [...(options.external ?? []), ...external];
     if (context.format === "esm") {
       options.banner = {
         js: "import { createRequire as __cr } from 'module'; const require = __cr(import.meta.url);",
