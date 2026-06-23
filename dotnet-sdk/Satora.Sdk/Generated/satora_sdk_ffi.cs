@@ -781,6 +781,8 @@ static class _UniFFILib {
     
     
     
+    
+    
 
     static _UniFFILib() {
         _UniFFILib.uniffiCheckContractApiVersion();
@@ -838,6 +840,10 @@ static class _UniFFILib {
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_create_arkade_to_lightning_swap(IntPtr @ptr,RustBuffer @destination,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_create_lightning_to_arkade_swap(IntPtr @ptr,ulong @satsReceive,RustBuffer @receiveTo,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -1125,6 +1131,10 @@ static class _UniFFILib {
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_lightning_to_arkade_swap(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_swap(
     );
 
@@ -1224,6 +1234,12 @@ static class _UniFFILib {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_arkade_to_lightning_swap();
             if (checksum != 55337) {
                 throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_arkade_to_lightning_swap` checksum `55337`, library returned `{checksum}`");
+            }
+        }
+        {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_lightning_to_arkade_swap();
+            if (checksum != 46608) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_lightning_to_arkade_swap` checksum `46608`, library returned `{checksum}`");
             }
         }
         {
@@ -1529,6 +1545,29 @@ public interface ISatoraClient {
     /// </summary>
     /// <exception cref="SdkException"></exception>
     Swap CreateArkadeToLightningSwap(LightningDestination @destination);
+    /// <summary>
+    /// Create a Lightning → Arkade swap. Dedicated counterpart to
+    /// [`Self::create_arkade_to_lightning_swap`]: the server returns a
+    /// BOLT11 invoice (in `swap.funding` as `SwapFunding::Bolt11Invoice`)
+    /// that the user pays from their own Lightning wallet; the server
+    /// then funds an Arkade VHTLC the user claims via [`Self::claim`].
+    ///
+    /// `sats_receive` is what the user wants to *receive* on Arkade —
+    /// the server quotes the corresponding BOLT11 amount internally and
+    /// embeds it in the invoice.
+    ///
+    /// `receive_to` is the Arkade address that receives the BTC. Pass
+    /// `None` to route to the SDK's own internal Arkade wallet (requires
+    /// the client to have been built via `new_with_arkade`), mirroring
+    /// [`Self::create_swap`]'s address-less behaviour.
+    ///
+    /// This is the same direction [`Self::create_swap`] routes when
+    /// `source_chain == Lightning`; the dedicated method exists so the
+    /// C# surface has a discoverable, single-purpose entry point that
+    /// matches the Rust SDK's `create_lightning_to_arkade_swap`.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    Swap CreateLightningToArkadeSwap(ulong @satsReceive, Address? @receiveTo);
     /// <summary>
     /// Create a swap. Thin forward to the Rust SDK's dispatcher
     /// ([`lendaswap_sdk::Client::create_swap`]). Direction is resolved
@@ -1846,6 +1885,36 @@ public class SatoraClient : ISatoraClient, IDisposable {
         return CallWithPointer(thisPtr => FfiConverterTypeSwap.INSTANCE.Lift(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
     _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_create_arkade_to_lightning_swap(thisPtr, FfiConverterTypeLightningDestination.INSTANCE.Lower(@destination), ref _status)
+)));
+    }
+    
+    
+    /// <summary>
+    /// Create a Lightning → Arkade swap. Dedicated counterpart to
+    /// [`Self::create_arkade_to_lightning_swap`]: the server returns a
+    /// BOLT11 invoice (in `swap.funding` as `SwapFunding::Bolt11Invoice`)
+    /// that the user pays from their own Lightning wallet; the server
+    /// then funds an Arkade VHTLC the user claims via [`Self::claim`].
+    ///
+    /// `sats_receive` is what the user wants to *receive* on Arkade —
+    /// the server quotes the corresponding BOLT11 amount internally and
+    /// embeds it in the invoice.
+    ///
+    /// `receive_to` is the Arkade address that receives the BTC. Pass
+    /// `None` to route to the SDK's own internal Arkade wallet (requires
+    /// the client to have been built via `new_with_arkade`), mirroring
+    /// [`Self::create_swap`]'s address-less behaviour.
+    ///
+    /// This is the same direction [`Self::create_swap`] routes when
+    /// `source_chain == Lightning`; the dedicated method exists so the
+    /// C# surface has a discoverable, single-purpose entry point that
+    /// matches the Rust SDK's `create_lightning_to_arkade_swap`.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public Swap CreateLightningToArkadeSwap(ulong @satsReceive, Address? @receiveTo) {
+        return CallWithPointer(thisPtr => FfiConverterTypeSwap.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_create_lightning_to_arkade_swap(thisPtr, FfiConverterUInt64.INSTANCE.Lower(@satsReceive), FfiConverterOptionalTypeAddress.INSTANCE.Lower(@receiveTo), ref _status)
 )));
     }
     
