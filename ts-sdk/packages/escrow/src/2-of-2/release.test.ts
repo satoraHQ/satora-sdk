@@ -105,6 +105,18 @@ describe("buildEscrowReleaseTx", () => {
     expect(() => verifyReleaseArkTx(built, expectation)).not.toThrow();
   });
 
+  it("omits the fee output for a zero-fee release and still verifies", () => {
+    const escrow = new EscrowVtxoScript(options);
+    const zeroFeeOutputs = { ...outputs, feeSats: 0 };
+    const built = buildEscrowReleaseTx(escrow, funding, zeroFeeOutputs, config);
+
+    // Only buyer + the P2A anchor; no fee output.
+    expect(built.arkTx.outputsLength).toBe(2);
+    expect(() =>
+      verifyReleaseArkTx(built, { ...expectation, feeAmountSats: 0n }),
+    ).not.toThrow();
+  });
+
   it("verifyReleaseArkTx rejects a tampered payout amount", () => {
     const escrow = new EscrowVtxoScript(options);
     const built = buildEscrowReleaseTx(escrow, funding, outputs, config);

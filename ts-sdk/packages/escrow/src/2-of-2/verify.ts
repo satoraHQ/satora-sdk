@@ -90,8 +90,13 @@ export function verifyReleaseArkTx(
   }
 
   // (3) The Arkade transaction must pay buyer + fee, and nothing else but the anchor.
+  // A zero (or non-positive) fee is omitted at build time, so we only expect a
+  // fee output when the agreed fee is positive — mirroring buildEscrowReleaseTx.
   const buyerAddress = ArkAddress.decode(expected.buyerArkAddress);
-  const feeAddress = ArkAddress.decode(expected.feeArkAddress);
+  const expectFee = expected.feeAmountSats > 0n;
+  const feeAddress = expectFee
+    ? ArkAddress.decode(expected.feeArkAddress)
+    : undefined;
   const anchorScriptHex = hex.encode(P2A.script);
 
   let buyerOutputs = 0;
@@ -112,6 +117,7 @@ export function verifyReleaseArkTx(
     ) {
       buyerOutputs++;
     } else if (
+      feeAddress &&
       matchesAddress(output.script, feeAddress) &&
       output.amount === expected.feeAmountSats
     ) {
@@ -133,9 +139,10 @@ export function verifyReleaseArkTx(
       `expected exactly 1 buyer output paying ${expected.buyerAmountSats} sats to ${expected.buyerArkAddress}, got ${buyerOutputs}`,
     );
   }
-  if (feeOutputs !== 1) {
+  const expectedFeeOutputs = expectFee ? 1 : 0;
+  if (feeOutputs !== expectedFeeOutputs) {
     throw new ReleaseArkTxValidationError(
-      `expected exactly 1 fee output paying ${expected.feeAmountSats} sats to ${expected.feeArkAddress}, got ${feeOutputs}`,
+      `expected exactly ${expectedFeeOutputs} fee output(s) paying ${expected.feeAmountSats} sats to ${expected.feeArkAddress}, got ${feeOutputs}`,
     );
   }
   if (anchorOutputs !== 1) {
