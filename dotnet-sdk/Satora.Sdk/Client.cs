@@ -279,8 +279,13 @@ public sealed class Client : IDisposable
     }
 
     /// <summary>
-    /// Create a swap. Today the SDK only routes EVM stablecoin → BTC on
-    /// Arkade; other direction combos return an <see cref="SdkException"/>.
+    /// Create a swap. The direction is resolved from
+    /// <paramref name="sourceChain"/>: EVM stablecoin → BTC on Arkade,
+    /// or Lightning → BTC on Arkade. For the Lightning direction prefer
+    /// the dedicated, single-purpose
+    /// <see cref="CreateLightningToArkadeSwapAsync"/> — it's the same
+    /// routing with a clearer signature. Other direction combos return
+    /// an <see cref="SdkException"/>.
     /// Requires the client to be constructed with a mnemonic (see
     /// <see cref="Client(string, string)"/>) — the signer derives the
     /// per-swap preimage and EVM EOA from it.
@@ -408,6 +413,41 @@ public sealed class Client : IDisposable
         var ffi = _ffi;
         return Task.Run(
             () => TryOrThrow(() => ffi.ArkadeBoardingAddress()),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Create a Lightning → Arkade swap. The dedicated counterpart to
+    /// <see cref="CreateArkadeToLightningSwapAsync"/>: the backend
+    /// returns a BOLT11 invoice (in <c>swap.Funding</c> as
+    /// <c>SwapFunding.Bolt11Invoice</c>) that the user pays from their
+    /// own Lightning wallet; the server then funds an Arkade VHTLC the
+    /// user sweeps with <see cref="ClaimAsync"/>.
+    ///
+    /// This routes the same direction as
+    /// <see cref="CreateSwapAsync"/> with <c>sourceChain =
+    /// ChainId.Lightning</c>, but with a signature that only exposes the
+    /// knobs the Lightning rail actually uses.
+    /// </summary>
+    /// <param name="satsReceive">
+    /// Amount the user wants to <b>receive</b> on Arkade, in satoshis.
+    /// The server quotes the corresponding BOLT11 amount internally and
+    /// embeds it in the returned invoice.
+    /// </param>
+    /// <param name="receiveTo">
+    /// Arkade address (<c>tark1…</c>) that receives the BTC. Pass
+    /// <c>null</c> to route to the SDK's own internal Arkade wallet —
+    /// requires the client to have been constructed with a mnemonic.
+    /// </param>
+    public Task<SwapDetails> CreateLightningToArkadeSwapAsync(
+        ulong satsReceive,
+        Address? receiveTo = null,
+        CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        return Task.Run(
+            () => TryOrThrow(() => SwapDetails.FromFfi(
+                ffi.CreateLightningToArkadeSwap(satsReceive, receiveTo))),
             cancellationToken);
     }
 

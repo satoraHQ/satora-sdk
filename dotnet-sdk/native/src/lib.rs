@@ -607,6 +607,51 @@ impl SatoraClient {
     }
 }
 
+// ─── Lightning → Arkade ───────────────────────────────────────────────
+
+#[uniffi::export]
+impl SatoraClient {
+    /// Create a Lightning → Arkade swap. Dedicated counterpart to
+    /// [`Self::create_arkade_to_lightning_swap`]: the server returns a
+    /// BOLT11 invoice (in `swap.funding` as `SwapFunding::Bolt11Invoice`)
+    /// that the user pays from their own Lightning wallet; the server
+    /// then funds an Arkade VHTLC the user claims via [`Self::claim`].
+    ///
+    /// `sats_receive` is what the user wants to *receive* on Arkade —
+    /// the server quotes the corresponding BOLT11 amount internally and
+    /// embeds it in the invoice.
+    ///
+    /// `receive_to` is the Arkade address that receives the BTC. Pass
+    /// `None` to route to the SDK's own internal Arkade wallet (requires
+    /// the client to have been built via `new_with_arkade`), mirroring
+    /// [`Self::create_swap`]'s address-less behaviour.
+    ///
+    /// This is the same direction [`Self::create_swap`] routes when
+    /// `source_chain == Lightning`; the dedicated method exists so the
+    /// C# surface has a discoverable, single-purpose entry point that
+    /// matches the Rust SDK's `create_lightning_to_arkade_swap`.
+    pub fn create_lightning_to_arkade_swap(
+        &self,
+        sats_receive: u64,
+        receive_to: Option<Address>,
+    ) -> Result<Swap, SdkError> {
+        runtime().block_on(async {
+            let resolved: SdkAddress = match receive_to {
+                Some(addr) => addr.into(),
+                None => {
+                    let addr = self.inner.arkade_offchain_address().await?;
+                    SdkAddress::Arkade(addr)
+                }
+            };
+            let swap = self
+                .inner
+                .create_lightning_to_arkade_swap(sats_receive, resolved)
+                .await?;
+            Ok(swap.into())
+        })
+    }
+}
+
 // ─── Arkade → Lightning ───────────────────────────────────────────────
 
 /// Lightning destination for an Arkade → Lightning swap. The server
