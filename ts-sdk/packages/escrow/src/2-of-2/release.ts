@@ -99,20 +99,27 @@ export function buildEscrowReleaseTx(
   const buyerAmount = BigInt(outputs.buyerAmountSats);
   const feeAmount = BigInt(outputs.feeSats);
   const buyerAddress = ArkAddress.decode(outputs.buyerArkAddress);
-  const feeAddress = ArkAddress.decode(outputs.feeArkAddress);
+
+  const releaseOutputs = [
+    {
+      script: pkScriptFor(buyerAddress, buyerAmount, config.dust),
+      amount: buyerAmount,
+    },
+  ];
+
+  // Skip the fee output entirely for zero (or non-positive) fees, e.g. a
+  // fee-free trade. A zero-amount output would otherwise be rejected.
+  if (feeAmount > 0n) {
+    const feeAddress = ArkAddress.decode(outputs.feeArkAddress);
+    releaseOutputs.push({
+      script: pkScriptFor(feeAddress, feeAmount, config.dust),
+      amount: feeAmount,
+    });
+  }
 
   const { arkTx, checkpoints } = buildOffchainTx(
     [arkInput],
-    [
-      {
-        script: pkScriptFor(buyerAddress, buyerAmount, config.dust),
-        amount: buyerAmount,
-      },
-      {
-        script: pkScriptFor(feeAddress, feeAmount, config.dust),
-        amount: feeAmount,
-      },
-    ],
+    releaseOutputs,
     config.serverUnrollScript,
   );
 
