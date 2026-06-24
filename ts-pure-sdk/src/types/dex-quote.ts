@@ -44,6 +44,53 @@ export interface DexQuoteHop {
   router: string;
 }
 
+/**
+ * The bridge protocol a {@link BridgeRate} is for — the `router` discriminant
+ * of the union. Switch on it exhaustively.
+ */
+export type BridgeRouter = "cctp" | "layerzero";
+
+/**
+ * Fee model for the cross-chain bridge leg of a quote, tagged by protocol
+ * (`router`). Present for any bridged quote; each protocol is a variant with
+ * exactly its own fields, so `switch` on `router` rather than assuming a shape.
+ *
+ * The bridge settles inside the single Arbitrum `Call[]` the SDK submits (no
+ * extra user op) — this just says what (if anything) to subtract from the
+ * DEX-leg output to get the delivered amount.
+ *
+ * - **`cctp`**: Circle's Forwarding Service deducts a percentage (`minimumFee`)
+ *   + flat (`forwardFee`) from the bridged USDC. Apply, on a 6-dec USDC
+ *   `amount`:
+ *   ```text
+ *   protocol = floor(floor(amount * minimum_fee_scaled / 1_000_000) * 120 / 100)
+ *   fee      = protocol + (recipientSetup ? flat_with_setup : flat)
+ *   ```
+ *   Mirrors the server's `cctp::compute_max_fee` bit-for-bit.
+ * - **`layerzero`**: no token-denominated deduction — the messaging fee is ETH
+ *   the user pays via their own (Alchemy) publish, never taken from the USDT0.
+ *   Nothing to subtract today.
+ */
+export type BridgeRate =
+  | {
+      router: "cctp";
+      /**
+       * The token every amount in this variant is denominated in
+       * (`flat`, `flat_with_setup`, and the `amount` the percentage applies
+       * to) — the remote bridged USDC from the request. Check it matches the
+       * token you're deducting from before applying; a future asset-denominated
+       * fee would need a conversion.
+       */
+      fee_token: Token;
+      /** Circle's `minimumFee` pre-scaled to `round(minimumFee_bps * 100)`. Stringified u128. */
+      minimum_fee_scaled: string;
+      /** Flat USDC fee deducted from the bridged amount, recipient already provisioned. Outbound: `forwardFee.high`; inbound: `"0"`. Stringified u64. */
+      flat: string;
+      /** Flat-fee variant including a fresh non-EVM recipient's ATA rent (Solana). Equals `flat` otherwise; same units. Stringified u64. */
+      flat_with_setup: string;
+    }
+  | { router: "layerzero" };
+
 export interface DexQuoteResponse {
   expected_amount_in: TokenAmount;
   estimated_amount_out: TokenAmount;
@@ -52,6 +99,13 @@ export interface DexQuoteResponse {
   requires_multiple_user_ops: boolean;
   router: string;
   cache_ttl_seconds: number;
+  /**
+   * Cross-chain bridge fee model, tagged by protocol. Present for any bridged
+   * quote — `{ router: "cctp", … }` (a USDC deduction) or
+   * `{ router: "layerzero" }` (no deduction); `undefined` only for plain
+   * same-chain quotes.
+   */
+  bridge_rate?: BridgeRate;
 }
 
 // -- wire shapes (identical to the SDK types for now; explicit so we
@@ -75,6 +129,16 @@ export interface WireDexQuoteHop {
   router: string;
 }
 
+export type WireBridgeRate =
+  | {
+      router: "cctp";
+      fee_token: WireToken;
+      minimum_fee_scaled: string;
+      flat: string;
+      flat_with_setup: string;
+    }
+  | { router: "layerzero" };
+
 export interface WireDexQuoteResponse {
   expected_amount_in: WireTokenAmount;
   estimated_amount_out: WireTokenAmount;
@@ -83,6 +147,7 @@ export interface WireDexQuoteResponse {
   requires_multiple_user_ops: boolean;
   router: string;
   cache_ttl_seconds: number;
+  bridge_rate?: WireBridgeRate | null;
 }
 
 function fromWireTokenAmount(wire: WireTokenAmount): TokenAmount {
@@ -115,5 +180,21 @@ export function fromWireDexQuoteResponse(
     requires_multiple_user_ops: wire.requires_multiple_user_ops,
     router: wire.router,
     cache_ttl_seconds: wire.cache_ttl_seconds,
+    bridge_rate: wire.bridge_rate
+      ? fromWireBridgeRate(wire.bridge_rate)
+      : undefined,
   };
+}
+
+function fromWireBridgeRate(wire: WireBridgeRate): BridgeRate {
+  if (wire.router === "cctp") {
+    return {
+      router: "cctp",
+      fee_token: wire.fee_token,
+      minimum_fee_scaled: wire.minimum_fee_scaled,
+      flat: wire.flat,
+      flat_with_setup: wire.flat_with_setup,
+    };
+  }
+  return { router: "layerzero" };
 }

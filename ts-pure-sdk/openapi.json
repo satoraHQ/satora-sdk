@@ -6,7 +6,7 @@
     "license": {
       "name": ""
     },
-    "version": "0.2.46"
+    "version": "0.2.47"
   },
   "servers": [
     {
@@ -2955,6 +2955,55 @@
           }
         }
       },
+      "BridgeRate": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Circle CCTP (USDC). The Forwarding Service deducts a percentage\n(`minimumFee`) plus a flat (`forwardFee`) from the bridged USDC, so the\nSDK applies:\n\n```text\nprotocol = floor(floor(amount * minimum_fee_scaled / 1_000_000) * 120 / 100)\nfee      = protocol + (recipient_setup ? flat_with_setup : flat)\n```\n\nMirrors `cctp::compute_max_fee` exactly (integer math, 20% buffer baked\ninto the `minimum_fee_scaled` formula).",
+            "required": [
+              "fee_token",
+              "minimum_fee_scaled",
+              "flat",
+              "flat_with_setup",
+              "router"
+            ],
+            "properties": {
+              "fee_token": {
+                "$ref": "#/components/schemas/Token",
+                "description": "The token every amount in this variant is denominated in (`flat`,\n`flat_with_setup`, and the `amount` the percentage applies to) —\nthe remote bridged USDC from the request (`to` for outbound, `from`\nfor inbound). The SDK must check this matches the token it's\ndeducting from rather than assuming, so a future asset-denominated\nfee can't be applied blindly."
+              },
+              "flat": {
+                "type": "string",
+                "description": "Flat USDC fee deducted from the bridged amount, recipient already\nprovisioned. Outbound: `forwardFee.high`; inbound: `\"0\"` (we call\n`receiveMessage` ourselves). Stringified `u64`."
+              },
+              "flat_with_setup": {
+                "type": "string",
+                "description": "Flat-fee variant including Circle's ATA-creation rent for a fresh\nnon-EVM recipient (Solana). Equals `flat` for EVM destinations.\nSame units as `flat`. Stringified `u64`."
+              },
+              "minimum_fee_scaled": {
+                "type": "string",
+                "description": "Circle's `minimumFee` pre-scaled to `round(minimumFee_bps * 100)`.\nStringified `u128`."
+              },
+              "router": {
+                "type": "string",
+                "enum": ["cctp"]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "LayerZero OFT (USDT0). No token-denominated deduction: the only cost is\nthe messaging `msg.value`, paid in native ETH on the source chain by\nthe user's own (Alchemy) publish — it never reduces the delivered\nUSDT0. So nothing to subtract today. When we want to *show* that ETH\ncost, it becomes a field on this variant (e.g. `native_fee_wei`).",
+            "required": ["router"],
+            "properties": {
+              "router": {
+                "type": "string",
+                "enum": ["layerzero"]
+              }
+            }
+          }
+        ],
+        "description": "Fee model for the cross-chain bridge leg of a quote, tagged by protocol\n(`router`). Present only when `from`/`to` straddle a bridge; each protocol\nis a variant carrying exactly the fields its fee needs, so consumers\n`match`/`switch` on the tag rather than assuming one shape.\n\nThe bridge isn't a separate user op — Circle's Forwarding Service (CCTP)\nand LayerZero's OFT both settle inside the single Arbitrum `Call[]` the SDK\nalready submits. This just tells the SDK what (if anything) to subtract\nfrom the DEX-leg output to get the delivered amount."
+      },
       "BtcToArkadeSwapResponse": {
         "type": "object",
         "description": "BTC → Arkade swap response",
@@ -3778,6 +3827,17 @@
           "cache_ttl_seconds"
         ],
         "properties": {
+          "bridge_rate": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/BridgeRate",
+                "description": "Cross-chain bridge fee model, tagged by protocol. Present for any\nbridged quote — `Cctp { … }` (a USDC deduction) or `LayerZero {}` (no\ndeduction) — and absent (`None`) only for plain same-chain quotes. The\nSDK folds it into the end-to-end quote; see [`BridgeRate`]."
+              }
+            ]
+          },
           "cache_ttl_seconds": {
             "type": "integer",
             "format": "int32",

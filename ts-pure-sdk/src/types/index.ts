@@ -16,6 +16,8 @@ export {
   type WireChainConfigResponse,
 } from "./chain-config.js";
 export {
+  type BridgeRate,
+  type BridgeRouter,
   type DexQuoteAmount,
   type DexQuoteHop,
   type DexQuoteResponse,

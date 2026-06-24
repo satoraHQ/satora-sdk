@@ -1432,6 +1432,50 @@ export interface components {
             /** @description WBTC token contract address on the target EVM chain (the token locked in the HTLC) */
             wbtc_address: string;
         };
+        /**
+         * @description Fee model for the cross-chain bridge leg of a quote, tagged by protocol
+         *     (`router`). Present only when `from`/`to` straddle a bridge; each protocol
+         *     is a variant carrying exactly the fields its fee needs, so consumers
+         *     `match`/`switch` on the tag rather than assuming one shape.
+         *
+         *     The bridge isn't a separate user op — Circle's Forwarding Service (CCTP)
+         *     and LayerZero's OFT both settle inside the single Arbitrum `Call[]` the SDK
+         *     already submits. This just tells the SDK what (if anything) to subtract
+         *     from the DEX-leg output to get the delivered amount.
+         */
+        BridgeRate: {
+            /**
+             * @description The token every amount in this variant is denominated in (`flat`,
+             *     `flat_with_setup`, and the `amount` the percentage applies to) —
+             *     the remote bridged USDC from the request (`to` for outbound, `from`
+             *     for inbound). The SDK must check this matches the token it's
+             *     deducting from rather than assuming, so a future asset-denominated
+             *     fee can't be applied blindly.
+             */
+            fee_token: components["schemas"]["Token"];
+            /**
+             * @description Flat USDC fee deducted from the bridged amount, recipient already
+             *     provisioned. Outbound: `forwardFee.high`; inbound: `"0"` (we call
+             *     `receiveMessage` ourselves). Stringified `u64`.
+             */
+            flat: string;
+            /**
+             * @description Flat-fee variant including Circle's ATA-creation rent for a fresh
+             *     non-EVM recipient (Solana). Equals `flat` for EVM destinations.
+             *     Same units as `flat`. Stringified `u64`.
+             */
+            flat_with_setup: string;
+            /**
+             * @description Circle's `minimumFee` pre-scaled to `round(minimumFee_bps * 100)`.
+             *     Stringified `u128`.
+             */
+            minimum_fee_scaled: string;
+            /** @enum {string} */
+            router: "cctp";
+        } | {
+            /** @enum {string} */
+            router: "layerzero";
+        };
         /** @description BTC → Arkade swap response */
         BtcToArkadeSwapResponse: {
             /** @description Arkade VHTLC claim transaction ID (user claim) */
@@ -2037,6 +2081,7 @@ export interface components {
             to: components["schemas"]["Token"];
         };
         DexQuoteResponse: {
+            bridge_rate?: null | components["schemas"]["BridgeRate"];
             /**
              * Format: int32
              * @description How long the SDK can treat this quote as fresh, in seconds. Route
