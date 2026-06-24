@@ -259,6 +259,10 @@ export interface ComposeQuoteParams {
   sourceAmount?: number;
   targetAmount?: number;
   slippageBps?: number;
+  /** Referral code — resolved to an extra-fee rate via `/referral-fee`. */
+  referralCode?: string;
+  /** Per-swap extra-fee surcharge (bps), capped per referral key. */
+  extraFees?: number;
 }
 
 /**
@@ -273,6 +277,12 @@ export interface ComposeQuoteDeps {
   swapPairs: SwapPairsResponse;
   networkFees: NetworkFeesResponse;
   chainConfig: ChainConfigResponse;
+
+  /**
+   * Referral/extra-fee rate (decimal fraction) from `/referral-fee`, added on
+   * top of the per-pair `fee_percentage`. `0`/omitted for non-referral quotes.
+   */
+  referralExtraFeeRate?: number;
 
   /**
    * DEX-leg quote primitive — `Client.getDexQuote` once bound to the
@@ -389,10 +399,12 @@ async function composeBtcToEvm(
   // uses `rust_decimal` arithmetic on a `Decimal`; we use `BigInt`
   // multiplication after scaling the percentage by 1e18 to dodge
   // floating-point drift.
+  // Effective rate = per-pair base + referral/extra-fee delta (0 if none),
+  // mirroring the server's `effective_fee_pct = base + org_extra`.
+  const effectiveFeePct =
+    pair.fee_percentage + (deps.referralExtraFeeRate ?? 0);
   const FEE_SCALE = 10n ** 18n;
-  const feePctScaled = BigInt(
-    Math.round(pair.fee_percentage * Number(FEE_SCALE)),
-  );
+  const feePctScaled = BigInt(Math.round(effectiveFeePct * Number(FEE_SCALE)));
   const protocolFee = Number((btcSats * feePctScaled) / FEE_SCALE);
   const totalFeeSats = networkFeeSats + gaslessNetworkFee + protocolFee;
 
@@ -418,7 +430,7 @@ async function composeBtcToEvm(
     network_fee: networkFeeSats,
     gasless_network_fee: gaslessNetworkFee,
     protocol_fee: protocolFee,
-    protocol_fee_rate: pair.fee_percentage,
+    protocol_fee_rate: effectiveFeePct,
     min_amount: pair.min_sats,
     max_amount: pair.max_sats,
     source_amount: btcSats.toString(),
@@ -606,11 +618,11 @@ async function composeEvmToBtc(
   const { btcSats, evmSmallest, evmDecimals, bridgeFee } = pivot;
 
   // Protocol fee in sats: floor(btc_sats × fee_percentage). Same fixed-
-  // point trick as composeBtcToEvm.
+  // point trick as composeBtcToEvm; effective rate = base + referral delta.
+  const effectiveFeePct =
+    pair.fee_percentage + (deps.referralExtraFeeRate ?? 0);
   const FEE_SCALE = 10n ** 18n;
-  const feePctScaled = BigInt(
-    Math.round(pair.fee_percentage * Number(FEE_SCALE)),
-  );
+  const feePctScaled = BigInt(Math.round(effectiveFeePct * Number(FEE_SCALE)));
   const protocolFee = Number((btcSats * feePctScaled) / FEE_SCALE);
   const totalFeeSats = networkFeeSats + gaslessNetworkFee + protocolFee;
 
@@ -637,7 +649,7 @@ async function composeEvmToBtc(
     network_fee: networkFeeSats,
     gasless_network_fee: gaslessNetworkFee,
     protocol_fee: protocolFee,
-    protocol_fee_rate: pair.fee_percentage,
+    protocol_fee_rate: effectiveFeePct,
     min_amount: pair.min_sats,
     max_amount: pair.max_sats,
     // EVM→BTC: the EVM source is the bridged side. The dex-quote already

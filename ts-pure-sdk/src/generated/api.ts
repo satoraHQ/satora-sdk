@@ -423,6 +423,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/referral-fee": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Resolve the referral/extra-fee delta for a referral code. */
+        get: operations["get_referral_fee"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/status": {
         parameters: {
             query?: never;
@@ -2964,6 +2981,41 @@ export interface components {
              */
             min_amount_out: string;
         };
+        ReferralFeeRequest: {
+            /**
+             * Format: int32
+             * @description Optional per-swap fee surcharge in basis points. Rejected with 400 if
+             *     it exceeds the referral key's `max_extra_fee_bps`. When omitted the
+             *     key's `default_extra_fee_bps` applies.
+             */
+            extra_fees?: number | null;
+            /**
+             * @description Referral code. When omitted/unknown/revoked the response is a zero
+             *     extra fee (the base fee applies unchanged).
+             */
+            ref?: string | null;
+        };
+        ReferralFeeResponse: {
+            /**
+             * Format: double
+             * @description Extra fee as a **decimal fraction** (e.g. `0.005` = 0.5% = 50 bps), to be
+             *     **added on top of** the per-pair `fee_percentage` from `/swap-pairs`
+             *     (also a fraction) — so a client composes `fee_percentage + extra_fee_rate`
+             *     with no conversion. `0` when there's no/unknown referral and no
+             *     `extra_fees`.
+             *
+             *     Note the asymmetry: the *input* (`extra_fees`, the key's
+             *     `max_extra_fee_bps`) is in **basis points** (the key-config convention);
+             *     this *output* is a fraction (the composition convention). The endpoint
+             *     converts once so the client never handles bps.
+             */
+            extra_fee_rate: number;
+            /**
+             * @description Human-readable partner label for the referral code, when registered.
+             *     Informational (attribution / display) only.
+             */
+            referral_label?: string | null;
+        };
         /** @description Response containing refund calldata for an EVM-to-Arkade swap. */
         RefundCalldataResponse: {
             /** @description ABI-encoded calldata for the refund call on the coordinator */
@@ -4153,6 +4205,47 @@ export interface operations {
                 };
             };
             /** @description Bad request - invalid parameters */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_referral_fee: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Referral code. When omitted/unknown/revoked the response is a zero
+                 *     extra fee (the base fee applies unchanged).
+                 */
+                ref?: string | null;
+                /**
+                 * @description Optional per-swap fee surcharge in basis points. Rejected with 400 if
+                 *     it exceeds the referral key's `max_extra_fee_bps`. When omitted the
+                 *     key's `default_extra_fee_bps` applies.
+                 */
+                extra_fees?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The extra-fee delta (decimal fraction) for the referral code */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReferralFeeResponse"];
+                };
+            };
+            /** @description extra_fees exceeds the referral key's cap */
             400: {
                 headers: {
                     [name: string]: unknown;

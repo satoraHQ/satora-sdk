@@ -152,15 +152,18 @@ import {
   fromWireDexQuoteResponse,
   fromWireNetworkFeesResponse,
   fromWireQuoteResponse,
+  fromWireReferralFeeResponse,
   fromWireSwapPairsResponse,
   type NetworkFeesResponse,
   type QuoteResponse,
+  type ReferralFeeResponse,
   type SwapPairsResponse,
   type Token,
   type WireChainConfigResponse,
   type WireDexQuoteResponse,
   type WireNetworkFeesResponse,
   type WireQuoteResponse,
+  type WireReferralFeeResponse,
   type WireSwapPairsResponse,
 } from "./types/index.js";
 import { USDT0_ADDRESSES } from "./usdt0-bridge/constants.js";
@@ -1273,6 +1276,28 @@ export class Client {
   }
 
   /**
+   * The referral/extra-fee delta for a referral code — a decimal fraction to
+   * add on top of `getSwapPairs()`'s per-pair `fee_percentage` when composing
+   * a quote. The fourth composition primitive; the server resolves the key's
+   * default/cap logic (and 400s if `extraFees` exceeds the key's cap), so the
+   * client never handles bps.
+   */
+  async getReferralFee(params: {
+    referralCode?: string;
+    extraFees?: number;
+  }): Promise<ReferralFeeResponse> {
+    const { data, error } = await this.#apiClient.GET("/referral-fee", {
+      params: {
+        query: { ref: params.referralCode, extra_fees: params.extraFees },
+      },
+    });
+    if (error || !data) {
+      throw new Error(`Failed to get referral fee: ${JSON.stringify(error)}`);
+    }
+    return fromWireReferralFeeResponse(data as WireReferralFeeResponse);
+  }
+
+  /**
    * Per-pair network-fee estimates in sats at current gas/mining prices.
    *
    * One of three primitives a client combines to compose an end-to-end
@@ -1337,15 +1362,26 @@ export class Client {
    * which takes pre-fetched primitives as a dependency object.
    */
   async composeQuote(params: ComposeQuoteParams): Promise<QuoteResponse> {
-    const [swapPairs, networkFees, chainConfig] = await Promise.all([
+    // Only fetch the referral delta when a referral / extra-fee is in play —
+    // otherwise it's a guaranteed-zero round-trip.
+    const referralFee =
+      params.referralCode != null || params.extraFees != null
+        ? this.getReferralFee({
+            referralCode: params.referralCode,
+            extraFees: params.extraFees,
+          })
+        : Promise.resolve(undefined);
+    const [swapPairs, networkFees, chainConfig, referral] = await Promise.all([
       this.getSwapPairs(),
       this.getNetworkFees(),
       this.getChainConfig(),
+      referralFee,
     ]);
     return composeQuoteHelper(params, {
       swapPairs,
       networkFees,
       chainConfig,
+      referralExtraFeeRate: referral?.extra_fee_rate,
       getDexQuote: (p) => this.getDexQuote(p),
     });
   }
@@ -1379,6 +1415,9 @@ export class Client {
           targetToken: params.targetToken,
           sourceAmount: params.sourceAmount,
           targetAmount: params.targetAmount,
+          // Per-call referral wins; fall back to the client default.
+          referralCode: params.referralCode ?? this.#config.referralCode,
+          extraFees: params.extraFees,
         });
       } catch (err) {
         if (!(err instanceof UnsupportedComposeQuotePath)) {
@@ -1401,22 +1440,18 @@ export class Client {
    * Whether `getQuote` can serve `params` via client-side `composeQuote`.
    *
    * Compose now covers BTC↔EVM both directions — direct (hub chains) or
-   * bridged (via Arbitrum/CCTP/OFT, with `bridge_fee` surfaced) — and the BTC
-   * side can be Bitcoin, Arkade, or Lightning. The response shape is identical
-   * to `/quote`; some *values* are more accurate (e.g. the Lightning Boltz fee,
-   * EURe), which is fine — only the API contract must stay stable.
+   * bridged (via Arbitrum/CCTP/OFT, with `bridge_fee` surfaced), the BTC side
+   * Bitcoin/Arkade/Lightning, and referral/extra-fee pricing (resolved via
+   * `/referral-fee`). The response shape is identical to `/quote`; some
+   * *values* are more accurate (e.g. the Lightning Boltz fee, EURe), which is
+   * fine — only the API contract must stay stable.
    *
-   * Stays on `/quote` (compose can't reproduce or price these):
-   *   - referral / extra-fee pricing (applied server-side only),
+   * Stays on `/quote` (compose can't price these):
    *   - `bridgeRecipientSetup` (Solana CCTP ATA hint),
    *   - Solana destinations (base58 token, not hex),
    *   - foreign EVM↔EVM (neither side BTC).
    */
   #canComposeQuote(params: GetQuoteParams): boolean {
-    if ((params.referralCode ?? this.#config.referralCode) != null) {
-      return false;
-    }
-    if (params.extraFees != null) return false;
     if (params.bridgeRecipientSetup != null) return false;
     const sourceIsBtc = params.sourceToken.toLowerCase() === "btc";
     const targetIsBtc = params.targetToken.toLowerCase() === "btc";

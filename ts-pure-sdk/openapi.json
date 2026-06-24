@@ -1089,6 +1089,57 @@
         }
       }
     },
+    "/referral-fee": {
+      "get": {
+        "tags": ["swap-pairs"],
+        "summary": "Resolve the referral/extra-fee delta for a referral code.",
+        "operationId": "get_referral_fee",
+        "parameters": [
+          {
+            "name": "ref",
+            "in": "query",
+            "description": "Referral code. When omitted/unknown/revoked the response is a zero\nextra fee (the base fee applies unchanged).",
+            "required": false,
+            "schema": {
+              "type": ["string", "null"]
+            }
+          },
+          {
+            "name": "extra_fees",
+            "in": "query",
+            "description": "Optional per-swap fee surcharge in basis points. Rejected with 400 if\nit exceeds the referral key's `max_extra_fee_bps`. When omitted the\nkey's `default_extra_fee_bps` applies.",
+            "required": false,
+            "schema": {
+              "type": ["integer", "null"],
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The extra-fee delta (decimal fraction) for the referral code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReferralFeeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "extra_fees exceeds the referral key's cap",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/status": {
       "get": {
         "tags": ["status"],
@@ -5523,6 +5574,36 @@
           "min_amount_out": {
             "type": "string",
             "description": "Minimum amount of sweepToken the coordinator must sweep to the destination.\nThis is the value the client must include in the EIP-712 Redeem signature."
+          }
+        }
+      },
+      "ReferralFeeRequest": {
+        "type": "object",
+        "properties": {
+          "extra_fees": {
+            "type": ["integer", "null"],
+            "format": "int32",
+            "description": "Optional per-swap fee surcharge in basis points. Rejected with 400 if\nit exceeds the referral key's `max_extra_fee_bps`. When omitted the\nkey's `default_extra_fee_bps` applies.",
+            "minimum": 0
+          },
+          "ref": {
+            "type": ["string", "null"],
+            "description": "Referral code. When omitted/unknown/revoked the response is a zero\nextra fee (the base fee applies unchanged)."
+          }
+        }
+      },
+      "ReferralFeeResponse": {
+        "type": "object",
+        "required": ["extra_fee_rate"],
+        "properties": {
+          "extra_fee_rate": {
+            "type": "number",
+            "format": "double",
+            "description": "Extra fee as a **decimal fraction** (e.g. `0.005` = 0.5% = 50 bps), to be\n**added on top of** the per-pair `fee_percentage` from `/swap-pairs`\n(also a fraction) — so a client composes `fee_percentage + extra_fee_rate`\nwith no conversion. `0` when there's no/unknown referral and no\n`extra_fees`.\n\nNote the asymmetry: the *input* (`extra_fees`, the key's\n`max_extra_fee_bps`) is in **basis points** (the key-config convention);\nthis *output* is a fraction (the composition convention). The endpoint\nconverts once so the client never handles bps."
+          },
+          "referral_label": {
+            "type": ["string", "null"],
+            "description": "Human-readable partner label for the referral code, when registered.\nInformational (attribution / display) only."
           }
         }
       },

@@ -39,6 +39,11 @@ export {
   type WireQuoteResponse,
 } from "./quote.js";
 export {
+  fromWireReferralFeeResponse,
+  type ReferralFeeResponse,
+  type WireReferralFeeResponse,
+} from "./referral-fee.js";
+export {
   fromWireSwapPairsResponse,
   type SwapPairInfo,
   type SwapPairsResponse,
