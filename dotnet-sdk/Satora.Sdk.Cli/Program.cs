@@ -74,6 +74,8 @@ internal static class Cli
                 "create-swap" => await CreateSwapCommand.RunAsync(args[1..]).ConfigureAwait(false),
                 "lightning-to-arkade" => await LightningToArkadeCommand.RunAsync(args[1..]).ConfigureAwait(false),
                 "status" => await StatusCommand.RunAsync(args[1..]).ConfigureAwait(false),
+                "balance" => await BalanceCommand.RunAsync(args[1..]).ConfigureAwait(false),
+                "address" => await AddressCommand.RunAsync(args[1..]).ConfigureAwait(false),
                 "flow" => await FlowCommand.RunAsync(args[1..]).ConfigureAwait(false),
                 _ => Fail($"unknown subcommand: {args[0]}"),
             };
@@ -107,6 +109,8 @@ internal static class Cli
                 satora create-swap  --source <chain:token> --target <chain:token> --target-amount "<value> <unit>" --receive-to "<addr>" [--gasless]
                 satora lightning-to-arkade  --target-amount "<value> sats" [--receive-to "<tark1...>"]
                 satora status       <swap-id>
+                satora balance
+                satora address
                 satora flow         --source <chain:token> --target <chain:token> --target-amount "<value> <unit>" --receive-to "<addr>" [--gasless]
 
             EXAMPLES:
@@ -114,6 +118,8 @@ internal static class Cli
                 satora create-swap  --source Arb:USDC --target Arkade:BTC --target-amount "10000 sats" --receive-to "tark1q..." --gasless
                 satora lightning-to-arkade  --target-amount "10000 sats"
                 satora status       38da340b-784d-4132-bc50-6218a7af9872
+                satora balance
+                satora address
                 satora flow         --source Arb:USDC --target Arkade:BTC --target-amount "10000 sats" --receive-to "tark1q..." --gasless
 
             CHAIN ALIASES: Arb, Eth, Pol, Arkade, Lightning, Bitcoin
@@ -121,7 +127,8 @@ internal static class Cli
             UNITS:         USD (×10^6), sats (×1), raw (×1)
 
             ENV:
-                MNEMONIC                BIP-39 mnemonic — required for `create-swap` / `lightning-to-arkade` / `flow`.
+                MNEMONIC                BIP-39 mnemonic — required for `create-swap` / `lightning-to-arkade` /
+                                        `balance` / `address` / `flow`.
                                         Stays in this process's memory only.
                 ARKADE_NETWORK          mainnet|testnet|signet|regtest   (default mainnet)
                 LENDASWAP_API_URL       override the network's default backend URL
@@ -460,6 +467,87 @@ internal static class StatusCommand
         Console.WriteLine($"  receive_token  : {swap.ReceiveToken}");
         Console.WriteLine($"  receive_to     : {swap.ReceiveAddress}");
         Console.WriteLine($"  funding        : {swap.Funding}");
+        return 0;
+    }
+}
+
+/// <summary>
+/// Implements the <c>balance</c> subcommand — the offchain VTXO balance
+/// of the SDK's internal Arkade wallet, split into the three buckets
+/// ark-client distinguishes. Needs MNEMONIC: the wallet (and thus the
+/// balance) is derived from the seed.
+/// </summary>
+internal static class BalanceCommand
+{
+    internal static async Task<int> RunAsync(string[] args)
+    {
+        if (args.Length != 0)
+        {
+            Console.Error.WriteLine("error: balance takes no arguments");
+            return 2;
+        }
+
+        var mnemonic = Environment.GetEnvironmentVariable("MNEMONIC");
+        if (string.IsNullOrWhiteSpace(mnemonic))
+        {
+            Console.Error.WriteLine("error: MNEMONIC env var must be set for balance (the wallet is derived from it).");
+            return 2;
+        }
+
+        using var client = new Client(
+            mnemonic: mnemonic,
+            network: Cli.NetworkFromEnv(),
+            baseUrl: Environment.GetEnvironmentVariable("LENDASWAP_API_URL"),
+            arkadeServerUrl: Environment.GetEnvironmentVariable("ARKADE_URL"),
+            esploraUrl: Environment.GetEnvironmentVariable("ESPLORA_URL"));
+
+        var balance = await client.GetArkadeBalanceAsync().ConfigureAwait(false);
+        var total = balance.@confirmedSats + balance.@preConfirmedSats + balance.@recoverableSats;
+
+        // confirmed is the only "spendable right now" bucket; the others
+        // are surfaced so the total isn't mistaken for available funds.
+        Console.WriteLine($"  confirmed_sats     : {balance.@confirmedSats}");
+        Console.WriteLine($"  pre_confirmed_sats : {balance.@preConfirmedSats}");
+        Console.WriteLine($"  recoverable_sats   : {balance.@recoverableSats}");
+        Console.WriteLine($"  total_sats         : {total}");
+        return 0;
+    }
+}
+
+/// <summary>
+/// Implements the <c>address</c> subcommand — the SDK internal Arkade
+/// wallet's offchain receive address (tark1…) and on-chain boarding
+/// address. Deterministic per mnemonic, so safe to display and reuse.
+/// </summary>
+internal static class AddressCommand
+{
+    internal static async Task<int> RunAsync(string[] args)
+    {
+        if (args.Length != 0)
+        {
+            Console.Error.WriteLine("error: address takes no arguments");
+            return 2;
+        }
+
+        var mnemonic = Environment.GetEnvironmentVariable("MNEMONIC");
+        if (string.IsNullOrWhiteSpace(mnemonic))
+        {
+            Console.Error.WriteLine("error: MNEMONIC env var must be set for address (the wallet is derived from it).");
+            return 2;
+        }
+
+        using var client = new Client(
+            mnemonic: mnemonic,
+            network: Cli.NetworkFromEnv(),
+            baseUrl: Environment.GetEnvironmentVariable("LENDASWAP_API_URL"),
+            arkadeServerUrl: Environment.GetEnvironmentVariable("ARKADE_URL"),
+            esploraUrl: Environment.GetEnvironmentVariable("ESPLORA_URL"));
+
+        var offchain = await client.GetArkadeAddressAsync().ConfigureAwait(false);
+        var boarding = await client.GetArkadeBoardingAddressAsync().ConfigureAwait(false);
+
+        Console.WriteLine($"  offchain (tark1) : {offchain}");
+        Console.WriteLine($"  boarding (L1 BTC): {boarding}");
         return 0;
     }
 }
