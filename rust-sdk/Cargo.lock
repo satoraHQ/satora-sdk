@@ -686,9 +686,9 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "ark-bdk-wallet"
-version = "0.9.2"
+version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "302836638966506bd3e97626109fc93116a817343d62074fe785e34f1afd5472"
+checksum = "782c79f4e679e464372152e732608f02f58aa911193d14f5281a230129ea64c2"
 dependencies = [
  "anyhow",
  "ark-client",
@@ -706,9 +706,9 @@ dependencies = [
 
 [[package]]
 name = "ark-client"
-version = "0.9.2"
+version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ba0fc3c07cb0a862916c53604c444877a22996236efc9625bee0dde84b4fd08"
+checksum = "0116ff42017a58b95f43dd9e7f5f530386998a6b99742a89397fcf28afe75261"
 dependencies = [
  "ark-core",
  "ark-delegator",
@@ -745,9 +745,9 @@ dependencies = [
 
 [[package]]
 name = "ark-core"
-version = "0.9.2"
+version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16bcb207d1273c766941abf3316e7dc2f14675dd1f007981cf938f8070f8d7b7"
+checksum = "4c2608b6ea565ce14dd445a806f65a48cc12049ca62a63971c8251779dff00d0"
 dependencies = [
  "bech32",
  "bitcoin",
@@ -767,9 +767,9 @@ dependencies = [
 
 [[package]]
 name = "ark-delegator"
-version = "0.9.2"
+version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96fc4ae8598b8cc90a1afff8819a4b227ccc3e29ff25305079098df13dc1670f"
+checksum = "5bec906eb2b8cdc9e77e3e03643a04084e3c2118230dadf26e6ee1ebdb599839"
 dependencies = [
  "ark-core",
  "bitcoin",
@@ -781,9 +781,9 @@ dependencies = [
 
 [[package]]
 name = "ark-fees"
-version = "0.9.2"
+version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3deebd83941967877d8b26e56f8e9947c9e5ab87b928a68d7ec1a90cec6b442"
+checksum = "d992b425826e89ff4ce5d4d28eefa77893090bd12aedd0fcae14db1c46a1c819"
 dependencies = [
  "cel",
 ]
@@ -916,9 +916,9 @@ dependencies = [
 
 [[package]]
 name = "ark-grpc"
-version = "0.9.2"
+version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "feeb9b2d02b73b782585e301c1150677e3db0df37ea9adaa1464109ee211f5cb"
+checksum = "e21b651b5b353b42536e4cc98a686459aaa6acb8d6868e8b6141a43c751f3702"
 dependencies = [
  "ark-core",
  "async-stream",
@@ -935,9 +935,9 @@ dependencies = [
 
 [[package]]
 name = "ark-rs"
-version = "0.9.2"
+version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba2b912788536c5ed01637db4a17941dcdd3dc4ac967b0c6c2d89d39903b9938"
+checksum = "e8169b8237e8b4bde7bd9447d16fdbffb3c2a3b43e2a8242aa18e2a76c67b1d1"
 dependencies = [
  "ark-client",
  "ark-core",
@@ -1982,7 +1982,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2858,7 +2858,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3263,7 +3263,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4280,7 +4280,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4348,7 +4348,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4777,7 +4777,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4953,7 +4953,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
