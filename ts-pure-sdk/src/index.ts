@@ -300,7 +300,6 @@ export type {
   ChainConfigEntry,
   ChainConfigResponse,
   DexQuoteAmount,
-  DexQuoteHop,
   DexQuoteResponse,
   NetworkFee,
   NetworkFeePairEntry,

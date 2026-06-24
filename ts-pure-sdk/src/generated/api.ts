@@ -2016,41 +2016,6 @@ export interface components {
              */
             value: string;
         };
-        /**
-         * @description A single hop in the route the server picked.
-         *
-         *     One hop == one user op the SDK will need to submit. Multi-hop routes
-         *     (e.g. USDC@Optimism → USDC@Arbitrum via CCTP, then USDC@Arbitrum →
-         *     tBTC@Arbitrum via Uniswap) are represented as multiple entries in
-         *     [`DexQuoteResponse::hops`].
-         */
-        DexQuoteHop: {
-            estimated_amount_out: components["schemas"]["TokenAmount"];
-            /**
-             * Format: int32
-             * @description Per-hop settlement time. Sum across `hops` ≈ end-to-end time.
-             */
-            estimated_settlement_seconds: number;
-            /**
-             * @description Per-hop input/output (raw market estimates, no slippage). Useful
-             *     for showing the user a per-hop fee breakdown in the UI. Each side
-             *     carries the matching token's decimals for direct human-readable
-             *     formatting.
-             */
-            expected_amount_in: components["schemas"]["TokenAmount"];
-            /**
-             * @description Source token for this hop. Carries chain id + address in the same
-             *     shape as the request — round-trips cleanly through the SDK.
-             */
-            from: components["schemas"]["Token"];
-            /** @description Per-hop router label (`"cctp"`, `"layerzero"`, `"uniswap"`, …). */
-            router: string;
-            /**
-             * @description Destination token for this hop. Equal-chain to `from` for
-             *     same-chain swaps, different for bridges.
-             */
-            to: components["schemas"]["Token"];
-        };
         DexQuoteRequest: {
             /**
              * @description Either the input amount (exact-in) or the desired output amount
@@ -2091,47 +2056,31 @@ export interface components {
              */
             cache_ttl_seconds: number;
             /**
-             * @description End-to-end output amount across all hops.
+             * @description End-to-end output amount the user receives.
              *
-             *     - `ExactIn`: the expected (mid-market) output for the pinned input, with the caller's
-             *       `slippage_bps` already factored into route selection.
+             *     - `ExactIn`: the expected (mid-market) output for the pinned input (net of any bridge fee),
+             *       with the caller's `slippage_bps` already factored into route selection.
              *     - `ExactOut`: echoes the pinned output amount from the request.
              */
             estimated_amount_out: components["schemas"]["TokenAmount"];
             /**
              * Format: int32
-             * @description Sum of all hops' settlement times. Useful for showing the user a
-             *     rough end-to-end ETA alongside the price.
+             * @description Rough end-to-end settlement ETA in seconds, for display alongside the
+             *     price. `0` for a same-chain on-chain swap.
              */
             estimated_settlement_seconds: number;
             /**
-             * @description End-to-end input amount across all hops.
+             * @description End-to-end input amount the user sends.
              *
              *     - `ExactIn`: echoes the pinned input amount from the request.
-             *     - `ExactOut`: the expected (mid-market) input required to receive the pinned output, with
-             *       the caller's `slippage_bps` already factored into route selection.
+             *     - `ExactOut`: the expected (mid-market) input required to receive the pinned output (incl.
+             *       any bridge gross-up), with the caller's `slippage_bps` already factored into route
+             *       selection.
              */
             expected_amount_in: components["schemas"]["TokenAmount"];
             /**
-             * @description Per-hop breakdown of the route. Always at least one entry.
-             *
-             *     `hops.len() == 1`: single-hop route, one user op.
-             *     `hops.len() > 1`:  multi-hop route, one user op per hop, submitted
-             *     in order and waiting for settlement between each. The SDK iterates
-             *     `hops` and calls [`/dex-calldata`] once per hop, deriving each
-             *     `/dex-calldata` request from the corresponding `DexQuoteHop`.
-             */
-            hops: components["schemas"]["DexQuoteHop"][];
-            /**
-             * @description `true` iff `hops.len() > 1`. Surfaced explicitly so the SDK can
-             *     show the user a step counter ("Step 1 of 2") without iterating.
-             */
-            requires_multiple_user_ops: boolean;
-            /**
-             * @description Top-level router label. Usually equals the only hop's router for
-             *     single-hop routes (`"lifi"`, `"uniswap"`, …), or a `+`-joined
-             *     composite for multi-hop (`"cctp+uniswap"`). Informational only —
-             *     SDK behaviour is driven by `hops`, not this string.
+             * @description Router that priced the DEX leg (`"uniswap_v3"`, `"lifi"`, …).
+             *     Informational only.
              */
             router: string;
         };

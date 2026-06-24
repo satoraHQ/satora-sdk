@@ -34,16 +34,6 @@ export interface TokenAmount {
   symbol?: string;
 }
 
-export interface DexQuoteHop {
-  from: Token;
-  to: Token;
-  expected_amount_in: TokenAmount;
-  estimated_amount_out: TokenAmount;
-  estimated_settlement_seconds: number;
-  /** Per-hop router label (`"cctp"`, `"layerzero"`, `"uniswap_v3"`, `"lifi"`, …). */
-  router: string;
-}
-
 /**
  * The bridge protocol a {@link BridgeRate} is for — the `router` discriminant
  * of the union. Switch on it exhaustively.
@@ -92,11 +82,13 @@ export type BridgeRate =
   | { router: "layerzero" };
 
 export interface DexQuoteResponse {
+  /** End-to-end input amount the user sends (incl. any bridge gross-up for exact-out). */
   expected_amount_in: TokenAmount;
+  /** End-to-end output amount the user receives (net of any bridge fee for exact-in). */
   estimated_amount_out: TokenAmount;
+  /** Rough end-to-end settlement ETA in seconds; `0` for a same-chain swap. */
   estimated_settlement_seconds: number;
-  hops: DexQuoteHop[];
-  requires_multiple_user_ops: boolean;
+  /** Router that priced the DEX leg (`"uniswap_v3"`, `"lifi"`, …). Informational. */
   router: string;
   cache_ttl_seconds: number;
   /**
@@ -120,15 +112,6 @@ export interface WireTokenAmount {
   symbol?: string | null;
 }
 
-export interface WireDexQuoteHop {
-  from: WireToken;
-  to: WireToken;
-  expected_amount_in: WireTokenAmount;
-  estimated_amount_out: WireTokenAmount;
-  estimated_settlement_seconds: number;
-  router: string;
-}
-
 export type WireBridgeRate =
   | {
       router: "cctp";
@@ -143,8 +126,6 @@ export interface WireDexQuoteResponse {
   expected_amount_in: WireTokenAmount;
   estimated_amount_out: WireTokenAmount;
   estimated_settlement_seconds: number;
-  hops: WireDexQuoteHop[];
-  requires_multiple_user_ops: boolean;
   router: string;
   cache_ttl_seconds: number;
   bridge_rate?: WireBridgeRate | null;
@@ -158,17 +139,6 @@ function fromWireTokenAmount(wire: WireTokenAmount): TokenAmount {
   };
 }
 
-function fromWireDexQuoteHop(wire: WireDexQuoteHop): DexQuoteHop {
-  return {
-    from: wire.from,
-    to: wire.to,
-    expected_amount_in: fromWireTokenAmount(wire.expected_amount_in),
-    estimated_amount_out: fromWireTokenAmount(wire.estimated_amount_out),
-    estimated_settlement_seconds: wire.estimated_settlement_seconds,
-    router: wire.router,
-  };
-}
-
 export function fromWireDexQuoteResponse(
   wire: WireDexQuoteResponse,
 ): DexQuoteResponse {
@@ -176,8 +146,6 @@ export function fromWireDexQuoteResponse(
     expected_amount_in: fromWireTokenAmount(wire.expected_amount_in),
     estimated_amount_out: fromWireTokenAmount(wire.estimated_amount_out),
     estimated_settlement_seconds: wire.estimated_settlement_seconds,
-    hops: wire.hops.map(fromWireDexQuoteHop),
-    requires_multiple_user_ops: wire.requires_multiple_user_ops,
     router: wire.router,
     cache_ttl_seconds: wire.cache_ttl_seconds,
     bridge_rate: wire.bridge_rate

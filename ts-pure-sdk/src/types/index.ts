@@ -19,7 +19,6 @@ export {
   type BridgeRate,
   type BridgeRouter,
   type DexQuoteAmount,
-  type DexQuoteHop,
   type DexQuoteResponse,
   fromWireDexQuoteResponse,
   type Token,
