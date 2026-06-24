@@ -594,7 +594,11 @@ impl Client {
             .await
             .map_err(|e| Error::Transport(format!("get_virtual_tx_outpoints: {e}")))?;
 
-        let vtxo_list = VtxoList::new(arkade.client.server_info.dust, virtual_tx_outpoints);
+        let server_info = arkade
+            .client
+            .server_info()
+            .map_err(|e| Error::Transport(format!("server_info: {e}")))?;
+        let vtxo_list = VtxoList::new(server_info.dust, virtual_tx_outpoints);
         let vhtlc_outpoint = vtxo_list
             .all_unspent()
             .next()
@@ -643,6 +647,10 @@ impl Client {
         );
 
         let outputs = vec![SendReceiver::bitcoin(destination_address, claim_amount)];
+        let server_info = arkade
+            .client
+            .server_info()
+            .map_err(|e| Error::Transport(format!("server_info: {e}")))?;
         // We're draining the VHTLC entirely; reuse the destination as the change address (no
         // change will actually be produced).
         let OffchainTransactions {
@@ -652,7 +660,7 @@ impl Client {
             &outputs,
             &destination_address,
             std::slice::from_ref(&vhtlc_input),
-            &arkade.client.server_info,
+            &server_info,
         )
         .map_err(|e| Error::Decode(format!("build_offchain_transactions: {e}")))?;
 
