@@ -72,6 +72,7 @@ internal static class Cli
             {
                 "quote" => await QuoteCommand.RunAsync(args[1..]).ConfigureAwait(false),
                 "create-swap" => await CreateSwapCommand.RunAsync(args[1..]).ConfigureAwait(false),
+                "lightning-to-arkade" => await LightningToArkadeCommand.RunAsync(args[1..]).ConfigureAwait(false),
                 "status" => await StatusCommand.RunAsync(args[1..]).ConfigureAwait(false),
                 "flow" => await FlowCommand.RunAsync(args[1..]).ConfigureAwait(false),
                 _ => Fail($"unknown subcommand: {args[0]}"),
@@ -104,12 +105,14 @@ internal static class Cli
                 satora quote        --source <chain:token> --target <chain:token> --source-amount "<value> <unit>"
                 satora quote        --source <chain:token> --target <chain:token> --target-amount "<value> <unit>"
                 satora create-swap  --source <chain:token> --target <chain:token> --target-amount "<value> <unit>" --receive-to "<addr>" [--gasless]
+                satora lightning-to-arkade  --target-amount "<value> sats" [--receive-to "<tark1...>"]
                 satora status       <swap-id>
                 satora flow         --source <chain:token> --target <chain:token> --target-amount "<value> <unit>" --receive-to "<addr>" [--gasless]
 
             EXAMPLES:
                 satora quote        --source Arb:USDT --target Arkade:BTC --source-amount "10 USD"
                 satora create-swap  --source Arb:USDC --target Arkade:BTC --target-amount "10000 sats" --receive-to "tark1q..." --gasless
+                satora lightning-to-arkade  --target-amount "10000 sats"
                 satora status       38da340b-784d-4132-bc50-6218a7af9872
                 satora flow         --source Arb:USDC --target Arkade:BTC --target-amount "10000 sats" --receive-to "tark1q..." --gasless
 
@@ -118,7 +121,7 @@ internal static class Cli
             UNITS:         USD (×10^6), sats (×1), raw (×1)
 
             ENV:
-                MNEMONIC                BIP-39 mnemonic — required for `create-swap` / `flow`.
+                MNEMONIC                BIP-39 mnemonic — required for `create-swap` / `lightning-to-arkade` / `flow`.
                                         Stays in this process's memory only.
                 ARKADE_NETWORK          mainnet|testnet|signet|regtest   (default mainnet)
                 LENDASWAP_API_URL       override the network's default backend URL
@@ -458,6 +461,140 @@ internal static class StatusCommand
         Console.WriteLine($"  receive_to     : {swap.ReceiveAddress}");
         Console.WriteLine($"  funding        : {swap.Funding}");
         return 0;
+    }
+}
+
+/// <summary>
+/// Implements the <c>lightning-to-arkade</c> subcommand. Creates a
+/// Lightning → BTC-on-Arkade swap via the dedicated SDK method: the
+/// backend returns a BOLT11 invoice the user pays from their own
+/// Lightning wallet, after which the server funds an Arkade VHTLC the
+/// user sweeps with `claim`. Requires MNEMONIC — the signer derives the
+/// per-swap preimage and (when <c>--receive-to</c> is omitted) the
+/// internal Arkade receive address.
+///
+/// After printing the invoice the command stays alive: it polls until
+/// the swap reaches <c>ServerFunded</c> (i.e. the operator detected your
+/// Lightning payment and funded the VHTLC), then claims the VHTLC in the
+/// SAME process. That single-process requirement is load-bearing — the
+/// per-swap key_index lives only in the FFI handle's in-memory storage,
+/// so a separate `claim` invocation couldn't re-derive the preimage.
+/// </summary>
+internal static class LightningToArkadeCommand
+{
+    // Generous budget: we block on a human paying the invoice, then the
+    // operator's Lightning→VHTLC funding leg. Mirrors the gasless flow's
+    // deposit-wait headroom.
+    private static readonly TimeSpan WaitBudget = TimeSpan.FromMinutes(30);
+
+    internal static async Task<int> RunAsync(string[] args)
+    {
+        string? targetAmount = null;
+        string? receiveTo = null;
+
+        for (var i = 0; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--target-amount": targetAmount = TakeValue(args, ref i, "--target-amount"); break;
+                case "--receive-to": receiveTo = TakeValue(args, ref i, "--receive-to"); break;
+                default:
+                    Console.Error.WriteLine($"error: unknown flag `{args[i]}`");
+                    return 2;
+            }
+        }
+
+        if (targetAmount is null)
+        {
+            Console.Error.WriteLine("error: --target-amount \"<n> sats\" is required (the amount to receive on Arkade)");
+            return 2;
+        }
+
+        var mnemonic = Environment.GetEnvironmentVariable("MNEMONIC");
+        if (string.IsNullOrWhiteSpace(mnemonic))
+        {
+            Console.Error.WriteLine("error: MNEMONIC env var must be set for lightning-to-arkade (BIP-39 phrase).");
+            return 2;
+        }
+
+        // The dedicated method takes sats-to-receive directly; reuse the
+        // shared "<n> sats" parser against BTC so the unit handling
+        // matches the other subcommands.
+        var satsReceive = QuoteCommand.ParseAmountInternal(targetAmount, new TokenId.Btc());
+
+        // Omitting --receive-to routes to the SDK's own internal Arkade
+        // wallet (derived from MNEMONIC); a value is tagged as an Arkade
+        // rail address.
+        Address? receiveAddress = receiveTo is null ? null : new Address.Arkade(receiveTo);
+
+        using var client = new Client(
+            mnemonic: mnemonic,
+            network: Cli.NetworkFromEnv(),
+            baseUrl: Environment.GetEnvironmentVariable("LENDASWAP_API_URL"),
+            arkadeServerUrl: Environment.GetEnvironmentVariable("ARKADE_URL"),
+            esploraUrl: Environment.GetEnvironmentVariable("ESPLORA_URL"));
+
+        // ── 1. Create the swap ──
+        var swap = await client.CreateLightningToArkadeSwapAsync(satsReceive, receiveAddress).ConfigureAwait(false);
+
+        Console.WriteLine($"  swap_id        : {swap.Id}");
+        Console.WriteLine($"  status         : {swap.Status}");
+        Console.WriteLine($"  deposit_amount : {swap.DepositAmount}");
+        Console.WriteLine($"  deposit_token  : {swap.DepositToken}");
+        Console.WriteLine($"  receive_amount : {swap.ReceiveAmount}");
+        Console.WriteLine($"  receive_token  : {swap.ReceiveToken}");
+        Console.WriteLine($"  receive_to     : {swap.ReceiveAddress}");
+        // For this direction the funding instruction is the BOLT11
+        // invoice the user pays. Surface it directly so the value is
+        // copy-pasteable, not buried in the record's ToString().
+        if (swap.Funding is SwapFunding.Bolt11Invoice bolt11)
+        {
+            Console.WriteLine($"  pay invoice    : {bolt11.@invoice}");
+        }
+        else
+        {
+            Console.WriteLine($"  funding        : {swap.Funding}");
+        }
+
+        // ── 2. Wait for the operator to detect the LN payment + fund VHTLC ──
+        Console.WriteLine();
+        Console.WriteLine($"[wait] pay the invoice above, then polling until ServerFunded (up to {WaitBudget.TotalMinutes:0} min)…");
+        var reached = await client.WaitForSwapStatusAsync(
+            swap.Id,
+            // Accept ServerFunded plus the post-claim states, covering the
+            // race where the swap progresses past ServerFunded between
+            // polls (matches the gasless flow's target list).
+            new SwapStatus[]
+            {
+                new SwapStatus.ServerFunded(),
+                new SwapStatus.ClientRedeemed(),
+                new SwapStatus.ServerRedeemed(),
+            },
+            WaitBudget).ConfigureAwait(false);
+        Console.WriteLine($"  reached        : {reached}");
+
+        // ── 3. Claim the VHTLC ──
+        //
+        // Sweep to the same Arkade address we received to. When
+        // --receive-to was omitted the swap delivered to the internal
+        // wallet, so resolve that address to claim into it.
+        var claimTo = receiveTo ?? await client.GetArkadeAddressAsync().ConfigureAwait(false);
+        Console.WriteLine();
+        Console.WriteLine("[claim] sweeping the Arkade VHTLC");
+        var claim = await client.ClaimAsync(swap.Id, claimTo).ConfigureAwait(false);
+        Console.WriteLine($"  claim_to       : {claimTo}");
+        Console.WriteLine($"  ark_txid       : {claim.ArkTxid}");
+        Console.WriteLine($"  amount_sats    : {claim.ClaimAmountSats}");
+        return 0;
+    }
+
+    private static string TakeValue(string[] args, ref int i, string flag)
+    {
+        if (i + 1 >= args.Length)
+        {
+            throw new ArgumentException($"{flag} requires a value");
+        }
+        return args[++i];
     }
 }
 
