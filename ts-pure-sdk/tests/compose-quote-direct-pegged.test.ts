@@ -4,6 +4,14 @@ import {
   type ComposeQuoteParams,
   composeQuote,
 } from "../src/compose-quote.js";
+import type { Chain } from "../src/types/index.js";
+
+/**
+ * Widen a chain-id string to `Chain`. The `Chain` union only names the
+ * hub/BTC chains, so bridge destinations (Optimism, …) are cast — exactly how
+ * the SDK's own bridge-token code constructs them.
+ */
+const asChain = (s: string): Chain => s as Chain;
 
 // tBTC on Arbitrum — 18-dec pegged pivot, redeemable 1:1, so the direct
 // BTC↔tBTC conversion is pure decimal scaling (pivotScale = 10^(18-8)).
@@ -218,5 +226,78 @@ describe("composeQuote — direct BTC↔pegged pivot (no DEX)", () => {
     // net_target = (sats − totalFees) × evmSmallest / sats
     //            = (100_000 − 1_050) × 10^10
     expect(q.net_target_amount).toBe((98_950 * SAT_IN_TBTC_BASE).toString());
+  });
+});
+
+describe("composeQuote — bridge route-selection", () => {
+  const USDC_OPTIMISM = "0x0b2c639c533813f4aa9d7837caf62653d097ff85";
+  const USDC_POLYGON = "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359";
+
+  /** Wire a `getDexQuote` that records the from/to chain ids it's called with
+   *  and returns a fixed 100 USDC out. */
+  function captureDexCall() {
+    const calls: Array<{ fromChain: number; toChain: number }> = [];
+    const d = deps({
+      getDexQuote: async (p) => {
+        const fromChain = p.from.kind === "evm" ? p.from.chain_id : -1;
+        const toChain = p.to.kind === "evm" ? p.to.chain_id : -1;
+        calls.push({ fromChain, toChain });
+        return {
+          expected_amount_in: { raw: "1000000000000000", decimals: 18 },
+          estimated_amount_out: { raw: "100000000", decimals: 6 },
+        };
+      },
+    });
+    return { deps: d, calls };
+  }
+
+  it("bridges a non-hub target (USDC@Optimism) through Arbitrum tBTC", async () => {
+    const { deps: d, calls } = captureDexCall();
+    const q = await composeQuote(
+      {
+        sourceChain: "Bitcoin",
+        sourceToken: "btc",
+        targetChain: asChain("10"), // Optimism — not a hub
+        targetToken: USDC_OPTIMISM,
+        sourceAmount: 100_000,
+      },
+      d,
+    );
+    // DEX leg crosses tBTC@Arbitrum -> USDC@Optimism; server bridges.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual({ fromChain: 42161, toChain: 10 });
+    expect(BigInt(q.target_amount)).toBeGreaterThan(0n);
+  });
+
+  it("routes a hub target (USDC@Polygon) directly — no bridge", async () => {
+    const { deps: d, calls } = captureDexCall();
+    await composeQuote(
+      {
+        sourceChain: "Bitcoin",
+        sourceToken: "btc",
+        targetChain: "137", // Polygon — a hub
+        targetToken: USDC_POLYGON,
+        sourceAmount: 100_000,
+      },
+      d,
+    );
+    // Same-chain on Polygon (WBTC -> USDC); never touches Arbitrum.
+    expect(calls[0]).toEqual({ fromChain: 137, toChain: 137 });
+  });
+
+  it("bridges a non-hub source (USDC@Optimism -> BTC) in through Arbitrum", async () => {
+    const { deps: d, calls } = captureDexCall();
+    await composeQuote(
+      {
+        sourceChain: asChain("10"), // Optimism — not a hub
+        sourceToken: USDC_OPTIMISM,
+        targetChain: "Bitcoin",
+        targetToken: "btc",
+        sourceAmount: 100_000_000,
+      },
+      d,
+    );
+    // DEX leg crosses USDC@Optimism -> tBTC@Arbitrum; server bridges in.
+    expect(calls[0]).toEqual({ fromChain: 10, toChain: 42161 });
   });
 });

@@ -67,6 +67,77 @@ function pivotForChain(
   };
 }
 
+/** Arbitrum — the settlement hub every bridge pivots through. */
+const ARBITRUM_CHAIN = "42161" as Chain;
+const ARBITRUM_CHAIN_ID = 42161;
+
+/** How the EVM leg reaches a given chain — directly on a hub, or bridged. */
+interface EvmRouting {
+  /** Pivot token on the settlement chain: the EVM chain itself if it's a hub,
+   *  otherwise Arbitrum's tBTC. */
+  btcPegged: Pivot;
+  /** Chain id the pivot + HTLC live on (the DEX pivot side). */
+  pivotChainId: number;
+  /** Chain used for swap-pair / network-fee lookups (the settlement hub). */
+  hubChain: Chain;
+  /** Chain id of the user's EVM token (same as `pivotChainId` when direct,
+   *  the remote chain when bridged). */
+  tokenChainId: number;
+  /** True when the route bridges through Arbitrum. */
+  bridged: boolean;
+}
+
+/**
+ * Decide how the EVM leg reaches `evmChain`:
+ *
+ * - **hub** (a chain with a BTC-pegged pivot in `/chain-config` — today
+ *   Arbitrum, Polygon, Ethereum) → swap there directly; pivot/HTLC and the
+ *   user's token share the chain, no bridge.
+ * - **anything else** (Optimism, Base, Solana, USDT0-only chains, …) → bridge
+ *   through Arbitrum: the HTLC settles in tBTC on Arbitrum, the DEX leg crosses
+ *   Arbitrum↔`evmChain`, and the swap-pair / network-fee legs key off Arbitrum.
+ *   The bridge protocol (CCTP vs OFT) and its fee are resolved server-side from
+ *   the token, and `/dex-quote` already folds the fee into the amounts.
+ *
+ * Note we don't bridge a token that *is* directly swappable on a hub even when
+ * that hub also happens to be a bridge chain (e.g. USDC@Polygon): Polygon is a
+ * hub, so it routes direct and skips Circle's fee entirely.
+ */
+function resolveEvmRouting(
+  chainConfig: ChainConfigResponse,
+  evmChain: Chain,
+): EvmRouting {
+  const tokenChainId = Number.parseInt(evmChain, 10);
+  if (Number.isNaN(tokenChainId)) {
+    throw new UnsupportedComposeQuotePath(
+      `composeQuote: EVM chain ${evmChain} is not numeric`,
+    );
+  }
+  const direct = pivotForChain(chainConfig, evmChain);
+  if (direct) {
+    return {
+      btcPegged: direct,
+      pivotChainId: tokenChainId,
+      hubChain: evmChain,
+      tokenChainId,
+      bridged: false,
+    };
+  }
+  const arb = pivotForChain(chainConfig, ARBITRUM_CHAIN);
+  if (!arb) {
+    throw new UnsupportedComposeQuotePath(
+      "composeQuote: Arbitrum pivot missing from chain-config; cannot bridge",
+    );
+  }
+  return {
+    btcPegged: arb,
+    pivotChainId: ARBITRUM_CHAIN_ID,
+    hubChain: ARBITRUM_CHAIN,
+    tokenChainId,
+    bridged: true,
+  };
+}
+
 /**
  * Parse a decimal rate string ("1", "0.99790000") into an exact
  * numerator/denominator so the BTC↔pegged conversion is integer-exact
@@ -248,29 +319,19 @@ async function composeBtcToEvm(
   params: ComposeQuoteParams,
   deps: ComposeQuoteDeps,
 ): Promise<QuoteResponse> {
-  const evmChain = params.targetChain;
-  const btcPegged = pivotForChain(deps.chainConfig, evmChain);
-  if (!btcPegged) {
-    throw new UnsupportedComposeQuotePath(
-      `composeQuote: no BTC-pegged token configured for chain ${evmChain}`,
-    );
-  }
-  const chainIdNum = Number.parseInt(evmChain, 10);
-  if (Number.isNaN(chainIdNum)) {
-    throw new UnsupportedComposeQuotePath(
-      `composeQuote: target chain ${evmChain} is not numeric (EVM)`,
-    );
-  }
-
-  const pair = lookupPair(
-    deps.swapPairs,
-    params.sourceChain,
+  // Direct on a hub chain, or bridged through Arbitrum for everything else.
+  const { btcPegged, pivotChainId, hubChain, tokenChainId } = resolveEvmRouting(
+    deps.chainConfig,
     params.targetChain,
   );
+
+  // The BTC↔pivot leg (rate, fee, limits) keys off the settlement hub —
+  // Arbitrum for a bridged target, the target chain itself when direct.
+  const pair = lookupPair(deps.swapPairs, params.sourceChain, hubChain);
   const feeEntry = lookupFeeEntry(
     deps.networkFees,
     params.sourceChain,
-    params.targetChain,
+    hubChain,
   );
   const networkFeeSats = feeEntry.fees.source_sats + feeEntry.fees.target_sats;
   // `gasless_network_fee` is always 0: the gasless settlement cost is folded
@@ -300,7 +361,8 @@ async function composeBtcToEvm(
       params,
       deps,
       btcPegged,
-      chainIdNum,
+      pivotChainId,
+      tokenChainId,
       pivotScale,
     );
   } else if (params.targetAmount != null) {
@@ -309,7 +371,8 @@ async function composeBtcToEvm(
       params,
       deps,
       btcPegged,
-      chainIdNum,
+      pivotChainId,
+      tokenChainId,
       pivotScale,
     );
   } else {
@@ -379,15 +442,18 @@ async function dexSourcePinned(
   params: ComposeQuoteParams,
   deps: ComposeQuoteDeps,
   btcPegged: { address: string; decimals: number },
-  chainIdNum: number,
+  pivotChainId: number,
+  tokenChainId: number,
   pivotScale: bigint,
 ): Promise<BtcEvmPivot> {
   const pivotInBase = btcSats * pivotScale;
+  // `from` (pivot) and `to` (target token) share a chain when direct, and
+  // straddle Arbitrum↔dest when bridged — the server bridges and folds the fee.
   const dexQuote = await deps.getDexQuote({
-    from: { kind: "evm", chain_id: chainIdNum, address: btcPegged.address },
+    from: { kind: "evm", chain_id: pivotChainId, address: btcPegged.address },
     to: {
       kind: "evm",
-      chain_id: chainIdNum,
+      chain_id: tokenChainId,
       address: params.targetToken.toLowerCase(),
     },
     amount: { kind: "exact_in", value: pivotInBase.toString() },
@@ -414,14 +480,17 @@ async function dexTargetPinned(
   params: ComposeQuoteParams,
   deps: ComposeQuoteDeps,
   btcPegged: { address: string; decimals: number },
-  chainIdNum: number,
+  pivotChainId: number,
+  tokenChainId: number,
   pivotScale: bigint,
 ): Promise<BtcEvmPivot> {
+  // Bridged exact-out: the server grosses the DEX output up by the bridge fee
+  // so `expected_amount_in` (the pivot needed) already covers it.
   const dexQuote = await deps.getDexQuote({
-    from: { kind: "evm", chain_id: chainIdNum, address: btcPegged.address },
+    from: { kind: "evm", chain_id: pivotChainId, address: btcPegged.address },
     to: {
       kind: "evm",
-      chain_id: chainIdNum,
+      chain_id: tokenChainId,
       address: params.targetToken.toLowerCase(),
     },
     amount: { kind: "exact_out", value: evmSmallest.toString() },
@@ -471,28 +540,18 @@ async function composeEvmToBtc(
   params: ComposeQuoteParams,
   deps: ComposeQuoteDeps,
 ): Promise<QuoteResponse> {
-  const evmChain = params.sourceChain;
-  const btcPegged = pivotForChain(deps.chainConfig, evmChain);
-  if (!btcPegged) {
-    throw new UnsupportedComposeQuotePath(
-      `composeQuote: no BTC-pegged token configured for chain ${evmChain}`,
-    );
-  }
-  const chainIdNum = Number.parseInt(evmChain, 10);
-  if (Number.isNaN(chainIdNum)) {
-    throw new UnsupportedComposeQuotePath(
-      `composeQuote: source chain ${evmChain} is not numeric (EVM)`,
-    );
-  }
-
-  const pair = lookupPair(
-    deps.swapPairs,
+  // Direct on a hub chain, or bridged in through Arbitrum for everything else.
+  const { btcPegged, pivotChainId, hubChain, tokenChainId } = resolveEvmRouting(
+    deps.chainConfig,
     params.sourceChain,
-    params.targetChain,
   );
+
+  // The pivot↔BTC leg keys off the settlement hub — Arbitrum for a bridged
+  // source, the source chain itself when direct.
+  const pair = lookupPair(deps.swapPairs, hubChain, params.targetChain);
   const feeEntry = lookupFeeEntry(
     deps.networkFees,
-    params.sourceChain,
+    hubChain,
     params.targetChain,
   );
   const networkFeeSats = feeEntry.fees.source_sats + feeEntry.fees.target_sats;
@@ -515,7 +574,8 @@ async function composeEvmToBtc(
       params,
       deps,
       btcPegged,
-      chainIdNum,
+      pivotChainId,
+      tokenChainId,
       pivotScale,
     );
   } else if (params.targetAmount != null) {
@@ -524,7 +584,8 @@ async function composeEvmToBtc(
       params,
       deps,
       btcPegged,
-      chainIdNum,
+      pivotChainId,
+      tokenChainId,
       pivotScale,
     );
   } else {
@@ -594,16 +655,20 @@ async function dexEvmToBtcSourcePinned(
   params: ComposeQuoteParams,
   deps: ComposeQuoteDeps,
   btcPegged: { address: string; decimals: number },
-  chainIdNum: number,
+  pivotChainId: number,
+  tokenChainId: number,
   pivotScale: bigint,
 ): Promise<EvmBtcPivot> {
+  // `from` (source token) and `to` (pivot) share a chain when direct, and
+  // straddle dest↔Arbitrum when bridged in — the server bridges the source USDC
+  // to the hub and folds the inbound fee.
   const dexQuote = await deps.getDexQuote({
     from: {
       kind: "evm",
-      chain_id: chainIdNum,
+      chain_id: tokenChainId,
       address: params.sourceToken.toLowerCase(),
     },
-    to: { kind: "evm", chain_id: chainIdNum, address: btcPegged.address },
+    to: { kind: "evm", chain_id: pivotChainId, address: btcPegged.address },
     amount: { kind: "exact_in", value: evmSmallest.toString() },
     slippageBps: params.slippageBps ?? 100,
   });
@@ -630,17 +695,21 @@ async function dexEvmToBtcTargetPinned(
   params: ComposeQuoteParams,
   deps: ComposeQuoteDeps,
   btcPegged: { address: string; decimals: number },
-  chainIdNum: number,
+  pivotChainId: number,
+  tokenChainId: number,
   pivotScale: bigint,
 ): Promise<EvmBtcPivot> {
   const pivotInBase = btcSats * pivotScale;
+  // Bridged-in exact-out: the server grosses the source USDC burn up by the
+  // inbound fee, so `expected_amount_in` is what the user must supply on the
+  // remote chain.
   const dexQuote = await deps.getDexQuote({
     from: {
       kind: "evm",
-      chain_id: chainIdNum,
+      chain_id: tokenChainId,
       address: params.sourceToken.toLowerCase(),
     },
-    to: { kind: "evm", chain_id: chainIdNum, address: btcPegged.address },
+    to: { kind: "evm", chain_id: pivotChainId, address: btcPegged.address },
     amount: { kind: "exact_out", value: pivotInBase.toString() },
     slippageBps: params.slippageBps ?? 100,
   });
