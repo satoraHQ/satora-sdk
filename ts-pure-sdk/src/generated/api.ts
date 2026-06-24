@@ -1466,8 +1466,14 @@ export interface components {
              */
             flat_with_setup: string;
             /**
-             * @description Circle's `minimumFee` pre-scaled to `round(minimumFee_bps * 100)`.
-             *     Stringified `u128`.
+             * @description CCTP percentage fee rate expressed in **millionths** (parts per
+             *     million): apply it as `floor(amount * minimum_fee_scaled / 1_000_000)`.
+             *
+             *     It's Circle's `minimumFee` (which the IRIS API gives in *basis
+             *     points*, e.g. `1.3`) pre-scaled by ×100 to a clean integer —
+             *     `round(minimumFee_bps * 100)` — so the percentage math stays integer
+             *     on both sides. Worked example: `"130"` = 1.3 bps = 0.013% =
+             *     `130 / 1_000_000` of the amount. Stringified `u128`.
              */
             minimum_fee_scaled: string;
             /** @enum {string} */
@@ -2046,6 +2052,15 @@ export interface components {
             to: components["schemas"]["Token"];
         };
         DexQuoteResponse: {
+            /**
+             * @description The bridge fee **actually deducted** for this quote, in the bridged
+             *     token's smallest units (USDC for CCTP), stringified. This is the amount
+             *     the fold already took out of the end-to-end amounts above — surfaced so
+             *     the SDK can report it as a line item without re-deriving it from
+             *     `bridge_rate`. Present only for a CCTP bridge leg with a fee; absent for
+             *     same-chain and OFT (which deduct nothing).
+             */
+            bridge_fee?: string | null;
             bridge_rate?: null | components["schemas"]["BridgeRate"];
             /**
              * Format: int32

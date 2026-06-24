@@ -2982,7 +2982,7 @@
               },
               "minimum_fee_scaled": {
                 "type": "string",
-                "description": "Circle's `minimumFee` pre-scaled to `round(minimumFee_bps * 100)`.\nStringified `u128`."
+                "description": "CCTP percentage fee rate expressed in **millionths** (parts per\nmillion): apply it as `floor(amount * minimum_fee_scaled / 1_000_000)`.\n\nIt's Circle's `minimumFee` (which the IRIS API gives in *basis\npoints*, e.g. `1.3`) pre-scaled by ×100 to a clean integer —\n`round(minimumFee_bps * 100)` — so the percentage math stays integer\non both sides. Worked example: `\"130\"` = 1.3 bps = 0.013% =\n`130 / 1_000_000` of the amount. Stringified `u128`."
               },
               "router": {
                 "type": "string",
@@ -3786,6 +3786,10 @@
           "cache_ttl_seconds"
         ],
         "properties": {
+          "bridge_fee": {
+            "type": ["string", "null"],
+            "description": "The bridge fee **actually deducted** for this quote, in the bridged\ntoken's smallest units (USDC for CCTP), stringified. This is the amount\nthe fold already took out of the end-to-end amounts above — surfaced so\nthe SDK can report it as a line item without re-deriving it from\n`bridge_rate`. Present only for a CCTP bridge leg with a fee; absent for\nsame-chain and OFT (which deduct nothing)."
+          },
           "bridge_rate": {
             "oneOf": [
               {

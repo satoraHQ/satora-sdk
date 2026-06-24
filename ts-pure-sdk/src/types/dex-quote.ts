@@ -72,7 +72,13 @@ export type BridgeRate =
        * fee would need a conversion.
        */
       fee_token: Token;
-      /** Circle's `minimumFee` pre-scaled to `round(minimumFee_bps * 100)`. Stringified u128. */
+      /**
+       * CCTP percentage fee rate in **millionths** (parts per million): apply
+       * as `floor(amount * minimum_fee_scaled / 1_000_000)`. It's Circle's
+       * `minimumFee` (basis points, e.g. `1.3`) pre-scaled ×100 to a clean
+       * integer — `round(minimumFee_bps * 100)`. E.g. `"130"` = 1.3 bps =
+       * 0.013% = `130 / 1_000_000`. Stringified u128.
+       */
       minimum_fee_scaled: string;
       /** Flat USDC fee deducted from the bridged amount, recipient already provisioned. Outbound: `forwardFee.high`; inbound: `"0"`. Stringified u64. */
       flat: string;
@@ -98,6 +104,13 @@ export interface DexQuoteResponse {
    * same-chain quotes.
    */
   bridge_rate?: BridgeRate;
+  /**
+   * The bridge fee actually deducted for this quote, in the bridged token's
+   * smallest units (USDC for CCTP), stringified. Already reflected in the
+   * end-to-end amounts above — surfaced so the SDK can report it as a line
+   * item. `undefined` for same-chain and OFT.
+   */
+  bridge_fee?: string;
 }
 
 // -- wire shapes (identical to the SDK types for now; explicit so we
@@ -129,6 +142,7 @@ export interface WireDexQuoteResponse {
   router: string;
   cache_ttl_seconds: number;
   bridge_rate?: WireBridgeRate | null;
+  bridge_fee?: string | null;
 }
 
 function fromWireTokenAmount(wire: WireTokenAmount): TokenAmount {
@@ -151,6 +165,7 @@ export function fromWireDexQuoteResponse(
     bridge_rate: wire.bridge_rate
       ? fromWireBridgeRate(wire.bridge_rate)
       : undefined,
+    bridge_fee: wire.bridge_fee ?? undefined,
   };
 }
 

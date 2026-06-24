@@ -30,6 +30,7 @@ import type { AaConfig } from "./cctp-inbound/types.js";
 import {
   type ComposeQuoteParams,
   composeQuote as composeQuoteHelper,
+  UnsupportedComposeQuotePath,
 } from "./compose-quote.js";
 import {
   type ArkadeToEvmSwapOptions,
@@ -509,6 +510,38 @@ interface ArkadeVhtlcParams {
   network: string;
   preimage: string;
   preimageHash: string;
+}
+
+/** Parameters for {@link Client.getQuote}. */
+export interface GetQuoteParams {
+  /** Source blockchain (e.g. "Arkade", "Polygon", "Bitcoin"). */
+  sourceChain: Chain;
+  /** Source token: contract address for EVM tokens, or "btc" for BTC. */
+  sourceToken: string;
+  /** Target blockchain. */
+  targetChain: Chain;
+  /** Target token: contract address for EVM tokens, or "btc" for BTC. */
+  targetToken: string;
+  /** Amount in smallest unit of source token (mutually exclusive with targetAmount). */
+  sourceAmount?: number;
+  /** Amount in smallest unit of target token (mutually exclusive with sourceAmount). */
+  targetAmount?: number;
+  /** Optional referral code to apply referral pricing to the quote. */
+  referralCode?: string;
+  /**
+   * Optional per-swap fee surcharge in basis points
+   * (0..=max_extra_fee_bps configured on the matching developer key).
+   * Must be passed identically here and on the corresponding createSwap
+   * so the quoted fee matches what's charged.
+   */
+  extraFees?: number;
+  /**
+   * Optional ATA-existence hint for non-EVM CCTP destinations
+   * (Solana). `true` = recipient has no USDC ATA yet, `false` =
+   * recipient already holds USDC. Omit to let the backend fall back
+   * to its conservative default.
+   */
+  bridgeRecipientSetup?: boolean;
 }
 
 const DEFAULT_BASE_URL = "https://api.satora.io/";
@@ -1323,40 +1356,80 @@ export class Client {
 
   /**
    * Gets a quote for swapping between two tokens.
+   *
+   * Composes the quote client-side from the `/swap-pairs` + `/network-fees` +
+   * `/dex-quote` primitives when it can — BTC↔EVM both directions, direct
+   * (hub chains) or bridged (via Arbitrum/CCTP/OFT), including EURe and the
+   * accurate Lightning routing fee. Falls back to the server-composed `/quote`
+   * for anything compose can't faithfully serve: referral / extra-fee pricing
+   * (only the server applies those), Solana destinations, and any path
+   * `composeQuote` doesn't handle. The returned shape is identical either way.
+   *
    * @param params - Quote parameters.
-   * @param params.sourceChain - Source blockchain (e.g., "Arkade", "Polygon").
-   * @param params.sourceToken - Source token: contract address for EVM tokens, or "btc" for BTC.
-   * @param params.targetChain - Target blockchain (e.g., "Polygon", "Lightning").
-   * @param params.targetToken - Target token: contract address for EVM tokens, or "btc" for BTC.
-   * @param params.sourceAmount - Amount in smallest unit of source token (mutually exclusive with targetAmount).
-   * @param params.targetAmount - Amount in smallest unit of target token (mutually exclusive with sourceAmount).
-   * @param params.referralCode - Optional referral code to apply referral pricing to the quote.
    * @returns A promise that resolves to the quote response with pricing details.
    * @throws Error if the request fails.
    */
-  async getQuote(params: {
-    sourceChain: Chain;
-    sourceToken: string;
-    targetChain: Chain;
-    targetToken: string;
-    sourceAmount?: number;
-    targetAmount?: number;
-    referralCode?: string;
-    /**
-     * Optional per-swap fee surcharge in basis points
-     * (0..=max_extra_fee_bps configured on the matching developer key).
-     * Must be passed identically here and on the corresponding createSwap
-     * so the quoted fee matches what's charged.
-     */
-    extraFees?: number;
-    /**
-     * Optional ATA-existence hint for non-EVM CCTP destinations
-     * (Solana). `true` = recipient has no USDC ATA yet, `false` =
-     * recipient already holds USDC. Omit to let the backend fall back
-     * to its conservative default.
-     */
-    bridgeRecipientSetup?: boolean;
-  }): Promise<QuoteResponse> {
+  async getQuote(params: GetQuoteParams): Promise<QuoteResponse> {
+    if (this.#canComposeQuote(params)) {
+      try {
+        return await this.composeQuote({
+          sourceChain: params.sourceChain,
+          sourceToken: params.sourceToken,
+          targetChain: params.targetChain,
+          targetToken: params.targetToken,
+          sourceAmount: params.sourceAmount,
+          targetAmount: params.targetAmount,
+        });
+      } catch (err) {
+        if (!(err instanceof UnsupportedComposeQuotePath)) {
+          // UnsupportedComposeQuotePath is the expected "not my path" signal —
+          // fall through silently. Any other error is unexpected; a transient
+          // compose failure shouldn't break a quote the server can still
+          // serve, so log it and fall back rather than propagate.
+          this.#logger.warn({
+            event: "client.getQuote.composeFallback",
+            message: "composeQuote failed; falling back to server /quote",
+            data: { error: err instanceof Error ? err.message : String(err) },
+          });
+        }
+      }
+    }
+    return this.#getQuoteFromServer(params);
+  }
+
+  /**
+   * Whether `getQuote` can serve `params` via client-side `composeQuote`.
+   *
+   * Compose now covers BTC↔EVM both directions — direct (hub chains) or
+   * bridged (via Arbitrum/CCTP/OFT, with `bridge_fee` surfaced) — and the BTC
+   * side can be Bitcoin, Arkade, or Lightning. The response shape is identical
+   * to `/quote`; some *values* are more accurate (e.g. the Lightning Boltz fee,
+   * EURe), which is fine — only the API contract must stay stable.
+   *
+   * Stays on `/quote` (compose can't reproduce or price these):
+   *   - referral / extra-fee pricing (applied server-side only),
+   *   - `bridgeRecipientSetup` (Solana CCTP ATA hint),
+   *   - Solana destinations (base58 token, not hex),
+   *   - foreign EVM↔EVM (neither side BTC).
+   */
+  #canComposeQuote(params: GetQuoteParams): boolean {
+    if ((params.referralCode ?? this.#config.referralCode) != null) {
+      return false;
+    }
+    if (params.extraFees != null) return false;
+    if (params.bridgeRecipientSetup != null) return false;
+    const sourceIsBtc = params.sourceToken.toLowerCase() === "btc";
+    const targetIsBtc = params.targetToken.toLowerCase() === "btc";
+    if (sourceIsBtc === targetIsBtc) return false; // need exactly one BTC side
+    const evmToken = sourceIsBtc ? params.targetToken : params.sourceToken;
+    return evmToken.startsWith("0x"); // hex EVM token (rules out Solana base58)
+  }
+
+  /**
+   * Server-composed quote via `/quote` — the fallback path for requests
+   * `composeQuote` can't serve (see {@link getQuote}).
+   */
+  async #getQuoteFromServer(params: GetQuoteParams): Promise<QuoteResponse> {
     // If the target is a bridge-only chain (e.g. USDC on Base), remap the
     // quote request to the token on Arbitrum (source chain the backend knows).
     // Pass bridge_target_chain so the backend includes the bridge fee.

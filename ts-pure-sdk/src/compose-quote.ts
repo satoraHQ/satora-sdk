@@ -214,7 +214,7 @@ function directBtcToPeggedPivot(
       "composeQuote: no amount pinned (unreachable)",
     );
   }
-  return { btcSats, evmSmallest, evmDecimals: pivot.decimals };
+  return { btcSats, evmSmallest, evmDecimals: pivot.decimals, bridgeFee: 0n };
 }
 
 /**
@@ -241,7 +241,7 @@ function directPeggedToBtcPivot(
       "composeQuote: no amount pinned (unreachable)",
     );
   }
-  return { btcSats, evmSmallest, evmDecimals: pivot.decimals };
+  return { btcSats, evmSmallest, evmDecimals: pivot.decimals, bridgeFee: 0n };
 }
 
 export class UnsupportedComposeQuotePath extends Error {
@@ -286,6 +286,8 @@ export interface ComposeQuoteDeps {
   }): Promise<{
     expected_amount_in: { raw: string; decimals: number };
     estimated_amount_out: { raw: string; decimals: number };
+    /** Bridge fee deducted (bridged-token smallest units); absent if no bridge. */
+    bridge_fee?: string;
   }>;
 }
 
@@ -381,7 +383,7 @@ async function composeBtcToEvm(
     );
   }
 
-  const { btcSats, evmSmallest, evmDecimals } = pivot;
+  const { btcSats, evmSmallest, evmDecimals, bridgeFee } = pivot;
 
   // Protocol fee in sats: floor(btc_sats × fee_percentage). The server
   // uses `rust_decimal` arithmetic on a `Decimal`; we use `BigInt`
@@ -420,10 +422,13 @@ async function composeBtcToEvm(
     min_amount: pair.min_sats,
     max_amount: pair.max_sats,
     source_amount: btcSats.toString(),
-    target_amount: evmSmallest.toString(),
+    // `evmSmallest` is the delivered amount (the dex-quote folded the bridge
+    // fee out); add it back so `target_amount` is the gross DEX output, matching
+    // legacy's contract (`target_amount − bridge_fee = delivered`).
+    target_amount: (evmSmallest + bridgeFee).toString(),
     net_source_amount: netSource.toString(),
     net_target_amount: netTarget.toString(),
-    bridge_fee: undefined,
+    bridge_fee: bridgeFee > 0n ? Number(bridgeFee) : undefined,
   };
 }
 
@@ -431,6 +436,8 @@ interface BtcEvmPivot {
   btcSats: bigint;
   evmSmallest: bigint;
   evmDecimals: number;
+  /** Bridge fee deducted (target-token smallest units); `0n` if no bridge. */
+  bridgeFee: bigint;
 }
 
 /**
@@ -463,6 +470,7 @@ async function dexSourcePinned(
     btcSats,
     evmSmallest: BigInt(dexQuote.estimated_amount_out.raw),
     evmDecimals: dexQuote.estimated_amount_out.decimals,
+    bridgeFee: BigInt(dexQuote.bridge_fee ?? "0"),
   };
 }
 
@@ -501,6 +509,7 @@ async function dexTargetPinned(
     btcSats: pivotInBase / pivotScale,
     evmSmallest,
     evmDecimals: dexQuote.estimated_amount_out.decimals,
+    bridgeFee: BigInt(dexQuote.bridge_fee ?? "0"),
   };
 }
 
@@ -594,7 +603,7 @@ async function composeEvmToBtc(
     );
   }
 
-  const { btcSats, evmSmallest, evmDecimals } = pivot;
+  const { btcSats, evmSmallest, evmDecimals, bridgeFee } = pivot;
 
   // Protocol fee in sats: floor(btc_sats × fee_percentage). Same fixed-
   // point trick as composeBtcToEvm.
@@ -631,11 +640,15 @@ async function composeEvmToBtc(
     protocol_fee_rate: pair.fee_percentage,
     min_amount: pair.min_sats,
     max_amount: pair.max_sats,
+    // EVM→BTC: the EVM source is the bridged side. The dex-quote already
+    // reports `evmSmallest` as the gross the user supplies (the inbound fee was
+    // folded onto it), so `source_amount` needs no adjustment — just surface
+    // the fee.
     source_amount: evmSmallest.toString(),
     target_amount: btcSats.toString(),
     net_source_amount: netSource.toString(),
     net_target_amount: netTarget.toString(),
-    bridge_fee: undefined,
+    bridge_fee: bridgeFee > 0n ? Number(bridgeFee) : undefined,
   };
 }
 
@@ -643,6 +656,8 @@ interface EvmBtcPivot {
   btcSats: bigint;
   evmSmallest: bigint;
   evmDecimals: number;
+  /** Bridge fee deducted (source-token smallest units); `0n` if no bridge. */
+  bridgeFee: bigint;
 }
 
 /**
@@ -677,6 +692,7 @@ async function dexEvmToBtcSourcePinned(
     btcSats: pivotBase / pivotScale,
     evmSmallest,
     evmDecimals: dexQuote.expected_amount_in.decimals,
+    bridgeFee: BigInt(dexQuote.bridge_fee ?? "0"),
   };
 }
 
@@ -717,6 +733,7 @@ async function dexEvmToBtcTargetPinned(
     btcSats,
     evmSmallest: BigInt(dexQuote.expected_amount_in.raw),
     evmDecimals: dexQuote.expected_amount_in.decimals,
+    bridgeFee: BigInt(dexQuote.bridge_fee ?? "0"),
   };
 }
 
