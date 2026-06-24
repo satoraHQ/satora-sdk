@@ -140,6 +140,7 @@ import {
   isBtcPegged,
   isEvmToken,
   isLightning,
+  isSolanaToken,
   isSourceEvmChain,
   toChainName,
 } from "./tokens.js";
@@ -1332,6 +1333,11 @@ export class Client {
     to: Token;
     amount: DexQuoteAmount;
     slippageBps: number;
+    /**
+     * `true` when the CCTP recipient's USDC account doesn't exist yet (fresh
+     * non-EVM recipient, e.g. Solana) — folds the higher ATA-setup flat fee.
+     */
+    recipientSetup?: boolean;
   }): Promise<DexQuoteResponse> {
     const { data, error } = await this.#apiClient.POST("/dex-quote", {
       body: {
@@ -1339,6 +1345,7 @@ export class Client {
         to: params.to,
         amount: params.amount,
         slippage_bps: params.slippageBps,
+        recipient_setup: params.recipientSetup,
       },
     });
     if (error || !data) {
@@ -1418,6 +1425,7 @@ export class Client {
           // Per-call referral wins; fall back to the client default.
           referralCode: params.referralCode ?? this.#config.referralCode,
           extraFees: params.extraFees,
+          bridgeRecipientSetup: params.bridgeRecipientSetup,
         });
       } catch (err) {
         if (!(err instanceof UnsupportedComposeQuotePath)) {
@@ -1441,21 +1449,21 @@ export class Client {
    *
    * Compose now covers BTC↔EVM both directions — direct (hub chains) or
    * bridged (via Arbitrum/CCTP/OFT, with `bridge_fee` surfaced), the BTC side
-   * Bitcoin/Arkade/Lightning, and referral/extra-fee pricing (resolved via
-   * `/referral-fee`). The response shape is identical to `/quote`; some
-   * *values* are more accurate (e.g. the Lightning Boltz fee, EURe), which is
-   * fine — only the API contract must stay stable.
+   * Bitcoin/Arkade/Lightning, referral/extra-fee pricing (via `/referral-fee`),
+   * and BTC→Solana CCTP (incl. the `bridgeRecipientSetup` ATA surcharge). The
+   * response shape is identical to `/quote`; some *values* are more accurate
+   * (e.g. the Lightning Boltz fee, EURe), which is fine — only the API contract
+   * must stay stable.
    *
    * Stays on `/quote` (compose can't price these):
-   *   - `bridgeRecipientSetup` (Solana CCTP ATA hint),
-   *   - Solana destinations (base58 token, not hex),
    *   - foreign EVM↔EVM (neither side BTC).
    */
   #canComposeQuote(params: GetQuoteParams): boolean {
-    if (params.bridgeRecipientSetup != null) return false;
     const sourceIsBtc = params.sourceToken.toLowerCase() === "btc";
     const targetIsBtc = params.targetToken.toLowerCase() === "btc";
     if (sourceIsBtc === targetIsBtc) return false; // need exactly one BTC side
+    // Solana is a CCTP-only *target* — base58 token, allowed for BTC→Solana.
+    if (sourceIsBtc && isSolanaToken(params.targetChain)) return true;
     const evmToken = sourceIsBtc ? params.targetToken : params.sourceToken;
     return evmToken.startsWith("0x"); // hex EVM token (rules out Solana base58)
   }

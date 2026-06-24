@@ -138,6 +138,55 @@ function resolveEvmRouting(
   };
 }
 
+/** Solana — a CCTP-only, non-EVM destination carried as a base58 SPL token. */
+const SOLANA_CHAIN = "Solana" as Chain;
+
+/** The routing + the actual `to` token a BTC→EVM/Solana quote delivers to. */
+interface TargetRouting {
+  btcPegged: Pivot;
+  pivotChainId: number;
+  hubChain: Chain;
+  /** The remote token the DEX delivers — EVM (hub or bridged) or Solana. */
+  toToken: Token;
+}
+
+/**
+ * Resolve the target side, including non-EVM Solana. Solana is CCTP-only, so it
+ * bridges through Arbitrum (like a non-hub EVM chain) but its `to` token is a
+ * `{ kind: "solana" }` base58 SPL address rather than an EVM hex address.
+ */
+function resolveTargetRouting(
+  chainConfig: ChainConfigResponse,
+  targetChain: Chain,
+  targetToken: string,
+): TargetRouting {
+  if (targetChain === SOLANA_CHAIN) {
+    const arb = pivotForChain(chainConfig, ARBITRUM_CHAIN);
+    if (!arb) {
+      throw new UnsupportedComposeQuotePath(
+        "composeQuote: Arbitrum pivot missing from chain-config; cannot bridge to Solana",
+      );
+    }
+    return {
+      btcPegged: arb,
+      pivotChainId: ARBITRUM_CHAIN_ID,
+      hubChain: ARBITRUM_CHAIN,
+      toToken: { kind: "solana", address: targetToken },
+    };
+  }
+  const r = resolveEvmRouting(chainConfig, targetChain);
+  return {
+    btcPegged: r.btcPegged,
+    pivotChainId: r.pivotChainId,
+    hubChain: r.hubChain,
+    toToken: {
+      kind: "evm",
+      chain_id: r.tokenChainId,
+      address: targetToken.toLowerCase(),
+    },
+  };
+}
+
 /**
  * Parse a decimal rate string ("1", "0.99790000") into an exact
  * numerator/denominator so the BTC↔pegged conversion is integer-exact
@@ -263,6 +312,11 @@ export interface ComposeQuoteParams {
   referralCode?: string;
   /** Per-swap extra-fee surcharge (bps), capped per referral key. */
   extraFees?: number;
+  /**
+   * `true` when a Solana CCTP recipient has no USDC ATA yet — folds the higher
+   * ATA-setup bridge fee. Only meaningful for Solana targets.
+   */
+  bridgeRecipientSetup?: boolean;
 }
 
 /**
@@ -293,6 +347,7 @@ export interface ComposeQuoteDeps {
     to: Token;
     amount: { kind: "exact_in" | "exact_out"; value: string };
     slippageBps: number;
+    recipientSetup?: boolean;
   }): Promise<{
     expected_amount_in: { raw: string; decimals: number };
     estimated_amount_out: { raw: string; decimals: number };
@@ -331,10 +386,12 @@ async function composeBtcToEvm(
   params: ComposeQuoteParams,
   deps: ComposeQuoteDeps,
 ): Promise<QuoteResponse> {
-  // Direct on a hub chain, or bridged through Arbitrum for everything else.
-  const { btcPegged, pivotChainId, hubChain, tokenChainId } = resolveEvmRouting(
+  // Direct on a hub chain, or bridged through Arbitrum for everything else
+  // (incl. non-EVM Solana, whose `to` token is base58).
+  const { btcPegged, pivotChainId, hubChain, toToken } = resolveTargetRouting(
     deps.chainConfig,
     params.targetChain,
+    params.targetToken,
   );
 
   // The BTC↔pivot leg (rate, fee, limits) keys off the settlement hub —
@@ -374,7 +431,7 @@ async function composeBtcToEvm(
       deps,
       btcPegged,
       pivotChainId,
-      tokenChainId,
+      toToken,
       pivotScale,
     );
   } else if (params.targetAmount != null) {
@@ -384,7 +441,7 @@ async function composeBtcToEvm(
       deps,
       btcPegged,
       pivotChainId,
-      tokenChainId,
+      toToken,
       pivotScale,
     );
   } else {
@@ -462,7 +519,7 @@ async function dexSourcePinned(
   deps: ComposeQuoteDeps,
   btcPegged: { address: string; decimals: number },
   pivotChainId: number,
-  tokenChainId: number,
+  toToken: Token,
   pivotScale: bigint,
 ): Promise<BtcEvmPivot> {
   const pivotInBase = btcSats * pivotScale;
@@ -470,13 +527,10 @@ async function dexSourcePinned(
   // straddle Arbitrum↔dest when bridged — the server bridges and folds the fee.
   const dexQuote = await deps.getDexQuote({
     from: { kind: "evm", chain_id: pivotChainId, address: btcPegged.address },
-    to: {
-      kind: "evm",
-      chain_id: tokenChainId,
-      address: params.targetToken.toLowerCase(),
-    },
+    to: toToken,
     amount: { kind: "exact_in", value: pivotInBase.toString() },
     slippageBps: params.slippageBps ?? 100,
+    recipientSetup: params.bridgeRecipientSetup,
   });
   return {
     btcSats,
@@ -501,20 +555,17 @@ async function dexTargetPinned(
   deps: ComposeQuoteDeps,
   btcPegged: { address: string; decimals: number },
   pivotChainId: number,
-  tokenChainId: number,
+  toToken: Token,
   pivotScale: bigint,
 ): Promise<BtcEvmPivot> {
   // Bridged exact-out: the server grosses the DEX output up by the bridge fee
   // so `expected_amount_in` (the pivot needed) already covers it.
   const dexQuote = await deps.getDexQuote({
     from: { kind: "evm", chain_id: pivotChainId, address: btcPegged.address },
-    to: {
-      kind: "evm",
-      chain_id: tokenChainId,
-      address: params.targetToken.toLowerCase(),
-    },
+    to: toToken,
     amount: { kind: "exact_out", value: evmSmallest.toString() },
     slippageBps: params.slippageBps ?? 100,
+    recipientSetup: params.bridgeRecipientSetup,
   });
   const pivotInBase = BigInt(dexQuote.expected_amount_in.raw);
   return {

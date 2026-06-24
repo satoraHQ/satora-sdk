@@ -2052,6 +2052,14 @@ export interface components {
              */
             from: components["schemas"]["Token"];
             /**
+             * @description `true` when the CCTP recipient's USDC token account doesn't exist yet
+             *     and Circle's forwarder must create it (only meaningful for non-EVM
+             *     destinations like Solana — it adds ~$0.14 of ATA rent to the flat fee).
+             *     Selects `forwardFee` with the setup surcharge for the fold + the
+             *     reported `bridge_fee`. Ignored (no surcharge) for EVM destinations.
+             */
+            recipient_setup?: boolean;
+            /**
              * Format: int32
              * @description Slippage tolerance the SDK will use at execution time, in basis
              *     points (e.g. `100` = 1%, `50` = 0.5%). Affects route selection —
@@ -2063,8 +2071,8 @@ export interface components {
             slippage_bps: number;
             /**
              * @description Target asset. Same-chain quotes use the same chain id as `from`;
-             *     cross-chain quotes use a different EVM chain id (Solana
-             *     destinations are reserved for future work).
+             *     cross-chain quotes bridge (a different EVM chain id, or a
+             *     `Token::Solana` base58 SPL address for CCTP-to-Solana).
              */
             to: components["schemas"]["Token"];
         };
