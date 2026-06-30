@@ -41,6 +41,7 @@ export type {
   RedeemContext,
 } from "./types.js";
 export { getChainFromTokenId } from "./types.js";
+export { claimViaUserOp, type UserOpClaimParams } from "./userop-claim.js";
 
 /**
  * Claims a swap by revealing the preimage.

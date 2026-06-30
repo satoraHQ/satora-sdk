@@ -107,6 +107,7 @@ import {
   buildArkadeClaim,
   type ClaimGaslessResult,
   type ClaimResult,
+  claimViaUserOp,
   continueArkadeClaim,
   claimViaGasless as gaslessClaim,
   claim as redeemClaim,
@@ -2107,6 +2108,81 @@ export class Client {
       throw new Error(
         `Expected arkade_to_evm or lightning_to_evm swap, got ${swap.direction}. claimViaGasless is for EVM-targeted swaps.`,
       );
+    }
+
+    // Client-side claim via a paymaster-sponsored UserOp for same-chain
+    // Arbitrum EVM DEX swaps. Required for LI.FI-only targets (e.g. EURe): the
+    // legacy server path builds Uniswap calldata with a fixed gas limit and
+    // reverts (wrong pool / OOG). Here the SDK fetches LI.FI calldata from
+    // `/dex-calldata/fund` (recipient = coordinator) and publishes itself; the
+    // bundler estimates gas and the Gas Manager sponsors it.
+    //
+    // Only genuinely-unsupported shapes (bridge / Solana / non-Arbitrum /
+    // WBTC-pivot no-DEX) fall through to the legacy server path. A swap this
+    // path *is* meant to handle must NOT silently degrade to legacy when AA is
+    // unconfigured — that legacy path is exactly what's broken for these
+    // targets — so we throw an actionable error instead.
+    const targetTokenAddr = String(swap.target_token.token_id);
+    const dexSwapNeeded =
+      targetTokenAddr.toLowerCase() !== swap.wbtc_address.toLowerCase();
+    const userOpEligible =
+      dexSwapNeeded &&
+      swap.evm_chain_id === 42161 &&
+      !bridgeRecipient &&
+      !bridgeRecipientWallet &&
+      !(swap as { bridge_target_chain?: string | null }).bridge_target_chain;
+    if (userOpEligible) {
+      if (this.#config.aa == null) {
+        throw new Error(
+          "Claiming an Arbitrum EVM DEX swap requires AA config for the " +
+            "sponsored UserOp. Call `.withAa({ bundlerUrl, paymasterPolicyId })` " +
+            "on the ClientBuilder before `.build()`.",
+        );
+      }
+      // Mirror the per-direction slippage floor the legacy server path uses;
+      // the coordinator's `_sweep` enforces `min_amount_out` on-chain.
+      const slippageBps = swap.direction === "bitcoin_to_evm" ? 200 : 100;
+      const fundResp = await this.#apiClient.POST("/dex-calldata/fund", {
+        body: {
+          from: {
+            kind: "evm",
+            chain_id: swap.evm_chain_id,
+            address: swap.wbtc_address,
+          },
+          to: {
+            kind: "evm",
+            chain_id: swap.evm_chain_id,
+            address: targetTokenAddr,
+          },
+          amount: { kind: "exact_in", value: String(swap.evm_expected_sats) },
+          sender: swap.evm_coordinator_address,
+          slippage_bps: slippageBps,
+        },
+      });
+      if (fundResp.error || !fundResp.data) {
+        throw new Error(
+          `Failed to fetch /dex-calldata/fund: ${JSON.stringify(fundResp.error)}`,
+        );
+      }
+      const payload = fundResp.data.payload;
+      if (payload.kind !== "evm") {
+        throw new Error(
+          `Unexpected /dex-calldata payload kind: ${payload.kind}`,
+        );
+      }
+      return claimViaUserOp({
+        preimage: stored.preimage,
+        secretKey: hexToBytes(this.#getEvmSigningKey()),
+        swap,
+        destination,
+        calls: payload.calls.map((c) => ({
+          target: c.target,
+          value: BigInt(c.value),
+          data: c.data,
+        })),
+        minAmountOut: BigInt(fundResp.data.estimated_amount_out),
+        aa: this.#config.aa,
+      });
     }
 
     // Always fetch redeem calldata from the server to get calls_hash.

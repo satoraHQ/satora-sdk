@@ -15,6 +15,7 @@ export {
   type CollabRefundEvmDigestParams,
   type CollabRefundEvmTypedData,
   type CoordinatorCall,
+  computeCoordinatorCallsHash,
   type Eip2612PermitParams,
   type ExecuteAndCreateCallData,
   type ExecuteAndCreateWithPermit2Params,

@@ -275,6 +275,24 @@ export function buildRedeemCalls(
   ];
 }
 
+/**
+ * Compute `keccak256(abi.encode(Call[]))` — the `callsHash` the coordinator's
+ * `redeemBySig` signature commits to (`HTLCCoordinator._computeCallsHash`).
+ *
+ * When the SDK builds the calls itself (publishing `redeemAndExecute` directly
+ * rather than via the server) it must produce this hash byte-for-byte, or
+ * `redeemBySig` reverts. Solidity `abi.encode(Call[])` is a 32-byte offset word
+ * (`0x20`, pointing at the array) followed by the array body; `encodeCalls()`
+ * emits only the body (in `redeemAndExecute` the offset lives in the call head),
+ * so we prepend the offset here. Matches the server's `calls.abi_encode_params()`.
+ */
+export function computeCoordinatorCallsHash(calls: CoordinatorCall[]): string {
+  const ARRAY_OFFSET_WORD =
+    "0000000000000000000000000000000000000000000000000000000000000020";
+  const body = encodeCalls(calls);
+  return keccak256(hexToBytes(`0x${ARRAY_OFFSET_WORD}${body}`));
+}
+
 // ── redeemAndExecute calldata ────────────────────────────────────────────────
 
 /**
