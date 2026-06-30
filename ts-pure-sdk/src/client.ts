@@ -897,6 +897,18 @@ export class Client {
   readonly #apiClient: ApiClient;
   readonly #config: ClientConfig;
   #signer: Signer;
+  /**
+   * Short-TTL memo for `composeQuote`'s session-static primitives
+   * (`/swap-pairs`, `/chain-config`, `/referral-fee`) so a keystroke-driven UI
+   * doesn't re-fetch them on every recompute. Keyed by request; caches the
+   * in-flight promise so concurrent recomputes share one round-trip, and evicts
+   * on rejection so errors aren't sticky. `/network-fees` is intentionally not
+   * cached — it tracks live gas.
+   */
+  readonly #composeStaticCache = new Map<
+    string,
+    { promise: Promise<unknown>; expiry: number }
+  >();
   readonly #signerStorage?: WalletStorage;
   readonly #swapStorage?: SwapStorage;
   #statusWatcher: SwapStatusWatcher | null = null;
@@ -1370,18 +1382,26 @@ export class Client {
    */
   async composeQuote(params: ComposeQuoteParams): Promise<QuoteResponse> {
     // Only fetch the referral delta when a referral / extra-fee is in play —
-    // otherwise it's a guaranteed-zero round-trip.
+    // otherwise it's a guaranteed-zero round-trip. It's session-static per
+    // (code, extraFees), so cache it like the other primitives.
     const referralFee =
       params.referralCode != null || params.extraFees != null
-        ? this.getReferralFee({
-            referralCode: params.referralCode,
-            extraFees: params.extraFees,
-          })
+        ? this.#composeStatic(
+            `referral-fee|${params.referralCode ?? ""}|${params.extraFees ?? ""}`,
+            () =>
+              this.getReferralFee({
+                referralCode: params.referralCode,
+                extraFees: params.extraFees,
+              }),
+          )
         : Promise.resolve(undefined);
+    // `/swap-pairs` and `/chain-config` are static at the session timescale —
+    // cache them so keystroke-driven recomputes don't re-fetch. `/network-fees`
+    // tracks live gas, so it's always fetched fresh.
     const [swapPairs, networkFees, chainConfig, referral] = await Promise.all([
-      this.getSwapPairs(),
+      this.#composeStatic("swap-pairs", () => this.getSwapPairs()),
       this.getNetworkFees(),
-      this.getChainConfig(),
+      this.#composeStatic("chain-config", () => this.getChainConfig()),
       referralFee,
     ]);
     return composeQuoteHelper(params, {
@@ -1391,6 +1411,35 @@ export class Client {
       referralExtraFeeRate: referral?.extra_fee_rate,
       getDexQuote: (p) => this.getDexQuote(p),
     });
+  }
+
+  /** TTL window for `composeQuote`'s static-primitive memo. */
+  static readonly #COMPOSE_STATIC_TTL_MS = 60_000;
+
+  /**
+   * Memoize a session-static compose primitive for {@link Client.#COMPOSE_STATIC_TTL_MS}.
+   * Caches the in-flight promise (so concurrent recomputes share one round-trip)
+   * and evicts on rejection (so a transient failure isn't cached).
+   */
+  #composeStatic<T>(key: string, fetcher: () => Promise<T>): Promise<T> {
+    const hit = this.#composeStaticCache.get(key);
+    if (hit && hit.expiry > Date.now()) {
+      return hit.promise as Promise<T>;
+    }
+    const promise = fetcher();
+    const entry = {
+      promise,
+      expiry: Date.now() + Client.#COMPOSE_STATIC_TTL_MS,
+    };
+    this.#composeStaticCache.set(key, entry);
+    promise.catch(() => {
+      // Evict only if this exact entry is still current, so we don't clobber a
+      // newer successful fetch that replaced it.
+      if (this.#composeStaticCache.get(key) === entry) {
+        this.#composeStaticCache.delete(key);
+      }
+    });
+    return promise;
   }
 
   // =========================================================================
