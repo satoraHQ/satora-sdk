@@ -127,7 +127,7 @@ export const BTC_ONCHAIN_INFO: TokenInfo = {
 const SOURCE_EVM_CHAINS = ["1", "137", "42161"] as const;
 
 /** All EVM chain IDs including CCTP and USDT0 bridge-only destinations. */
-const ALL_EVM_CHAIN_IDS: Record<string, string> = {
+export const ALL_EVM_CHAIN_IDS: Record<string, string> = {
   Ethereum: "1",
   Polygon: "137",
   Arbitrum: "42161",

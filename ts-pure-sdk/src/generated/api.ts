@@ -1499,6 +1499,17 @@ export interface components {
             /** @enum {string} */
             router: "layerzero";
         };
+        /** @description CCTP mint recipient, tagged by destination chain kind. */
+        BridgeRecipient: {
+            address: string;
+            /** @enum {string} */
+            kind: "evm";
+        } | {
+            address: string;
+            /** @enum {string} */
+            kind: "solana";
+            wallet?: string | null;
+        };
         /** @description BTC → Arkade swap response */
         BtcToArkadeSwapResponse: {
             /** @description Arkade VHTLC claim transaction ID (user claim) */
@@ -1917,6 +1928,7 @@ export interface components {
              *     (exact-out), both as stringified `u128` smallest-unit values.
              */
             amount: components["schemas"]["DexCalldataAmount"];
+            bridge_recipient?: null | components["schemas"]["BridgeRecipient"];
             /**
              * @description Source asset the SDK will spend. Must be a [`Token::Evm`] variant —
              *     EOAs only delegate via EIP-7702 on EVM. `Solana` is rejected with

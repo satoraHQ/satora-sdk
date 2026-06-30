@@ -3055,6 +3055,42 @@
         ],
         "description": "Fee model for the cross-chain bridge leg of a quote, tagged by protocol\n(`router`). Present only when `from`/`to` straddle a bridge; each protocol\nis a variant carrying exactly the fields its fee needs, so consumers\n`match`/`switch` on the tag rather than assuming one shape.\n\nThe bridge isn't a separate user op — Circle's Forwarding Service (CCTP)\nand LayerZero's OFT both settle inside the single Arbitrum `Call[]` the SDK\nalready submits. This just tells the SDK what (if anything) to subtract\nfrom the DEX-leg output to get the delivered amount."
       },
+      "BridgeRecipient": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "EVM destination — the recipient's address (hex).",
+            "required": ["address", "kind"],
+            "properties": {
+              "address": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": ["evm"]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Solana destination — the recipient's USDC associated token account\n(base58). `wallet` (the recipient's wallet pubkey) is supplied only when\nthe ATA doesn't exist yet; its presence selects Circle's higher\nATA-creation fee variant.",
+            "required": ["address", "kind"],
+            "properties": {
+              "address": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": ["solana"]
+              },
+              "wallet": {
+                "type": ["string", "null"]
+              }
+            }
+          }
+        ],
+        "description": "CCTP mint recipient, tagged by destination chain kind."
+      },
       "BtcToArkadeSwapResponse": {
         "type": "object",
         "description": "BTC → Arkade swap response",
@@ -3686,6 +3722,17 @@
           "amount": {
             "$ref": "#/components/schemas/DexCalldataAmount",
             "description": "Either the input amount (exact-in) or the desired output amount\n(exact-out), both as stringified `u128` smallest-unit values."
+          },
+          "bridge_recipient": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/BridgeRecipient",
+                "description": "CCTP mint recipient on the destination chain. Required when `to` is a\ncross-chain / Solana CCTP target; the destination chain and bridge\nprotocol are read from `to` itself. The variant must match `to`'s chain\nkind (EVM ↔ `evm`, Solana ↔ `solana`)."
+              }
+            ]
           },
           "from": {
             "$ref": "#/components/schemas/Token",

@@ -135,6 +135,7 @@ import {
   type WalletStorage,
 } from "./storage/index.js";
 import {
+  ALL_EVM_CHAIN_IDS,
   isArkade,
   isBridgeOnlyChain,
   isBtcOnchain,
@@ -2110,35 +2111,74 @@ export class Client {
       );
     }
 
-    // Client-side claim via a paymaster-sponsored UserOp for same-chain
-    // Arbitrum EVM DEX swaps. Required for LI.FI-only targets (e.g. EURe): the
-    // legacy server path builds Uniswap calldata with a fixed gas limit and
-    // reverts (wrong pool / OOG). Here the SDK fetches LI.FI calldata from
-    // `/dex-calldata/fund` (recipient = coordinator) and publishes itself; the
-    // bundler estimates gas and the Gas Manager sponsors it.
+    // Client-side claim via a paymaster-sponsored UserOp. Covers Arbitrum-hub
+    // DEX swaps (e.g. EURe — LI.FI-only, broken on the legacy fixed-gas Uniswap
+    // path) and CCTP bridge targets (USDC → Optimism/Base/Solana, all settled on
+    // the Arbitrum hub). The SDK fetches the LI.FI swap + CCTP legs from
+    // `/dex-calldata/fund` (driven by the `to` Token) and publishes the UserOp
+    // itself; the bundler estimates gas and the Gas Manager sponsors it.
     //
-    // Only genuinely-unsupported shapes (bridge / Solana / non-Arbitrum /
-    // WBTC-pivot no-DEX) fall through to the legacy server path. A swap this
-    // path *is* meant to handle must NOT silently degrade to legacy when AA is
-    // unconfigured — that legacy path is exactly what's broken for these
-    // targets — so we throw an actionable error instead.
+    // OFT/USDT0 bridges stay on the legacy path for now (their native LayerZero
+    // fee needs an ETH self-fund leg). A swap this path *is* meant to handle must
+    // NOT silently degrade to legacy when AA is unconfigured — that legacy path
+    // is exactly what's broken — so we throw an actionable error instead.
     const targetTokenAddr = String(swap.target_token.token_id);
     const dexSwapNeeded =
       targetTokenAddr.toLowerCase() !== swap.wbtc_address.toLowerCase();
+    const bridgeSwap = swap as {
+      bridge_target_chain?: string | null;
+      bridge_target_token_address?: string | null;
+    };
+    const bridgeTargetChain = bridgeSwap.bridge_target_chain || undefined;
+    const bridgeTargetToken =
+      bridgeSwap.bridge_target_token_address || undefined;
+    const isBridge = bridgeTargetChain != null;
+    // A USDT0 target token is a LayerZero OFT bridge; everything else CCTP.
+    const isOftBridge =
+      isBridge &&
+      bridgeTargetToken != null &&
+      Object.values(USDT0_ADDRESSES).some(
+        (a) => a.toLowerCase() === bridgeTargetToken.toLowerCase(),
+      );
+    const isCctpBridge = isBridge && !isOftBridge && bridgeTargetToken != null;
+    const isSolanaBridge = isBridge && isSolanaToken(bridgeTargetChain);
+
     const userOpEligible =
       dexSwapNeeded &&
       swap.evm_chain_id === 42161 &&
-      !bridgeRecipient &&
-      !bridgeRecipientWallet &&
-      !(swap as { bridge_target_chain?: string | null }).bridge_target_chain;
+      (!isBridge || isCctpBridge);
     if (userOpEligible) {
       if (this.#config.aa == null) {
         throw new Error(
-          "Claiming an Arbitrum EVM DEX swap requires AA config for the " +
+          "Claiming an Arbitrum EVM DEX/CCTP swap requires AA config for the " +
             "sponsored UserOp. Call `.withAa({ bundlerUrl, paymasterPolicyId })` " +
             "on the ClientBuilder before `.build()`.",
         );
       }
+      // The swap leg always runs on Arbitrum. For a CCTP target the `to` Token
+      // names the destination (USDC on the dest chain / Solana) — the server
+      // reads the bridge from it; for same-chain it's the hub target itself.
+      const toToken = !isBridge
+        ? { kind: "evm" as const, chain_id: 42161, address: targetTokenAddr }
+        : isSolanaBridge
+          ? { kind: "solana" as const, address: bridgeTargetToken as string }
+          : {
+              kind: "evm" as const,
+              chain_id: Number(ALL_EVM_CHAIN_IDS[bridgeTargetChain as string]),
+              address: bridgeTargetToken as string,
+            };
+      // CCTP mint recipient: the user's address for EVM (same address cross-
+      // chain), the recipient ATA (+ optional wallet for ATA-setup) for Solana.
+      const bridgeRecipientParam = !isCctpBridge
+        ? undefined
+        : isSolanaBridge
+          ? {
+              kind: "solana" as const,
+              address: bridgeRecipient ?? "",
+              wallet: bridgeRecipientWallet,
+            }
+          : { kind: "evm" as const, address: destination };
+
       // Mirror the per-direction slippage floor the legacy server path uses;
       // the coordinator's `_sweep` enforces `min_amount_out` on-chain.
       const slippageBps = swap.direction === "bitcoin_to_evm" ? 200 : 100;
@@ -2149,14 +2189,11 @@ export class Client {
             chain_id: swap.evm_chain_id,
             address: swap.wbtc_address,
           },
-          to: {
-            kind: "evm",
-            chain_id: swap.evm_chain_id,
-            address: targetTokenAddr,
-          },
+          to: toToken,
           amount: { kind: "exact_in", value: String(swap.evm_expected_sats) },
           sender: swap.evm_coordinator_address,
           slippage_bps: slippageBps,
+          bridge_recipient: bridgeRecipientParam,
         },
       });
       if (fundResp.error || !fundResp.data) {
@@ -2180,7 +2217,11 @@ export class Client {
           value: BigInt(c.value),
           data: c.data,
         })),
-        minAmountOut: BigInt(fundResp.data.estimated_amount_out),
+        // A CCTP bridge claim's `_sweep` is a no-op (USDC is forwarded), so the
+        // floor is 0; a same-chain claim sweeps the swapped token to destination.
+        minAmountOut: isBridge
+          ? 0n
+          : BigInt(fundResp.data.estimated_amount_out),
         aa: this.#config.aa,
       });
     }
