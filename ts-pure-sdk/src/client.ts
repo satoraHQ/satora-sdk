@@ -2171,6 +2171,15 @@ export class Client {
               chain_id: Number(ALL_EVM_CHAIN_IDS[bridgeTargetChain as string]),
               address: bridgeTargetToken as string,
             };
+      // A Solana bridge target's mint recipient is its USDC ATA, which only
+      // rides on `bridgeRecipient` — reject a missing one here with an
+      // actionable error instead of round-tripping "" to the server (which
+      // fails opaquely in `solana_pubkey_to_bytes32`).
+      if (isCctpBridge && isSolanaBridge && !bridgeRecipient) {
+        throw new Error(
+          "Solana bridge claim requires `bridgeRecipient` (the recipient's USDC ATA).",
+        );
+      }
       // CCTP mint recipient: the user's address for EVM (same address cross-
       // chain), the recipient ATA (+ optional wallet for ATA-setup) for Solana.
       const bridgeRecipientParam = !isCctpBridge
