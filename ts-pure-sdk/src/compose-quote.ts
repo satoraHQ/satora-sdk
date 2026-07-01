@@ -491,10 +491,17 @@ async function composeBtcToEvm(
     min_amount: pair.min_sats,
     max_amount: pair.max_sats,
     source_amount: btcSats.toString(),
-    // `evmSmallest` is the delivered amount (the dex-quote folded the bridge
-    // fee out); add it back so `target_amount` is the gross DEX output, matching
-    // legacy's contract (`target_amount − bridge_fee = delivered`).
-    target_amount: (evmSmallest + bridgeFee).toString(),
+    // Source-pinned: `evmSmallest` is the delivered (fee-netted) DEX output, so
+    // gross it back up by the bridge fee — `target_amount` is the gross output
+    // (`target_amount − bridge_fee = delivered`). Target-pinned: the user pinned
+    // the *delivered* amount, so `target_amount` must echo it (and equal
+    // `net_target_amount` above); the server already covers the fee on the input
+    // side (`expected_amount_in`), so adding it here would overshoot the pin.
+    // Keyed on the same predicate as `net_target` above.
+    target_amount: (params.sourceAmount != null
+      ? evmSmallest + bridgeFee
+      : evmSmallest
+    ).toString(),
     net_source_amount: netSource.toString(),
     net_target_amount: netTarget.toString(),
     bridge_fee: bridgeFee > 0n ? Number(bridgeFee) : undefined,
