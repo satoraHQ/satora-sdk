@@ -61,7 +61,7 @@
     "viem": "^2.52.2"
   },
   "optionalDependencies": {
-    "better-sqlite3": "^12.6.2"
+    "better-sqlite3": "^12.11.1"
   },
   "peerDependencies": {
     "@circle-fin/adapter-viem-v2": "^1.8.0",
