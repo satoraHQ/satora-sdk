@@ -332,9 +332,17 @@ export function getBridgeTargetChain(token: TokenInfo): string | undefined {
  *
  * Excludes source chains (those already have USDC tokens from the backend).
  */
-export function getCctpBridgeTokens(): TokenInfo[] {
+/**
+ * A {@link TokenInfo} for an SDK-composed bridge target. Identical shape to
+ * `TokenInfo` except `chain` is the wide public {@link Chain} — these tokens
+ * live on CCTP/OFT bridge chains (Base, Optimism, Solana, …) that the narrow
+ * wire `TokenInfo["chain"]` can't represent.
+ */
+export type BridgeTokenInfo = Omit<TokenInfo, "chain"> & { chain: Chain };
+
+export function getCctpBridgeTokens(): BridgeTokenInfo[] {
   const sourceChainNames = new Set(["Ethereum", "Polygon", "Arbitrum"]);
-  const tokens: TokenInfo[] = [];
+  const tokens: BridgeTokenInfo[] = [];
 
   for (const chainName of Object.keys(CCTP_DOMAINS)) {
     // Skip source chains (backend already provides their USDC tokens)
@@ -372,9 +380,9 @@ export function getCctpBridgeTokens(): TokenInfo[] {
  *
  * Excludes source chains (those already have USDT0 tokens from the backend).
  */
-export function getUsdt0BridgeTokens(): TokenInfo[] {
+export function getUsdt0BridgeTokens(): BridgeTokenInfo[] {
   const sourceChainNames = new Set(["Ethereum", "Polygon", "Arbitrum"]);
-  const tokens: TokenInfo[] = [];
+  const tokens: BridgeTokenInfo[] = [];
 
   for (const chainName of Object.keys(LZ_EIDS)) {
     // Skip source chains (backend already provides their USDT tokens)

@@ -7,7 +7,7 @@
  * used by `Client` methods to coerce HTTP responses into the SDK shape.
  */
 
-export type { Chain } from "./chain.js";
+export type { Chain, WireChain } from "./chain.js";
 export {
   type ChainConfigEntry,
   type ChainConfigResponse,

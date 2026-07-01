@@ -162,6 +162,7 @@ import {
   type ReferralFeeResponse,
   type SwapPairsResponse,
   type Token,
+  type WireChain,
   type WireChainConfigResponse,
   type WireDexQuoteResponse,
   type WireNetworkFeesResponse,
@@ -1571,9 +1572,12 @@ export class Client {
     }
 
     const query = {
-      source_chain: sourceChain,
+      // Bridge targets have already been remapped to a hub chain above (with
+      // the destination carried in `bridge_target_chain`), so the value is a
+      // WireChain by construction — narrow it back for the server request.
+      source_chain: sourceChain as WireChain,
       source_token: sourceToken,
-      target_chain: targetChain,
+      target_chain: targetChain as WireChain,
       target_token: targetToken,
       source_amount: params.sourceAmount,
       target_amount: params.targetAmount,

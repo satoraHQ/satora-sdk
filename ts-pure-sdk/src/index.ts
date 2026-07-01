@@ -263,6 +263,7 @@ export {
 // Token helpers and constants
 export {
   Asset,
+  type BridgeTokenInfo,
   BTC_ARKADE,
   BTC_ARKADE_INFO,
   BTC_LIGHTNING,
