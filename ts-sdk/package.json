@@ -15,10 +15,14 @@
     "lint": "turbo run lint",
     "lint:fix": "turbo run lint:fix",
     "check-types": "turbo run check-types",
-    "clean": "turbo run clean && rm -rf .turbo node_modules"
+    "clean": "turbo run clean && rm -rf .turbo node_modules",
+    "changeset": "changeset",
+    "version": "changeset version",
+    "release": "turbo run build && changeset publish"
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.15",
+    "@changesets/cli": "^2.31.0",
     "turbo": "^2.9.5",
     "typescript": "^5.7.0"
   }
