@@ -66,3 +66,24 @@ typecheck:
 # Bump version for the SDK
 bump-version version:
     cd ts-pure-sdk && npm version {{ version }} --no-git-tag-version
+
+# =============================================================================
+# Changesets (SDK release versioning + changelogs)
+# =============================================================================
+
+# Usage (commit the generated .changeset/*.md alongside your change):
+#   just changeset pure                 # @lendasat/lendaswap-sdk-pure
+#   just changeset satora               # @satora/*
+#   just changeset pure add --empty     # empty changeset (no bump) for tooling
+#   just changeset satora status        # any changeset subcommand
+
+# Add a changeset for an SDK workspace (pure | satora), interactive
+changeset sdk *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{ sdk }}" in
+      pure)   dir=ts-pure-sdk ;;
+      satora) dir=ts-sdk ;;
+      *) echo "unknown sdk '{{ sdk }}' — use: pure | satora"; exit 1 ;;
+    esac
+    cd "$dir" && pnpm changeset {{ args }}
