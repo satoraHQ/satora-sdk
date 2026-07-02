@@ -17,8 +17,8 @@
     "check-types": "turbo run check-types",
     "clean": "turbo run clean && rm -rf .turbo node_modules",
     "changeset": "changeset",
-    "version": "changeset version",
-    "release": "turbo run build && changeset publish"
+    "changeset:version": "changeset version",
+    "changeset:release": "turbo run build && changeset publish"
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.15",
