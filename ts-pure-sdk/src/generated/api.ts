@@ -1034,6 +1034,7 @@ export interface components {
             /** @description Canonical EntryPoint v0.7 deployment. */
             entry_point: string;
         };
+        AmountU256: string;
         /**
          * @description Chain-agnostic request for Arkade-to-EVM swaps.
          *
@@ -2040,7 +2041,7 @@ export interface components {
              *     `estimated_amount_out` is the expected (mid-market) receive
              *     amount that the requested slippage tolerance covers.
              */
-            value: string;
+            value: components["schemas"]["AmountU256"];
         } | {
             /** @enum {string} */
             kind: "exact_out";
@@ -2049,7 +2050,7 @@ export interface components {
              *     `expected_amount_in` is the expected (mid-market) required input
              *     at the requested slippage tolerance.
              */
-            value: string;
+            value: components["schemas"]["AmountU256"];
         };
         DexQuoteRequest: {
             /**

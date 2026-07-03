@@ -2294,6 +2294,9 @@
           }
         }
       },
+      "AmountU256": {
+        "type": "string"
+      },
       "ArkadeToEvmSwapRequest": {
         "type": "object",
         "description": "Chain-agnostic request for Arkade-to-EVM swaps.\n\nThe caller specifies the target chain via `evm_chain_id` and the token\nvia its ERC-20 contract `token_address`. This endpoint supports any token\nreachable through 1inch aggregation (which covers Uniswap, Curve, etc.).",
@@ -3827,7 +3830,7 @@
                 "enum": ["exact_in"]
               },
               "value": {
-                "type": "string",
+                "$ref": "#/components/schemas/AmountU256",
                 "description": "Spend exactly this much `from_token`; the response's\n`estimated_amount_out` is the expected (mid-market) receive\namount that the requested slippage tolerance covers."
               }
             }
@@ -3842,7 +3845,7 @@
                 "enum": ["exact_out"]
               },
               "value": {
-                "type": "string",
+                "$ref": "#/components/schemas/AmountU256",
                 "description": "Receive exactly this much `to_token`; the response's\n`expected_amount_in` is the expected (mid-market) required input\nat the requested slippage tolerance."
               }
             }
