@@ -1360,7 +1360,7 @@ export class Client {
         to: params.to,
         amount: params.amount,
         slippage_bps: params.slippageBps,
-        recipient_setup: params.recipientSetup,
+        cctp_recipient_setup: params.recipientSetup,
       },
     });
     if (error || !data) {

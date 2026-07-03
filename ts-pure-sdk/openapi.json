@@ -3010,7 +3010,7 @@
         "oneOf": [
           {
             "type": "object",
-            "description": "Circle CCTP (USDC). The Forwarding Service deducts a percentage\n(`minimumFee`) plus a flat (`forwardFee`) from the bridged USDC, so the\nSDK applies:\n\n```text\nprotocol = floor(floor(amount * minimum_fee_scaled / 1_000_000) * 120 / 100)\nfee      = protocol + (recipient_setup ? flat_with_setup : flat)\n```\n\nMirrors `cctp::compute_max_fee` exactly (integer math, 20% buffer baked\ninto the `minimum_fee_scaled` formula).",
+            "description": "Circle CCTP (USDC). The Forwarding Service deducts a percentage\n(`minimumFee`) plus a flat (`forwardFee`) from the bridged USDC, so the\nSDK applies:\n\n```text\nprotocol = floor(floor(amount * minimum_fee_scaled / 1_000_000) * 120 / 100)\nfee      = protocol + (cctp_recipient_setup ? flat_with_setup : flat)\n```\n\nMirrors `cctp::compute_max_fee` exactly (integer math, 20% buffer baked\ninto the `minimum_fee_scaled` formula).",
             "required": [
               "fee_token",
               "minimum_fee_scaled",
@@ -3858,13 +3858,13 @@
             "$ref": "#/components/schemas/DexQuoteAmount",
             "description": "Either the input amount (exact-in) or the desired output amount\n(exact-out), both as stringified `u128` smallest-unit values."
           },
+          "cctp_recipient_setup": {
+            "type": "boolean",
+            "description": "`true` when the CCTP recipient's USDC token account doesn't exist yet\nand Circle's forwarder must create it (only meaningful for non-EVM\ndestinations like Solana — it adds ~$0.14 of ATA rent to the flat fee).\nSelects `forwardFee` with the setup surcharge for the fold + the\nreported `bridge_fee`. Ignored (no surcharge) for EVM destinations."
+          },
           "from": {
             "$ref": "#/components/schemas/Token",
             "description": "Source asset. Must be a [`Token::Evm`] variant — price discovery\nis rooted in an EVM settlement hub; `Solana` is rejected with a\n400."
-          },
-          "recipient_setup": {
-            "type": "boolean",
-            "description": "`true` when the CCTP recipient's USDC token account doesn't exist yet\nand Circle's forwarder must create it (only meaningful for non-EVM\ndestinations like Solana — it adds ~$0.14 of ATA rent to the flat fee).\nSelects `forwardFee` with the setup surcharge for the fold + the\nreported `bridge_fee`. Ignored (no surcharge) for EVM destinations."
           },
           "slippage_bps": {
             "type": "integer",

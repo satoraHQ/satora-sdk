@@ -2058,19 +2058,19 @@ export interface components {
              */
             amount: components["schemas"]["DexQuoteAmount"];
             /**
-             * @description Source asset. Must be a [`Token::Evm`] variant — price discovery
-             *     is rooted in an EVM settlement hub; `Solana` is rejected with a
-             *     400.
-             */
-            from: components["schemas"]["Token"];
-            /**
              * @description `true` when the CCTP recipient's USDC token account doesn't exist yet
              *     and Circle's forwarder must create it (only meaningful for non-EVM
              *     destinations like Solana — it adds ~$0.14 of ATA rent to the flat fee).
              *     Selects `forwardFee` with the setup surcharge for the fold + the
              *     reported `bridge_fee`. Ignored (no surcharge) for EVM destinations.
              */
-            recipient_setup?: boolean;
+            cctp_recipient_setup?: boolean;
+            /**
+             * @description Source asset. Must be a [`Token::Evm`] variant — price discovery
+             *     is rooted in an EVM settlement hub; `Solana` is rejected with a
+             *     400.
+             */
+            from: components["schemas"]["Token"];
             /**
              * Format: int32
              * @description Slippage tolerance the SDK will use at execution time, in basis
