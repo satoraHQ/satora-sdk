@@ -50,7 +50,7 @@ export type BridgeRouter = "cctp" | "layerzero";
  * DEX-leg output to get the delivered amount.
  *
  * - **`cctp`**: Circle's Forwarding Service deducts a percentage
- *   (`minimum_fee_scaled`) + a flat fee (`flat` / `flat_with_setup`) from the
+ *   (`proportional_fee_millionths`) + a flat fee (`flat` / `flat_with_setup`) from the
  *   bridged USDC.
  * - **`layerzero`**: no token-denominated deduction — the messaging fee is ETH
  *   the user pays via their own (Alchemy) publish, never taken from the USDT0.
@@ -69,12 +69,12 @@ export type BridgeRate =
       fee_token: Token;
       /**
        * CCTP percentage fee rate in **millionths** (parts per million): apply
-       * as `floor(amount * minimum_fee_scaled / 1_000_000)`. It's Circle's
+       * as `floor(amount * proportional_fee_millionths / 1_000_000)`. It's Circle's
        * `minimumFee` (basis points, e.g. `1.3`) pre-scaled ×100 to a clean
        * integer — `round(minimumFee_bps * 100)`. E.g. `"130"` = 1.3 bps =
        * 0.013% = `130 / 1_000_000`. Stringified u128.
        */
-      minimum_fee_scaled: string;
+      proportional_fee_millionths: string;
       /** Flat USDC fee deducted from the bridged amount, recipient already provisioned. Outbound: `forwardFee.high`; inbound: `"0"`. Stringified u64. */
       flat: string;
       /** Flat-fee variant including a fresh non-EVM recipient's ATA rent (Solana). Equals `flat` otherwise; same units. Stringified u64. */
@@ -124,7 +124,7 @@ export type WireBridgeRate =
   | {
       router: "cctp";
       fee_token: WireToken;
-      minimum_fee_scaled: string;
+      proportional_fee_millionths: string;
       flat: string;
       flat_with_setup: string;
     }
@@ -169,7 +169,7 @@ function fromWireBridgeRate(wire: WireBridgeRate): BridgeRate {
     return {
       router: "cctp",
       fee_token: wire.fee_token,
-      minimum_fee_scaled: wire.minimum_fee_scaled,
+      proportional_fee_millionths: wire.proportional_fee_millionths,
       flat: wire.flat,
       flat_with_setup: wire.flat_with_setup,
     };

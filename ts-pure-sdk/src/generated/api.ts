@@ -1484,7 +1484,7 @@ export interface components {
             flat_with_setup: string;
             /**
              * @description CCTP percentage fee rate expressed in **millionths** (parts per
-             *     million): apply it as `floor(amount * minimum_fee_scaled / 1_000_000)`.
+             *     million): apply it as `floor(amount * proportional_fee_millionths / 1_000_000)`.
              *
              *     It's Circle's `minimumFee` (which the IRIS API gives in *basis
              *     points*, e.g. `1.3`) pre-scaled by ×100 to a clean integer —
@@ -1492,7 +1492,7 @@ export interface components {
              *     on both sides. Worked example: `"130"` = 1.3 bps = 0.013% =
              *     `130 / 1_000_000` of the amount. Stringified `u128`.
              */
-            minimum_fee_scaled: string;
+            proportional_fee_millionths: string;
             /** @enum {string} */
             router: "cctp";
         } | {
