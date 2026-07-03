@@ -49,14 +49,9 @@ export type BridgeRouter = "cctp" | "layerzero";
  * extra user op) — this just says what (if anything) to subtract from the
  * DEX-leg output to get the delivered amount.
  *
- * - **`cctp`**: Circle's Forwarding Service deducts a percentage (`minimumFee`)
- *   + flat (`forwardFee`) from the bridged USDC. Apply, on a 6-dec USDC
- *   `amount`:
- *   ```text
- *   protocol = floor(floor(amount * minimum_fee_scaled / 1_000_000) * 120 / 100)
- *   fee      = protocol + (recipientSetup ? flat_with_setup : flat)
- *   ```
- *   Mirrors the server's `cctp::compute_max_fee` bit-for-bit.
+ * - **`cctp`**: Circle's Forwarding Service deducts a percentage
+ *   (`minimum_fee_scaled`) + a flat fee (`flat` / `flat_with_setup`) from the
+ *   bridged USDC.
  * - **`layerzero`**: no token-denominated deduction — the messaging fee is ETH
  *   the user pays via their own (Alchemy) publish, never taken from the USDT0.
  *   Nothing to subtract today.

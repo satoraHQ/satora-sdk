@@ -3010,7 +3010,7 @@
         "oneOf": [
           {
             "type": "object",
-            "description": "Circle CCTP (USDC). The Forwarding Service deducts a percentage\n(`minimumFee`) plus a flat (`forwardFee`) from the bridged USDC, so the\nSDK applies:\n\n```text\nprotocol = floor(floor(amount * minimum_fee_scaled / 1_000_000) * 120 / 100)\nfee      = protocol + (cctp_recipient_setup ? flat_with_setup : flat)\n```\n\nMirrors `cctp::compute_max_fee` exactly (integer math, 20% buffer baked\ninto the `minimum_fee_scaled` formula).",
+            "description": "Circle CCTP (USDC). The Forwarding Service deducts a percentage\n(`minimum_fee_scaled`) plus a flat fee (`flat`, or `flat_with_setup` for\na fresh non-EVM recipient) from the bridged USDC. See each field for how\nit applies; `cctp::compute_max_fee` is the authoritative computation.",
             "required": [
               "fee_token",
               "minimum_fee_scaled",
