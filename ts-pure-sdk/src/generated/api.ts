@@ -1472,7 +1472,7 @@ export interface components {
             fee_token: components["schemas"]["Token"];
             /**
              * @description Flat USDC fee deducted from the bridged amount, recipient already
-             *     provisioned. Outbound: `forwardFee.high`; inbound: `"0"` (we call
+             *     provisioned. Outbound: `forwardFee.high`; inbound: `0` (we call
              *     `receiveMessage` ourselves). Stringified `u64`.
              */
             flat: string;

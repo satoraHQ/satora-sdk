@@ -3010,7 +3010,7 @@
         "oneOf": [
           {
             "type": "object",
-            "description": "Circle CCTP (USDC). The Forwarding Service deducts a percentage\n(`minimum_fee_scaled`) plus a flat fee (`flat`, or `flat_with_setup` for\na fresh non-EVM recipient) from the bridged USDC. See each field for how\nit applies; `cctp::compute_max_fee` is the authoritative computation.",
+            "description": "Circle CCTP (USDC). The Forwarding Service deducts a percentage\n(`minimum_fee_scaled`) plus a flat fee (`flat`, or `flat_with_setup` for\na fresh non-EVM recipient) from the bridged USDC.",
             "required": [
               "fee_token",
               "minimum_fee_scaled",
@@ -3025,7 +3025,7 @@
               },
               "flat": {
                 "type": "string",
-                "description": "Flat USDC fee deducted from the bridged amount, recipient already\nprovisioned. Outbound: `forwardFee.high`; inbound: `\"0\"` (we call\n`receiveMessage` ourselves). Stringified `u64`."
+                "description": "Flat USDC fee deducted from the bridged amount, recipient already\nprovisioned. Outbound: `forwardFee.high`; inbound: `0` (we call\n`receiveMessage` ourselves). Stringified `u64`."
               },
               "flat_with_setup": {
                 "type": "string",
