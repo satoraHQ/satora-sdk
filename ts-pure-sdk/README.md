@@ -122,9 +122,6 @@ approval, EIP-712 signing, transaction submission) in a single call:
 ```typescript
 // Fund with an external wallet
 const {txHash} = await client.fundSwap(swapId, signer);
-
-// Or fund gaslessly (SDK signs internally, server submits via relay)
-const {txHash} = await client.fundSwapGasless(swapId);
 ```
 
 ### The EvmSigner Interface
