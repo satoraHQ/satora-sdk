@@ -382,6 +382,26 @@ export async function composeQuote(
   return composeEvmToBtc(params, deps);
 }
 
+/**
+ * Source-pinned BTC→EVM net target (what the user receives after all fees).
+ *
+ * `deliveredEvm` is already net of the bridge fee. Apply the BTC-side fee ratio
+ * (`effectiveSats / btcSats`) to the *gross* DEX output, then subtract the
+ * bridge fee at full value — scaling `deliveredEvm` directly would discount the
+ * (largely flat) CCTP fee by the same ratio and overstate delivery. Exported
+ * for unit testing.
+ */
+export function netTargetSourcePinned(
+  btcSats: bigint,
+  effectiveSats: bigint,
+  deliveredEvm: bigint,
+  bridgeFee: bigint,
+): bigint {
+  if (btcSats === 0n || effectiveSats < 0n) return 0n;
+  const scaledGross = (effectiveSats * (deliveredEvm + bridgeFee)) / btcSats;
+  return scaledGross > bridgeFee ? scaledGross - bridgeFee : 0n;
+}
+
 async function composeBtcToEvm(
   params: ComposeQuoteParams,
   deps: ComposeQuoteDeps,
@@ -473,10 +493,12 @@ async function composeBtcToEvm(
   if (params.sourceAmount != null) {
     const effectiveSats = btcSats - BigInt(totalFeeSats);
     netSource = btcSats;
-    netTarget =
-      btcSats === 0n
-        ? 0n
-        : (effectiveSats < 0n ? 0n : effectiveSats * evmSmallest) / btcSats;
+    netTarget = netTargetSourcePinned(
+      btcSats,
+      effectiveSats,
+      evmSmallest,
+      bridgeFee,
+    );
   } else {
     netSource = btcSats + BigInt(totalFeeSats);
     netTarget = evmSmallest;
