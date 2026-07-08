@@ -326,5 +326,10 @@ export {
   type Usdt0ChainName,
 } from "./usdt0-bridge/index.js";
 // Version metadata, generated from package.json by scripts/sync-version.mjs.
-export { CLIENT_AGENT, SDK_NAME, SDK_VERSION } from "./version.js";
+export {
+  CLIENT_AGENT,
+  SDK_COMMIT_HASH,
+  SDK_NAME,
+  SDK_VERSION,
+} from "./version.js";
 export type { SwapStatusHandler, SwapStatusWatcher } from "./ws.js";
