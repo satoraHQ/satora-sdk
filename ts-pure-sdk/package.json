@@ -34,9 +34,8 @@
   "scripts": {
     "generate:api": "openapi-typescript openapi.json -o src/generated/api.ts",
     "sync-version": "node scripts/sync-version.mjs",
-    "prepare": "node scripts/sync-version.mjs",
     "prebuild": "node scripts/sync-version.mjs",
-    "version": "node scripts/sync-version.mjs",
+    "version": "node scripts/sync-version.mjs && git add src/version.ts",
     "changeset": "changeset",
     "changeset:version": "changeset version && node scripts/sync-version.mjs",
     "changeset:release": "pnpm build && changeset publish",
