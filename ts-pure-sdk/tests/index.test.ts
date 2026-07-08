@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { VERSION } from "../src/index.js";
+import { SDK_VERSION } from "../src/index.js";
 
 describe("ts-pure-sdk", () => {
-  it("should export VERSION", () => {
-    expect(VERSION).toBe("0.0.1");
+  it("exports a semver SDK_VERSION", () => {
+    expect(SDK_VERSION).toMatch(/^\d+\.\d+\.\d+/);
   });
 });
