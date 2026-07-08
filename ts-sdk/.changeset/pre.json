@@ -1,0 +1,13 @@
+{
+  "mode": "pre",
+  "tag": "rc.0",
+  "initialVersions": {
+    "@satora/escrow": "0.0.4",
+    "@satora/escrow-client": "0.0.4",
+    "@satora/swap": "0.0.4"
+  },
+  "changesets": [
+    "euroe-readmes",
+    "satora-readmes"
+  ]
+}
