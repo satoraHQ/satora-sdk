@@ -55,13 +55,13 @@ test-sqlite:
 # =============================================================================
 
 generate:
-    cd ts-pure-sdk && npm run generate:api
+    cd ts-pure-sdk && pnpm run generate:api
 
 build:
-    cd ts-pure-sdk && npm install && npm run build
+    cd ts-pure-sdk && pnpm install && pnpm run build
 
 typecheck:
-    cd ts-pure-sdk && npm run typecheck
+    cd ts-pure-sdk && pnpm run typecheck
 
 # Bump version for the SDK
 bump-version version:
