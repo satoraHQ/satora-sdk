@@ -7,6 +7,7 @@
   "changesets": [
     "euroe-cctp-bridge",
     "export-sdk-version",
-    "public-loops-doubt"
+    "public-loops-doubt",
+    "sdk-commit-hash"
   ]
 }
