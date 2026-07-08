@@ -1,0 +1,11 @@
+{
+  "mode": "pre",
+  "tag": "rc",
+  "initialVersions": {
+    "@lendasat/lendaswap-sdk-pure": "0.2.44"
+  },
+  "changesets": [
+    "euroe-cctp-bridge",
+    "public-loops-doubt"
+  ]
+}
