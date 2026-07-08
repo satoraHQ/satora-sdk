@@ -6,6 +6,7 @@
   },
   "changesets": [
     "euroe-cctp-bridge",
+    "export-sdk-version",
     "public-loops-doubt"
   ]
 }
