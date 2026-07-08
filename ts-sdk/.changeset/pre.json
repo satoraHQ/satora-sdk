@@ -6,8 +6,5 @@
     "@satora/escrow-client": "0.0.4",
     "@satora/swap": "0.0.4"
   },
-  "changesets": [
-    "euroe-readmes",
-    "satora-readmes"
-  ]
+  "changesets": ["euroe-readmes", "satora-readmes"]
 }
