@@ -14,6 +14,9 @@ export type SwapStatus = components["schemas"]["SwapStatus"];
 export type ServiceStatus = components["schemas"]["ServiceStatus"];
 export type StatusResponse = components["schemas"]["StatusResponse"];
 export type GetSwapResponse = components["schemas"]["GetSwapResponse"];
+export type BulkStatusRequest = components["schemas"]["BulkStatusRequest"];
+export type BulkStatusResponse = components["schemas"]["BulkStatusResponse"];
+export type SwapStatusEntry = components["schemas"]["SwapStatusEntry"];
 export type BtcToArkadeSwapResponse =
   components["schemas"]["BtcToArkadeSwapResponse"];
 export type EvmToArkadeSwapResponse =

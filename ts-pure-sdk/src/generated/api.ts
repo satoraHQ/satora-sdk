@@ -580,6 +580,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/swap/bulk-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Get the status of multiple swaps at once.
+         * @description Returns only the swap status (not the full per-direction details) so the
+         *     whole batch is served by a single database query. Use `GET /swap/{id}` when
+         *     full details are needed for a specific swap.
+         */
+        post: operations["get_bulk_status"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/swap/evm/arkade": {
         parameters: {
             query?: never;
@@ -1593,6 +1615,18 @@ export interface components {
              * @description VHTLC refund locktime (unix timestamp)
              */
             vhtlc_refund_locktime: number;
+        };
+        /** @description Request body for the bulk swap status endpoint. */
+        BulkStatusRequest: {
+            /** @description The swap IDs to look up. */
+            ids: string[];
+        };
+        /** @description Response for the bulk swap status endpoint. */
+        BulkStatusResponse: {
+            /** @description IDs that did not resolve to a swap. */
+            not_found: string[];
+            /** @description Status for each ID that was found. */
+            statuses: components["schemas"]["SwapStatusEntry"][];
         };
         /** @description A single call in the coordinator's Call[] array, serialized as JSON. */
         CallJson: {
@@ -3182,6 +3216,11 @@ export interface components {
          * @enum {string}
          */
         SwapStatus: "pending" | "clientfundingseen" | "clientfunded" | "clientrefunded" | "serverfunded" | "clientredeeming" | "clientredeemed" | "serverredeemed" | "clientfundedserverrefunded" | "clientrefundedserverfunded" | "clientrefundedserverrefunded" | "expired" | "clientinvalidfunded" | "clientfundedtoolate" | "serverwontfund" | "clientredeemedandclientrefunded";
+        /** @description Status of a single swap. */
+        SwapStatusEntry: {
+            id: string;
+            status: components["schemas"]["SwapStatus"];
+        };
         /**
          * @description A token identified by the chain it lives on plus a chain-native address.
          *
@@ -4532,6 +4571,48 @@ export interface operations {
             };
             /** @description Conflict - a swap with this preimage hash exists already */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_bulk_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BulkStatusRequest"];
+            };
+        };
+        responses: {
+            /** @description Bulk lookup completed; see `not_found` for unresolved IDs */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkStatusResponse"];
+                };
+            };
+            /** @description Bad request - too many IDs requested */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };

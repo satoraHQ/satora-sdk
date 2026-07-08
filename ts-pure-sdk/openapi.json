@@ -6,7 +6,7 @@
     "license": {
       "name": ""
     },
-    "version": "0.2.47"
+    "version": "0.2.48"
   },
   "servers": [
     {
@@ -1425,6 +1425,56 @@
           },
           "409": {
             "description": "Conflict - a swap with this preimage hash exists already",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/swap/bulk-status": {
+      "post": {
+        "tags": ["swaps"],
+        "summary": "Get the status of multiple swaps at once.",
+        "description": "Returns only the swap status (not the full per-direction details) so the\nwhole batch is served by a single database query. Use `GET /swap/{id}` when\nfull details are needed for a specific swap.",
+        "operationId": "get_bulk_status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Bulk lookup completed; see `not_found` for unresolved IDs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkStatusResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request - too many IDs requested",
             "content": {
               "application/json": {
                 "schema": {
@@ -3234,6 +3284,43 @@
             "type": "integer",
             "format": "int64",
             "description": "VHTLC refund locktime (unix timestamp)"
+          }
+        }
+      },
+      "BulkStatusRequest": {
+        "type": "object",
+        "description": "Request body for the bulk swap status endpoint.",
+        "required": ["ids"],
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "The swap IDs to look up."
+          }
+        }
+      },
+      "BulkStatusResponse": {
+        "type": "object",
+        "description": "Response for the bulk swap status endpoint.",
+        "required": ["statuses", "not_found"],
+        "properties": {
+          "not_found": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "IDs that did not resolve to a swap."
+          },
+          "statuses": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SwapStatusEntry"
+            },
+            "description": "Status for each ID that was found."
           }
         }
       },
@@ -5890,6 +5977,19 @@
           "serverwontfund",
           "clientredeemedandclientrefunded"
         ]
+      },
+      "SwapStatusEntry": {
+        "type": "object",
+        "description": "Status of a single swap.",
+        "required": ["id", "status"],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SwapStatus"
+          }
+        }
       },
       "Token": {
         "oneOf": [

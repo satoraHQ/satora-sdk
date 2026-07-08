@@ -3,6 +3,7 @@ import {
   type ArkadeToEvmSwapResponse,
   type ArkadeToLightningSwapResponse,
   type BtcToArkadeSwapResponse,
+  type BulkStatusResponse,
   createApiClient,
   type EvmToArkadeSwapResponse,
   type EvmToBitcoinSwapResponse,
@@ -1631,6 +1632,34 @@ export class Client {
 
     if (options?.updateStorage && this.#swapStorage) {
       await this.#swapStorage.update(id, data);
+    }
+
+    return data;
+  }
+
+  /**
+   * Gets the status of multiple swaps in a single request.
+   *
+   * Returns only each swap's status (not the full details) so the whole batch
+   * is served by one database query. Use {@link getSwap} when you need full
+   * details for a specific swap.
+   *
+   * Unknown IDs are returned in `not_found` rather than throwing, so one bad ID
+   * does not fail the whole call. Duplicate IDs are de-duplicated server-side.
+   *
+   * @param ids - The UUIDs of the swaps to look up (max 100 per request).
+   * @returns A promise resolving to `{ statuses, not_found }`.
+   * @throws Error if the request fails (e.g. more than 100 IDs, or a network/server error).
+   */
+  async getBulkStatus(ids: string[]): Promise<BulkStatusResponse> {
+    const { data, error } = await this.#apiClient.POST("/swap/bulk-status", {
+      body: { ids },
+    });
+    if (error) {
+      throw new Error(`Failed to get swap statuses: ${JSON.stringify(error)}`);
+    }
+    if (!data) {
+      throw new Error("No swap data returned");
     }
 
     return data;
