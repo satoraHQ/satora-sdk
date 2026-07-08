@@ -1,5 +1,3 @@
-export const VERSION = "0.0.1";
-
 // API types
 export type {
   ApiClient,
@@ -327,4 +325,6 @@ export {
   USDT0_ADDRESSES,
   type Usdt0ChainName,
 } from "./usdt0-bridge/index.js";
+// Version metadata, generated from package.json by scripts/sync-version.mjs.
+export { CLIENT_AGENT, SDK_NAME, SDK_VERSION } from "./version.js";
 export type { SwapStatusHandler, SwapStatusWatcher } from "./ws.js";
