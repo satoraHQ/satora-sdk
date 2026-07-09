@@ -1314,7 +1314,7 @@ export interface components {
             user_id: string;
         };
         /**
-         * @description Chain-agnostic request for Arkade-to-EVM swaps.
+         * @description Chain-agnostic request for Bitcoin-to-EVM swaps.
          *
          *     The caller specifies the target chain via `evm_chain_id` and the token
          *     via its ERC-20 contract `token_address`. This endpoint supports any token
@@ -1375,7 +1375,7 @@ export interface components {
             hash_lock: string;
             /** @description Optional referral code for tracking. */
             referral_code?: string | null;
-            /** @description Refund public key used to generate the Arkade VHTLC. */
+            /** @description Refund public key used to generate the Bitcoin HTLC. */
             refund_pk: string;
             /**
              * @description Recipient where tokens land after the claim (user's final destination).

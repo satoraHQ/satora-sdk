@@ -6,7 +6,7 @@
     "license": {
       "name": ""
     },
-    "version": "0.2.48"
+    "version": "0.2.49"
   },
   "servers": [
     {
@@ -2823,7 +2823,7 @@
       },
       "BitcoinToEvmSwapRequest": {
         "type": "object",
-        "description": "Chain-agnostic request for Arkade-to-EVM swaps.\n\nThe caller specifies the target chain via `evm_chain_id` and the token\nvia its ERC-20 contract `token_address`. This endpoint supports any token\nreachable through 1inch aggregation (which covers Uniswap, Curve, etc.).",
+        "description": "Chain-agnostic request for Bitcoin-to-EVM swaps.\n\nThe caller specifies the target chain via `evm_chain_id` and the token\nvia its ERC-20 contract `token_address`. This endpoint supports any token\nreachable through 1inch aggregation (which covers Uniswap, Curve, etc.).",
         "required": [
           "claiming_address",
           "target_address",
@@ -2888,7 +2888,7 @@
           },
           "refund_pk": {
             "type": "string",
-            "description": "Refund public key used to generate the Arkade VHTLC."
+            "description": "Refund public key used to generate the Bitcoin HTLC."
           },
           "target_address": {
             "type": "string",
