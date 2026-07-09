@@ -58,7 +58,7 @@
     "@zerodev/sdk": "^5.5.0",
     "dexie": "^4.4.2",
     "openapi-fetch": "^0.17.0",
-    "viem": "^2.52.2"
+    "viem": "2.52.2"
   },
   "optionalDependencies": {
     "better-sqlite3": "^12.11.1"
@@ -86,7 +86,7 @@
     "openapi-typescript": "^7.10.1",
     "tsup": "^8.5.1",
     "typescript": "^5.7.0",
-    "viem": "^2.52.2",
+    "viem": "2.52.2",
     "vitest": "^3.0.0"
   },
   "keywords": [
