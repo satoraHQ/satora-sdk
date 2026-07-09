@@ -1,5 +1,11 @@
 # Lendaswap Pure TypeScript SDK
 
+> **This is the legacy SDK. It keeps working and stays supported** — no urgent
+> migration needed. For new code we recommend
+> [`@satora/swap`](https://www.npmjs.com/package/@satora/swap), a drop-in
+> replacement (same API, same imports) where new features land. To move over,
+> just change the package name in your imports; nothing else changes.
+
 A pure TypeScript SDK for interacting with the Lendaswap API. This SDK is designed to work in all JavaScript
 environments, including React Native.
 
