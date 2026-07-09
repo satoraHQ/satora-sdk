@@ -60,7 +60,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@lendasat/lendaswap-sdk-pure": "^0.2.38"
+    "@lendasat/lendaswap-sdk-pure": "^0.3.0"
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.15",
