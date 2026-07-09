@@ -59,6 +59,7 @@ generate:
 
 build:
     cd ts-pure-sdk && pnpm install && pnpm run build
+    cd ts-sdk && pnpm install && pnpm run build
 
 typecheck:
     cd ts-pure-sdk && pnpm run typecheck
@@ -70,7 +71,6 @@ bump-version version:
 # =============================================================================
 # Changesets (SDK release versioning + changelogs)
 # =============================================================================
-
 # Usage (commit the generated .changeset/*.md alongside your change):
 #   just changeset pure                 # @lendasat/lendaswap-sdk-pure
 #   just changeset satora               # @satora/*
