@@ -5075,6 +5075,10 @@
             "type": "string",
             "description": "Hash lock provided by the client (32-byte hex string with 0x prefix).\nUsed for the Boltz VHTLC. RIPEMD160 of this is used for the Arkade VHTLC."
           },
+          "invoice_description": {
+            "type": ["string", "null"],
+            "description": "Optional description shown in the payer's wallet when they open the Lightning\ninvoice. When omitted (`null`), a default is used. Use emoty string to unset it."
+          },
           "referral_code": {
             "type": ["string", "null"],
             "description": "Optional referral code for fee exemption"
@@ -5283,6 +5287,10 @@
           "hash_lock": {
             "type": "string",
             "description": "Hash lock provided by the client (32-byte hex string with 0x prefix)."
+          },
+          "invoice_description": {
+            "type": ["string", "null"],
+            "description": "Optional description shown in the payer's wallet when they open the Lightning\ninvoice. When omitted (`null`), a default is used. Use empty string to unset it."
           },
           "referral_code": {
             "type": ["string", "null"],

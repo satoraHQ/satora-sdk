@@ -2648,6 +2648,11 @@ export interface components {
              *     Used for the Boltz VHTLC. RIPEMD160 of this is used for the Arkade VHTLC.
              */
             hash_lock: string;
+            /**
+             * @description Optional description shown in the payer's wallet when they open the Lightning
+             *     invoice. When omitted (`null`), a default is used. Use emoty string to unset it.
+             */
+            invoice_description?: string | null;
             /** @description Optional referral code for fee exemption */
             referral_code?: string | null;
             /**
@@ -2778,6 +2783,11 @@ export interface components {
             gasless?: boolean;
             /** @description Hash lock provided by the client (32-byte hex string with 0x prefix). */
             hash_lock: string;
+            /**
+             * @description Optional description shown in the payer's wallet when they open the Lightning
+             *     invoice. When omitted (`null`), a default is used. Use empty string to unset it.
+             */
+            invoice_description?: string | null;
             /**
              * @description Optional referral code for tracking. Matches a developer's API key
              *     (`referral_id` on `developer_api_keys`) and is persisted for attribution.

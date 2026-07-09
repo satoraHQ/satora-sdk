@@ -52,6 +52,9 @@ export async function createLightningToEvmSwapGeneric(
       bridge_target_chain: options.bridgeParams?.targetChain,
       bridge_target_token_address: options.bridgeParams?.targetTokenAddress,
       bridge_recipient_setup: options.bridgeParams?.recipientSetup,
+      // `undefined` is omitted from the JSON body so the server applies its
+      // default; an explicit "" is sent to blank the invoice description.
+      invoice_description: options.invoiceDescription,
     };
     const { data, error } = await ctx.apiClient.POST("/swap/lightning/evm", {
       body,

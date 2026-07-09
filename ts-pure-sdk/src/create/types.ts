@@ -192,6 +192,12 @@ export interface LightningToEvmSwapGenericOptions {
   gasless?: boolean;
   /** Optional: when set, USDC is bridged via CCTP to the destination chain after the DEX swap. */
   bridgeParams?: UsdcBridgeParams;
+  /**
+   * Optional description shown in the payer's wallet when they open the Lightning
+   * invoice. When omitted, the server uses a default. An empty string is honored
+   * as-is (invoice with no description).
+   */
+  invoiceDescription?: string;
 }
 
 /** Result of creating a Lightning-to-EVM swap via the generic endpoint */
@@ -405,6 +411,12 @@ export interface LightningToArkadeSwapOptions {
   referralCode?: string;
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
+  /**
+   * Optional description shown in the payer's wallet when they open the Lightning
+   * invoice. When omitted, the server uses a default. An empty string is honored
+   * as-is (invoice with no description).
+   */
+  invoiceDescription?: string;
 }
 
 /** Result of creating a Lightning-to-Arkade swap */

@@ -61,6 +61,9 @@ export async function createLightningToArkadeSwap(
       target_arkade_address: options.targetAddress,
       referral_code: options.referralCode,
       extra_fees: options.extraFees,
+      // `undefined` is omitted from the JSON body so the server applies its
+      // default; an explicit "" is sent to blank the invoice description.
+      invoice_description: options.invoiceDescription,
     };
 
     const { data, error } = await ctx.apiClient.POST("/swap/lightning/arkade", {
