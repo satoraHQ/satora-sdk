@@ -17,9 +17,23 @@ export class Client {
   /** The wrapped legacy client. Calls are forwarded here until migrated. */
   readonly #legacy: LegacyClient;
 
-  /** @internal Use {@link Client.builder} instead of constructing directly. */
-  constructor(legacy: LegacyClient) {
-    this.#legacy = legacy;
+  /**
+   * Creates a new Client instance.
+   *
+   * Prefer {@link Client.builder} for new code.
+   */
+  constructor(...args: ConstructorParameters<typeof LegacyClient>);
+  /** @internal Wrap an already-built legacy client during migration. */
+  constructor(legacy: LegacyClient);
+  constructor(
+    ...args: ConstructorParameters<typeof LegacyClient> | [legacy: LegacyClient]
+  ) {
+    this.#legacy =
+      args.length === 1 && args[0] instanceof LegacyClient
+        ? args[0]
+        : new LegacyClient(
+            ...(args as ConstructorParameters<typeof LegacyClient>),
+          );
   }
 
   /** Start building a {@link Client}. */
