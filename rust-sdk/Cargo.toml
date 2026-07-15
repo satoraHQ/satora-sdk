@@ -1,0 +1,78 @@
+# Standalone crate (not part of the root Cargo workspace).
+[workspace]
+
+[package]
+name = "lendaswap-sdk"
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/satoraHQ/lendaswap-sdk"
+description = "Lendaswap Client SDK (Rust). FFI-friendly public API; the schema is verified against the upstream OpenAPI spec."
+
+[lib]
+name = "lendaswap_sdk"
+crate-type = ["rlib"]
+
+[features]
+# Gasless EVM funding via ERC-4337 (EntryPoint v0.7) + EIP-7702 delegation
+# to a ZeroDev Kernel V3.3 implementation. Off by default: pulls in alloy,
+# so the base SDK (quote, create_swap) stays lean and the FFI / dotnet
+# layer can opt out.
+gasless = ["dep:alloy", "dep:alloy-provider"]
+
+[dependencies]
+# Crypto: HD wallet derivation, secp256k1, hashes.
+# `bitcoin` re-exports `secp256k1`; no need to pull it in directly.
+bip39 = "2"
+bitcoin = { version = "0.32", default-features = false, features = ["std"] }
+hex = "0.4"
+reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls", "query"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "1"
+tiny-keccak = { version = "2", features = ["keccak"] }
+tracing = "0.1"
+url = "2"
+
+# Account-abstraction (`gasless` feature only). `sol-types` for the `sol!`
+# ABI blocks, `rpc-types` for the ERC-4337 `PackedUserOperation` wire type,
+# `providers` + `transport-http` for the bundler RPC. `alloy-provider` is
+# pulled in directly *with* the `erc4337-api` feature because the umbrella
+# `alloy` crate doesn't re-export that feature (it gates the `Erc4337Api`
+# extension trait — `eth_sendUserOperation` / `estimate_user_operation_gas`
+# / `get_user_operation_receipt`).
+alloy = { version = "1", optional = true, features = ["sol-types", "rpc-types", "providers", "transport-http", "signer-local"] }
+alloy-provider = { version = "1", optional = true, features = ["erc4337-api"] }
+# `rand` is used by both the gasless flow (Permit2 nonces) and the
+# Arkade settle flow (ark-rs `Client::settle` requires a CSPRNG).
+rand = "0.8"
+# `tokio` for timer-based polling (`wait_for_swap_status`) and the
+# gasless receipt-poll sleep. Non-optional because `reqwest` already
+# pulls a tokio runtime in transitively — the `time` feature is tiny
+# and gating it would force a feature flag onto a fundamental client
+# primitive.
+tokio = { version = "1", features = ["sync", "time"] }
+
+# Arkade VHTLC claim + balance + settle. `ark-rs` for the core VHTLC
+# script + gRPC client to arkd, `ark-bdk-wallet` for the on-chain
+# wallet plumbing ark-client demands, `esplora-client` for chain
+# queries. Versions track `scripts/e2e-rust/Cargo.toml`.
+ark-bdk-wallet = "0.9"
+ark-rs = { version = "0.9", features = ["client", "grpc"] }
+esplora-client = { version = "0.11", default-features = false, features = ["async", "async-https", "tokio"] }
+
+# rustls 0.23 demands an explicit CryptoProvider install before any TLS
+# handshake — otherwise the first https call (Arkade gRPC, esplora over
+# TLS, …) panics with "Could not automatically determine the
+# process-level CryptoProvider". We pull rustls in as a direct dep so
+# we can call `rustls::crypto::ring::default_provider().install_default()`
+# from `Client::new` / `ClientBuilder::build`; the `ring` feature pins
+# the backend we want without leaving the choice to feature unification.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+
+[dev-dependencies]
+jsonschema = { version = "0.46.4", default-features = false }
+tokio = { version = "1", features = ["rt", "macros", "rt-multi-thread"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+wiremock = "0.6"

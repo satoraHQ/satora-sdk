@@ -1,0 +1,130 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <!-- ImplicitUsings brings in the standard global usings (System,
+         System.Threading, System.Threading.Tasks, …) so per-file `using`
+         lines stay focused on the project's own namespaces. -->
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>Satora.Sdk</RootNamespace>
+    <AssemblyName>Satora.Sdk</AssemblyName>
+    <!-- uniffi-bindgen-cs's generated bindings use `unsafe` blocks for
+         the FFI pointer marshalling layer (RustBuffer, raw P/Invoke
+         glue). Required by the codegen — not by our own code. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <!-- NuGet package metadata (preliminary; bump on publish). -->
+    <PackageId>Satora.Sdk</PackageId>
+    <Version>0.1.0-alpha</Version>
+    <Authors>Satora</Authors>
+    <Description>
+      .NET bindings for the Satora SDK. Thin wrapper over a Rust core
+      via UniFFI; native libraries shipped per-RID.
+    </Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/satoraHQ/lendaswap-sdk</RepositoryUrl>
+    <!-- README shown on nuget.org. Consumer-focused (install + quick
+         start); the dev/contributor README lives at ../README.md. -->
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+    <None Include="build\Satora.Sdk.targets" Pack="true" PackagePath="build\" />
+  </ItemGroup>
+
+  <!-- Surface the uniffi-generated tagged enums under our public
+       Satora.Sdk namespace via global type aliases. Callers write
+       `ChainId.Arbitrum` / `TokenId.Usdt0Arbitrum` / `QuoteAmount.Source`
+       without importing the generated namespace. -->
+  <ItemGroup>
+    <Using Include="uniffi.satora_sdk_ffi.ChainId" Alias="ChainId" />
+    <Using Include="uniffi.satora_sdk_ffi.TokenId" Alias="TokenId" />
+    <Using Include="uniffi.satora_sdk_ffi.QuoteAmount" Alias="QuoteAmount" />
+    <Using Include="uniffi.satora_sdk_ffi.Address" Alias="Address" />
+    <Using Include="uniffi.satora_sdk_ffi.SwapStatus" Alias="SwapStatus" />
+    <Using Include="uniffi.satora_sdk_ffi.SwapFunding" Alias="SwapFunding" />
+    <Using Include="uniffi.satora_sdk_ffi.GaslessOpts" Alias="GaslessOpts" />
+    <Using Include="uniffi.satora_sdk_ffi.GasOverrides" Alias="GasOverrides" />
+    <Using Include="uniffi.satora_sdk_ffi.FundSwapReceipt" Alias="FundSwapReceiptRaw" />
+    <Using Include="uniffi.satora_sdk_ffi.BitcoinNetwork" Alias="BitcoinNetwork" />
+    <Using Include="uniffi.satora_sdk_ffi.ClaimReceipt" Alias="ClaimReceiptRaw" />
+    <Using Include="uniffi.satora_sdk_ffi.LightningDestination" Alias="LightningDestination" />
+    <Using Include="uniffi.satora_sdk_ffi.ArkadeBalance" Alias="ArkadeBalance" />
+  </ItemGroup>
+
+  <!-- Native libraries: at pack time these go under runtimes/{rid}/native
+       so the .NET host auto-discovers them via the platform's library
+       search. The build targets below ALSO copy the host-RID dylib into
+       any consuming project's bin output so tests and examples just work
+       without a Pack step.
+
+       The relative path resolves to client-sdk/dotnet-sdk/native/target/
+       — i.e. the cargo build output. CI / release builds replace this
+       with platform-specific prebuilts (see Justfile `pack`). -->
+  <!-- Debug-mode ItemGroups: copy the locally-built cdylib into bin/
+       so `dotnet test` / `dotnet run` find it without a publish step.
+       Gated to Debug so they don't fight the Release ItemGroups below
+       during `dotnet pack -c Release`. -->
+  <ItemGroup Condition="'$(Configuration)' == 'Debug' And Exists('..\native\target\debug\libsatora_sdk_ffi.dylib')">
+    <None Include="..\native\target\debug\libsatora_sdk_ffi.dylib"
+          Pack="true"
+          PackagePath="runtimes/osx-arm64/native/libsatora_sdk_ffi.dylib"
+          CopyToOutputDirectory="PreserveNewest"
+          Visible="false" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(Configuration)' == 'Debug' And Exists('..\native\target\debug\libsatora_sdk_ffi.so')">
+    <None Include="..\native\target\debug\libsatora_sdk_ffi.so"
+          Pack="true"
+          PackagePath="runtimes/linux-x64/native/libsatora_sdk_ffi.so"
+          CopyToOutputDirectory="PreserveNewest"
+          Visible="false" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(Configuration)' == 'Debug' And Exists('..\native\target\debug\satora_sdk_ffi.dll')">
+    <None Include="..\native\target\debug\satora_sdk_ffi.dll"
+          Pack="true"
+          PackagePath="runtimes/win-x64/native/satora_sdk_ffi.dll"
+          CopyToOutputDirectory="PreserveNewest"
+          Visible="false" />
+  </ItemGroup>
+
+  <!-- Release-mode, target-triple-keyed staging used by CI's pack job.
+       Each matrix runner cross-compiles its own RID into
+       `native/target/<triple>/release/<lib>`; this csproj globs them
+       into the .nupkg under `runtimes/<rid>/native/`. The ItemGroups
+       are Exists-gated so local Debug builds (which don't have these
+       paths) stay unaffected. -->
+  <ItemGroup Condition="Exists('..\native\target\aarch64-apple-darwin\release\libsatora_sdk_ffi.dylib')">
+    <None Include="..\native\target\aarch64-apple-darwin\release\libsatora_sdk_ffi.dylib"
+          Pack="true"
+          PackagePath="runtimes/osx-arm64/native/libsatora_sdk_ffi.dylib"
+          Visible="false" />
+  </ItemGroup>
+  <ItemGroup Condition="Exists('..\native\target\x86_64-unknown-linux-gnu\release\libsatora_sdk_ffi.so')">
+    <None Include="..\native\target\x86_64-unknown-linux-gnu\release\libsatora_sdk_ffi.so"
+          Pack="true"
+          PackagePath="runtimes/linux-x64/native/libsatora_sdk_ffi.so"
+          Visible="false" />
+  </ItemGroup>
+  <ItemGroup Condition="Exists('..\native\target\x86_64-pc-windows-msvc\release\satora_sdk_ffi.dll')">
+    <None Include="..\native\target\x86_64-pc-windows-msvc\release\satora_sdk_ffi.dll"
+          Pack="true"
+          PackagePath="runtimes/win-x64/native/satora_sdk_ffi.dll"
+          Visible="false" />
+  </ItemGroup>
+  <ItemGroup Condition="Exists('..\native\target\aarch64-unknown-linux-gnu\release\libsatora_sdk_ffi.so')">
+    <None Include="..\native\target\aarch64-unknown-linux-gnu\release\libsatora_sdk_ffi.so"
+          Pack="true"
+          PackagePath="runtimes/linux-arm64/native/libsatora_sdk_ffi.so"
+          Visible="false" />
+  </ItemGroup>
+  <ItemGroup Condition="Exists('..\native\target\x86_64-apple-darwin\release\libsatora_sdk_ffi.dylib')">
+    <None Include="..\native\target\x86_64-apple-darwin\release\libsatora_sdk_ffi.dylib"
+          Pack="true"
+          PackagePath="runtimes/osx-x64/native/libsatora_sdk_ffi.dylib"
+          Visible="false" />
+  </ItemGroup>
+
+</Project>

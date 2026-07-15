@@ -1,0 +1,332 @@
+# Build + publish the Satora .NET SDK NuGet package.
+#
+# IMPORTANT: this workflow file lives in the *source* repo under
+# `client-sdk/.github/workflows/` so the existing client-sdk subtree
+# sync (`sync-client-sdk-subtree.yml`) mirrors it to
+# `lendasat/lendaswap-sdk/.github/workflows/` — i.e. it runs in the
+# PUBLIC mirror repo, not the private source repo. Public repos get
+# free Actions minutes, hence the indirection.
+#
+# Layout assumption (post-subtree-push):
+#   ./dotnet-sdk/native/               # Rust cdylib source
+#   ./dotnet-sdk/Satora.Sdk/        # C# project
+#   ./rust-sdk/                        # pure-Rust SDK (path-dep of native/)
+#
+# Per-push behaviour:
+#   1. Matrix-build the Rust cdylib on three native runners
+#      (osx-arm64 / linux-x64 / win-x64). Each uploads exactly one
+#      native artifact.
+#   2. Pack job downloads all three, regenerates UniFFI bindings,
+#      stamps a SemVer-prerelease version derived from the commit,
+#      runs `dotnet pack`, and pushes to GitHub Packages on the same
+#      org that owns this (mirrored) repo.
+#
+# Consumers install with:
+#   dotnet add package Satora.Sdk --prerelease \
+#       --source https://nuget.pkg.github.com/lendasat/index.json
+# (with a PAT that has `read:packages`).
+
+name: Build .NET SDK NuGet
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - dotnet-sdk/**
+      - rust-sdk/**
+      - .github/workflows/build-dotnet-sdk.yml
+  pull_request:
+    paths:
+      - dotnet-sdk/**
+      - rust-sdk/**
+      - .github/workflows/build-dotnet-sdk.yml
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Push the resulting .nupkg to GitHub Packages'
+        type: boolean
+        default: true
+      publish_nuget_org:
+        description: 'Also push to the public nuget.org feed (use only for tagged releases)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+# Cancel any in-flight run for the same ref when a new push arrives.
+# Workflow is matrix-heavy (5 native runners + pack) so superseded
+# runs are expensive — and we just hit a real "stuck job" case where
+# a deprecated runner label left the pipeline hanging until we
+# cancelled it by hand.
+concurrency:
+  group: build-dotnet-sdk-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  DOTNET_NOLOGO: 1
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+  # Pin lockstep with the Justfile's `bindgen_tag` — bindgen releases
+  # are tagged `<bindgen>+<uniffi>` and only work with their matching
+  # uniffi crate version.
+  UNIFFI_BINDGEN_CS_TAG: v0.10.0+v0.29.4
+
+jobs:
+  build-native:
+    name: native ${{ matrix.rid }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: osx-arm64
+            os: macos-14
+            target: aarch64-apple-darwin
+            lib: libsatora_sdk_ffi.dylib
+          - rid: linux-x64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            lib: libsatora_sdk_ffi.so
+          - rid: win-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            lib: satora_sdk_ffi.dll
+          - rid: linux-arm64
+            os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            lib: libsatora_sdk_ffi.so
+          - rid: osx-x64
+            # Cross-compile from the arm64 macos-14 host: GitHub deprecated
+            # macos-13 (Intel) runners and jobs targeting that label sit
+            # queued indefinitely. The `Install Rust toolchain` step already
+            # runs `rustup target add ${{ matrix.target }}`, and Apple's
+            # clang on arm64 ships the x86_64 SDK out of the box — so a
+            # plain `cargo build --target x86_64-apple-darwin` produces the
+            # Intel dylib without extra setup.
+            os: macos-14
+            target: x86_64-apple-darwin
+            lib: libsatora_sdk_ffi.dylib
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # On macos-14 the preinstalled rustup sometimes lacks a default
+      # toolchain — `cargo` then proxies through rustup-init and errors
+      # with "unexpected argument 'build'". Anchor toolchain state
+      # explicitly instead of relying on the dtolnay action alone.
+      - name: Install Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustup target add ${{ matrix.target }}
+          echo "--- toolchain state ---"
+          which cargo
+          cargo --version
+          rustc --version
+          rustup show
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: dotnet-sdk/native
+          shared-key: native-${{ matrix.rid }}
+
+      - name: Build cdylib (release)
+        working-directory: dotnet-sdk/native
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Upload native artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: native-${{ matrix.rid }}
+          path: dotnet-sdk/native/target/${{ matrix.target }}/release/${{ matrix.lib }}
+          if-no-files-found: error
+          retention-days: 7
+
+  pack:
+    name: Pack NuGet
+    needs: build-native
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install Rust toolchain (for uniffi-bindgen-cs + host cdylib)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          cargo --version
+          rustc --version
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: dotnet-sdk/native
+          shared-key: native-host
+
+      - name: Download all native artifacts
+        uses: actions/download-artifact@v5
+        with:
+          path: native-artifacts
+          pattern: native-*
+
+      # Stage native libs at the target-triple-keyed paths the csproj's
+      # release ItemGroups expect. Matches the layout `cargo build
+      # --target <triple> --release` would produce locally — so a dev
+      # can reproduce the pack flow by building each target themselves.
+      - name: Stage native libs into native/target/<triple>/release/
+        run: |
+          set -euo pipefail
+          declare -A triple_for_rid=(
+            [osx-arm64]=aarch64-apple-darwin
+            [linux-x64]=x86_64-unknown-linux-gnu
+            [win-x64]=x86_64-pc-windows-msvc
+            [linux-arm64]=aarch64-unknown-linux-gnu
+            [osx-x64]=x86_64-apple-darwin
+          )
+          for rid in osx-arm64 linux-x64 win-x64 linux-arm64 osx-x64; do
+            triple="${triple_for_rid[$rid]}"
+            mkdir -p "dotnet-sdk/native/target/${triple}/release"
+            cp -v native-artifacts/native-${rid}/* \
+              "dotnet-sdk/native/target/${triple}/release/"
+          done
+          ls -lR dotnet-sdk/native/target/*/release || true
+
+      - name: Install uniffi-bindgen-cs
+        run: |
+          cargo install --locked \
+            --git https://github.com/NordSecurity/uniffi-bindgen-cs \
+            --tag "$UNIFFI_BINDGEN_CS_TAG" \
+            uniffi-bindgen-cs
+
+      # Generate bindings from the linux .so we just staged (no need
+      # to rebuild — the same host can read the metadata out of an
+      # x86_64 .so via uniffi's library mode).
+      #
+      # NOTE: `uniffi-bindgen-cs --library` still shells out to
+      # `cargo metadata` internally, which walks upward looking for a
+      # `Cargo.toml`. The mirror repo has no Cargo.toml above
+      # `dotnet-sdk/`, so we run bindgen from inside `native/` (the
+      # crate's own Cargo.toml) and let it write back into the C#
+      # project via the `--out-dir ../...` path.
+      - name: Generate C# bindings
+        working-directory: dotnet-sdk
+        run: |
+          set -euo pipefail
+          (cd native && uniffi-bindgen-cs \
+            --library target/x86_64-unknown-linux-gnu/release/libsatora_sdk_ffi.so \
+            --out-dir ../Satora.Sdk/Generated)
+          # Mirror the Justfile post-process: tagged-enum base records
+          # (and the SDK error / client types) ship as `internal` by
+          # default, which makes them unreachable from consumer
+          # assemblies. Bump everything we expose in the public API.
+          # Keep this list in sync with dotnet-sdk/Justfile.
+          sed -i.bak \
+            -e 's/^internal record ChainId {/public record ChainId {/' \
+            -e 's/^internal record TokenId {/public record TokenId {/' \
+            -e 's/^internal record QuoteAmount {/public record QuoteAmount {/' \
+            -e 's/^internal record Address {/public record Address {/' \
+            -e 's/^internal record SwapStatus {/public record SwapStatus {/' \
+            -e 's/^internal record SwapFunding {/public record SwapFunding {/' \
+            -e 's/^internal record Swap (/public record Swap (/' \
+            -e 's/^internal record Version (/public record Version (/' \
+            -e 's/^internal record QuoteResult (/public record QuoteResult (/' \
+            -e 's/^internal record GaslessOpts (/public record GaslessOpts (/' \
+            -e 's/^internal record FundSwapReceipt (/public record FundSwapReceipt (/' \
+            -e 's/^internal record GasOverrides (/public record GasOverrides (/' \
+            -e 's/^internal record ArkadeConfig (/public record ArkadeConfig (/' \
+            -e 's/^internal record ClaimReceipt (/public record ClaimReceipt (/' \
+            -e 's/^internal record ArkadeBalance (/public record ArkadeBalance (/' \
+            -e 's/^internal record DepositStatus (/public record DepositStatus (/' \
+            -e 's/^internal record LightningDestination {/public record LightningDestination {/' \
+            -e 's/^internal enum BitcoinNetwork: int/public enum BitcoinNetwork: int/' \
+            -e 's/^internal interface ISatoraClient {/public interface ISatoraClient {/' \
+            -e 's/^internal class SatoraClient : ISatoraClient/public class SatoraClient : ISatoraClient/' \
+            Satora.Sdk/Generated/satora_sdk_ffi.cs
+          rm Satora.Sdk/Generated/satora_sdk_ffi.cs.bak
+
+      # SemVer-prerelease string derived from CI metadata:
+      #   <base>-ci.<YYYYMMDD>.<run_number>.sha-<short>
+      # The leading `-ci.` keeps these treated as prerelease so they
+      # don't outrank a future stable `0.1.0` release. `run_number`
+      # is monotonic per-workflow; the SHA pins exact provenance.
+      - name: Compute CI version
+        id: version
+        run: |
+          set -euo pipefail
+          BASE=$(grep -oE '<Version>[^<]+' dotnet-sdk/Satora.Sdk/Satora.Sdk.csproj \
+            | head -n1 | sed -E 's,<Version>,,; s,-.*,,')
+          DATE=$(date -u +%Y%m%d)
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          VERSION="${BASE}-ci.${DATE}.${{ github.run_number }}.sha-${SHORT_SHA}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Computed package version: ${VERSION}"
+
+      - name: dotnet pack
+        working-directory: dotnet-sdk
+        run: |
+          dotnet pack Satora.Sdk/Satora.Sdk.csproj \
+            -c Release \
+            -p:Version=${{ steps.version.outputs.version }} \
+            -p:RepositoryCommit=${{ github.sha }} \
+            -o dist
+
+      - name: Upload .nupkg artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: Satora.Sdk-${{ steps.version.outputs.version }}
+          path: dotnet-sdk/dist/*.nupkg
+          if-no-files-found: error
+
+      # While we're still validating the publish pipeline, also push on
+      # PR runs so test branches produce visible packages. Once we trust
+      # the flow, drop `pull_request` from this condition so only main /
+      # explicit dispatch publishes.
+      - name: Push to GitHub Packages
+        if: github.event_name == 'push' || github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.publish)
+        working-directory: dotnet-sdk
+        run: |
+          dotnet nuget push dist/*.nupkg \
+            --source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" \
+            --api-key "${{ secrets.GITHUB_TOKEN }}" \
+            --skip-duplicate
+
+      # Public nuget.org publish — opt-in via workflow_dispatch only.
+      # GitHub Packages requires auth even for public packages, which
+      # blocks third-party plugin builders (e.g. BTCPay); nuget.org is
+      # the canonical anonymous-read feed.
+      #
+      # The NUGET_API_KEY secret is scoped to the `Satora.*` glob, so
+      # the published PackageId (`Satora.Sdk`, set in the csproj) must
+      # match that prefix.
+      - name: Push to nuget.org
+        if: github.event_name == 'push' || github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.publish)
+        working-directory: dotnet-sdk
+        run: |
+          dotnet nuget push dist/*.nupkg \
+            --source "https://api.nuget.org/v3/index.json" \
+            --api-key "${{ secrets.NUGET_API_KEY }}" \
+            --skip-duplicate

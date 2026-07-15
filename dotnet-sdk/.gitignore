@@ -1,0 +1,19 @@
+# Rust build artefacts
+native/target/
+native/Cargo.lock
+
+# .NET build artefacts
+**/bin/
+**/obj/
+dist/
+
+# Generated bindings — regenerated on `just generate-bindings`. Track if
+# you want reviewable diffs on FFI changes; ignore if you prefer the
+# build to always produce them fresh. We track-and-regenerate so PR
+# diffs show binding changes alongside Rust changes.
+# (Uncomment the next line to switch to generate-only.)
+# Satora.Sdk/Generated/
+
+.idea/
+.vscode/
+*.user

@@ -1,0 +1,112 @@
+# Use shell positional args ($1, $2, "$@", …) so variadic recipes can
+# forward args without losing quoting (e.g. `--source-amount "10 USD"`
+# stays one token across forwarding hops).
+set positional-arguments := true
+
+# =============================================================================
+# .NET SDK build orchestration
+#
+# Two-language project: Rust (native FFI lib under `native/`) plus a C#
+# wrapper project that P/Invokes into it via UniFFI-generated bindings.
+# Recipes are ordered roughly in the order a contributor invokes them
+# the first time through.
+# =============================================================================
+
+# UniFFI ↔ uniffi-bindgen-cs version pinning. Bump in lockstep — bindgen
+# releases are tagged `<bindgen>+<uniffi>` and only work with their
+# matching uniffi crate version. See README.md.
+bindgen_tag := "v0.10.0+v0.29.4"
+
+# Where uniffi-bindgen-cs lands the generated `.cs` file.
+generated_dir := "Satora.Sdk/Generated"
+
+# Install uniffi-bindgen-cs at the pinned tag. Idempotent — `cargo
+# install` is a no-op if the same version is already installed.
+install-bindgen:
+    cargo install --locked \
+        --git https://github.com/NordSecurity/uniffi-bindgen-cs \
+        --tag {{ bindgen_tag }} \
+        uniffi-bindgen-cs
+
+# Build the Rust cdylib (`libsatora_sdk_ffi.dylib` / `.so` / `.dll`).
+build-native:
+    cd native && cargo build
+
+# Generate the C# P/Invoke bindings from the just-built cdylib. Must run
+# after build-native so the symbol metadata is fresh.
+#
+# Run from inside `native/` because uniffi-bindgen-cs internally invokes
+# `cargo metadata`, which walks upward looking for a `Cargo.toml`. That
+# works fine inside the mono-repo (root workspace has one) but breaks in
+# the standalone mirror, where there's no Cargo.toml above `dotnet-sdk/`.
+# Anchoring at `native/Cargo.toml` makes the recipe robust either way.
+#
+# Post-process: uniffi-bindgen-cs emits the base record of every tagged
+# enum (and the SDK error base type) as `internal`, while the variants
+# are `public`. That breaks any public API that uses these types as
+# parameters — callers in another assembly see `internal` types they
+# can't even name. We bump the chain / token / quote-amount enum base
+# records to `public` so the SDK can expose them in its public surface.
+# Idempotent: running twice is a no-op.
+generate-bindings: build-native
+    cd native && uniffi-bindgen-cs \
+        --library target/debug/libsatora_sdk_ffi.dylib \
+        --out-dir ../{{ generated_dir }}
+    sed -i.bak \
+        -e 's/^internal record ChainId {/public record ChainId {/' \
+        -e 's/^internal record TokenId {/public record TokenId {/' \
+        -e 's/^internal record QuoteAmount {/public record QuoteAmount {/' \
+        -e 's/^internal record Address {/public record Address {/' \
+        -e 's/^internal record SwapStatus {/public record SwapStatus {/' \
+        -e 's/^internal record SwapFunding {/public record SwapFunding {/' \
+        -e 's/^internal record Swap (/public record Swap (/' \
+        -e 's/^internal record Version (/public record Version (/' \
+        -e 's/^internal record QuoteResult (/public record QuoteResult (/' \
+        -e 's/^internal record GaslessOpts (/public record GaslessOpts (/' \
+        -e 's/^internal record FundSwapReceipt (/public record FundSwapReceipt (/' \
+        -e 's/^internal record GasOverrides (/public record GasOverrides (/' \
+        -e 's/^internal record ArkadeConfig (/public record ArkadeConfig (/' \
+        -e 's/^internal record ClaimReceipt (/public record ClaimReceipt (/' \
+        -e 's/^internal record ArkadeBalance (/public record ArkadeBalance (/' \
+        -e 's/^internal record DepositStatus (/public record DepositStatus (/' \
+        -e 's/^internal record LightningDestination {/public record LightningDestination {/' \
+        -e 's/^internal enum BitcoinNetwork: int/public enum BitcoinNetwork: int/' \
+        -e 's/^internal interface ISatoraClient {/public interface ISatoraClient {/' \
+        -e 's/^internal class SatoraClient : ISatoraClient/public class SatoraClient : ISatoraClient/' \
+        {{ generated_dir }}/satora_sdk_ffi.cs
+    rm {{ generated_dir }}/satora_sdk_ffi.cs.bak
+
+# Lint Rust side. Mirrors what the client-sdk top-level Justfile expects.
+lint-rust:
+    cd native && cargo clippy --all-targets -- -D warnings
+
+# Format the Rust side using the pinned nightly toolchain.
+fmt-rust:
+    cd native && cargo +nightly-2025-11-01 fmt
+
+# Build the C# solution. Requires the `dotnet` CLI (8.0+).
+build: generate-bindings
+    dotnet build Satora.Sdk.sln
+
+# Run xUnit tests. Live tests are skipped unless LENDASWAP_API_URL is set.
+test: generate-bindings
+    dotnet test Satora.Sdk.sln
+
+# Run live tests too (set LENDASWAP_API_URL or rely on the default).
+test-live api_url="http://localhost:3333":
+    LENDASWAP_API_URL={{ api_url }} dotnet test Satora.Sdk.sln
+
+# Pack the NuGet (.nupkg) using the currently-built native lib. Production
+# packaging will need to drop in cross-compiled binaries for every RID
+# under `native/target/<rid>/release/` before this runs — that part
+# happens in CI, not here.
+pack: build
+    dotnet pack Satora.Sdk/Satora.Sdk.csproj -c Release -o dist
+
+# Run the sample CLI. Pass arguments after `--`, e.g.:
+#   just dotnet-cli -- quote --source Arb:USDT --target Arkade:BTC --source-amount "10 USD"
+dotnet-cli *args: generate-bindings
+    # No explicit `--` here: the user's `--` (passed at the outermost
+    # `just dotnet-cli -- …`) flows through `"$@"` at every hop and
+    # serves as `dotnet run`'s program-args separator.
+    dotnet run --project Satora.Sdk.Cli/Satora.Sdk.Cli.csproj "$@"
