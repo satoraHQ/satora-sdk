@@ -30,7 +30,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@arkade-os/sdk": "^0.4.32",
+    "@arkade-os/sdk": "^0.4.45",
     "@scure/base": "^2.0.0"
   },
   "devDependencies": {

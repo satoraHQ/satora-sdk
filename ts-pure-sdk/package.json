@@ -48,7 +48,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@arkade-os/sdk": "^0.4.37",
+    "@arkade-os/sdk": "^0.4.45",
     "@noble/curves": "^2.2.0",
     "@noble/hashes": "^2.2.0",
     "@scure/base": "^2.0.0",

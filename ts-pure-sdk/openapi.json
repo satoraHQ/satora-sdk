@@ -5077,7 +5077,7 @@
           },
           "invoice_description": {
             "type": ["string", "null"],
-            "description": "Optional description shown in the payer's wallet when they open the Lightning\ninvoice. When omitted (`null`), a default is used. Use emoty string to unset it."
+            "description": "Optional description shown in the payer's wallet when they open the Lightning\ninvoice. When omitted (`null`), a default is used. Use empty string to unset it."
           },
           "referral_code": {
             "type": ["string", "null"],

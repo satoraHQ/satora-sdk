@@ -2650,7 +2650,7 @@ export interface components {
             hash_lock: string;
             /**
              * @description Optional description shown in the payer's wallet when they open the Lightning
-             *     invoice. When omitted (`null`), a default is used. Use emoty string to unset it.
+             *     invoice. When omitted (`null`), a default is used. Use empty string to unset it.
              */
             invoice_description?: string | null;
             /** @description Optional referral code for fee exemption */
