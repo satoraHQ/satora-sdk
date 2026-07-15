@@ -140,4 +140,16 @@ describe("Client tracking", () => {
     unsub();
     expect(() => client.stopTracking()).not.toThrow();
   });
+
+  it("unregisters every tracked leg on stopTracking (no leaked manager watches)", async () => {
+    const m = managers();
+    const client = new Client(fakeLegacy([arkadeEvmSwap]), withManagers(m.map));
+    await client.startTracking();
+    expect(m.arkade.registered.size).toBe(1);
+    expect(m.evm.registered.size).toBe(1);
+    client.stopTracking();
+    // Both legs released, so the managers stop watching this swap.
+    expect(m.arkade.registered.size).toBe(0);
+    expect(m.evm.registered.size).toBe(0);
+  });
 });

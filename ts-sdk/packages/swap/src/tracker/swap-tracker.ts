@@ -101,12 +101,23 @@ export class SwapTracker {
     return () => this.#subscribers.delete(cb);
   }
 
-  /** Stop reacting to manager events and drop subscribers. Managers are not owned here. */
+  /**
+   * Stop tracking: unregister every still-tracked leg (releasing its manager's
+   * watch — e.g. the EVM per-chain block watch that only `unregister` tears down),
+   * drop the poll timer, and detach event listeners + subscribers. Mirrors
+   * `startTracking`'s `register`, so no manager keeps watching a stopped tracker's
+   * swaps. The managers themselves are not owned here, so they are unregistered but
+   * never disposed.
+   */
   stop(): void {
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = undefined;
     for (const unsub of this.#eventUnsubs) unsub();
     this.#eventUnsubs = [];
+    for (const swap of this.#swaps.values())
+      for (const leg of legsOf(swap))
+        void this.#managerFor(leg).unregister(leg);
+    this.#swaps.clear();
     this.#subscribers.clear();
   }
 
