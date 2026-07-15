@@ -5,17 +5,52 @@
  * `@lendasat/lendaswap-sdk-pure` client, so it is a drop-in replacement. For
  * now every legacy method is forwarded to an internally-owned legacy client
  * instance (see the `@deprecated` delegators below). New Satora-native features
- * (e.g. the action model from issue #848) are added directly on this class, and
+ * are added directly on this class, and
  * individual delegators get replaced with native implementations over time.
  */
 import {
   Client as LegacyClient,
   type ClientBuilder as LegacyClientBuilder,
 } from "@lendasat/lendaswap-sdk-pure";
+import { ArkadeContractManager } from "./contracts/arkade-manager.js";
+import { defaultArkadeServerUrl } from "./contracts/arkade-network.js";
+import { BitcoinContractManager } from "./contracts/bitcoin-manager.js";
+import { DEFAULT_ESPLORA_URLS } from "./contracts/bitcoin-reader-esplora.js";
+import { EvmContractManager } from "./contracts/evm-manager.js";
+import { defaultEvmReaders } from "./contracts/evm-reader-viem.js";
+import type { ContractManager, Ledger } from "./contracts/types.js";
+import { swapToTracked } from "./tracker/from-swap.js";
+import {
+  type ActionSubscriber,
+  SwapTracker,
+  type TrackedSwap,
+} from "./tracker/swap-tracker.js";
+
+/** How the client should set up observe-mode tracking. */
+type TrackingConfig = {
+  /** Whether tracking is enabled at all (default on; `withoutTracking()` clears). */
+  enabled: boolean;
+  /** Explicit per-ledger managers, bypassing auto-construction (advanced/testing). */
+  managers?: Map<Ledger, ContractManager>;
+  /** Ark server URL override; defaults to the mainnet server when unset. */
+  arkadeServerUrl?: string;
+  /** Per-chain EVM RPC overrides; the EVM manager is auto-built either way. */
+  evmRpcUrls?: Record<number, string>;
+  /** Esplora REST URL override for the Bitcoin manager; defaults to mainnet mempool.space. */
+  esploraUrl?: string;
+  /** Poll interval (ms) for advancing observations/clocks; defaults to 5s. */
+  refreshIntervalMs?: number;
+};
 
 export class Client {
   /** The wrapped legacy client. Calls are forwarded here until migrated. */
   readonly #legacy: LegacyClient;
+  /** Tracking configuration; managers are built lazily from it on first use. */
+  readonly #tracking: TrackingConfig;
+  /** Per-ledger monitors, resolved once from {@link #tracking}. */
+  #managers: Map<Ledger, ContractManager> | undefined;
+  #tracker: SwapTracker | undefined;
+  #started = false;
 
   /**
    * Creates a new Client instance.
@@ -23,17 +58,25 @@ export class Client {
    * Prefer {@link Client.builder} for new code.
    */
   constructor(...args: ConstructorParameters<typeof LegacyClient>);
-  /** @internal Wrap an already-built legacy client during migration. */
-  constructor(legacy: LegacyClient);
+  /** @internal Wrap an already-built legacy client, optionally with tracking. */
+  constructor(legacy: LegacyClient, tracking?: TrackingConfig);
   constructor(
-    ...args: ConstructorParameters<typeof LegacyClient> | [legacy: LegacyClient]
+    ...args:
+      | ConstructorParameters<typeof LegacyClient>
+      | [legacy: LegacyClient, tracking?: TrackingConfig]
   ) {
-    this.#legacy =
-      args.length === 1 && args[0] instanceof LegacyClient
-        ? args[0]
-        : new LegacyClient(
-            ...(args as ConstructorParameters<typeof LegacyClient>),
-          );
+    if (args[0] instanceof LegacyClient) {
+      this.#legacy = args[0];
+      this.#tracking = (args[1] as TrackingConfig | undefined) ?? {
+        enabled: false,
+      };
+    } else {
+      this.#legacy = new LegacyClient(
+        ...(args as ConstructorParameters<typeof LegacyClient>),
+      );
+      // A raw (non-builder) client has no tracking config to build from.
+      this.#tracking = { enabled: false };
+    }
   }
 
   /** Start building a {@link Client}. */
@@ -526,6 +569,99 @@ export class Client {
   }
 
   // --- Satora-native features go below ---
+
+  /**
+   * Start observing the user's active swaps and deriving each one's next action.
+   *
+   * Loads stored swaps, maps the ones whose ledgers are observable to
+   * {@link TrackedSwap}s, and runs the per-ledger monitors. Idempotent. Requires
+   * the client to have been built with {@link ClientBuilder.withTracking}.
+   * Subscribe with {@link subscribeToActions}; release with
+   * {@link stopTracking}.
+   */
+  async startTracking(): Promise<void> {
+    if (!this.#tracking.enabled)
+      throw new Error(
+        "tracking is disabled — remove .withoutTracking() to enable it",
+      );
+    if (this.#started) return;
+    this.#started = true;
+    try {
+      const tracker = new SwapTracker(await this.#ensureManagers(), {
+        refreshIntervalMs: this.#tracking.refreshIntervalMs ?? 5_000,
+      });
+      this.#tracker = tracker;
+      const swaps = await this.listAllSwaps();
+      const tracked = swaps
+        .map(swapToTracked)
+        .filter((s): s is TrackedSwap => s !== undefined);
+      await tracker.startTracking(tracked);
+    } catch (error) {
+      this.#started = false;
+      throw error;
+    }
+  }
+
+  /**
+   * Subscribe to next-action updates: `cb` fires with the current action for each
+   * tracked swap immediately, then on every change. Call after
+   * {@link startTracking}. Returns an unsubscribe fn.
+   */
+  subscribeToActions(cb: ActionSubscriber): () => void {
+    if (!this.#tracker)
+      throw new Error("call startTracking() before subscribeToActions()");
+    return this.#tracker.subscribeToActions(cb);
+  }
+
+  /** Stop tracking and drop subscribers. The managers themselves are not disposed. */
+  stopTracking(): void {
+    this.#tracker?.stop();
+    this.#tracker = undefined;
+    this.#started = false;
+  }
+
+  /**
+   * Resolve the per-ledger managers once — the explicit override if given, else
+   * auto-built from config: an {@link ArkadeContractManager} from the configured
+   * Ark server URL (defaulting to the mainnet server), clocked by `getMtp`, and an
+   * {@link EvmContractManager} from the tested default RPCs.
+   */
+  async #ensureManagers(): Promise<Map<Ledger, ContractManager>> {
+    if (this.#managers) return this.#managers;
+    if (this.#tracking.managers) {
+      this.#managers = this.#tracking.managers;
+      return this.#managers;
+    }
+    const managers = new Map<Ledger, ContractManager>();
+    const { arkadeServerUrl, evmRpcUrls, esploraUrl } = this.#tracking;
+    // Arkade + Bitcoin share the Bitcoin MTP clock.
+    const chainTime = async () => (await this.getMtp()).mtp * 1000;
+
+    // Default to mainnet; dev/other networks override via withArkadeServerUrl.
+    const arkadeUrl = arkadeServerUrl ?? defaultArkadeServerUrl("bitcoin");
+    if (arkadeUrl) {
+      managers.set(
+        "arkade",
+        await ArkadeContractManager.create({ serverUrl: arkadeUrl, chainTime }),
+      );
+    }
+    // EVM tracks out of the box via tested default RPCs; overrides take priority.
+    const readers = defaultEvmReaders(evmRpcUrls);
+    if (readers.size > 0)
+      managers.set("evm", EvmContractManager.fromDeps({ readers }));
+    // Bitcoin observes on-chain HTLCs via esplora. Default to the public pair
+    // (mempool.space + blockstream.info) with rotation/failover; an explicit URL
+    // replaces them (a dev/regtest node must not fail over to mainnet).
+    managers.set(
+      "bitcoin",
+      await BitcoinContractManager.create({
+        esploraUrl: esploraUrl ? [esploraUrl] : DEFAULT_ESPLORA_URLS,
+        chainTime,
+      }),
+    );
+    this.#managers = managers;
+    return managers;
+  }
 }
 
 /**
@@ -534,6 +670,39 @@ export class Client {
  */
 export class ClientBuilder {
   readonly #inner: LegacyClientBuilder = LegacyClient.builder();
+  // Observe-mode tracking is on by default; the built client auto-builds its
+  // managers from config unless disabled or given an explicit override.
+  #trackingEnabled = true;
+  #arkadeServerUrl: string | undefined;
+  #esploraUrl: string | undefined;
+  #evmRpcUrls: Record<number, string> | undefined;
+  #managers: Map<Ledger, ContractManager> | undefined;
+
+  /**
+   * Override the EVM JSON-RPC endpoint per chainId. Optional — tracking uses
+   * tested public defaults otherwise; an override is tried first, with the
+   * defaults kept as fallbacks.
+   */
+  withEvmRpcUrls(urls: Record<number, string>): this {
+    this.#evmRpcUrls = urls;
+    return this;
+  }
+
+  /** Turn observe-mode tracking off. */
+  withoutTracking(): this {
+    this.#trackingEnabled = false;
+    return this;
+  }
+
+  /**
+   * Advanced: supply per-ledger {@link ContractManager}s explicitly instead of
+   * letting the client auto-build them from config (useful for tests or custom
+   * chain sources).
+   */
+  withContractManagers(managers: Map<Ledger, ContractManager>): this {
+    this.#managers = managers;
+    return this;
+  }
 
   withBaseUrl(...args: Parameters<LegacyClientBuilder["withBaseUrl"]>): this {
     this.#inner.withBaseUrl(...args);
@@ -559,17 +728,23 @@ export class ClientBuilder {
     return this;
   }
 
-  withEsploraUrl(
-    ...args: Parameters<LegacyClientBuilder["withEsploraUrl"]>
-  ): this {
-    this.#inner.withEsploraUrl(...args);
+  /**
+   * Override the Esplora REST URL. Optional for tracking — the Bitcoin manager
+   * otherwise defaults to mainnet mempool.space; set this for a dev/regtest node.
+   */
+  withEsploraUrl(url: string): this {
+    this.#inner.withEsploraUrl(url);
+    this.#esploraUrl = url;
     return this;
   }
 
-  withArkadeServerUrl(
-    ...args: Parameters<LegacyClientBuilder["withArkadeServerUrl"]>
-  ): this {
-    this.#inner.withArkadeServerUrl(...args);
+  /**
+   * Override the Ark server URL. Optional for tracking — it otherwise defaults to
+   * the mainnet server; set this to track a non-mainnet (dev/signet) deployment.
+   */
+  withArkadeServerUrl(url: string): this {
+    this.#inner.withArkadeServerUrl(url);
+    this.#arkadeServerUrl = url;
     return this;
   }
 
@@ -613,6 +788,12 @@ export class ClientBuilder {
   }
 
   async build(): Promise<Client> {
-    return new Client(await this.#inner.build());
+    return new Client(await this.#inner.build(), {
+      enabled: this.#trackingEnabled,
+      managers: this.#managers,
+      arkadeServerUrl: this.#arkadeServerUrl,
+      esploraUrl: this.#esploraUrl,
+      evmRpcUrls: this.#evmRpcUrls,
+    });
   }
 }
