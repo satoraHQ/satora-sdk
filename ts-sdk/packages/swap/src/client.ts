@@ -597,6 +597,12 @@ export class Client {
         .filter((s): s is TrackedSwap => s !== undefined);
       await tracker.startTracking(tracked);
     } catch (error) {
+      // A partway failure (e.g. a ledger register/refresh erroring on an RPC or
+      // indexer hiccup) left `#tracker` set and some legs registered. Tear it down
+      // so `subscribeToActions` still reports "not started" and a retry begins
+      // clean, instead of leaking the partial tracker's registrations/listeners.
+      this.#tracker?.stop();
+      this.#tracker = undefined;
       this.#started = false;
       throw error;
     }

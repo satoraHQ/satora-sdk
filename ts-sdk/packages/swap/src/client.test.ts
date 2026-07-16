@@ -152,4 +152,21 @@ describe("Client tracking", () => {
     expect(m.arkade.registered.size).toBe(0);
     expect(m.evm.registered.size).toBe(0);
   });
+
+  it("clears the partial tracker when startTracking fails partway", async () => {
+    const m = managers();
+    // The EVM leg's register fails, as an RPC/indexer error would. The Arkade leg
+    // (registered first) must be torn down, not leaked.
+    m.evm.register = async () => {
+      throw new Error("rpc down");
+    };
+    const client = new Client(fakeLegacy([arkadeEvmSwap]), withManagers(m.map));
+
+    await expect(client.startTracking()).rejects.toThrow(/rpc down/);
+
+    // Partial tracker torn down: subscribe still reports not-started, and the
+    // Arkade leg that did register was unregistered.
+    expect(() => client.subscribeToActions(() => {})).toThrow(/startTracking/);
+    expect(m.arkade.registered.size).toBe(0);
+  });
 });
