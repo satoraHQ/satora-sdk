@@ -73,6 +73,13 @@ export class EvmContractManager implements ContractManager {
   async register(ref: HtlcRef): Promise<void> {
     if (ref.ledger !== "evm")
       throw new Error(`EvmContractManager can't track a '${ref.ledger}' HTLC`);
+    // Fail loudly on an unconfigured chain rather than storing a ref we can never
+    // observe (its state/clock would stay undefined and the tracker would wait on
+    // it forever). The caller must add the chain via ClientBuilder.withEvmRpcUrls().
+    if (!this.#readers.has(ref.chainId))
+      throw new Error(
+        `no EVM reader for chain ${ref.chainId} — configure it via ClientBuilder.withEvmRpcUrls()`,
+      );
     this.#refs.set(htlcKey(ref), ref);
     this.#ensureWatch(ref.chainId);
     await this.#reconcileChain(ref.chainId);

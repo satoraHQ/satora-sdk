@@ -55,6 +55,12 @@ describe("EvmContractManager", () => {
     ).rejects.toThrow(/can't track/);
   });
 
+  it("throws for a chain with no configured reader (instead of silently stalling)", async () => {
+    await expect(build().register({ ...ref, chainId: 8453 })).rejects.toThrow(
+      /no EVM reader for chain 8453/,
+    );
+  });
+
   it("seeds the observation and the chain clock on register", async () => {
     const m = build();
     reader.events = [{ kind: "created", amount: 1000n, token: "0xwbtc" }];
