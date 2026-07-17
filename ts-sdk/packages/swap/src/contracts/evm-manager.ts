@@ -58,6 +58,10 @@ export class EvmContractManager implements ContractManager {
   readonly #now = new Map<number, number>();
   /** chainId → unsubscribe for its (single, shared) watch. */
   readonly #watchUnsubs = new Map<number, () => void>();
+  /** chainId → a block-event reconcile is currently running (coalescing). */
+  readonly #reconciling = new Set<number>();
+  /** chainId → a block event arrived mid-reconcile; run exactly one more. */
+  readonly #reconcileAgain = new Set<number>();
   readonly #listeners = new Set<
     (ref: HtlcRef, state: HtlcObservation) => void
   >();
@@ -96,6 +100,7 @@ export class EvmContractManager implements ContractManager {
       this.#watchUnsubs.get(ref.chainId)?.();
       this.#watchUnsubs.delete(ref.chainId);
       this.#now.delete(ref.chainId);
+      this.#reconcileAgain.delete(ref.chainId);
     }
   }
 
@@ -120,6 +125,8 @@ export class EvmContractManager implements ContractManager {
   dispose(): void {
     for (const unsub of this.#watchUnsubs.values()) unsub();
     this.#watchUnsubs.clear();
+    this.#reconciling.clear();
+    this.#reconcileAgain.clear();
     this.#listeners.clear();
   }
 
@@ -134,8 +141,33 @@ export class EvmContractManager implements ContractManager {
     if (!reader) return;
     this.#watchUnsubs.set(
       chainId,
-      reader.watch(() => void this.#reconcileChain(chainId)),
+      reader.watch(() => this.#scheduleReconcile(chainId)),
     );
+  }
+
+  /**
+   * Reconcile a chain in response to a block/log event, coalesced: at most one
+   * reconcile runs per chain at a time, with at most one queued rerun to pick up
+   * changes that arrived mid-run. This stops fast chains / slow RPCs from stacking
+   * redundant full-log scans (which amplify rate limits), and the `.catch` keeps a
+   * transient RPC failure in a background reconcile from becoming an unhandled
+   * rejection. `register`/`refresh` still await `#reconcileChain` directly.
+   */
+  #scheduleReconcile(chainId: number): void {
+    if (this.#reconciling.has(chainId)) {
+      this.#reconcileAgain.add(chainId);
+      return;
+    }
+    this.#reconciling.add(chainId);
+    void this.#reconcileChain(chainId)
+      .catch((error) => {
+        console.warn(`EVM reconcile failed for chain ${chainId}:`, error);
+      })
+      .finally(() => {
+        this.#reconciling.delete(chainId);
+        if (this.#reconcileAgain.delete(chainId))
+          this.#scheduleReconcile(chainId);
+      });
   }
 
   /** Refresh one chain's clock and re-observe every HTLC tracked on it. */

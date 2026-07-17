@@ -142,4 +142,47 @@ describe("EvmContractManager", () => {
     m.dispose();
     expect(reader.watching).toBe(false);
   });
+
+  it("coalesces overlapping block-event reconciles into a single rerun", async () => {
+    const m = build();
+    await m.register(ref);
+
+    // Gate the first watch-driven reconcile so we can fire more events while it's
+    // in flight; count reconciles by their one getBlockTimeMs call each.
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((r) => {
+      releaseGate = r;
+    });
+    let calls = 0;
+    reader.getBlockTimeMs = async () => {
+      calls += 1;
+      if (calls === 1) await gate;
+      return 1_000;
+    };
+
+    reader.fire(); // starts reconcile #1 (blocks on the gate)
+    reader.fire(); // in flight → queue exactly one rerun
+    reader.fire(); // in flight → coalesced, no extra queue
+    await tick();
+
+    releaseGate(); // #1 finishes → runs the single queued rerun (#2)
+    await tick();
+    await tick();
+
+    // #1 + one coalesced rerun = 2, not 3 (the three rapid fires didn't stack).
+    expect(calls).toBe(2);
+  });
+
+  it("catches a rejecting block-event reconcile (no unhandled rejection)", async () => {
+    const m = build();
+    await m.register(ref);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    reader.getBlockTimeMs = async () => {
+      throw new Error("rpc down");
+    };
+    expect(() => reader.fire()).not.toThrow();
+    await tick();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
 });
