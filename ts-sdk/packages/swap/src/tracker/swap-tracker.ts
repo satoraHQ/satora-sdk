@@ -87,11 +87,23 @@ export class SwapTracker {
     this.#recomputeAll();
   }
 
-  /** Re-poll every manager to seed/advance clocks and reconcile observations. */
+  /**
+   * Re-poll the managers that have a registered leg — seeding/advancing their
+   * clocks and reconciling observations. Managers with nothing tracked are
+   * skipped: refreshing them still hits their clock source (e.g. Arkade/Bitcoin
+   * MTP via the API), so a swap that doesn't touch a ledger can't fail on that
+   * ledger's endpoint being down (the default client builds every manager).
+   */
   async #refreshManagers(): Promise<void> {
-    await Promise.all(
-      [...new Set(this.#managers.values())].map((manager) => manager.refresh()),
+    const active = new Set<Ledger>();
+    for (const swap of this.#swaps.values())
+      for (const leg of legsOf(swap)) active.add(leg.ledger);
+    const managers = new Set(
+      [...active]
+        .map((ledger) => this.#managers.get(ledger))
+        .filter((m): m is ContractManager => m !== undefined),
     );
+    await Promise.all([...managers].map((manager) => manager.refresh()));
   }
 
   /** Notify `cb` of the current action for each tracked swap, then on every change. */

@@ -98,6 +98,25 @@ describe("SwapTracker", () => {
     expect(evm.registered.has(htlcKey(serverHtlc))).toBe(true);
   });
 
+  it("does not refresh a manager with no registered legs", async () => {
+    const arkade = new FakeManager("arkade", 1_000);
+    const evm = new FakeManager("evm", 1_000);
+    const bitcoin = new FakeManager("bitcoin", 1_000);
+    // Bitcoin's clock source is down; the tracked swap has no Bitcoin leg, so its
+    // refresh must not run — startTracking should still succeed.
+    bitcoin.refresh = async () => {
+      throw new Error("MTP endpoint down");
+    };
+    const tracker = new SwapTracker(
+      new Map<Ledger, ContractManager>([
+        ["arkade", arkade],
+        ["evm", evm],
+        ["bitcoin", bitcoin],
+      ]),
+    );
+    await expect(tracker.startTracking([swap])).resolves.toBeUndefined();
+  });
+
   it("primes a refresh-only clock on startTracking, so emits aren't blocked", async () => {
     // Arkade's clock is undefined until refresh(); without priming it in
     // startTracking, the recompute would bail on an undefined clock forever.
