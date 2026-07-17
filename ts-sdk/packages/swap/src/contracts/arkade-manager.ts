@@ -53,11 +53,21 @@ function isFunded(vtxo: VirtualCoin): boolean {
   return state === "preconfirmed" || state === "settled";
 }
 
-/** The txid that spent this contract's vtxo, if any. */
-function spentBy(vtxos: VirtualCoin[]): string | undefined {
-  return vtxos.find(
-    (v) => v.spentBy || v.isSpent || v.virtualStatus.state === "spent",
-  )?.spentBy;
+/**
+ * The offchain txid that spent this contract's VHTLC, if any. Mirrors the backend
+ * watcher (`unified_watcher.rs`), which keys spend detection on `arkTxId` — the
+ * offchain Arkade tx whose input[0] condition witness carries the revealed
+ * preimage. Falls back to `spentBy` (the checkpoint tx, which also reveals it) so
+ * a spend is caught under either field: reading only `spentBy` silently missed
+ * spent vtxos that expose the spend solely via `arkTxId`, leaving them classified
+ * as `confirmed` forever (never emitting spent_claim/spent_refund).
+ */
+function spendTxid(vtxos: VirtualCoin[]): string | undefined {
+  const spent = vtxos.find(
+    (v) =>
+      v.arkTxId || v.spentBy || v.isSpent || v.virtualStatus.state === "spent",
+  );
+  return spent?.arkTxId ?? spent?.spentBy;
 }
 
 export class ArkadeContractManager implements ContractManager {
@@ -151,7 +161,7 @@ export class ArkadeContractManager implements ContractManager {
     ref: Extract<HtlcRef, { ledger: "arkade" }>,
   ): Promise<void> {
     const { vtxos } = await this.#indexer.getVtxos({ scripts: [ref.script] });
-    const spend = spentBy(vtxos);
+    const spend = spendTxid(vtxos);
     if (spend) {
       const resolved = await fetchArkadeSpend(
         this.#indexer,

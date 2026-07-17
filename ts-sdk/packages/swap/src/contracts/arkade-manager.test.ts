@@ -34,12 +34,14 @@ function spendPsbt(secret?: Uint8Array): string {
 /** Build a minimal vtxo; only the fields the observer reads matter. */
 function vtxo(p: {
   state: "preconfirmed" | "settled" | "swept" | "spent";
+  arkTxId?: string;
   spentBy?: string;
   value?: number;
 }): VirtualCoin {
   return {
     virtualStatus: { state: p.state },
     isSpent: p.state === "spent",
+    arkTxId: p.arkTxId,
     spentBy: p.spentBy,
     value: p.value ?? 1000,
   } as unknown as VirtualCoin;
@@ -88,9 +90,11 @@ describe("ArkadeContractManager", () => {
     expect(m.getState(ref)).toBe("invalid");
   });
 
-  it("classifies a claim spend and recovers the verified preimage", async () => {
+  it("classifies a claim spend (keyed on arkTxId) and recovers the verified preimage", async () => {
     const m = build();
-    indexer.vtxos = [vtxo({ state: "spent", spentBy: "spendtx" })];
+    // The spend is exposed via `arkTxId` with `spentBy` empty — the case the old
+    // `spentBy`-only read silently missed (leaving it stuck as `confirmed`).
+    indexer.vtxos = [vtxo({ state: "spent", arkTxId: "spendtx" })];
     indexer.txs = [spendPsbt(preimage)];
     await m.register(ref);
     expect(indexer.getVirtualTxs).toHaveBeenCalledWith(["spendtx"]);
@@ -100,11 +104,20 @@ describe("ArkadeContractManager", () => {
 
   it("classifies a timelock refund spend (no preimage revealed)", async () => {
     const m = build();
-    indexer.vtxos = [vtxo({ state: "spent", spentBy: "spendtx" })];
+    indexer.vtxos = [vtxo({ state: "spent", arkTxId: "spendtx" })];
     indexer.txs = [spendPsbt()];
     await m.register(ref);
     expect(m.getState(ref)).toBe("spent_refund");
     expect(m.getPreimage(ref)).toBeUndefined();
+  });
+
+  it("falls back to spentBy when arkTxId is absent", async () => {
+    const m = build();
+    indexer.vtxos = [vtxo({ state: "spent", spentBy: "spendtx" })];
+    indexer.txs = [spendPsbt(preimage)];
+    await m.register(ref);
+    expect(indexer.getVirtualTxs).toHaveBeenCalledWith(["spendtx"]);
+    expect(m.getState(ref)).toBe("spent_claim");
   });
 
   it("notifies listeners and re-observes on refresh", async () => {
@@ -121,7 +134,7 @@ describe("ArkadeContractManager", () => {
 
   it("never downgrades a resolved spend back to a funding state", async () => {
     const m = build();
-    indexer.vtxos = [vtxo({ state: "spent", spentBy: "spendtx" })];
+    indexer.vtxos = [vtxo({ state: "spent", arkTxId: "spendtx" })];
     indexer.txs = [spendPsbt(preimage)];
     await m.register(ref);
     expect(m.getState(ref)).toBe("spent_claim");
