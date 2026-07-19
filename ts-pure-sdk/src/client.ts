@@ -1136,6 +1136,45 @@ export class Client {
   }
 
   /**
+   * Select the SDK-controlled EVM key that matches the swap's recorded depositor.
+   *
+   * Current gasless EVM-sourced swaps use the deterministic wallet-level EVM key;
+   * older gasless swaps may have used the per-swap key. Non-gasless SDK-funded
+   * swaps still use the per-swap key even though client_evm_address may point at
+   * the user's wallet rather than the later Permit2 depositor.
+   */
+  #getCollabRefundEvmSigningKey(storedSwap: StoredSwap): string {
+    const swapKey = storedSwap.secretKey;
+    const response = storedSwap.response as {
+      client_evm_address?: string;
+      gasless?: boolean;
+    };
+
+    if (!response.gasless) {
+      return swapKey;
+    }
+
+    const deterministicKey = this.#getEvmSigningKey();
+    const deterministicAddress = deriveEvmAddress(deterministicKey);
+    const swapAddress = deriveEvmAddress(swapKey);
+    const clientAddress = response.client_evm_address?.toLowerCase();
+
+    if (
+      clientAddress === deterministicAddress.toLowerCase() ||
+      !clientAddress
+    ) {
+      return deterministicKey;
+    }
+    if (clientAddress === swapAddress.toLowerCase()) {
+      return swapKey;
+    }
+
+    throw new Error(
+      `Cannot sign collaborative EVM refund with an SDK-controlled key: swap depositor is ${response.client_evm_address}, but SDK-controlled addresses are ${deterministicAddress} (current gasless key) and ${swapAddress} (legacy per-swap key). Use collabRefundEvmWithSigner with the depositor wallet instead.`,
+    );
+  }
+
+  /**
    * Gets the current key index from storage.
    * @returns The current key index, or 0 if no storage is configured.
    */
@@ -4168,17 +4207,17 @@ export class Client {
       settlement,
     );
 
-    // Sign using the EVM secret key for this swap
+    // Sign using the SDK-controlled EVM key that matches the on-chain depositor.
     const storedSwap = await this.getStoredSwap(swapId);
     if (!storedSwap?.secretKey) {
       throw new Error(
         "No secret key found for this swap. Cannot sign collab refund.",
       );
     }
-    const evmKey = storedSwap.secretKey;
+    const evmKey = this.#getCollabRefundEvmSigningKey(storedSwap);
     const sig = signEvmDigest(evmKey, digest);
 
-    // Derive the on-chain depositor address from the per-swap EVM signing key
+    // Derive the on-chain depositor address from the selected EVM signing key.
     const depositorAddress = deriveEvmAddress(evmKey);
 
     // POST to the server

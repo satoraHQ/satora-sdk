@@ -231,7 +231,7 @@ export interface EvmToLightningSwapGenericOptions {
   referralCode?: string;
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
-  /** Use gasless relay. When true, userAddress is auto-derived from the swap's secretKey. */
+  /** Use gasless relay. When true, userAddress is auto-derived from the SDK EVM key. */
   gasless?: boolean;
   /** Optional: when set, source USDC originates on another CCTP chain and hops to Arbitrum via CCTPv2. */
   inboundBridgeParams?: UsdcInboundBridgeParams;
@@ -263,7 +263,7 @@ export interface EvmToArkadeSwapGenericOptions {
   referralCode?: string;
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
-  /** Use gasless relay. When true, userAddress is auto-derived from the swap's secretKey. */
+  /** Use gasless relay. When true, userAddress is auto-derived from the SDK EVM key. */
   gasless?: boolean;
   /** Optional: when set, source USDC originates on another CCTP chain and hops to Arbitrum via CCTPv2. */
   inboundBridgeParams?: UsdcInboundBridgeParams;
@@ -295,7 +295,7 @@ export interface EvmToBitcoinSwapOptions {
   referralCode?: string;
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
-  /** Use gasless relay. When true, userAddress is auto-derived from the swap's secretKey. */
+  /** Use gasless relay. When true, userAddress is auto-derived from the SDK EVM key. */
   gasless?: boolean;
   /** Optional: when set, source USDC originates on another CCTP chain and hops to Arbitrum via CCTPv2. */
   inboundBridgeParams?: UsdcInboundBridgeParams;
