@@ -25,5 +25,10 @@
     "@changesets/cli": "^2.31.0",
     "turbo": "^2.9.5",
     "typescript": "^5.7.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "@lendasat/lendaswap-sdk-pure": "link:../ts-pure-sdk"
+    }
   }
 }
