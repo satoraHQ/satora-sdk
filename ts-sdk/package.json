@@ -9,26 +9,20 @@
   },
   "packageManager": "pnpm@10.8.0",
   "scripts": {
-    "build": "turbo run build",
-    "test": "turbo run test",
-    "test:run": "turbo run test:run",
-    "lint": "turbo run lint",
-    "lint:fix": "turbo run lint:fix",
-    "check-types": "turbo run check-types",
-    "clean": "turbo run clean && rm -rf .turbo node_modules",
+    "build": "pnpm --filter @lendasat/lendaswap-sdk-pure --filter './packages/**...' run build",
+    "test": "pnpm --filter './packages/**' run test",
+    "test:run": "pnpm build && pnpm --filter './packages/**' run test:run",
+    "lint": "pnpm --filter './packages/**' run lint",
+    "lint:fix": "pnpm --filter './packages/**' run lint:fix",
+    "check-types": "pnpm build && pnpm --filter './packages/**' run check-types",
+    "clean": "pnpm --filter @lendasat/lendaswap-sdk-pure --filter './packages/**' run clean && rm -rf node_modules",
     "changeset": "changeset",
     "changeset:version": "changeset version",
-    "changeset:release": "turbo run build && changeset publish"
+    "changeset:release": "pnpm build && changeset publish"
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.15",
     "@changesets/cli": "^2.31.0",
-    "turbo": "^2.9.5",
     "typescript": "^5.7.0"
-  },
-  "pnpm": {
-    "overrides": {
-      "@lendasat/lendaswap-sdk-pure": "link:../ts-pure-sdk"
-    }
   }
 }

@@ -63,7 +63,7 @@
   },
   "dependencies": {
     "@arkade-os/sdk": "^0.4.45",
-    "@lendasat/lendaswap-sdk-pure": "^0.3.0",
+    "@lendasat/lendaswap-sdk-pure": "workspace:^0.4.0",
     "@noble/hashes": "^2.2.0",
     "@scure/base": "^2.0.0",
     "viem": "2.52.2"

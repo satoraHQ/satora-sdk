@@ -1,5 +1,6 @@
 packages:
   - "packages/*"
+  - "../ts-pure-sdk"
 
 # pnpm 10 only runs native build scripts for allowlisted packages, and the
 # allowlist must live at the workspace root. better-sqlite3 needs its native
