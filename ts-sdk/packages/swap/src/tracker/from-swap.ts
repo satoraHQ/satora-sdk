@@ -22,7 +22,7 @@ const ms = (seconds: number): number => seconds * 1000;
  * The BTC-pegged token the coordinator locks in HTLCs per MAINNET chain
  * (mirrors `config.mainnet.yaml` `tokens.wbtc`): WBTC on Polygon, tBTC on
  * Ethereum/Arbitrum. TEMPORARY fallback for the responses that don't expose
- * the locked token (`evm_to_arkade`, `evm_to_lightning`) so their isActive
+ * the locked token (`evm_to_arkade`) so their isActive
  * tuple is complete; delete once the server returns the token there.
  * Gated to mainnet: a dev deployment's mock token lives at another address,
  * and guessing wrong would flag valid fundings as `invalid`.
@@ -311,6 +311,27 @@ export function swapToTracked(stored: StoredSwap): TrackedSwap | undefined {
         ),
         clientRefundLocktime: 0, // no on-chain client leg
         serverRefundLocktime: ms(r.vhtlc_refund_locktime),
+      };
+
+    // Client funds the EVM HTLC (evm_expected_sats of the BTC-pegged token);
+    // the server pays the Lightning invoice off-chain and claims the HTLC —
+    // no server leg to watch.
+    case "evm_to_lightning":
+      return {
+        swapId: r.id,
+        clientHtlc: evmLeg({
+          chainId: r.evm_chain_id,
+          htlc: r.evm_htlc_address,
+          hashLock: r.hash_lock,
+          claimAddress: r.server_evm_address, // the server claims the client's EVM HTLC
+          expectedSats: r.evm_expected_sats,
+          token: r.wbtc_address,
+          sender: r.evm_coordinator_address, // the coordinator locks on the client's behalf
+          timelockSec: r.evm_refund_locktime,
+          createdAt: r.created_at,
+        }),
+        clientRefundLocktime: ms(r.evm_refund_locktime),
+        serverRefundLocktime: 0, // no on-chain server leg
       };
 
     // Client funds the Arkade VHTLC (source_amount); the server pays the

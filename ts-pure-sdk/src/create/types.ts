@@ -11,6 +11,7 @@ import type {
   ArkadeToLightningSwapResponse,
   BtcToArkadeSwapResponse,
   EvmToArkadeSwapResponse,
+  EvmToLightningSwapResponse,
   LightningToArkadeSwapResponse,
   TokenId,
   TokenInfo,
@@ -443,6 +444,70 @@ export type ArkadeToLightningSwapOptions = {
     } & ArkadeToLightningAmount)
 );
 
+/** Exactly one of source (token units to lock) or target (Lightning payout) pins the amount. */
+type EvmToLightningAmount =
+  | {
+      /** Source token amount in smallest units; fees are deducted from the payout (send-max). Mutually exclusive with `targetAmountSats`. */
+      sourceAmount: bigint;
+      targetAmountSats?: undefined;
+    }
+  | {
+      /** Sats the recipient receives over Lightning; fees are added on top. Mutually exclusive with `sourceAmount`. */
+      targetAmountSats: number;
+      sourceAmount?: undefined;
+    };
+
+/** Options for creating an EVM-to-Lightning swap via `/swap/evm/lightning`. */
+export type EvmToLightningSwapOptions = {
+  /** ERC-20 contract address of the source token on the EVM chain */
+  tokenAddress: string;
+  /** Numeric EVM chain ID: 1 (Ethereum), 137 (Polygon), 42161 (Arbitrum) */
+  evmChainId: number;
+  /** User's EVM wallet address (sender of the ERC-20 token). Required unless `gasless`. */
+  userAddress?: string;
+  /** Optional referral code for fee exemption */
+  referralCode?: string;
+  /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
+  extraFees?: number;
+  /** Use gasless relay. When true, userAddress is auto-derived from the SDK EVM key. */
+  gasless?: boolean;
+  /** Optional: when set, source USDC originates on another CCTP chain and hops to Arbitrum via CCTPv2. */
+  inboundBridgeParams?: UsdcInboundBridgeParams;
+} & (
+  | {
+      /**
+       * BOLT11 invoice to pay. Its amount pins the payout, so no
+       * `sourceAmount` here; an optional `targetAmountSats` is
+       * cross-checked against the invoice by the server.
+       */
+      lightningInvoice: string;
+      lightningAddress?: undefined;
+      lnurl?: undefined;
+      sourceAmount?: undefined;
+      targetAmountSats?: number;
+    }
+  | ({
+      /** Lightning address (`user@domain`) resolved into an invoice over the payout amount. */
+      lightningAddress: string;
+      lightningInvoice?: undefined;
+      lnurl?: undefined;
+    } & EvmToLightningAmount)
+  | ({
+      /** LNURL-pay string resolved into an invoice over the payout amount. */
+      lnurl: string;
+      lightningInvoice?: undefined;
+      lightningAddress?: undefined;
+    } & EvmToLightningAmount)
+);
+
+/** Result of creating an EVM-to-Lightning swap */
+export interface EvmToLightningSwapResult {
+  /** The swap response from the API */
+  response: EvmToLightningSwapResponse;
+  /** The swap parameters used (for storage/recovery) */
+  swapParams: SwapParams;
+}
+
 /** Result of creating an Arkade-to-Lightning swap */
 export interface ArkadeToLightningSwapResult {
   /** The swap response from the API */
@@ -468,7 +533,8 @@ export type CreateSwapResult =
   | LightningToArkadeSwapResult
   | LightningToEvmSwapResult
   | EvmToArkadeSwapGenericResult
-  | EvmToBitcoinSwapResult;
+  | EvmToBitcoinSwapResult
+  | EvmToLightningSwapResult;
 
 /**
  * Context passed to swap creation functions.

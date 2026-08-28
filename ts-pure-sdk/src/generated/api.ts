@@ -355,8 +355,8 @@ export interface paths {
          * @description Resolves the destination (invoice, lightning address or LNURL) and
          *     prices the swap with the provider's actual Lightning send fee for that
          *     payment — unlike `/quote`, whose network fee for Lightning-target
-         *     routes is an estimate. `source_chain` defaults to "Arkade", currently
-         *     the only supported source. Informational: the create endpoint
+         *     routes is an estimate. `source_chain` defaults to "Arkade"; EVM
+         *     sources also take `source_token`. Informational: the create endpoint
          *     re-quotes the fee, which may move between the two calls.
          */
         get: operations["get_lightning_send_quote"];
@@ -578,6 +578,34 @@ export interface paths {
         put?: never;
         /** Create a chain-agnostic EVM-to-Bitcoin swap. */
         post: operations["create_evm_to_bitcoin_swap"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/swap/evm/lightning": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a chain-agnostic EVM-to-Lightning swap.
+         * @description Flow:
+         *     1. User funds the HTLCErc20 (via the coordinator; locked to the invoice's payment hash)
+         *     2. Once the funding is final, the server pays the invoice; the settled payment reveals the
+         *        preimage
+         *     3. Server claims the HTLC with the preimage
+         *
+         *     If the payment fails the swap becomes `ServerWontFund` and the user
+         *     reclaims their tokens via the collaborative EVM refund endpoint (or
+         *     unilaterally after the refund locktime).
+         */
+        post: operations["create_evm_to_lightning_swap"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2404,6 +2432,144 @@ export interface components {
             /** @description WBTC token contract address on the EVM chain */
             wbtc_address: string;
         };
+        /**
+         * @description Request to create an EVM-to-Lightning swap.
+         *
+         *     User sends any ERC-20 token on EVM, receives BTC on a Lightning invoice.
+         */
+        EvmToLightningSwapRequest: {
+            /**
+             * @description Source token amount in smallest units (send-max: fees are deducted
+             *     from the Lightning payout). Only valid with
+             *     `lightning_address`/`lnurl`; mutually exclusive with
+             *     `target_amount_sats`.
+             */
+            amount_in?: string | null;
+            /**
+             * @description Optional: CCTP bridge source chain (e.g., "Ethereum", "Optimism"). When set,
+             *     the user's source USDC originates on this chain and hops through CCTPv2 to
+             *     Arbitrum before the HTLC is created.
+             */
+            bridge_source_chain?: string | null;
+            /** @description Optional: USDC address on the bridge source chain. */
+            bridge_source_token_address?: string | null;
+            /**
+             * Format: int64
+             * @description Numeric EVM chain ID: 1 (Ethereum), 137 (Polygon), 42161 (Arbitrum).
+             */
+            evm_chain_id: number;
+            /**
+             * Format: int32
+             * @description Optional per-swap fee surcharge in basis points
+             *     (0..=max_extra_fee_bps configured on the matching developer key).
+             */
+            extra_fees?: number | null;
+            /** @description Whether to use gasless relay for funding (server submits tx on behalf of user). */
+            gasless?: boolean;
+            /**
+             * @description Lightning address (`user@domain`) to resolve into an invoice over
+             *     the payout amount. Mutually exclusive with the other destination
+             *     fields.
+             */
+            lightning_address?: string | null;
+            /**
+             * @description BOLT11 invoice the user wants paid. Must carry an amount (which
+             *     pins the payout — `amount_in` cannot be combined with it).
+             *     Mutually exclusive with `lightning_address` and `lnurl`.
+             */
+            lightning_invoice?: string | null;
+            /**
+             * @description LNURL-pay string to resolve into an invoice over the payout amount.
+             *     Mutually exclusive with the other destination fields.
+             */
+            lnurl?: string | null;
+            /** @description Optional referral code for fee exemption. */
+            referral_code?: string | null;
+            /**
+             * Format: int64
+             * @description Amount the recipient should receive over Lightning in satoshis
+             *     (fees are added on top). Required with `lightning_address`/`lnurl`
+             *     unless `amount_in` is given; optional with `lightning_invoice`,
+             *     where it must match the invoice amount.
+             */
+            target_amount_sats?: number | null;
+            /** @description ERC-20 contract address of the source token on the EVM chain. */
+            token_address: string;
+            /** @description User's EVM address (sender of the ERC-20 token). */
+            user_address: string;
+            /** @description User ID derived from wallet for recovery purposes. */
+            user_id: string;
+        };
+        /** @description EVM → Lightning swap response. */
+        EvmToLightningSwapResponse: {
+            /**
+             * @description CCTP bridge source chain. Set when the source USDC originated on
+             *     another CCTP chain and hopped to Arbitrum via CCTPv2 before the
+             *     HTLC was created.
+             */
+            bridge_source_chain?: string | null;
+            /** @description Native USDC address on the bridge source chain. */
+            bridge_source_token_address?: string | null;
+            chain: string;
+            client_evm_address: string;
+            /** @description BOLT11 invoice the server will pay once the HTLC funding is final */
+            client_lightning_invoice: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: int64 */
+            evm_chain_id: number;
+            evm_claim_txid?: string | null;
+            /** @description The HTLCCoordinator this swap is pinned to (the HTLC `refundAddress`). */
+            evm_coordinator_address: string;
+            /** @description WBTC/tBTC the coordinator locks in the HTLC, in token smallest units */
+            evm_expected_sats: string;
+            evm_fund_txid?: string | null;
+            evm_htlc_address: string;
+            /**
+             * Format: int64
+             * @description HTLCErc20 contract VERSION of the deployment this swap lives on —
+             *     the EIP-712 domain version string for redeem/refund signatures.
+             */
+            evm_htlc_version: number;
+            /** Format: int64 */
+            evm_refund_locktime: number;
+            /**
+             * Format: int64
+             * @description Protocol fee in satoshis
+             */
+            fee_sats: number;
+            /** @description Whether this swap was created with gasless relay (Permit2) */
+            gasless: boolean;
+            /** @description Hash lock (0x-prefixed 32-byte hex; the invoice's payment hash) */
+            hash_lock: string;
+            id: string;
+            /**
+             * Format: int64
+             * @description Unix timestamp after which the invoice can no longer be paid
+             */
+            invoice_expires_at: number;
+            network: string;
+            /**
+             * Format: int64
+             * @description Network fee in satoshis: the provider's quoted Lightning send fee
+             *     plus the server's HTLC claim gas. The actual send fee is paid out
+             *     of `fee_sats + network_fee_sats`, never on top.
+             */
+            network_fee_sats: number;
+            server_evm_address: string;
+            /** @description Source token amount in smallest units */
+            source_amount: string;
+            source_token: components["schemas"]["TokenInfo"];
+            status: components["schemas"]["SwapStatus"];
+            /** @description Amount paid out on the user's Lightning invoice in satoshis */
+            target_amount: string;
+            target_token: components["schemas"]["TokenInfo"];
+            /**
+             * @description WBTC/tBTC token contract address on the EVM chain (the token locked
+             *     in the HTLC).
+             */
+            wbtc_address: string;
+        };
         EvmTokenInfo: {
             address: string;
             /** Format: int32 */
@@ -2461,6 +2627,9 @@ export interface components {
         }) | (components["schemas"]["EvmToBitcoinSwapResponse"] & {
             /** @enum {string} */
             direction: "evm_to_bitcoin";
+        }) | (components["schemas"]["EvmToLightningSwapResponse"] & {
+            /** @enum {string} */
+            direction: "evm_to_lightning";
         });
         LightningSendQuoteResponse: {
             /**
@@ -2490,9 +2659,17 @@ export interface components {
              */
             protocol_fee_sats: number;
             /**
+             * @description Total the user locks on the source chain (payout + fees), in the
+             *     source token's smallest unit: satoshis for Arkade, token units for
+             *     EVM sources.
+             */
+            source_amount: string;
+            /**
              * Format: int64
-             * @description Total the user locks on the source chain (payout + fees), in
-             *     satoshis.
+             * @deprecated
+             * @description Deprecated: use `source_amount`. The BTC-pegged lock in satoshis
+             *     (for EVM sources: the WBTC/tBTC the coordinator locks, not what the
+             *     user sends).
              */
             source_amount_sats: number;
             /**
@@ -3936,10 +4113,23 @@ export interface operations {
         parameters: {
             query?: {
                 /**
-                 * @description Source chain of the swap. Defaults to "Arkade" — currently the
-                 *     only supported source; other chains (e.g. EVM) are planned.
+                 * @description Source chain of the swap. Defaults to "Arkade". EVM chains
+                 *     ("Polygon", "Ethereum", "Arbitrum") require `source_token`.
                  */
                 source_chain?: null | components["schemas"]["Chain"];
+                /**
+                 * @description ERC-20 contract address of the source token; required (and only
+                 *     meaningful) for EVM source chains.
+                 */
+                source_token?: string | null;
+                /**
+                 * @description Total to lock on the source chain, in the source token's smallest
+                 *     unit (satoshis for Arkade, token units for EVM); fees are deducted
+                 *     from the Lightning payout (send-max). Only valid with
+                 *     `lightning_address`/`lnurl`; mutually exclusive with
+                 *     `target_amount_sats`.
+                 */
+                source_amount?: string | null;
                 /**
                  * @description BOLT11 invoice the user wants paid; pins the payout. Mutually
                  *     exclusive with `lightning_address` and `lnurl`.
@@ -3956,10 +4146,9 @@ export interface operations {
                  */
                 lnurl?: string | null;
                 /**
-                 * @description Total to lock on the source chain in satoshis (fees are deducted
-                 *     from the Lightning payout — send-max). Only valid with
-                 *     `lightning_address`/`lnurl`; mutually exclusive with
-                 *     `target_amount_sats`.
+                 * @deprecated
+                 * @description Deprecated: use `source_amount`. Arkade-only alias for the send-max
+                 *     lock amount in satoshis.
                  */
                 source_amount_sats?: number | null;
                 /**
@@ -4469,6 +4658,66 @@ export interface operations {
             };
             /** @description Internal server error */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    create_evm_to_lightning_swap: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EvmToLightningSwapRequest"];
+            };
+        };
+        responses: {
+            /** @description Swap created successfully */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvmToLightningSwapResponse"];
+                };
+            };
+            /** @description Bad request - invalid parameters */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict - a swap with this payment hash exists already */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Lightning is not available on this deployment */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

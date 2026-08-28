@@ -326,6 +326,41 @@ describe("swapToTracked", () => {
     expect(tracked?.serverRefundLocktime).toBe(1_000_000_000); // VHTLC leg
   });
 
+  it("maps evm_to_lightning: client funds the EVM HTLC, no server leg", () => {
+    const tracked = swapToTracked(
+      stored({
+        id: "swap-e2l",
+        direction: "evm_to_lightning",
+        hash_lock: hashLock,
+        evm_chain_id: 137,
+        evm_htlc_address: "0xhtlc",
+        evm_coordinator_address: "0xcoordinator",
+        evm_expected_sats: "1450",
+        wbtc_address: "0xwbtc",
+        client_evm_address: "0xclient",
+        server_evm_address: "0xserver",
+        evm_refund_locktime: 900_000,
+        created_at: "2026-01-01T00:00:00Z",
+      } as never),
+    );
+
+    expect(tracked?.serverHtlc).toBeUndefined();
+    expect(tracked?.clientHtlc).toEqual({
+      ledger: "evm",
+      chainId: 137,
+      htlc: "0xhtlc",
+      preimageHash: `0x${hashLock}`,
+      claimAddress: "0xserver", // the server claims the client's HTLC
+      expectedAmount: 1450n,
+      expectedToken: "0xwbtc",
+      sender: "0xcoordinator",
+      timelockSec: 900_000,
+      createdAtMs: Date.parse("2026-01-01T00:00:00Z"),
+    });
+    expect(tracked?.clientRefundLocktime).toBe(900_000_000);
+    expect(tracked?.serverRefundLocktime).toBe(0);
+  });
+
   it("returns undefined for directions not yet mapped", () => {
     expect(
       swapToTracked(stored({ direction: "future_direction" } as never)),

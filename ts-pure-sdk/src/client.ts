@@ -7,6 +7,7 @@ import {
   createApiClient,
   type EvmToArkadeSwapResponse,
   type EvmToBitcoinSwapResponse,
+  type EvmToLightningSwapResponse,
   type GetSwapResponse,
   type LightningToArkadeSwapResponse,
   type paths,
@@ -50,12 +51,15 @@ import {
   createBitcoinToEvmSwap,
   createEvmToArkadeSwapGeneric,
   createEvmToBitcoinSwap,
+  createEvmToLightningSwap,
   createLightningToArkadeSwap,
   createLightningToEvmSwap,
   type EvmToArkadeSwapGenericOptions,
   type EvmToArkadeSwapGenericResult,
   type EvmToBitcoinSwapOptions,
   type EvmToBitcoinSwapResult,
+  type EvmToLightningSwapOptions,
+  type EvmToLightningSwapResult,
   type LightningToArkadeSwapOptions,
   type LightningToArkadeSwapResult,
   type LightningToEvmSwapOptions,
@@ -208,6 +212,8 @@ export type {
   EvmToArkadeSwapResult,
   EvmToBitcoinSwapOptions,
   EvmToBitcoinSwapResult,
+  EvmToLightningSwapOptions,
+  EvmToLightningSwapResult,
   LightningToEvmSwapOptions,
   LightningToEvmSwapResponse,
   LightningToEvmSwapResult,
@@ -579,7 +585,7 @@ export interface GetQuoteParams {
   extraFees?: number;
   /**
    * Optional Lightning destination (BOLT11 invoice, lightning address or
-   * LNURL) for Arkade → Lightning quotes. When set, the quote is served
+   * LNURL) for Arkade/EVM → Lightning quotes. When set, the quote is served
    * by `/quote/lightning-send` and prices the swap with the provider's
    * REAL Lightning send fee for that exact payment instead of the flat
    * network-fee estimate. Invoices pin the payout (amount params are
@@ -597,6 +603,9 @@ export interface GetQuoteParams {
   bridgeRecipientSetup?: boolean;
 }
 
+/** Source chains `/quote/lightning-send` can price. */
+export type LightningSendSourceChain = "Arkade" | "1" | "137" | "42161";
+
 /**
  * Parameters for {@link Client.getLightningSendQuote}. Exactly one of the
  * destination fields must be set; `lightningAddress`/`lnurl` additionally
@@ -604,19 +613,28 @@ export interface GetQuoteParams {
  */
 export interface GetLightningSendQuoteParams {
   /**
+   * Source chain of the swap: "Arkade" (default) or an EVM chain id
+   * ("137", "1", "42161"). EVM sources also need `sourceToken`.
+   */
+  sourceChain?: LightningSendSourceChain;
+  /** ERC-20 contract address of the source token (EVM sources only). */
+  sourceToken?: string;
+  /**
+   * Total to lock on the source chain, in the source token's smallest
+   * unit (sats for Arkade, token units for EVM); fees are deducted from
+   * the Lightning payout (send-max). `lightningAddress`/`lnurl` only;
+   * mutually exclusive with `targetAmountSats`.
+   */
+  sourceAmount?: bigint | number | string;
+  /**
    * BOLT11 invoice the user wants paid; its amount pins the payout.
-   * `sourceAmountSats` cannot be combined with it.
+   * `sourceAmount` cannot be combined with it.
    */
   lightningInvoice?: string;
   /** Lightning address (`user@domain`). */
   lightningAddress?: string;
   /** LNURL-pay string (`lnurl1...`). */
   lnurl?: string;
-  /**
-   * Total to lock on the source chain in satoshis; fees are deducted from
-   * the Lightning payout (send-max). `lightningAddress`/`lnurl` only.
-   */
-  sourceAmountSats?: number;
   /**
    * Amount the recipient should receive over Lightning in satoshis; fees
    * are added on top. With `lightningInvoice` it must match the invoice.
@@ -632,15 +650,24 @@ export interface GetLightningSendQuoteParams {
   extraFees?: number;
 }
 
-/** Exact quote for a swap paying out over Lightning. Amounts in sats. */
+/**
+ * Exact quote for a swap paying out over Lightning. Amounts in sats unless
+ * noted.
+ */
 export interface LightningSendQuote {
-  /** Total the user locks on the source chain (payout + fees). */
-  sourceAmountSats: number;
+  /**
+   * Total the user locks on the source chain (payout + fees), in the
+   * source token's smallest unit: sats for Arkade, token units for EVM.
+   */
+  sourceAmount: string;
   /** Paid out on the Lightning invoice. */
   targetAmountSats: number;
   /** Protocol fee. */
   protocolFeeSats: number;
-  /** Provider-quoted Lightning send fee, charged as the network fee. */
+  /**
+   * Network fee: the provider-quoted Lightning send fee (plus the server's
+   * HTLC claim gas for EVM sources).
+   */
   networkFeeSats: number;
   /** Protocol fee rate (as decimal, e.g. 0.003 = 0.30%). */
   protocolFeeRate: number;
@@ -1701,8 +1728,8 @@ export class Client {
     // the real error.
     if (
       params.lightningDestination &&
-      params.sourceChain === "Arkade" &&
-      params.targetChain === "Lightning"
+      params.targetChain === "Lightning" &&
+      (params.sourceChain === "Arkade" || isSourceEvmChain(params.sourceChain))
     ) {
       try {
         return await this.#lightningSendQuoteAsQuote(
@@ -1781,10 +1808,15 @@ export class Client {
     const { data, error } = await this.#apiClient.GET("/quote/lightning-send", {
       params: {
         query: {
+          source_chain: params.sourceChain,
+          source_token: params.sourceToken,
+          source_amount:
+            params.sourceAmount === undefined
+              ? undefined
+              : params.sourceAmount.toString(),
           lightning_invoice: params.lightningInvoice,
           lightning_address: params.lightningAddress,
           lnurl: params.lnurl,
-          source_amount_sats: params.sourceAmountSats,
           target_amount_sats: params.targetAmountSats,
           // Per-call referral wins; fall back to the client default.
           ref: params.referralCode ?? this.#config.referralCode,
@@ -1802,7 +1834,7 @@ export class Client {
     }
 
     return {
-      sourceAmountSats: data.source_amount_sats,
+      sourceAmount: data.source_amount,
       targetAmountSats: data.target_amount_sats,
       protocolFeeSats: data.protocol_fee_sats,
       networkFeeSats: data.network_fee_sats,
@@ -1825,33 +1857,41 @@ export class Client {
     if (!kind) {
       throw new Error(`unrecognized lightning destination: ${destination}`);
     }
+    const evmSource = isSourceEvmChain(params.sourceChain);
     // The invoice pins the payout itself; only address/LNURL flows take a
-    // pinned amount.
-    const sourceAmountSats =
-      kind !== "invoice" && params.sourceAmount != null
-        ? Number(params.sourceAmount)
-        : undefined;
+    // pinned amount (in the source token's smallest unit: sats for Arkade,
+    // token units for EVM).
+    const sourcePinned = kind !== "invoice" && params.sourceAmount != null;
+    const sourceAmount = sourcePinned ? String(params.sourceAmount) : undefined;
     const targetAmountSats =
-      kind !== "invoice" &&
-      sourceAmountSats == null &&
-      params.targetAmount != null
+      kind !== "invoice" && !sourcePinned && params.targetAmount != null
         ? Number(params.targetAmount)
         : undefined;
 
     const q = await this.getLightningSendQuote({
+      sourceChain: evmSource
+        ? (params.sourceChain as LightningSendSourceChain)
+        : undefined,
+      sourceToken: evmSource ? params.sourceToken : undefined,
+      sourceAmount,
       lightningInvoice: kind === "invoice" ? destination : undefined,
       lightningAddress: kind === "address" ? destination : undefined,
       lnurl: kind === "lnurl" ? destination : undefined,
-      sourceAmountSats,
       targetAmountSats,
       referralCode: params.referralCode,
       extraFees: params.extraFees,
     });
 
-    // 1:1 rate; the pinned side carries the pre-fee amount on both sides,
-    // mirroring the server's /quote for this route.
-    const pinned =
-      sourceAmountSats != null ? q.sourceAmountSats : q.targetAmountSats;
+    // Arkade is 1:1, so the pinned side carries the pre-fee amount on both
+    // sides (mirroring the server's /quote for that route). EVM sources are
+    // DEX-priced: the source side is the token amount create persists.
+    const sourceAmountOut = evmSource
+      ? q.sourceAmount
+      : sourcePinned
+        ? q.sourceAmount
+        : String(q.targetAmountSats);
+    const targetAmountOut =
+      !evmSource && sourcePinned ? q.sourceAmount : String(q.targetAmountSats);
     return {
       exchange_rate: "1",
       network_fee: q.networkFeeSats,
@@ -1860,9 +1900,9 @@ export class Client {
       protocol_fee_rate: q.protocolFeeRate,
       min_amount: q.minAmountSats,
       max_amount: q.maxAmountSats,
-      source_amount: String(pinned),
-      target_amount: String(pinned),
-      net_source_amount: String(q.sourceAmountSats),
+      source_amount: sourceAmountOut,
+      target_amount: targetAmountOut,
+      net_source_amount: q.sourceAmount,
       net_target_amount: String(q.targetAmountSats),
     };
   }
@@ -3393,7 +3433,11 @@ export class Client {
     }
 
     // EVM-sourced swaps: collaborative refund or timelock-based refund
-    if (direction === "evm_to_arkade" || direction === "evm_to_bitcoin") {
+    if (
+      direction === "evm_to_arkade" ||
+      direction === "evm_to_bitcoin" ||
+      direction === "evm_to_lightning"
+    ) {
       const evmOptions = options as EvmRefundOptions | undefined;
 
       if (evmOptions?.collaborative) {
@@ -3402,6 +3446,9 @@ export class Client {
 
       if (direction === "evm_to_arkade") {
         return this.#buildEvmToArkadeRefund(id, swap);
+      }
+      if (direction === "evm_to_lightning") {
+        return this.#buildEvmToLightningRefund(id, swap);
       }
       return this.#buildEvmToBitcoinRefund(id, swap);
     }
@@ -4261,6 +4308,86 @@ export class Client {
   }
 
   /**
+   * Builds refund data for an EVM-to-Lightning swap.
+   * Same pattern as EVM-to-Arkade: direct HTLCErc20 refund for BTC-pegged
+   * sources, coordinator refund-and-swap-calldata otherwise.
+   * @internal
+   */
+  async #buildEvmToLightningRefund(
+    id: string,
+    swap: GetSwapResponse,
+  ): Promise<RefundResult> {
+    const evmSwap = swap as EvmToLightningSwapResponse & {
+      direction: "evm_to_lightning";
+    };
+
+    const timelock = evmSwap.evm_refund_locktime;
+    const now = Math.floor(Date.now() / 1000);
+    const timelockExpired = now >= timelock;
+
+    const isWbtcSource = evmSwap.source_token
+      ? isBtcPegged(evmSwap.source_token)
+      : false;
+
+    if (isWbtcSource) {
+      const refundData = encodeHtlcErc20RefundCallData(
+        evmSwap.evm_htlc_address,
+        {
+          preimageHash: evmSwap.hash_lock,
+          amount: BigInt(evmSwap.source_amount),
+          token: evmSwap.source_token.token_id,
+          claimAddress: evmSwap.server_evm_address, // The server would have been the claimer
+          timelock: timelock,
+        },
+      );
+
+      return {
+        success: true,
+        message: timelockExpired
+          ? "EVM refund calldata ready. Submit this transaction with your EVM wallet."
+          : `Timelock has not expired yet. Refund will be available at ${new Date(timelock * 1000).toISOString()}.`,
+        evmRefundData: {
+          to: refundData.to,
+          data: refundData.data,
+          timelockExpired,
+          timelockExpiry: timelock,
+        },
+      };
+    }
+
+    const response = await this.#apiClient.GET(
+      "/swap/{id}/refund-and-swap-calldata",
+      {
+        params: {
+          path: { id },
+        },
+      },
+    );
+
+    if (response.error) {
+      return {
+        success: false,
+        message: `Failed to fetch refund calldata: ${response.error.error || "Unknown error"}`,
+      };
+    }
+
+    const { coordinator_address, calldata } = response.data;
+
+    return {
+      success: true,
+      message: timelockExpired
+        ? "EVM refund calldata ready. Submit this transaction with your EVM wallet."
+        : `Timelock has not expired yet. Refund will be available at ${new Date(timelock * 1000).toISOString()}.`,
+      evmRefundData: {
+        to: coordinator_address,
+        data: calldata,
+        timelockExpired,
+        timelockExpiry: timelock,
+      },
+    };
+  }
+
+  /**
    * Builds refund data for an EVM-to-Bitcoin swap via the coordinator.
    * Same pattern as EVM-to-Arkade: uses the coordinator refund-and-swap-calldata endpoint.
    * @internal
@@ -4861,6 +4988,66 @@ export class Client {
       });
     }
 
+    // EVM → Lightning. `targetAddress` carries the Lightning destination:
+    // a BOLT11 invoice ("ln..."), an LNURL ("lnurl1..."), or a lightning
+    // address ("user@domain").
+    if (isSourceEvmChain(sourceChain) && isLightning(targetAsset)) {
+      if (!options.userAddress && !options.gasless) {
+        throw new Error(
+          "userAddress is required for EVM → Lightning swaps (unless gasless)",
+        );
+      }
+      const destination = options.targetAddress;
+      const lower = destination.toLowerCase();
+      const common = {
+        tokenAddress: sourceTokenId,
+        evmChainId: Number(sourceChain),
+        userAddress: options.userAddress,
+        referralCode: options.referralCode,
+        extraFees: options.extraFees,
+        gasless: options.gasless,
+        inboundBridgeParams,
+      };
+
+      if (!lower.startsWith("lnurl") && lower.startsWith("ln")) {
+        if (options.sourceAmount != null) {
+          throw new Error(
+            "sourceAmount cannot be combined with a BOLT11 invoice destination (the invoice fixes the payout)",
+          );
+        }
+        return this.createEvmToLightningSwap({
+          lightningInvoice: destination,
+          ...(options.targetAmount != null
+            ? { targetAmountSats: Number(options.targetAmount) }
+            : {}),
+          ...common,
+        });
+      }
+
+      if ((options.sourceAmount == null) === (options.targetAmount == null)) {
+        throw new Error(
+          "Provide exactly one of sourceAmount (token units to lock) or targetAmount (sats to receive over Lightning) for EVM → Lightning swaps",
+        );
+      }
+      const amount =
+        options.sourceAmount != null
+          ? { sourceAmount: BigInt(options.sourceAmount) }
+          : { targetAmountSats: Number(options.targetAmount) };
+
+      if (lower.startsWith("lnurl")) {
+        return this.createEvmToLightningSwap({
+          lnurl: destination,
+          ...amount,
+          ...common,
+        });
+      }
+      return this.createEvmToLightningSwap({
+        lightningAddress: destination,
+        ...amount,
+        ...common,
+      });
+    }
+
     // EVM → Arkade
     if (isSourceEvmChain(sourceChain) && isArkade(targetAsset)) {
       if (!options.userAddress && !options.gasless) {
@@ -5137,6 +5324,45 @@ export class Client {
     return createEvmToArkadeSwapGeneric(options, this.#getCreateContext());
   }
 
+  // =========================================================================
+  // Swap Creation - EVM to Lightning
+  // =========================================================================
+
+  /**
+   * Creates a new EVM-to-Lightning swap.
+   *
+   * The user locks an ERC-20 token in an HTLCErc20 (via the coordinator,
+   * `fundSwap` / `fundSwapGasless`) locked to the invoice's payment hash;
+   * the server pays the Lightning invoice and claims the HTLC with the
+   * revealed preimage. On failure the locked tokens come back via
+   * `refundSwap()` (collaborative, no locktime wait).
+   *
+   * @param options - The swap options.
+   * @returns The swap response and parameters for storage.
+   * @throws Error if the swap creation fails.
+   *
+   * @example
+   * ```ts
+   * // Destination is one of lightningInvoice (amount pinned by the
+   * // invoice), or lightningAddress/lnurl plus one of sourceAmount
+   * // (send-max, token units) or targetAmountSats (exact payout).
+   * const result = await client.createEvmToLightningSwap({
+   *   lightningAddress: "user@wallet.com",
+   *   targetAmountSats: 100000,
+   *   tokenAddress: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", // USDC on Polygon
+   *   evmChainId: 137,
+   *   userAddress: "0x1234...",
+   * });
+   * console.log("HTLC:", result.response.evm_htlc_address);
+   * console.log("Lock amount:", result.response.source_amount);
+   * ```
+   */
+  async createEvmToLightningSwap(
+    options: EvmToLightningSwapOptions,
+  ): Promise<EvmToLightningSwapResult> {
+    return createEvmToLightningSwap(options, this.#getCreateContext());
+  }
+
   /**
    * Creates a new EVM-to-Bitcoin (on-chain) swap.
    *
@@ -5211,10 +5437,11 @@ export class Client {
 
     if (
       swap.direction !== "evm_to_arkade" &&
-      swap.direction !== "evm_to_bitcoin"
+      swap.direction !== "evm_to_bitcoin" &&
+      swap.direction !== "evm_to_lightning"
     ) {
       throw new Error(
-        `Expected evm_to_arkade/evm_to_bitcoin swap, got ${swap.direction}. Permit2 fund method is for EVM-sourced swaps.`,
+        `Expected an EVM-sourced swap, got ${swap.direction}. Permit2 fund method is for EVM-sourced swaps.`,
       );
     }
 
@@ -5380,10 +5607,11 @@ export class Client {
 
     if (
       swap.direction !== "evm_to_arkade" &&
-      swap.direction !== "evm_to_bitcoin"
+      swap.direction !== "evm_to_bitcoin" &&
+      swap.direction !== "evm_to_lightning"
     ) {
       throw new Error(
-        `Expected evm_to_arkade/evm_to_bitcoin swap, got ${swap.direction}. Permit2 fund method is for EVM-sourced swaps.`,
+        `Expected an EVM-sourced swap, got ${swap.direction}. Permit2 fund method is for EVM-sourced swaps.`,
       );
     }
 
@@ -6063,10 +6291,11 @@ export class Client {
 
     if (
       swap.direction !== "evm_to_arkade" &&
-      swap.direction !== "evm_to_bitcoin"
+      swap.direction !== "evm_to_bitcoin" &&
+      swap.direction !== "evm_to_lightning"
     ) {
       throw new Error(
-        `Expected evm_to_arkade/evm_to_bitcoin swap, got ${swap.direction}. Gasless fund is for EVM-sourced swaps.`,
+        `Expected an EVM-sourced swap, got ${swap.direction}. Gasless fund is for EVM-sourced swaps.`,
       );
     }
 
@@ -6309,7 +6538,8 @@ export class Client {
     const swap = await this.getSwap(swapId);
     if (
       swap.direction !== "evm_to_arkade" &&
-      swap.direction !== "evm_to_bitcoin"
+      swap.direction !== "evm_to_bitcoin" &&
+      swap.direction !== "evm_to_lightning"
     ) {
       throw new Error(
         `Expected EVM-sourced swap, got ${swap.direction}. Recovery is only for gasless EVM swaps.`,

@@ -46,6 +46,12 @@ export type BitcoinToEvmSwapResponse =
 export type EvmToArkadeGenericSwapRequest =
   components["schemas"]["EvmToArkadeGenericSwapRequest"];
 
+// EVM-to-Lightning types
+export type EvmToLightningSwapRequest =
+  components["schemas"]["EvmToLightningSwapRequest"];
+export type EvmToLightningSwapResponse =
+  components["schemas"]["EvmToLightningSwapResponse"];
+
 // EVM-to-Bitcoin (generic endpoint) types
 export type EvmToBitcoinSwapRequest =
   components["schemas"]["EvmToBitcoinSwapRequest"];
