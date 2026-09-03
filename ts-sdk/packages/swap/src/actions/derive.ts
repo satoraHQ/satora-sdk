@@ -26,6 +26,7 @@ export function deriveSwapActions(input: SwapActionInput): SwapActions {
     clientRefundLocktime,
     serverRefundLocktime,
     clientFunds = true,
+    serverFunds = true,
   } = input;
 
   switch (status) {
@@ -138,6 +139,42 @@ export function deriveSwapActions(input: SwapActionInput): SwapActions {
     }
 
     case "serverfunded": {
+      // Receive-on-Lightning: "server funded" means the payment to the client's
+      // invoice is in flight — there is no server HTLC to claim and no claim
+      // window. Wait for it to settle (the server then sweeps the client's leg,
+      // which completes the swap); the deposit stays refundable at the client's
+      // own timelock, as in `clientfunded`.
+      if (!serverFunds) {
+        const refundUnlocked = clientChainNow >= clientRefundLocktime;
+        if (refundUnlocked) {
+          const refund: RefundUnilateralAction = {
+            id: "refund_unilateral",
+            recommended: true,
+            automation: "confirm",
+            reason: "Reclaim your deposit.",
+          };
+          return { recommended: "refund_unilateral", actions: [refund] };
+        }
+        const wait: WaitAction = {
+          id: "wait",
+          waitingOn: "server_funding",
+          recommended: true,
+          automation: "auto",
+          reason: "Waiting for the Lightning payment to settle.",
+        };
+        const refund: RefundUnilateralAction = {
+          id: "refund_unilateral",
+          recommended: false,
+          automation: "confirm",
+          reason: "Refund becomes available once the timelock passes.",
+          blockedBy: {
+            kind: "timelock_not_expired",
+            message: "The refund timelock has not passed yet.",
+          },
+        };
+        return { recommended: "wait", actions: [wait, refund] };
+      }
+
       // The client created the swap, so it always holds the preimage.
       const claimWindowClosed = serverChainNow >= serverRefundLocktime;
 

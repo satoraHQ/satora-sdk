@@ -150,8 +150,10 @@ export class HintTracker {
       serverChainNow: now,
       clientRefundLocktime: swap.clientRefundLocktime,
       serverRefundLocktime: swap.serverRefundLocktime,
-      // Pay-on-Lightning swaps have no client-funded on-chain leg.
+      // Pay-on-Lightning swaps have no client-funded on-chain leg;
+      // receive-on-Lightning swaps have no server-funded one.
       clientFunds: swap.clientHtlc !== undefined,
+      serverFunds: swap.serverHtlc !== undefined,
     });
     // No `observations`: nothing was observed on chain. Consumers treat the
     // field as optional.

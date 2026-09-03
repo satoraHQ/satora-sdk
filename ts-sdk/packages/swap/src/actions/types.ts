@@ -167,6 +167,16 @@ export type SwapActionInput = {
    * `false`, `pending` resolves to `wait` (not `fund`) and no refund is offered.
    */
   clientFunds?: boolean;
+  /**
+   * Whether the server's leg is an on-chain HTLC the client claims (the
+   * default). `false` for receive-on-Lightning swaps (`*_to_lightning`): there
+   * the server "funds" by paying the client's invoice off-chain, so there is
+   * nothing to claim and no claim window — {@link serverRefundLocktime} is
+   * meaningless. When `false`, `serverfunded` (the payment is in flight)
+   * resolves to `wait`, with the unilateral refund listed but blocked until
+   * the client's own timelock, exactly like `clientfunded`.
+   */
+  serverFunds?: boolean;
 };
 
 /** On-chain state of one HTLC in a swap. */

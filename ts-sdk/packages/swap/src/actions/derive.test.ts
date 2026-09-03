@@ -346,6 +346,60 @@ describe("deriveSwapActions", () => {
     });
   });
 
+  // Receive-on-Lightning (serverFunds: false): the server's leg is an off-chain
+  // payment to the client's invoice, so "serverfunded" is a payment in flight —
+  // nothing to claim, no claim window, and the serverRefundLocktime the tracker
+  // reports (0) must not read as "claim window closed".
+  describe("receive-on-Lightning (serverFunds: false)", () => {
+    it("serverfunded → wait on the payment, refund listed but blocked (never claim, never refund early)", () => {
+      const result = deriveSwapActions(
+        input({
+          status: "serverfunded",
+          serverFunds: false,
+          serverRefundLocktime: 0,
+        }),
+      );
+      expect(result.recommended).toBe("wait");
+      expect(result.actions[0]).toMatchObject({
+        id: "wait",
+        waitingOn: "server_funding",
+      });
+      expect(result.actions.some((a) => a.id === "claim")).toBe(false);
+      expect(result.actions[1]).toMatchObject({
+        id: "refund_unilateral",
+        recommended: false,
+        blockedBy: { kind: "timelock_not_expired" },
+      });
+    });
+
+    it("serverfunded past the client timelock → refund", () => {
+      const result = deriveSwapActions(
+        input({
+          status: "serverfunded",
+          serverFunds: false,
+          serverRefundLocktime: 0,
+          clientChainNow: 20_000,
+        }),
+      );
+      expect(result.recommended).toBe("refund_unilateral");
+    });
+
+    it("clientfunded is unchanged: wait on the server, refund blocked", () => {
+      const result = deriveSwapActions(
+        input({
+          status: "clientfunded",
+          serverFunds: false,
+          serverRefundLocktime: 0,
+        }),
+      );
+      expect(result.recommended).toBe("wait");
+      expect(result.actions[0]).toMatchObject({
+        id: "wait",
+        waitingOn: "server_funding",
+      });
+    });
+  });
+
   // Pay-on-Lightning (clientFunds: false): the client's deposit is an off-chain
   // Lightning payment, so there is no on-chain fund to recommend and nothing to
   // unilaterally refund — the Lightning wallet unwinds a hold invoice itself.

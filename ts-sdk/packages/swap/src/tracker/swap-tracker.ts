@@ -367,8 +367,10 @@ export class SwapTracker {
         serverChainNow,
         clientRefundLocktime: swap.clientRefundLocktime,
         serverRefundLocktime: swap.serverRefundLocktime,
-        // Pay-on-Lightning swaps have no client-funded on-chain leg.
+        // Pay-on-Lightning swaps have no client-funded on-chain leg;
+        // receive-on-Lightning swaps have no server-funded one.
         clientFunds: swap.clientHtlc !== undefined,
+        serverFunds: swap.serverHtlc !== undefined,
       }),
       // Expose the raw observations so consumers can render progress from
       // chain facts (which leg is funded/spent) even when the server is
