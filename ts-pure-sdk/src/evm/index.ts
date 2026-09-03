@@ -57,5 +57,6 @@ export {
   type EIP712TypedData,
   type EvmSigner,
   isUserRejection,
+  SimulationRevertError,
   type TxReceipt,
 } from "./wallet.js";

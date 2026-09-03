@@ -254,8 +254,25 @@ export function decodeUint256(hex: string): bigint {
 // ── Simulation ───────────────────────────────────────────────────────────────
 
 /**
- * Simulate a transaction via `eth_call`. Throws with the revert reason
- * if the call would fail, so callers don't burn gas on doomed transactions.
+ * A transaction that would revert, caught by simulation before it was sent —
+ * no gas was spent. `reason` is the revert reason as far as the RPC exposed
+ * it. Typical cause on a funding: the DEX rate moved past the swap's min-out
+ * between quoting and signing; a retry re-quotes.
+ */
+export class SimulationRevertError extends Error {
+  readonly reason: string;
+
+  constructor(label: string, reason: string) {
+    super(`${label} would revert: ${reason}`);
+    this.name = "SimulationRevertError";
+    this.reason = reason;
+  }
+}
+
+/**
+ * Simulate a transaction via `eth_call`. Throws {@link SimulationRevertError}
+ * with the revert reason if the call would fail, so callers don't burn gas on
+ * doomed transactions.
  */
 export async function simulateTransaction(
   signer: EvmSigner,
@@ -269,7 +286,7 @@ export async function simulateTransaction(
     const match =
       msg.match(/reverted with.*?:\s*(.+)/i) ?? msg.match(/reason:\s*(.+)/i);
     const reason = match?.[1]?.trim() ?? msg;
-    throw new Error(`${label} would revert: ${reason}`);
+    throw new SimulationRevertError(label, reason);
   }
 }
 

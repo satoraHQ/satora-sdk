@@ -5752,6 +5752,18 @@ export class Client {
       onProgress?: (step: CctpProgressStep) => void;
       /** Abort signal — cancels the CCTP attestation wait. */
       signal?: AbortSignal;
+      /**
+       * Reports the source amount the server quoted for this attempt, in the
+       * source token's smallest unit, before the wallet prompts for the
+       * Permit2 signature (and again should the server re-quote between the
+       * approval and the signature). A payout-pinned EVM → Lightning swap is
+       * priced afresh on every attempt, so this can differ from the amount
+       * stored on the swap. Ignored on the CCTP path.
+       */
+      onQuote?: (quote: {
+        sourceAmount: bigint;
+        sourceTokenAddress: string;
+      }) => void;
     },
   ): Promise<{ txHash: string; cctp?: CctpFundSwapResult }> {
     // Dispatch the CCTP-inbound path only for chains the backend does
@@ -5838,6 +5850,10 @@ export class Client {
       swapId,
       signer.chainId,
     );
+    options?.onQuote?.({
+      sourceAmount: funding.sourceAmount,
+      sourceTokenAddress: funding.sourceTokenAddress,
+    });
 
     const tokenAddress = funding.sourceTokenAddress;
     const permit2 = PERMIT2_ADDRESS;
@@ -5892,6 +5908,12 @@ export class Client {
       swapId,
       signer.chainId,
     );
+    if (freshFunding.sourceAmount !== funding.sourceAmount) {
+      options?.onQuote?.({
+        sourceAmount: freshFunding.sourceAmount,
+        sourceTokenAddress: freshFunding.sourceTokenAddress,
+      });
+    }
 
     // 5. Sign the Permit2 EIP-712 typed data
     const signature = await signer.signTypedData(freshFunding.typedData);
@@ -5930,6 +5952,10 @@ export class Client {
       const reason = await getRevertReason(signer, txHash, receipt.blockNumber);
       throw new Error(`Funding transaction failed: ${reason}`);
     }
+
+    // 10. The server may have re-quoted the source amount for this funding;
+    //     bring the stored copy up to date. Best effort — the funding is done.
+    await this.getSwap(swapId, { updateStorage: true }).catch(() => undefined);
 
     return { txHash };
   }

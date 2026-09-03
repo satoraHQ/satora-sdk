@@ -230,6 +230,7 @@ export {
   isUserRejection,
   PERMIT2_ADDRESS,
   type Permit2TypedData,
+  SimulationRevertError,
   signEvmDigest,
   type TxReceipt,
   type UnsignedPermit2FundingData,
