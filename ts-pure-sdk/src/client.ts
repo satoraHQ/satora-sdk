@@ -627,6 +627,11 @@ export interface GetLightningSendQuoteParams {
    */
   sourceAmount?: bigint | number | string;
   /**
+   * @deprecated Use `sourceAmount`. Arkade-only spelling of the source
+   * amount in sats; ignored when `sourceAmount` is given.
+   */
+  sourceAmountSats?: number;
+  /**
    * BOLT11 invoice the user wants paid; its amount pins the payout.
    * `sourceAmount` cannot be combined with it.
    */
@@ -660,6 +665,11 @@ export interface LightningSendQuote {
    * source token's smallest unit: sats for Arkade, token units for EVM.
    */
   sourceAmount: string;
+  /**
+   * @deprecated Use `sourceAmount`. Set only for Arkade sources, where the
+   * source unit is sats; `undefined` for EVM sources (token units).
+   */
+  sourceAmountSats?: number;
   /** Paid out on the Lightning invoice. */
   targetAmountSats: number;
   /** Protocol fee. */
@@ -1805,15 +1815,14 @@ export class Client {
       );
     }
 
+    const sourceAmount = params.sourceAmount ?? params.sourceAmountSats;
     const { data, error } = await this.#apiClient.GET("/quote/lightning-send", {
       params: {
         query: {
           source_chain: params.sourceChain,
           source_token: params.sourceToken,
           source_amount:
-            params.sourceAmount === undefined
-              ? undefined
-              : params.sourceAmount.toString(),
+            sourceAmount === undefined ? undefined : sourceAmount.toString(),
           lightning_invoice: params.lightningInvoice,
           lightning_address: params.lightningAddress,
           lnurl: params.lnurl,
@@ -1833,8 +1842,10 @@ export class Client {
       throw new Error("No lightning send quote data returned");
     }
 
+    const evmSource = isSourceEvmChain(params.sourceChain ?? "Arkade");
     return {
       sourceAmount: data.source_amount,
+      sourceAmountSats: evmSource ? undefined : Number(data.source_amount),
       targetAmountSats: data.target_amount_sats,
       protocolFeeSats: data.protocol_fee_sats,
       networkFeeSats: data.network_fee_sats,
