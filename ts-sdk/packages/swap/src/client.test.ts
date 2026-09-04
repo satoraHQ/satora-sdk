@@ -115,6 +115,38 @@ const withManagers = (map: Map<Ledger, ContractManager>) => ({
   refreshIntervalMs: 0, // no timer in tests
 });
 
+describe("Client bitcoinMinConfirmations", () => {
+  it("seeds from the tracking config and updates in place", () => {
+    const client = new Client(fakeLegacy([]), {
+      enabled: false,
+      bitcoinMinConfirmations: 1,
+    });
+    expect(client.getBitcoinMinConfirmations()).toBe(1);
+    client.setBitcoinMinConfirmations(0);
+    expect(client.getBitcoinMinConfirmations()).toBe(0);
+    client.setBitcoinMinConfirmations(undefined);
+    expect(client.getBitcoinMinConfirmations()).toBeUndefined();
+  });
+
+  it("rejects a depth that is not a whole block count", () => {
+    // A non-integer or non-finite depth makes every comparison in the readers
+    // false, so the funding would read `mempool` forever instead of erroring.
+    const client = new Client(fakeLegacy([]), { enabled: false });
+    for (const bad of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => client.setBitcoinMinConfirmations(bad)).toThrow(
+        /non-negative integer/,
+      );
+    }
+    expect(client.getBitcoinMinConfirmations()).toBeUndefined();
+  });
+
+  it("rejects the same values through the builder", () => {
+    expect(() =>
+      Client.builder().withBitcoinMinConfirmations(Number.NaN),
+    ).toThrow(/non-negative integer/);
+  });
+});
+
 describe("Client tracking", () => {
   it("rejects startTracking when tracking is disabled", () => {
     const client = new Client(fakeLegacy([]), { enabled: false });
@@ -400,20 +432,30 @@ describe("Client tracking", () => {
     expect(() => client.subscribeToActions(() => {})).not.toThrow();
   });
 
-  it("clears the partial tracker when startTracking fails partway", async () => {
+  it("skips a swap whose registration fails, keeping the rest tracked", async () => {
     const m = managers();
-    // The EVM leg's register fails, as an RPC/indexer error would. The Arkade leg
-    // (registered first) must be torn down, not leaked.
-    m.evm.register = async () => {
-      throw new Error("rpc down");
+    // register() reads the chain, so an RPC/indexer error here is transient and
+    // must not cost every other swap its tracking (and its auto-claim).
+    const secondSwap = {
+      response: { ...arkadeEvmSwap.response, id: "swap-2" },
+    } as unknown as StoredSwap;
+    let calls = 0;
+    const realRegister = m.evm.register.bind(m.evm);
+    m.evm.register = async (ref) => {
+      if (++calls === 1) throw new Error("rpc down");
+      return realRegister(ref);
     };
-    const client = new Client(fakeLegacy([arkadeEvmSwap]), withManagers(m.map));
+    const client = new Client(
+      fakeLegacy([arkadeEvmSwap, secondSwap]),
+      withManagers(m.map),
+    );
 
-    await expect(client.startTracking()).rejects.toThrow(/rpc down/);
+    await expect(client.startTracking()).resolves.toBeUndefined();
 
-    // Partial tracker torn down: subscribe still reports not-started, and the
-    // Arkade leg that did register was unregistered.
-    expect(() => client.subscribeToActions(() => {})).toThrow(/startTracking/);
-    expect(m.arkade.registered.size).toBe(0);
+    // Tracking is up, and the failed swap's already-registered Arkade leg was
+    // rolled back rather than left half-watched.
+    expect(() => client.subscribeToActions(() => {})).not.toThrow();
+    expect(m.arkade.registered.size).toBe(1);
+    expect(m.evm.registered.size).toBe(1);
   });
 });

@@ -12,6 +12,7 @@
 import { hex } from "@scure/base";
 import type { HtlcObservation } from "../actions/types.js";
 import { type BitcoinHtlcFacts, bitcoinObservation } from "./bitcoin.js";
+import type { MinConfirmationsSource } from "./bitcoin-reader-esplora.js";
 import type { ContractManager, HtlcRef, Ledger } from "./types.js";
 
 /** The chain surface the observer needs (the esplora and electrum readers satisfy it). */
@@ -52,9 +53,10 @@ export type BitcoinCreateConfig = {
    * Confirmations a funding tx needs before it observes as `confirmed`.
    * Default `0`: accept an unconfirmed funding, trusting the funder not to
    * double-spend it (the claim reveals the preimage against it). `1` = wait
-   * for a block.
+   * for a block. Only the server-funded leg reads it; `swapToTracked` pins the
+   * client-funded leg to 1.
    */
-  minConfirmations?: number;
+  minConfirmations?: MinConfirmationsSource;
 };
 
 export type BitcoinContractManagerDeps = {

@@ -60,6 +60,12 @@ export type SwapTrackerOptions = {
 export class SwapTracker {
   readonly #managers: Map<Ledger, ContractManager>;
   readonly #swaps = new Map<string, TrackedSwap>();
+  /**
+   * Swaps whose startup registration failed (a chain read that errored).
+   * Retried on the at-risk cadence; dropping them would leave an active
+   * swap unwatched for the whole session with no claim or refund surfaced.
+   */
+  readonly #unregistered = new Map<string, TrackedSwap>();
   /** Last actions emitted per swap — for dedupe and the subscribe-time snapshot. */
   readonly #lastActions = new Map<string, SwapActions>();
   readonly #subscribers = new Set<ActionSubscriber>();
@@ -102,8 +108,27 @@ export class SwapTracker {
         );
         continue;
       }
+      // Isolate per swap: register() reads the chain, so one indexer hiccup
+      // must not abort tracking for every other swap (and with it the
+      // auto-claim worker). Roll the failed swap back and carry on; the tick
+      // retries it on the at-risk cadence.
       this.#swaps.set(swap.swapId, swap);
-      for (const leg of legsOf(swap)) await this.#managerFor(leg).register(leg);
+      const registered: HtlcRef[] = [];
+      try {
+        for (const leg of legsOf(swap)) {
+          await this.#managerFor(leg).register(leg);
+          registered.push(leg);
+        }
+      } catch (error) {
+        this.#swaps.delete(swap.swapId);
+        for (const leg of registered)
+          void this.#managerFor(leg).unregister(leg);
+        this.#unregistered.set(swap.swapId, swap);
+        console.warn(
+          `SwapTracker: swap ${swap.swapId} not tracked yet, registering its legs failed (will retry):`,
+          error,
+        );
+      }
     }
     for (const manager of new Set(this.#managers.values())) {
       this.#eventUnsubs.push(manager.onEvent(() => this.#recomputeAll()));
@@ -186,6 +211,7 @@ export class SwapTracker {
     const now = Date.now();
     if (now - this.#lastAtRiskReconcileAt >= this.#atRiskReconcileIntervalMs) {
       this.#lastAtRiskReconcileAt = now;
+      await this.#retryUnregistered();
       const legs = [...this.#swaps.values()]
         .filter((swap) => this.#isAtRisk(swap))
         .flatMap((swap) => legsOf(swap));
@@ -200,6 +226,25 @@ export class SwapTracker {
       );
     }
     this.#recomputeAll();
+  }
+
+  /**
+   * Second attempt at swaps whose startup registration failed. `track` is
+   * idempotent and rolls back on failure, so a chain that is still down just
+   * leaves the swap here for the next round.
+   */
+  async #retryUnregistered(): Promise<void> {
+    for (const [swapId, swap] of this.#unregistered) {
+      try {
+        await this.track(swap);
+        this.#unregistered.delete(swapId);
+      } catch (error) {
+        console.warn(
+          `SwapTracker: retrying registration of ${swapId} failed:`,
+          error,
+        );
+      }
+    }
   }
 
   /**
@@ -319,6 +364,7 @@ export class SwapTracker {
       for (const leg of legsOf(swap))
         void this.#managerFor(leg).unregister(leg);
     this.#swaps.clear();
+    this.#unregistered.clear();
     this.#subscribers.clear();
   }
 

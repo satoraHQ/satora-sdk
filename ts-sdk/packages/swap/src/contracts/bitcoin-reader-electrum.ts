@@ -22,7 +22,10 @@ import { hex } from "@scure/base";
 import * as btc from "@scure/btc-signer";
 import type { BitcoinHtlcFacts } from "./bitcoin.js";
 import type { BitcoinChainReader } from "./bitcoin-manager.js";
-import type { BitcoinConfirmationPolicy } from "./bitcoin-reader-esplora.js";
+import {
+  type BitcoinReaderPolicy,
+  resolveMinConfirmations,
+} from "./bitcoin-reader-esplora.js";
 
 /** One entry of `blockchain.scripthash.get_history`. */
 type ElectrumHistoryEntry = {
@@ -84,7 +87,7 @@ function scriptHashOf(script: Uint8Array): string {
  */
 export function electrumReader(
   client: ElectrumRpc,
-  opts?: BitcoinConfirmationPolicy & {
+  opts?: BitcoinReaderPolicy & {
     /** Network the HTLC addresses live on; defaults to mainnet. */
     network?: ElectrumReaderNetwork;
     /** Reader consulted when the Electrum server errors (e.g. esplora). */
@@ -92,7 +95,6 @@ export function electrumReader(
   },
 ): BitcoinChainReader {
   const network = opts?.network ?? "mainnet";
-  const defaultMinConf = opts?.minConfirmations ?? 0;
   const fallback = opts?.fallback;
 
   const scriptFor = (address: string): Uint8Array =>
@@ -205,7 +207,8 @@ export function electrumReader(
 
   return {
     async getHtlcFacts(address, minConfirmations) {
-      const required = minConfirmations ?? defaultMinConf;
+      const required =
+        minConfirmations ?? resolveMinConfirmations(opts?.minConfirmations);
       try {
         return await getHtlcFactsElectrum(address, required);
       } catch (error) {

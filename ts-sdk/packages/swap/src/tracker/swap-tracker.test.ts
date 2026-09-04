@@ -484,6 +484,33 @@ describe("SwapTracker", () => {
       }
     });
 
+    it("retries a swap whose startup registration failed", async () => {
+      const { arkade, evm, tracker } = buildTimed();
+      try {
+        // One transient failure on the EVM leg's initial chain read.
+        let attempts = 0;
+        const register = evm.register;
+        evm.register = async (ref) => {
+          if (attempts++ === 0) throw new Error("rpc down");
+          return register(ref);
+        };
+
+        await tracker.startTracking([swap]);
+        // Skipped, not aborted: tracking is up, the swap is parked, and its
+        // Arkade leg was rolled back rather than left half-watched.
+        expect(tracker.trackedSwapIds()).toEqual([]);
+        expect(arkade.registered.size).toBe(0);
+
+        await vi.advanceTimersByTimeAsync(61_000);
+        expect(tracker.trackedSwapIds()).toEqual([swap.swapId]);
+        expect(arkade.registered.size).toBe(1);
+        expect(evm.registered.size).toBe(1);
+      } finally {
+        tracker.stop();
+        vi.useRealTimers();
+      }
+    });
+
     it("costs zero chain reads while the client leg is unfunded (hints only)", async () => {
       const { arkade, evm, tracker } = buildTimed();
       try {

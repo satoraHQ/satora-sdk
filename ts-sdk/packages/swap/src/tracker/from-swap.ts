@@ -133,8 +133,8 @@ function evmLeg(args: {
  *
  * The server does not act on a client funding until it has a blocktime, so
  * observing it sooner would report the swap as funded while the other side is
- * still waiting for a block. A server-funded leg keeps the reader's 0-conf
- * default, which is what lets a claim go out without waiting ~10 minutes.
+ * still waiting for a block. A server-funded leg leaves the depth to the
+ * reader, whose default is the client's configured value (0 unless set).
  */
 const CLIENT_FUNDING_MIN_CONFIRMATIONS = 1;
 

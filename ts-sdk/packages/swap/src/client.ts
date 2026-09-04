@@ -117,6 +117,8 @@ export class Client {
   #startPromise?: Promise<void>;
   /** Swap ids whose settled status was already re-fetched this session. */
   readonly #settledSyncDone = new Set<string>();
+  /** Read per chain read, so it can change without rebuilding the client. */
+  #bitcoinMinConfirmations: number | undefined;
 
   /**
    * Creates a new Client instance.
@@ -136,6 +138,8 @@ export class Client {
       this.#tracking = (args[1] as TrackingConfig | undefined) ?? {
         enabled: false,
       };
+      assertMinConfirmations(this.#tracking.bitcoinMinConfirmations);
+      this.#bitcoinMinConfirmations = this.#tracking.bitcoinMinConfirmations;
     } else {
       this.#legacy = new LegacyClient(
         ...(args as ConstructorParameters<typeof LegacyClient>),
@@ -655,6 +659,24 @@ export class Client {
 
   // --- Satora-native features go below ---
 
+  /** Confirmations a server-funded Bitcoin HTLC needs before it is claimable. */
+  getBitcoinMinConfirmations(): number | undefined {
+    return this.#bitcoinMinConfirmations;
+  }
+
+  /**
+   * At `0` the claim goes out against a mempool funding, trusting the funder
+   * not to replace it once the claim reveals the preimage.
+   *
+   * Only the chain monitors read a depth, so this does nothing unless the
+   * client was built with {@link ClientBuilder.withChainVerifiedTracking}.
+   * Takes effect on subsequent reads, including swaps already tracked.
+   */
+  setBitcoinMinConfirmations(minConfirmations: number | undefined): void {
+    assertMinConfirmations(minConfirmations);
+    this.#bitcoinMinConfirmations = minConfirmations;
+  }
+
   /**
    * Start observing the user's active swaps and deriving each one's next action.
    *
@@ -690,9 +712,21 @@ export class Client {
       // else, and every pre-existing withContractManagers caller expects it.
       const chainVerified =
         this.#tracking.chainVerified || this.#tracking.managers !== undefined;
+      if (!chainVerified && (this.#bitcoinMinConfirmations ?? 0) > 0)
+        console.warn(
+          "Client: bitcoinMinConfirmations is set but tracking follows server hints, which carry no depth. " +
+            "Build with ClientBuilder.withChainVerifiedTracking() for the depth to gate the claim.",
+        );
       const tracker = chainVerified
         ? new SwapTracker(await this.#ensureManagers(), {
             refreshIntervalMs: this.#tracking.refreshIntervalMs ?? 5_000,
+            // Depth is only re-derived on a chain read, and nothing pushes on a
+            // new block (an Electrum scripthash status doesn't change once the
+            // funding is in a block), so a deep policy would otherwise sit out
+            // the default interval after the block that satisfied it.
+            ...((this.#bitcoinMinConfirmations ?? 0) > 1
+              ? { atRiskReconcileIntervalMs: 15_000 }
+              : {}),
           })
         : new HintTracker({
             fetchStatus: async (swapId) =>
@@ -930,7 +964,6 @@ export class Client {
       esploraUrl,
       electrumWsUrl,
       bitcoinNetwork,
-      bitcoinMinConfirmations,
     } = this.#tracking;
     // Arkade + Bitcoin share the Bitcoin MTP clock.
     const chainTime = async () => (await this.getMtp()).mtp * 1000;
@@ -961,7 +994,7 @@ export class Client {
         electrumWsUrl: electrumWsUrl ?? DEFAULT_ELECTRUM_WS_URLS[network],
         network,
         chainTime,
-        minConfirmations: bitcoinMinConfirmations,
+        minConfirmations: () => this.#bitcoinMinConfirmations,
       }),
     );
     this.#managers = managers;
@@ -1108,9 +1141,11 @@ export class ClientBuilder {
    * funding hits the mempool, which TRUSTS the funder not to double-spend it
    * (claiming publishes the preimage, so a funder that then replaced its
    * funding could take both legs). Set `1` (or more) for a block-depth policy
-   * that doesn't rely on the funder's good behaviour.
+   * that doesn't rely on the funder's good behaviour. Read only by the chain
+   * monitors, so it needs {@link withChainVerifiedTracking} to have any effect.
    */
   withBitcoinMinConfirmations(minConfirmations: number): this {
+    assertMinConfirmations(minConfirmations);
     this.#bitcoinMinConfirmations = minConfirmations;
     return this;
   }
@@ -1190,6 +1225,19 @@ export class ClientBuilder {
  * anything ambiguous stays chain-verified.
  */
 /** The legacy client's resolved base URL, or `undefined` if it can't provide one. */
+/**
+ * A depth is a block count, so a fractional or non-finite value is a caller
+ * bug. Left unchecked it reaches the readers, where every depth comparison is
+ * false and the funding reads `mempool` forever instead of erroring.
+ */
+function assertMinConfirmations(value: number | undefined): void {
+  if (value === undefined) return;
+  if (!Number.isInteger(value) || value < 0)
+    throw new Error(
+      `bitcoinMinConfirmations must be a non-negative integer, got ${value}`,
+    );
+}
+
 function legacyBaseUrl(legacy: LegacyClient): string | undefined {
   try {
     return legacy.baseUrl;

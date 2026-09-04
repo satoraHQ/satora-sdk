@@ -33,9 +33,23 @@ type EsploraTx = {
  * `1` (or more) for a policy that doesn't rely on the funder's good behaviour;
  * values above 1 make the reader fetch the tip height to compute depth.
  */
+/** A depth already resolved to a number, for the pure classifier below. */
 export type BitcoinConfirmationPolicy = {
   minConfirmations?: number;
 };
+
+/** A depth, or a getter resolved per read so it can change without a rebuild. */
+export type MinConfirmationsSource = number | (() => number | undefined);
+
+export type BitcoinReaderPolicy = {
+  minConfirmations?: MinConfirmationsSource;
+};
+
+export function resolveMinConfirmations(
+  source: MinConfirmationsSource | undefined,
+): number {
+  return (typeof source === "function" ? source() : source) ?? 0;
+}
 
 /**
  * Reduce an address's esplora tx history to HTLC facts. If a tx spends an output
@@ -115,16 +129,16 @@ export const DEFAULT_ESPLORA_URLS = [
 export function esploraReader(
   esploraUrls: string | string[],
   fetchImpl: typeof fetch = fetch,
-  policy?: BitcoinConfirmationPolicy,
+  policy?: BitcoinReaderPolicy,
 ): BitcoinChainReader {
   const bases = (Array.isArray(esploraUrls) ? esploraUrls : [esploraUrls]).map(
     (url) => url.replace(/\/+$/, ""),
   );
-  const minConf = policy?.minConfirmations ?? 0;
   let start = 0;
   return {
     async getHtlcFacts(address, minConfirmations) {
-      const required = minConfirmations ?? minConf;
+      const required =
+        minConfirmations ?? resolveMinConfirmations(policy?.minConfirmations);
       const from = start++ % bases.length; // rotate the primary to spread load
       let lastError: unknown;
       for (let i = 0; i < bases.length; i++) {

@@ -174,7 +174,7 @@ describe("swapToTracked", () => {
       address: "bcrt1qhtlc",
       preimageHash: hashLock, // sha256 hash, no 0x — the classifier verifies against it
       expectedSats: 2400, // target_amount (server funds the BTC leg)
-      minConfirmations: undefined, // server-funded: claimable at 0-conf
+      minConfirmations: undefined, // server-funded: the reader applies the configured depth
     });
     expect(tracked?.clientRefundLocktime).toBe(900_000_000); // EVM leg
     expect(tracked?.serverRefundLocktime).toBe(1_000_000_000); // BTC leg
@@ -190,10 +190,11 @@ describe("swapToTracked", () => {
     expect(tracked?.serverRefundLocktime).toBe(900_000_000); // EVM leg
   });
 
-  it("waits a block on a client-funded BTC leg, but not a server-funded one", () => {
+  it("client-funded BTC leg waits a block, server-funded one follows the reader", () => {
     // The server does not act on the client's funding until it has a blocktime,
     // so reading it back at 0-conf would show the swap funded while the server
-    // is still waiting. Its own funding has no such constraint.
+    // is still waiting. Its own funding is gated by the client's configured
+    // depth, which the reader resolves on every read.
     const clientFunds = swapToTracked(
       stored({ ...bitcoinEvmFields, direction: "bitcoin_to_evm" }),
     );
@@ -209,6 +210,7 @@ describe("swapToTracked", () => {
     expect(clientLeg.minConfirmations).toBe(1);
     expect(serverLeg.minConfirmations).toBeUndefined();
   });
+
 
   // ─── Lightning: one on-chain leg, the other side off-chain (undefined) ──────
 

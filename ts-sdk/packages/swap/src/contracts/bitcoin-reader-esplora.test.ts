@@ -117,6 +117,34 @@ describe("esploraReader", () => {
     );
   });
 
+  it("re-reads a getter policy on every call", async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      json: async () => [fundingTx(false)], // unconfirmed
+    })) as unknown as typeof fetch;
+    let depth: number | undefined = 0;
+    const reader = esploraReader("http://esplora/api", fetchImpl, {
+      minConfirmations: () => depth,
+    });
+
+    expect((await reader.getHtlcFacts(ADDR)).funding).toBe("confirmed");
+    depth = 1;
+    expect((await reader.getHtlcFacts(ADDR)).funding).toBe("mempool");
+    depth = undefined; // getter returning undefined falls back to 0
+    expect((await reader.getHtlcFacts(ADDR)).funding).toBe("confirmed");
+  });
+
+  it("lets a per-call depth override the getter policy", async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      json: async () => [fundingTx(false)],
+    })) as unknown as typeof fetch;
+    const reader = esploraReader("http://esplora/api", fetchImpl, {
+      minConfirmations: () => 0,
+    });
+    expect((await reader.getHtlcFacts(ADDR, 1)).funding).toBe("mempool");
+  });
+
   it("throws when the only endpoint is non-ok", async () => {
     const fetchImpl = vi.fn(async () => ({
       ok: false,

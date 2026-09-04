@@ -41,9 +41,12 @@ export {
 } from "./contracts/bitcoin-reader-electrum.js";
 export {
   type BitcoinConfirmationPolicy,
+  type BitcoinReaderPolicy,
   DEFAULT_ESPLORA_URLS,
   esploraReader,
   htlcFactsFromEsploraTxs,
+  type MinConfirmationsSource,
+  resolveMinConfirmations,
 } from "./contracts/bitcoin-reader-esplora.js";
 export {
   type EvmChainReader,
