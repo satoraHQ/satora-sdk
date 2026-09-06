@@ -126,10 +126,28 @@ export class SqliteSwapStorage implements SwapStorage {
         preimage_hash TEXT NOT NULL,
         secret_key TEXT NOT NULL,
         stored_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
+        updated_at INTEGER NOT NULL,
+        evm_fund_txid TEXT,
+        evm_coordinator_address TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_swaps_stored_at ON swaps(stored_at);
     `);
+    // Databases created before these columns existed.
+    for (const column of ["evm_fund_txid", "evm_coordinator_address"]) {
+      if (this.#columns().includes(column)) continue;
+      try {
+        this.#db.exec(`ALTER TABLE swaps ADD COLUMN ${column} TEXT`);
+      } catch (error) {
+        // Another process may have added it between the check and the ALTER.
+        if (!this.#columns().includes(column)) throw error;
+      }
+    }
+  }
+
+  #columns(): string[] {
+    return (
+      this.#db.prepare("PRAGMA table_info(swaps)").all() as { name: string }[]
+    ).map((column) => column.name);
   }
 
   async get(swapId: string): Promise<StoredSwap | null> {
@@ -145,8 +163,8 @@ export class SqliteSwapStorage implements SwapStorage {
     this.#db
       .prepare(
         `INSERT OR REPLACE INTO swaps
-         (swap_id, version, key_index, response, public_key, preimage, preimage_hash, secret_key, stored_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (swap_id, version, key_index, response, public_key, preimage, preimage_hash, secret_key, stored_at, updated_at, evm_fund_txid, evm_coordinator_address)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         swap.swapId,
@@ -159,6 +177,8 @@ export class SqliteSwapStorage implements SwapStorage {
         swap.secretKey,
         swap.storedAt,
         swap.updatedAt,
+        swap.evmFundTxid ?? null,
+        swap.evmCoordinatorAddress ?? null,
       );
   }
 
@@ -204,6 +224,8 @@ export class SqliteSwapStorage implements SwapStorage {
       secretKey: row.secret_key,
       storedAt: row.stored_at,
       updatedAt: row.updated_at,
+      evmFundTxid: row.evm_fund_txid ?? undefined,
+      evmCoordinatorAddress: row.evm_coordinator_address ?? undefined,
     };
   }
 
@@ -226,6 +248,8 @@ interface SqliteSwapRow {
   secret_key: string;
   stored_at: number;
   updated_at: number;
+  evm_fund_txid: string | null;
+  evm_coordinator_address: string | null;
 }
 
 /**

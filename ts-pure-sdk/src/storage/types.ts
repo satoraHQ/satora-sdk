@@ -82,4 +82,16 @@ export interface StoredSwap {
    * committed at create time.
    */
   bridgeRecipientWallet?: string;
+
+  /**
+   * The tx this client knows funded an EVM-sourced swap: the one it sent
+   * (corrected to the mined hash once the receipt is in) or the relay
+   * reported. Kept beside `response` because every server refresh replaces
+   * that copy, and the server only learns the txid once its monitor has
+   * indexed the funding.
+   */
+  evmFundTxid?: string;
+
+  /** The HTLCCoordinator the funding went through; pins the refund target. */
+  evmCoordinatorAddress?: string;
 }

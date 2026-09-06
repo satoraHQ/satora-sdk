@@ -5,6 +5,8 @@
  * ReverseAtomicSwapHTLC contract for EVM-to-BTC swaps.
  */
 
+import { decodeUint256 } from "./wallet.js";
+
 /**
  * Parameters for creating an EVM HTLC swap.
  */
@@ -106,6 +108,8 @@ const REFUND_SWAP_SELECTOR = "0xfe2510ee";
 const HTLC_ERC20_CREATE_SELECTOR = "0x06799dee";
 // HTLCErc20.refund(bytes32,uint256,address,address,uint256)
 const HTLC_ERC20_REFUND_SELECTOR = "0x36504721";
+// HTLCErc20.isActive(bytes32,uint256,address,address,address,uint256)
+const HTLC_ERC20_IS_ACTIVE_SELECTOR = "0x160c723c";
 
 /**
  * Converts a UUID string to a bytes32 hex string (right-padded with zeros).
@@ -135,7 +139,7 @@ export function uuidToBytes32(uuid: string): string {
 /**
  * Normalizes a bytes32 value (removes 0x prefix, ensures 64 chars).
  */
-function normalizeBytes32(value: string): string {
+export function normalizeBytes32(value: string): string {
   let clean = value.replace(/^0x/, "");
   if (clean.length < 64) {
     clean = clean.padStart(64, "0");
@@ -350,6 +354,37 @@ export function encodeHtlcErc20RefundCallData(
   };
 }
 
+export interface HtlcErc20IsActiveParams {
+  preimageHash: string;
+  amount: bigint;
+  token: string;
+  /** The HTLC's sender: whoever called `create`. */
+  refundAddress: string;
+  claimAddress: string;
+  timelock: number;
+}
+
+/**
+ * Encodes `HTLCErc20.isActive(...)`, which answers whether the swap keyed by
+ * these parameters is still open (neither redeemed nor refunded). The result
+ * is a single ABI word, non-zero for true.
+ */
+export function encodeHtlcErc20IsActiveCallData(
+  htlcAddress: string,
+  params: HtlcErc20IsActiveParams,
+): { to: string; data: string } {
+  const data = [
+    HTLC_ERC20_IS_ACTIVE_SELECTOR,
+    normalizeBytes32(params.preimageHash),
+    encodeUint256(params.amount),
+    normalizeAddress(params.token),
+    normalizeAddress(params.refundAddress),
+    normalizeAddress(params.claimAddress),
+    encodeUint256(BigInt(params.timelock)),
+  ].join("");
+  return { to: htlcAddress, data };
+}
+
 /**
  * Encodes the call data for HTLCErc20.create function.
  *
@@ -434,5 +469,49 @@ export function buildEvmHtlcCallData(
       params.amountIn,
     ),
     createSwap: encodeCreateSwapCallData(htlcAddress, params),
+  };
+}
+
+// ── SwapCreated log ──────────────────────────────────────────────────────────
+
+/** topic0 of `SwapCreated(bytes32,address,address,address,uint256,uint256,bytes32)`. */
+export const SWAP_CREATED_TOPIC =
+  "0x127ba86dffa89675eb78a2ca7203c29f865789ebec607b9424ed9f8d3d533e9f";
+
+export interface SwapCreatedLog {
+  preimageHash: string;
+  /** The HTLC's sender; the coordinator for a Permit2-funded swap. */
+  refundAddress: string;
+  claimAddress: string;
+  token: string;
+  amount: bigint;
+  timelock: number;
+  key: string;
+}
+
+/**
+ * Decodes an HTLCErc20 `SwapCreated` log, or returns undefined for any other
+ * log. The amount here is the one the contract keys the swap on, which after
+ * a DEX swap inside the funding tx can differ from every amount in the swap
+ * record.
+ */
+export function decodeSwapCreatedLog(log: {
+  topics: readonly string[];
+  data: string;
+}): SwapCreatedLog | undefined {
+  if (log.topics.length !== 4) return undefined;
+  if (log.topics[0].toLowerCase() !== SWAP_CREATED_TOPIC) return undefined;
+  const data = log.data.replace(/^0x/, "");
+  if (data.length !== 4 * 64) return undefined;
+  const word = (i: number) => data.slice(i * 64, (i + 1) * 64);
+  const address = (w: string) => `0x${w.slice(24)}`.toLowerCase();
+  return {
+    preimageHash: `0x${normalizeBytes32(log.topics[1])}`,
+    refundAddress: address(normalizeBytes32(log.topics[2])),
+    claimAddress: address(normalizeBytes32(log.topics[3])),
+    token: address(word(0)),
+    amount: decodeUint256(word(1)),
+    timelock: Number(decodeUint256(word(2))),
+    key: `0x${word(3)}`,
   };
 }

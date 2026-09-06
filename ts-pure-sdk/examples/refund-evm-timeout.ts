@@ -41,8 +41,10 @@ console.log("Direction:", swap.direction);
 // Build an EvmSigner from your wallet (see funding example for details)
 declare const signer: EvmSigner; // your wallet — see EvmSigner docs
 
-// refundEvmWithSigner handles everything: fetches calldata, sends the
-// transaction, and waits for the receipt.
+// refundEvmWithSigner handles everything: reads the locked amount off the
+// funding tx's receipt (your waitForReceipt must return its logs), asks the
+// server for calldata only if that fails, sends the transaction, and waits
+// for the receipt.
 // The locked WBTC/tBTC is returned directly to the depositor.
 const { txHash } = await client.refundEvmWithSigner(swapId, signer);
 

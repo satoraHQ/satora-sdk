@@ -87,11 +87,18 @@ import {
   buildPermit2TypedData,
   type CollabRefundEvmDigestParams,
   type CollabRefundEvmTypedData,
+  decodeSwapCreatedLog,
   deriveEvmAddress,
   encodeApproveCallData,
+  encodeDepositsCallData,
   encodeExecuteAndCreateWithPermit2,
+  encodeHtlcErc20IsActiveCallData,
+  encodeHtlcErc20RefundCallData,
+  encodeRefundTo,
+  normalizeBytes32,
   PERMIT2_ADDRESS,
   type Permit2SignedFundingCallData,
+  type SwapCreatedLog,
   signEvmDigest,
   type UnsignedPermit2FundingData,
 } from "./evm/index.js";
@@ -375,6 +382,73 @@ export interface EvmRefundOptions {
    * @default false
    */
   collaborative?: boolean;
+  /**
+   * Lets the refund be built from the chain: the locked amount is read off
+   * the funding tx's `SwapCreated` log. The server is asked for another
+   * funding txid only when none the client knows yields a receipt, and for
+   * calldata once the chain path has failed. Its `waitForReceipt` must return
+   * the receipt's logs, its `getTransaction` must reject for a hash the node
+   * does not know, and it must be on the swap's chain.
+   */
+  signer?: EvmSigner;
+}
+
+/** The HTLC is no longer open on-chain, so no refund can be built for it. */
+class HtlcNotActiveError extends Error {}
+
+/** The funding tx could not be read from the chain; another txid may work. */
+class FundingTxUnavailableError extends Error {}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * A contract read must answer with exactly one ABI word; anything else means
+ * the node does not hold the contract, or the transport failed.
+ */
+function decodeCallWord(result: string, what: string): bigint {
+  const clean = result.replace(/^0x/i, "");
+  if (clean.length !== 64) {
+    throw new Error(
+      `${what} returned ${clean.length === 0 ? "no data" : "malformed data"}; the node may not hold the contract`,
+    );
+  }
+  return BigInt(`0x${clean}`);
+}
+
+function dedupeTxids(txids: (string | null | undefined)[]): string[] {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const txid of txids) {
+    if (!txid || seen.has(txid.toLowerCase())) continue;
+    seen.add(txid.toLowerCase());
+    unique.push(txid);
+  }
+  return unique;
+}
+
+function evmSourceLeg(stored: StoredSwap) {
+  const swap = stored.response as
+    | (EvmToArkadeSwapResponse & { direction: "evm_to_arkade" })
+    | (EvmToBitcoinSwapResponse & { direction: "evm_to_bitcoin" })
+    | (EvmToLightningSwapResponse & { direction: "evm_to_lightning" });
+  return {
+    chainId: swap.evm_chain_id,
+    htlcAddress: swap.evm_htlc_address,
+    hashLock:
+      swap.direction === "evm_to_bitcoin" ? swap.evm_hash_lock : swap.hash_lock,
+    claimAddress: swap.server_evm_address,
+    timelock: swap.evm_refund_locktime,
+    // This client's own record first, then the server's copy.
+    fundTxids: dedupeTxids([stored.evmFundTxid, swap.evm_fund_txid]),
+    // The server names the coordinator on the Lightning direction only.
+    coordinatorAddress:
+      stored.evmCoordinatorAddress ??
+      (swap.direction === "evm_to_lightning"
+        ? swap.evm_coordinator_address
+        : undefined),
+  };
 }
 
 /** Result of a collaborative EVM refund */
@@ -3408,7 +3482,8 @@ export class Client {
    * @param id - The UUID of the swap to refund.
    * @param options - Options for on-chain refunds (required for btc_onchain swaps).
    * @returns A RefundResult with the transaction details (for on-chain) or status message.
-   * @throws Error if the swap cannot be found, storage is not configured, or params are invalid.
+   * @throws Error if the swap cannot be found, storage is not configured, params are
+   *   invalid, or an EVM signer is on another chain than the swap.
    *
    * @example
    * ```ts
@@ -3460,7 +3535,7 @@ export class Client {
         return this.#collabRefundEvm(id);
       }
 
-      return this.#buildCoordinatorRefund(id, swap);
+      return this.#buildEvmSourceRefund(id, storedSwap, evmOptions?.signer);
     }
 
     return {
@@ -4292,6 +4367,267 @@ export class Client {
   }
 
   /**
+   * What this client learned when it funded the swap, kept beside the stored
+   * `response` because every server refresh replaces that copy.
+   */
+  async #recordEvmFunding(
+    swapId: string,
+    funding: { txid: string; coordinatorAddress?: string },
+  ): Promise<void> {
+    if (!this.#swapStorage) return;
+    try {
+      const stored = await this.#swapStorage.get(swapId);
+      if (!stored) return;
+      await this.#swapStorage.store({
+        ...stored,
+        evmFundTxid: funding.txid,
+        evmCoordinatorAddress:
+          funding.coordinatorAddress ?? stored.evmCoordinatorAddress,
+        updatedAt: Date.now(),
+      });
+    } catch (error) {
+      // The funding is on-chain either way. A bookkeeping failure must not
+      // make it look as if it were not, or a caller could fund the swap twice.
+      this.#logger.warn({
+        event: "client.fundSwap.recordFailed",
+        message: "could not record the funding tx on the stored swap",
+        swapId,
+        error,
+      });
+    }
+  }
+
+  /**
+   * Refund calldata for an EVM-sourced swap. With a signer it is built from
+   * the funding tx's `SwapCreated` log, since the DEX swap inside that tx
+   * decides the locked amount; the log's sender picks `refundTo` on the
+   * coordinator or a direct `HTLCErc20.refund`. The server is asked for
+   * another txid only when no recorded one yields a receipt, and for the
+   * calldata once the chain path has failed.
+   */
+  async #buildEvmSourceRefund(
+    id: string,
+    stored: StoredSwap,
+    signer?: EvmSigner,
+  ): Promise<RefundResult> {
+    const leg = evmSourceLeg(stored);
+    const ready = (
+      refund: { to: string; data: string },
+      timelock: number,
+    ): RefundResult => {
+      const timelockExpired = Math.floor(Date.now() / 1000) >= timelock;
+      return {
+        success: true,
+        message: timelockExpired
+          ? "EVM refund calldata ready. Submit this transaction with your EVM wallet."
+          : `Timelock has not expired yet. Refund will be available at ${new Date(timelock * 1000).toISOString()}.`,
+        evmRefundData: { ...refund, timelockExpired, timelockExpiry: timelock },
+      };
+    };
+
+    const chainFailures: string[] = [];
+    if (signer) {
+      if (signer.chainId !== leg.chainId) {
+        throw new Error(
+          `Signer is on chain ${signer.chainId} but swap ${id} was funded on chain ${leg.chainId}`,
+        );
+      }
+      const tried: string[] = [];
+      // Only a receipt that could not be read leaves room for another txid.
+      let receiptUnavailable = true;
+      const fromFundingTx = async (
+        fundTxid: string,
+      ): Promise<RefundResult | undefined> => {
+        tried.push(fundTxid.toLowerCase());
+        try {
+          const refund = await this.#refundFromFundingTx(signer, {
+            ...leg,
+            fundTxid,
+          });
+          if (fundTxid.toLowerCase() !== stored.evmFundTxid?.toLowerCase()) {
+            await this.#recordEvmFunding(id, { txid: fundTxid });
+          }
+          return ready(refund, refund.timelock);
+        } catch (error) {
+          if (error instanceof HtlcNotActiveError) {
+            return { success: false, message: error.message };
+          }
+          receiptUnavailable = error instanceof FundingTxUnavailableError;
+          chainFailures.push(`${fundTxid}: ${errorMessage(error)}`);
+          return undefined;
+        }
+      };
+      for (const fundTxid of leg.fundTxids) {
+        const result = await fromFundingTx(fundTxid);
+        if (result) return result;
+        if (!receiptUnavailable) break;
+      }
+      if (receiptUnavailable) {
+        // The wallet may have replaced the recorded tx; the server's monitor
+        // saw the one that mined.
+        const serverTxid = await this.#serverFundTxid(id).catch(
+          () => undefined,
+        );
+        if (serverTxid && !tried.includes(serverTxid.toLowerCase())) {
+          const result = await fromFundingTx(serverTxid);
+          if (result) return result;
+        }
+        if (tried.length === 0) {
+          chainFailures.push("no funding tx is known for this swap");
+        }
+      }
+    }
+
+    let server: RefundResult;
+    try {
+      server = await this.#buildCoordinatorRefund(id, stored.response);
+    } catch (error) {
+      server = {
+        success: false,
+        message: `Failed to fetch refund calldata: ${errorMessage(error)}`,
+      };
+    }
+    if (server.success || chainFailures.length === 0) return server;
+    return {
+      success: false,
+      message: `Refund could not be built from the chain (${chainFailures.join("; ")}); ${server.message}`,
+    };
+  }
+
+  /**
+   * The server's copy of the funding txid. The stored copy is refreshed on
+   * the way, but failing to write it must not cost the txid itself.
+   */
+  async #serverFundTxid(id: string): Promise<string | undefined> {
+    const fresh = await this.getSwap(id);
+    try {
+      await this.#swapStorage?.update(id, fresh);
+    } catch (error) {
+      this.#logger.warn({
+        event: "client.refundSwap.refreshNotStored",
+        message: "could not store the refreshed swap",
+        swapId: id,
+        error,
+      });
+    }
+    return (
+      (fresh as { evm_fund_txid?: string | null }).evm_fund_txid ?? undefined
+    );
+  }
+
+  async #refundFromFundingTx(
+    signer: EvmSigner,
+    leg: {
+      fundTxid: string;
+      htlcAddress: string;
+      hashLock: string;
+      claimAddress: string;
+      coordinatorAddress?: string;
+    },
+  ): Promise<{ to: string; data: string; timelock: number }> {
+    // A hash the node does not know would keep waitForReceipt polling until
+    // its timeout, or forever on an adapter without one.
+    let known: unknown;
+    try {
+      known = await signer.getTransaction(leg.fundTxid);
+    } catch {
+      known = null;
+    }
+    if (!known) {
+      throw new FundingTxUnavailableError(
+        `Funding tx ${leg.fundTxid} is unknown to the node`,
+      );
+    }
+    let receipt: Awaited<ReturnType<EvmSigner["waitForReceipt"]>>;
+    try {
+      receipt = await signer.waitForReceipt(leg.fundTxid);
+    } catch (error) {
+      throw new FundingTxUnavailableError(
+        `Funding tx ${leg.fundTxid}: ${errorMessage(error)}`,
+      );
+    }
+    if (receipt.status !== "success") {
+      throw new FundingTxUnavailableError(
+        `Funding tx ${leg.fundTxid} reverted`,
+      );
+    }
+    if (!receipt.logs) {
+      throw new Error(
+        "Refunding without the server needs the funding receipt's logs, which this signer's waitForReceipt does not return",
+      );
+    }
+    const htlc = leg.htlcAddress.toLowerCase();
+    const hashLock = `0x${normalizeBytes32(leg.hashLock)}`;
+    const claimAddress = leg.claimAddress.toLowerCase();
+    const self = signer.address.toLowerCase();
+    const coordinator = leg.coordinatorAddress?.toLowerCase();
+    // The coordinator runs the server-supplied DEX calls before it creates
+    // the HTLC, so a call could plant a decoy with our hash lock earlier in
+    // the same receipt. Its create is non-reentrant and its calls cannot
+    // target the HTLC, so no decoy can name the coordinator as sender: the
+    // sender is what tells the HTLCs apart.
+    const matches = receipt.logs
+      .filter((log) => log.address.toLowerCase() === htlc)
+      .map((log) => decodeSwapCreatedLog(log))
+      .filter(
+        (created): created is SwapCreatedLog =>
+          created !== undefined &&
+          created.preimageHash === hashLock &&
+          created.claimAddress === claimAddress &&
+          (created.refundAddress === self ||
+            coordinator === undefined ||
+            created.refundAddress === coordinator),
+      );
+    if (matches.length === 0) {
+      // This tx did not fund the swap, so another one may have.
+      throw new FundingTxUnavailableError(
+        `Funding tx ${leg.fundTxid} carries no SwapCreated log for hash lock ${hashLock} on ${leg.htlcAddress}${
+          coordinator === undefined
+            ? ""
+            : ` created by ${signer.address} or ${leg.coordinatorAddress}`
+        }`,
+      );
+    }
+    if (matches.length > 1) {
+      throw new Error(
+        `Funding tx ${leg.fundTxid} carries ${matches.length} SwapCreated logs for hash lock ${hashLock}; refusing to guess which HTLC to refund`,
+      );
+    }
+    const created = matches[0];
+    const active = decodeCallWord(
+      await signer.call(
+        encodeHtlcErc20IsActiveCallData(leg.htlcAddress, created),
+      ),
+      "isActive",
+    );
+    if (active === 0n) {
+      throw new HtlcNotActiveError(
+        `The HTLC for hash lock ${hashLock} on ${leg.htlcAddress} is no longer active; it was already redeemed or refunded`,
+      );
+    }
+    const ownHtlc = created.refundAddress === self;
+    if (!ownHtlc && coordinator === undefined) {
+      // No record of the coordinator (the swap was not funded through this
+      // SDK), so the sender has to hold the deposit for this HTLC.
+      const depositor = decodeCallWord(
+        await signer.call(
+          encodeDepositsCallData(created.refundAddress, created.key),
+        ),
+        "deposits",
+      );
+      if (depositor === 0n) {
+        throw new Error(
+          `${created.refundAddress} created the HTLC for hash lock ${hashLock} but holds no deposit for it, so it is not a coordinator this client can refund through`,
+        );
+      }
+    }
+    const { to, data } = ownHtlc
+      ? encodeHtlcErc20RefundCallData(leg.htlcAddress, created)
+      : encodeRefundTo(created.refundAddress, created);
+    return { to, data, timelock: created.timelock };
+  }
+
+  /**
    * Fetches the EIP-712 parameters for collaborative EVM HTLC refund.
    *
    * Returns the addresses and values needed to build the `CollabRefund`
@@ -4527,6 +4863,9 @@ export class Client {
   ): Promise<void> {
     if (!this.#swapStorage) return;
 
+    // Recovery rebuilds a swap that may already be here; what its funding
+    // recorded must survive that.
+    const existing = await this.#swapStorage.get(swapId);
     const storedSwap: StoredSwap = {
       version: SWAP_STORAGE_VERSION,
       swapId,
@@ -4541,6 +4880,8 @@ export class Client {
       targetAddress,
       bridgeRecipient: bridge?.recipient,
       bridgeRecipientWallet: bridge?.recipientWallet,
+      evmFundTxid: existing?.evmFundTxid,
+      evmCoordinatorAddress: existing?.evmCoordinatorAddress,
     };
 
     await this.#swapStorage.store(storedSwap);
@@ -5755,6 +6096,12 @@ export class Client {
       data: encoded.data,
       gas: 500_000n,
     });
+    // Recorded before the wait, so an RPC failure on a tx that did mine
+    // cannot lose it; corrected below if the wallet replaced the tx.
+    await this.#recordEvmFunding(swapId, {
+      txid: txHash,
+      coordinatorAddress: freshFunding.coordinatorAddress,
+    });
 
     // 9. Wait for receipt
     const receipt = await signer.waitForReceipt(txHash);
@@ -5762,19 +6109,47 @@ export class Client {
       const reason = await getRevertReason(signer, txHash, receipt.blockNumber);
       throw new Error(`Funding transaction failed: ${reason}`);
     }
+    // waitForReceipt follows replacements, and a cancel mines with status
+    // success and no logs; the receipt has to show the HTLC was created.
+    const mined = receipt.transactionHash || txHash;
+    if (receipt.logs === undefined) {
+      this.#logger.warn({
+        event: "client.fundSwap.receiptWithoutLogs",
+        message:
+          "this signer's waitForReceipt returns no logs, so the swap can only be refunded through the server",
+        swapId,
+      });
+    } else {
+      const hashLock = `0x${normalizeBytes32(freshFunding.preimageHash)}`;
+      const created = receipt.logs.some(
+        (log) => decodeSwapCreatedLog(log)?.preimageHash === hashLock,
+      );
+      if (!created) {
+        throw new Error(
+          `Transaction ${mined} is on-chain but did not create the HTLC; the wallet may have replaced or cancelled the funding`,
+        );
+      }
+    }
+    if (mined.toLowerCase() !== txHash.toLowerCase()) {
+      await this.#recordEvmFunding(swapId, {
+        txid: mined,
+        coordinatorAddress: freshFunding.coordinatorAddress,
+      });
+    }
 
     // 10. The server may have re-quoted the source amount for this funding;
     //     bring the stored copy up to date. Best effort — the funding is done.
     await this.getSwap(swapId, { updateStorage: true }).catch(() => undefined);
 
-    return { txHash };
+    return { txHash: mined };
   }
 
   /**
    * Refund an EVM-sourced swap using an external wallet.
    *
-   * Fetches refund calldata from the server, sends the transaction via the
-   * provided signer, and waits for the receipt.
+   * Builds the refund from the funding tx's receipt, asking the server for
+   * the funding txid or the calldata only when that fails, then sends it via
+   * the provided signer and waits for the receipt.
    *
    * Use this for manual (timelock-based) refunds where the user pays gas.
    * For collaborative (gasless) refunds, use {@link collabRefundEvmWithSigner}.
@@ -5787,7 +6162,7 @@ export class Client {
     swapId: string,
     signer: EvmSigner,
   ): Promise<{ txHash: string }> {
-    const result = await this.refundSwap(swapId, {});
+    const result = await this.refundSwap(swapId, { signer });
 
     if (!result.evmRefundData) {
       throw new Error(
@@ -6281,6 +6656,10 @@ export class Client {
       message: string;
     };
 
+    await this.#recordEvmFunding(swapId, {
+      txid: result.tx_hash,
+      coordinatorAddress: serverData.coordinator_address,
+    });
     return { txHash: result.tx_hash };
   }
 

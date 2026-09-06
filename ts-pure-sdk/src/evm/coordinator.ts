@@ -11,6 +11,7 @@ import {
   hexToBytes as nobleFromHex,
   bytesToHex as nobleToHex,
 } from "@noble/hashes/utils.js";
+import { normalizeBytes32 } from "./htlc.js";
 
 // ── ABI helpers ──────────────────────────────────────────────────────────────
 
@@ -477,6 +478,26 @@ export function encodeRefundTo(
     to: coordinatorAddress,
     data,
     functionSignature: "refundTo(bytes32,uint256,address,address,uint256)",
+  };
+}
+
+// keccak256("deposits(bytes32)")
+const DEPOSITS_SELECTOR = keccak256(
+  stringToUtf8Bytes("deposits(bytes32)"),
+).slice(0, 10);
+
+/**
+ * Encodes `coordinator.deposits(key)`: the depositor the coordinator recorded
+ * when it created the HTLC with this key, as one ABI word, zero when it never
+ * created it or has already refunded it.
+ */
+export function encodeDepositsCallData(
+  coordinatorAddress: string,
+  key: string,
+): { to: string; data: string } {
+  return {
+    to: coordinatorAddress,
+    data: `${DEPOSITS_SELECTOR}${normalizeBytes32(key)}`,
   };
 }
 
@@ -1223,14 +1244,6 @@ function abiEncode(values: AbiValue[]): string {
       }
     })
     .join("");
-}
-
-function normalizeBytes32(value: string): string {
-  let clean = value.replace(/^0x/, "");
-  if (clean.length < 64) {
-    clean = clean.padStart(64, "0");
-  }
-  return clean.toLowerCase().slice(0, 64);
 }
 
 function normalizeAddress(address: string): string {

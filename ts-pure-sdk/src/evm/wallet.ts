@@ -114,9 +114,11 @@ export interface EvmSigner {
   /**
    * Wait for a transaction to be mined and return the receipt.
    *
-   * The implementation should handle transaction replacements (speed-up /
-   * cancel) — e.g. viem's `waitForTransactionReceipt` and ethers'
-   * `provider.waitForTransaction` both do this automatically.
+   * The implementation should follow transaction replacements (speed-up /
+   * cancel) and give up after a timeout. viem's `waitForTransactionReceipt`
+   * does both by default; ethers' `provider.waitForTransaction` does neither
+   * unless given a timeout, and only `TransactionResponse.wait` follows
+   * replacements there.
    *
    * @param hash - Transaction hash to wait for (0x-prefixed)
    */
@@ -124,7 +126,9 @@ export interface EvmSigner {
 
   /**
    * Get a transaction by hash. Used internally to replay reverted
-   * transactions and extract on-chain revert reasons.
+   * transactions and extract on-chain revert reasons, and to check that a
+   * recorded funding tx is one the node knows before waiting for its
+   * receipt: reject for an unknown hash (a null result is treated the same).
    *
    * @param hash - Transaction hash (0x-prefixed)
    */
@@ -156,10 +160,22 @@ export interface EvmSigner {
 
 // ── Transaction receipt ──────────────────────────────────────────────────────
 
+export interface ReceiptLog {
+  address: string;
+  topics: readonly string[];
+  data: string;
+}
+
 export interface TxReceipt {
   status: "success" | "reverted";
   blockNumber: bigint;
   transactionHash: string;
+  /**
+   * Needed to refund a coordinator-created HTLC without the server: the locked
+   * amount is decided by the DEX swap inside the funding tx, so the only record
+   * of it the client has is the `SwapCreated` log on that receipt.
+   */
+  logs?: readonly ReceiptLog[];
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

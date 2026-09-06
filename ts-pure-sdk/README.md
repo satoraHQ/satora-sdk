@@ -142,7 +142,9 @@ const {txHash} = await client.fundSwap(swapId, signer);
 ### The EvmSigner Interface
 
 `EvmSigner` is a minimal wallet abstraction. Implement it once for your stack — the SDK stays free of EVM library
-dependencies:
+dependencies. Return the receipt's `logs` from `waitForReceipt`: refunding an EVM-sourced swap without the server
+reads the locked amount off the funding transaction's `SwapCreated` log, and `fundSwap` logs a warning when they are
+missing.
 
 ```typescript
 import type { EvmSigner } from "@lendasat/lendaswap-sdk-pure";
@@ -167,6 +169,7 @@ const signer: EvmSigner = {
       status: r.status,
       blockNumber: r.blockNumber,
       transactionHash: r.transactionHash,
+      logs: r.logs,
     })),
   getTransaction: (hash) =>
     publicClient.getTransaction({hash}).then((tx) => ({
@@ -190,16 +193,20 @@ const signer: EvmSigner = {
     wallet.sendTransaction({to: tx.to, data: tx.data, gasLimit: tx.gas})
       .then((r) => r.hash),
   waitForReceipt: (hash) =>
-    wallet.provider.waitForTransaction(hash).then((r) => ({
+    wallet.provider.waitForTransaction(hash, 1, 180_000).then((r) => {
+      if (!r) throw new Error(`Transaction ${hash} was dropped`);
+      return {
         status: r.status === 1 ? "success" : "reverted",
         blockNumber: BigInt(r.blockNumber),
         transactionHash: r.hash,
-      })
-    ),
+        logs: r.logs,
+      };
+    }),
   getTransaction: (hash) =>
-    wallet.provider.getTransaction(hash).then((tx) => ({
-      to: tx.to, input: tx.data, from: tx.from,
-    })),
+    wallet.provider.getTransaction(hash).then((tx) => {
+      if (!tx) throw new Error(`Transaction ${hash} is unknown to the node`);
+      return {to: tx.to, input: tx.data, from: tx.from};
+    }),
   call: (tx) =>
     wallet.provider.call({to: tx.to, data: tx.data, from: tx.from, blockTag: tx.blockNumber}),
 };
@@ -233,7 +240,7 @@ const result = await client.refundSwap(swapId, {
 });
 
 // EVM swaps — manual refund (after timelock expires, user pays gas)
-const {txHash} = await client.refundEvmWithSigner(swapId, signer, "direct");
+const {txHash} = await client.refundEvmWithSigner(swapId, signer);
 
 // EVM swaps — collaborative refund (instant, gasless, server cosigns)
 const {txHash} = await client.collabRefundEvmWithSigner(swapId, signer);
