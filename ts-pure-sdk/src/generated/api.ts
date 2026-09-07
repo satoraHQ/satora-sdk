@@ -2633,6 +2633,12 @@ export interface components {
         });
         LightningSendQuoteResponse: {
             /**
+             * @description Source tokens (human-readable units) per 1 BTC locked, as `/quote`
+             *     reports it: `source_amount` over the BTC-pegged lock. "1" for Arkade
+             *     sources, where the source is already sats.
+             */
+            exchange_rate: string;
+            /**
              * Format: int64
              * @description Maximum payout for this route, in satoshis.
              */

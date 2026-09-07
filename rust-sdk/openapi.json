@@ -5526,9 +5526,14 @@
           "network_fee_sats",
           "protocol_fee_rate",
           "min_amount_sats",
-          "max_amount_sats"
+          "max_amount_sats",
+          "exchange_rate"
         ],
         "properties": {
+          "exchange_rate": {
+            "type": "string",
+            "description": "Source tokens (human-readable units) per 1 BTC locked, as `/quote`\nreports it: `source_amount` over the BTC-pegged lock. \"1\" for Arkade\nsources, where the source is already sats."
+          },
           "max_amount_sats": {
             "type": "integer",
             "format": "int64",

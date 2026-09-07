@@ -685,6 +685,11 @@ export interface LightningSendQuote {
   minAmountSats: number;
   /** Maximum payout for this route, in sats. */
   maxAmountSats: number;
+  /**
+   * Source tokens (human-readable units) per 1 BTC locked, as `/quote`
+   * reports it. "1" for Arkade sources, where the source is already sats.
+   */
+  exchangeRate: string;
 }
 
 /**
@@ -1731,7 +1736,7 @@ export class Client {
    * @throws Error if the request fails.
    */
   async getQuote(params: GetQuoteParams): Promise<QuoteResponse> {
-    // Arkade → Lightning with a concrete destination: serve the quote from
+    // Arkade/EVM → Lightning with a concrete destination: serve the quote from
     // /quote/lightning-send, which prices the provider's real send fee for
     // that exact payment. Fall back to the estimate paths on any failure
     // (bad destination, LNURL service down, ...) — a create would surface
@@ -1852,13 +1857,15 @@ export class Client {
       protocolFeeRate: data.protocol_fee_rate,
       minAmountSats: data.min_amount_sats,
       maxAmountSats: data.max_amount_sats,
+      exchangeRate: data.exchange_rate,
     };
   }
 
   /**
-   * Serve an Arkade → Lightning `getQuote` from `/quote/lightning-send`,
-   * adapted to the `QuoteResponse` shape (1:1 rate; net amounts carry the
-   * exact lock/payout including the provider's real send fee).
+   * Serve an Arkade/EVM → Lightning `getQuote` from `/quote/lightning-send`,
+   * adapted to the `QuoteResponse` shape (the server's rate: 1:1 for Arkade,
+   * DEX-derived for EVM sources; net amounts carry the exact lock/payout
+   * including the provider's real send fee).
    */
   async #lightningSendQuoteAsQuote(
     params: GetQuoteParams,
@@ -1904,7 +1911,7 @@ export class Client {
     const targetAmountOut =
       !evmSource && sourcePinned ? q.sourceAmount : String(q.targetAmountSats);
     return {
-      exchange_rate: "1",
+      exchange_rate: q.exchangeRate,
       network_fee: q.networkFeeSats,
       gasless_network_fee: 0,
       protocol_fee: q.protocolFeeSats,
