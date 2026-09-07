@@ -90,7 +90,6 @@ import {
   deriveEvmAddress,
   encodeApproveCallData,
   encodeExecuteAndCreateWithPermit2,
-  encodeHtlcErc20RefundCallData,
   PERMIT2_ADDRESS,
   type Permit2SignedFundingCallData,
   signEvmDigest,
@@ -147,7 +146,6 @@ import {
   isArkade,
   isBridgeOnlyChain,
   isBtcOnchain,
-  isBtcPegged,
   isEvmToken,
   isLightning,
   isSolanaToken,
@@ -3462,13 +3460,7 @@ export class Client {
         return this.#collabRefundEvm(id);
       }
 
-      if (direction === "evm_to_arkade") {
-        return this.#buildEvmToArkadeRefund(id, swap);
-      }
-      if (direction === "evm_to_lightning") {
-        return this.#buildEvmToLightningRefund(id, swap);
-      }
-      return this.#buildEvmToBitcoinRefund(id, swap);
+      return this.#buildCoordinatorRefund(id, swap);
     }
 
     return {
@@ -4240,222 +4232,33 @@ export class Client {
   }
 
   /**
-   * Builds refund data for an EVM-to-Arkade swap via the coordinator.
+   * Builds unilateral refund data for an EVM-sourced swap (EVM → Arkade,
+   * Bitcoin or Lightning).
    *
-   * Calls the server's refund-calldata endpoint which builds coordinator
-   * calldata for `refundTo` (return the BTC-pegged HTLC token directly).
+   * Every EVM-source funding is created by the HTLCCoordinator, which locks
+   * with itself as the HTLC sender and records the depositor. The HTLC's
+   * refund key binds that sender, so the wallet must call the coordinator's
+   * `refundTo` (which pays the recorded depositor) — a direct `HTLCErc20.refund`
+   * from the wallet computes a different key and reverts. That holds for a
+   * BTC-pegged source (tBTC, WBTC) just as for a DEX-swapped one: the
+   * coordinator is the sender either way. The server's calldata endpoint
+   * targets the actual locked amount, which covers the gasless relay fee.
    *
    * @internal
    */
-  async #buildEvmToArkadeRefund(
+  async #buildCoordinatorRefund(
     id: string,
     swap: GetSwapResponse,
   ): Promise<RefundResult> {
-    const evmSwap = swap as EvmToArkadeSwapResponse & {
-      direction: "evm_to_arkade";
-    };
+    const evmSwap = swap as
+      | EvmToArkadeSwapResponse
+      | EvmToBitcoinSwapResponse
+      | EvmToLightningSwapResponse;
 
     const timelock = evmSwap.evm_refund_locktime;
     const now = Math.floor(Date.now() / 1000);
     const timelockExpired = now >= timelock;
 
-    // Check if source token is BTC-pegged (WBTC/tBTC) - if so, use direct HTLCErc20 refund
-    const isWbtcSource = evmSwap.source_token
-      ? isBtcPegged(evmSwap.source_token)
-      : false;
-
-    if (isWbtcSource) {
-      // Direct HTLCErc20 refund - no DEX swap needed
-      const htlcAddress = evmSwap.evm_htlc_address;
-      const hashLock = evmSwap.hash_lock;
-
-      const refundData = encodeHtlcErc20RefundCallData(htlcAddress, {
-        preimageHash: hashLock,
-        amount: BigInt(evmSwap.source_amount),
-        token: evmSwap.source_token.token_id,
-        claimAddress: evmSwap.server_evm_address, // The server would have been the claimer
-        timelock: timelock,
-      });
-
-      return {
-        success: true,
-        message: timelockExpired
-          ? "EVM refund calldata ready. Submit this transaction with your EVM wallet."
-          : `Timelock has not expired yet. Refund will be available at ${new Date(timelock * 1000).toISOString()}.`,
-        evmRefundData: {
-          to: refundData.to,
-          data: refundData.data,
-          timelockExpired,
-          timelockExpiry: timelock,
-        },
-      };
-    }
-
-    // Non-WBTC source: fetch coordinator refund calldata from server
-    // (returns the BTC-pegged HTLC token directly to the caller)
-    const response = await this.#apiClient.GET(
-      "/swap/{id}/refund-and-swap-calldata",
-      {
-        params: {
-          path: { id },
-        },
-      },
-    );
-
-    if (response.error) {
-      return {
-        success: false,
-        message: `Failed to fetch refund calldata: ${response.error.error || "Unknown error"}`,
-      };
-    }
-
-    const { coordinator_address, calldata } = response.data;
-
-    return {
-      success: true,
-      message: timelockExpired
-        ? "EVM refund calldata ready. Submit this transaction with your EVM wallet."
-        : `Timelock has not expired yet. Refund will be available at ${new Date(timelock * 1000).toISOString()}.`,
-      evmRefundData: {
-        to: coordinator_address,
-        data: calldata,
-        timelockExpired,
-        timelockExpiry: timelock,
-      },
-    };
-  }
-
-  /**
-   * Builds refund data for an EVM-to-Lightning swap.
-   * Same pattern as EVM-to-Arkade: direct HTLCErc20 refund for BTC-pegged
-   * sources, coordinator refund-and-swap-calldata otherwise.
-   * @internal
-   */
-  async #buildEvmToLightningRefund(
-    id: string,
-    swap: GetSwapResponse,
-  ): Promise<RefundResult> {
-    const evmSwap = swap as EvmToLightningSwapResponse & {
-      direction: "evm_to_lightning";
-    };
-
-    const timelock = evmSwap.evm_refund_locktime;
-    const now = Math.floor(Date.now() / 1000);
-    const timelockExpired = now >= timelock;
-
-    const isWbtcSource = evmSwap.source_token
-      ? isBtcPegged(evmSwap.source_token)
-      : false;
-
-    if (isWbtcSource) {
-      const refundData = encodeHtlcErc20RefundCallData(
-        evmSwap.evm_htlc_address,
-        {
-          preimageHash: evmSwap.hash_lock,
-          amount: BigInt(evmSwap.source_amount),
-          token: evmSwap.source_token.token_id,
-          claimAddress: evmSwap.server_evm_address, // The server would have been the claimer
-          timelock: timelock,
-        },
-      );
-
-      return {
-        success: true,
-        message: timelockExpired
-          ? "EVM refund calldata ready. Submit this transaction with your EVM wallet."
-          : `Timelock has not expired yet. Refund will be available at ${new Date(timelock * 1000).toISOString()}.`,
-        evmRefundData: {
-          to: refundData.to,
-          data: refundData.data,
-          timelockExpired,
-          timelockExpiry: timelock,
-        },
-      };
-    }
-
-    const response = await this.#apiClient.GET(
-      "/swap/{id}/refund-and-swap-calldata",
-      {
-        params: {
-          path: { id },
-        },
-      },
-    );
-
-    if (response.error) {
-      return {
-        success: false,
-        message: `Failed to fetch refund calldata: ${response.error.error || "Unknown error"}`,
-      };
-    }
-
-    const { coordinator_address, calldata } = response.data;
-
-    return {
-      success: true,
-      message: timelockExpired
-        ? "EVM refund calldata ready. Submit this transaction with your EVM wallet."
-        : `Timelock has not expired yet. Refund will be available at ${new Date(timelock * 1000).toISOString()}.`,
-      evmRefundData: {
-        to: coordinator_address,
-        data: calldata,
-        timelockExpired,
-        timelockExpiry: timelock,
-      },
-    };
-  }
-
-  /**
-   * Builds refund data for an EVM-to-Bitcoin swap via the coordinator.
-   * Same pattern as EVM-to-Arkade: uses the coordinator refund-and-swap-calldata endpoint.
-   * @internal
-   */
-  async #buildEvmToBitcoinRefund(
-    id: string,
-    swap: GetSwapResponse,
-  ): Promise<RefundResult> {
-    const evmSwap = swap as EvmToBitcoinSwapResponse & {
-      direction: "evm_to_bitcoin";
-    };
-
-    const timelock = evmSwap.evm_refund_locktime;
-    const now = Math.floor(Date.now() / 1000);
-    const timelockExpired = now >= timelock;
-
-    // Check if source token is BTC-pegged (WBTC/tBTC) - if so, use direct HTLCErc20 refund
-    const isWbtcSource = evmSwap.source_token
-      ? isBtcPegged(evmSwap.source_token)
-      : false;
-
-    if (isWbtcSource) {
-      // Direct HTLCErc20 refund - no DEX swap needed
-      const htlcAddress = evmSwap.evm_htlc_address;
-      const hashLock = evmSwap.evm_hash_lock;
-
-      const refundData = encodeHtlcErc20RefundCallData(htlcAddress, {
-        preimageHash: hashLock,
-        amount: BigInt(evmSwap.source_amount),
-        token: evmSwap.source_token.token_id,
-        claimAddress: evmSwap.server_evm_address, // The server would have been the claimer
-        timelock: timelock,
-      });
-
-      return {
-        success: true,
-        message: timelockExpired
-          ? "EVM refund calldata ready. Submit this transaction with your EVM wallet."
-          : `Timelock has not expired yet. Refund will be available at ${new Date(timelock * 1000).toISOString()}.`,
-        evmRefundData: {
-          to: refundData.to,
-          data: refundData.data,
-          timelockExpired,
-          timelockExpiry: timelock,
-        },
-      };
-    }
-
-    // Non-WBTC source: use coordinator refund
-    // (returns the BTC-pegged HTLC token directly to the caller)
     const response = await this.#apiClient.GET(
       "/swap/{id}/refund-and-swap-calldata",
       {
