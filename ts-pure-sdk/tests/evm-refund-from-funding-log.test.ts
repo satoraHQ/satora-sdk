@@ -9,6 +9,7 @@ import {
   encodeHtlcErc20IsActiveCallData,
   findSwapCreated,
 } from "../src/evm/htlc.js";
+import { deriveEvmAddress } from "../src/evm/signing.js";
 import type { GetSwapResponse } from "../src/index.js";
 import { Client, InMemorySwapStorage } from "../src/index.js";
 import type { StoredSwap } from "../src/storage/types.js";
@@ -547,8 +548,7 @@ describe("refundSwap for an EVM-sourced swap", () => {
 
   it("trusts the coordinator the server names on the Lightning direction", async () => {
     // EVM -> Lightning responses carry evm_coordinator_address, so a swap this
-    // SDK did not fund needs no deposits probe there; an EOA-like answer to
-    // deposits() would otherwise reject the sender.
+    // SDK did not fund still only accepts that coordinator's log.
     serverGone();
     const { client } = await clientWith(
       storedSwap({
@@ -556,13 +556,78 @@ describe("refundSwap for an EVM-sourced swap", () => {
         evmCoordinatorAddress: undefined,
       }),
     );
-
-    const result = await client.refundSwap(SWAP_ID, {
-      signer: signerWith({ deposit: false }),
+    const stranger = `0x${"5".repeat(40)}`;
+    const rejected = await client.refundSwap(SWAP_ID, {
+      signer: signerWith({ logs: [logFrom(stranger)] }),
     });
-
+    expect(rejected.success).toBe(false);
+    expect(rejected.message).toMatch(new RegExp(`created by .*${COORDINATOR}`));
+    const result = await client.refundSwap(SWAP_ID, { signer: signerWith() });
     expect(result.success).toBe(true);
     expect(result.evmRefundData?.to).toBe(COORDINATOR);
+  });
+
+  it("pays the wallet itself when it is the depositor", async () => {
+    serverGone();
+    const { client } = await clientWith(storedSwap());
+    const result = await client.refundSwap(SWAP_ID, { signer: signerWith() });
+    expect(result.success).toBe(true);
+    expect(result.evmRefundData?.recipient).toBe(SIGNER_ADDRESS);
+    expect(result.message).not.toMatch(/pays the refund/);
+  });
+
+  it("names the SDK's gasless key as recipient and the way out of it", async () => {
+    // A gasless funding deposits from the SDK's deterministic key, so
+    // refundTo pays that key, not the wallet submitting the refund.
+    serverGone();
+    const storage = new InMemorySwapStorage();
+    const client = await Client.builder().withSwapStorage(storage).build();
+    const gaslessKey = client.getEvmAddress().toLowerCase();
+    await storage.store(storedSwap());
+    const result = await client.refundSwap(SWAP_ID, {
+      signer: signerWith({ deposit: gaslessKey }),
+    });
+    expect(result.success).toBe(true);
+    expect(result.evmRefundData?.recipient).toBe(gaslessKey);
+    expect(result.message).toMatch(
+      /pays the refund to .*gasless key.*recoverGaslessFunds/,
+    );
+  });
+
+  it("accepts the legacy per-swap key and the server's recorded depositor", async () => {
+    serverGone();
+    const legacyKey = deriveEvmAddress("01".repeat(32)).toLowerCase();
+    const { client } = await clientWith(storedSwap());
+    const legacy = await client.refundSwap(SWAP_ID, {
+      signer: signerWith({ deposit: legacyKey }),
+    });
+    expect(legacy.success).toBe(true);
+    expect(legacy.evmRefundData?.recipient).toBe(legacyKey);
+    expect(legacy.message).toMatch(/recoverGaslessFunds/);
+    // A device without the funding mnemonic only has the server's record.
+    const other = `0x${"7".repeat(40)}`;
+    const { client: elsewhere } = await clientWith(
+      storedSwap({ response: swapResponse({ clientEvmAddress: other }) }),
+    );
+    const recorded = await elsewhere.refundSwap(SWAP_ID, {
+      signer: signerWith({ deposit: other }),
+    });
+    expect(recorded.success).toBe(true);
+    expect(recorded.evmRefundData?.recipient).toBe(other);
+    expect(recorded.message).toMatch(
+      /pays the refund to the depositor 0x7+, not to the submitting wallet/,
+    );
+  });
+
+  it("refuses an HTLC whose depositor is none of this client's addresses", async () => {
+    serverGone();
+    const { client } = await clientWith(storedSwap());
+    const stranger = `0x${"9".repeat(40)}`;
+    const result = await client.refundSwap(SWAP_ID, {
+      signer: signerWith({ deposit: stranger }),
+    });
+    expect(result.success).toBe(false);
+    expect(result.message).toMatch(/none of this client's addresses/);
   });
 
   it("still asks the server when no signer is given", async () => {

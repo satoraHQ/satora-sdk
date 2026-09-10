@@ -25,3 +25,11 @@ the transaction and rejects a replacement that did not create the HTLC.
 `TxReceipt` gains an optional `logs` field that signer implementations must
 fill for this path (`fundSwap` logs a warning when it is missing), and
 `getTransaction` must reject for a hash the node does not know.
+
+Before building through the coordinator, the client reads its `deposits(key)`
+and requires the depositor to be the wallet, one of the SDK's gasless keys or
+the depositor the server recorded; anything else fails the chain path.
+`evmRefundData.recipient` names where the refund pays out, and the message
+points at `recoverGaslessFunds` when that is an SDK key. `fundSwap` records a
+replacement only if its receipt carries this swap's `SwapCreated` from the
+coordinator on the HTLC.

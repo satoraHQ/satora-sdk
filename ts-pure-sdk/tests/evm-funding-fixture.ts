@@ -63,12 +63,16 @@ export function swapResponse(
     direction?: "evm_to_bitcoin" | "evm_to_arkade" | "evm_to_lightning";
     fundTxid?: string | null;
     refundLocktime?: number;
+    clientEvmAddress?: string | null;
+    gasless?: boolean;
   } = {},
 ): StoredSwap["response"] {
   const {
     direction = "evm_to_bitcoin",
     fundTxid = null,
     refundLocktime = TIMELOCK,
+    clientEvmAddress = null,
+    gasless = false,
   } = overrides;
   return {
     direction,
@@ -86,6 +90,8 @@ export function swapResponse(
     evm_fund_txid: fundTxid,
     evm_refund_locktime: refundLocktime,
     server_evm_address: SERVER,
+    client_evm_address: clientEvmAddress,
+    gasless,
     source_amount: "15658166",
     target_amount: "20001",
     source_token: {
@@ -133,16 +139,17 @@ export function storedSwap(
 
 /**
  * A signer on the swap's chain whose node answers the way a real one does:
- * the HTLC is active, the coordinator holds the deposit (an EOA answers with
- * no data), balances and allowances are unlimited, every receipt carries
- * `logs`, and a hash in `unknownHashes` is rejected by `getTransaction`
- * while `waitForReceipt` on it never settles, as viem and ethers behave.
+ * the HTLC is active, the coordinator's deposit belongs to the signer or to
+ * the address `deposit` names (`false` answers like an EOA, with no data),
+ * balances and allowances are unlimited, every receipt carries `logs`, and a
+ * hash in `unknownHashes` is rejected by `getTransaction` while
+ * `waitForReceipt` on it never settles, as viem and ethers behave.
  */
 export function signerWith(
   overrides: Partial<EvmSigner> & {
     logs?: ReceiptLog[];
     active?: boolean;
-    deposit?: boolean;
+    deposit?: boolean | string;
     unknownHashes?: string[];
   } = {},
 ): EvmSigner {
@@ -169,7 +176,8 @@ export function signerWith(
         return active ? TRUE_WORD : ZERO_WORD;
       }
       if (data.startsWith(DEPOSITS_SELECTOR)) {
-        return deposit ? addressToBytes32(SIGNER_ADDRESS) : "0x";
+        if (deposit === false) return "0x";
+        return addressToBytes32(deposit === true ? SIGNER_ADDRESS : deposit);
       }
       if (
         data.startsWith(BALANCE_OF_SELECTOR) ||

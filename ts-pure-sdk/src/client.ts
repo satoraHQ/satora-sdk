@@ -352,6 +352,12 @@ export interface RefundResult {
     timelockExpired: boolean;
     /** Unix timestamp when the timelock expires */
     timelockExpiry: number;
+    /**
+     * Where the refund pays out: the depositor on the coordinator path,
+     * which for a gasless swap is the SDK's own key, not the wallet that
+     * submits the transaction.
+     */
+    recipient?: string;
   };
 }
 
@@ -414,6 +420,12 @@ function decodeCallWord(result: string, what: string): bigint {
     );
   }
   return BigInt(`0x${clean}`);
+}
+
+function uniqueAddresses(values: (string | null | undefined)[]): string[] {
+  return [
+    ...new Set(values.flatMap((value) => (value ? [value.toLowerCase()] : []))),
+  ];
 }
 
 function dedupeTxids(txids: (string | null | undefined)[]): string[] {
@@ -4361,6 +4373,7 @@ export class Client {
         data: calldata,
         timelockExpired,
         timelockExpiry: timelock,
+        recipient: evmSwap.client_evm_address ?? undefined,
       },
     };
   }
@@ -4411,16 +4424,24 @@ export class Client {
   ): Promise<RefundResult> {
     const leg = evmSourceLeg(stored);
     const ready = (
-      refund: { to: string; data: string },
+      refund: { to: string; data: string; recipient: string },
       timelock: number,
+      payoutNote: string,
     ): RefundResult => {
       const timelockExpired = Math.floor(Date.now() / 1000) >= timelock;
+      const status = timelockExpired
+        ? "EVM refund calldata ready. Submit this transaction with your EVM wallet."
+        : `Timelock has not expired yet. Refund will be available at ${new Date(timelock * 1000).toISOString()}.`;
       return {
         success: true,
-        message: timelockExpired
-          ? "EVM refund calldata ready. Submit this transaction with your EVM wallet."
-          : `Timelock has not expired yet. Refund will be available at ${new Date(timelock * 1000).toISOString()}.`,
-        evmRefundData: { ...refund, timelockExpired, timelockExpiry: timelock },
+        message: status + payoutNote,
+        evmRefundData: {
+          to: refund.to,
+          data: refund.data,
+          recipient: refund.recipient,
+          timelockExpired,
+          timelockExpiry: timelock,
+        },
       };
     };
 
@@ -4431,6 +4452,25 @@ export class Client {
           `Signer is on chain ${signer.chainId} but swap ${id} was funded on chain ${leg.chainId}`,
         );
       }
+      // Who refundTo may pay: the wallet, the SDK's gasless keys, or the
+      // depositor the server recorded, which is all a device without the
+      // funding mnemonic knows.
+      const sdkAddresses = uniqueAddresses([
+        this.getEvmAddress(),
+        stored.secretKey ? deriveEvmAddress(stored.secretKey) : undefined,
+      ]);
+      const expectedDepositors = uniqueAddresses([
+        signer.address,
+        ...sdkAddresses,
+        (stored.response as { client_evm_address?: string | null })
+          .client_evm_address,
+      ]);
+      const payoutNote = (recipient: string): string => {
+        if (recipient === signer.address.toLowerCase()) return "";
+        return sdkAddresses.includes(recipient)
+          ? ` The coordinator pays the refund to ${recipient}, this SDK's gasless key; run recoverGaslessFunds afterwards to move the tokens.`
+          : ` The coordinator pays the refund to the depositor ${recipient}, not to the submitting wallet.`;
+      };
       const tried: string[] = [];
       // Only a receipt that could not be read leaves room for another txid.
       let receiptUnavailable = true;
@@ -4442,6 +4482,7 @@ export class Client {
           const refund = await this.#refundFromFundingTx(signer, {
             ...leg,
             fundTxid,
+            expectedDepositors,
           });
           // A coordinator the chain just proved is worth keeping: with it on
           // record, only its own SwapCreated counts next time.
@@ -4457,7 +4498,7 @@ export class Client {
               coordinatorAddress: coordinatorProved ? refund.sender : undefined,
             });
           }
-          return ready(refund, refund.timelock);
+          return ready(refund, refund.timelock, payoutNote(refund.recipient));
         } catch (error) {
           if (error instanceof HtlcNotActiveError) {
             return { success: false, message: error.message };
@@ -4533,8 +4574,15 @@ export class Client {
       hashLock: string;
       claimAddress: string;
       coordinatorAddress?: string;
+      expectedDepositors: readonly string[];
     },
-  ): Promise<{ to: string; data: string; timelock: number; sender: string }> {
+  ): Promise<{
+    to: string;
+    data: string;
+    timelock: number;
+    sender: string;
+    recipient: string;
+  }> {
     // A hash the node does not know would keep waitForReceipt polling until
     // its timeout, or forever on an adapter without one.
     let known: unknown;
@@ -4605,20 +4653,28 @@ export class Client {
       );
     }
     const ownHtlc = created.refundAddress === self;
-    if (!ownHtlc && coordinator === undefined) {
-      // No record of the coordinator (the swap was not funded through this
-      // SDK), so the sender has to hold the deposit for this HTLC.
-      const depositor = decodeCallWord(
+    let recipient = self;
+    if (!ownHtlc) {
+      // refundTo pays whoever the sender recorded as depositor, and anyone
+      // may call it: this checks which HTLC was picked, not who may refund.
+      const deposit = decodeCallWord(
         await signer.call(
           encodeDepositsCallData(created.refundAddress, created.key),
         ),
         "deposits",
       );
-      if (depositor === 0n) {
+      if (deposit === 0n) {
         throw new Error(
           `${created.refundAddress} created the HTLC for hash lock ${hashLock} but holds no deposit for it, so it is not a coordinator this client can refund through`,
         );
       }
+      const depositor = `0x${deposit.toString(16).padStart(40, "0")}`;
+      if (!leg.expectedDepositors.includes(depositor)) {
+        throw new Error(
+          `${created.refundAddress} would refund the HTLC for hash lock ${hashLock} to ${depositor}, which is none of this client's addresses (${leg.expectedDepositors.join(", ")})`,
+        );
+      }
+      recipient = depositor;
     }
     const { to, data } = ownHtlc
       ? encodeHtlcErc20RefundCallData(leg.htlcAddress, created)
@@ -4628,6 +4684,7 @@ export class Client {
       data,
       timelock: created.timelock,
       sender: created.refundAddress,
+      recipient,
     };
   }
 
