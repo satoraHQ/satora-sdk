@@ -4,8 +4,10 @@ import {
   COORDINATOR,
   FUND_TXID,
   HASH_LOCK,
+  logFrom,
   REAL_LOG,
   SERVER,
+  SIGNER_ADDRESS,
   SWAP_ID,
   serverAnswering,
   serverGone,
@@ -117,6 +119,23 @@ describe("fundSwap records the funding on the stored swap", () => {
       evmFundTxid: SENT,
       evmCoordinatorAddress: COORDINATOR,
     });
+  });
+
+  it("rejects a replacement whose SwapCreated is not this swap's", async () => {
+    // Same hash lock, but emitted by another contract or created by another
+    // sender: neither is the HTLC the coordinator locks for this swap.
+    for (const decoy of [
+      { ...REAL_LOG, address: USDC },
+      logFrom(SIGNER_ADDRESS),
+    ]) {
+      serverAnswering({ swap: swapResponse(), permit2: permit2Params });
+      const { client, storage } = await unfundedClient();
+      const signer = fundingSigner({ transactionHash: MINED, logs: [decoy] });
+      await expect(client.fundSwap(SWAP_ID, signer)).rejects.toThrow(
+        /did not create the HTLC/,
+      );
+      expect(await storage.get(SWAP_ID)).toMatchObject({ evmFundTxid: SENT });
+    }
   });
 
   it("warns when the signer's receipt carries no logs", async () => {

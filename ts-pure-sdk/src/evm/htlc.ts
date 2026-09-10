@@ -5,7 +5,7 @@
  * ReverseAtomicSwapHTLC contract for EVM-to-BTC swaps.
  */
 
-import { decodeUint256 } from "./wallet.js";
+import { decodeUint256, type ReceiptLog } from "./wallet.js";
 
 /**
  * Parameters for creating an EVM HTLC swap.
@@ -514,4 +514,45 @@ export function decodeSwapCreatedLog(log: {
     timelock: Number(decodeUint256(word(2))),
     key: `0x${word(3)}`,
   };
+}
+
+export interface SwapCreatedFilter {
+  htlcAddress: string;
+  hashLock: string;
+  claimAddress: string;
+  /** Senders the HTLC may have been created by; any sender when omitted. */
+  senders?: readonly string[];
+  token?: string;
+}
+
+/**
+ * The funding tx runs server-supplied DEX calls before the coordinator
+ * creates the HTLC, so a receipt can carry decoys with the right hash lock;
+ * the emitting contract and the sender are what tell them apart.
+ */
+export function findSwapCreated(
+  logs: readonly ReceiptLog[],
+  filter: SwapCreatedFilter,
+): SwapCreatedLog[] {
+  const htlc = filter.htlcAddress.toLowerCase();
+  const hashLock = `0x${normalizeBytes32(filter.hashLock)}`;
+  const claimAddress = filter.claimAddress.toLowerCase();
+  const senders = filter.senders?.map((sender) => sender.toLowerCase());
+  const token = filter.token?.toLowerCase();
+  const matches: SwapCreatedLog[] = [];
+  for (const log of logs) {
+    if (log.address.toLowerCase() !== htlc) continue;
+    const created = decodeSwapCreatedLog(log);
+    if (
+      created === undefined ||
+      created.preimageHash !== hashLock ||
+      created.claimAddress !== claimAddress ||
+      (senders !== undefined && !senders.includes(created.refundAddress)) ||
+      (token !== undefined && created.token !== token)
+    ) {
+      continue;
+    }
+    matches.push(created);
+  }
+  return matches;
 }

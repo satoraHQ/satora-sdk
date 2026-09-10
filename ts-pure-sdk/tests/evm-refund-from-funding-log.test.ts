@@ -7,6 +7,7 @@ import {
 import {
   decodeSwapCreatedLog,
   encodeHtlcErc20IsActiveCallData,
+  findSwapCreated,
 } from "../src/evm/htlc.js";
 import type { GetSwapResponse } from "../src/index.js";
 import { Client, InMemorySwapStorage } from "../src/index.js";
@@ -14,11 +15,13 @@ import type { StoredSwap } from "../src/storage/types.js";
 import {
   COORDINATOR,
   FUND_TXID,
+  HASH_LOCK,
   HTLC,
   HTLC_REFUND_SELECTOR,
   logFrom,
   REAL_LOG,
   REFUND_TO_SELECTOR,
+  SERVER,
   SIGNER_ADDRESS,
   SWAP_ID,
   serverAnswering,
@@ -27,6 +30,8 @@ import {
   storedSwap,
   swapResponse,
   TIMELOCK,
+  USDC,
+  WBTC,
 } from "./evm-funding-fixture.js";
 
 const swapCreatedAbi = parseAbiItem(
@@ -78,6 +83,39 @@ describe("decodeSwapCreatedLog", () => {
       data: `0x${"0".repeat(64)}`,
     };
     expect(decodeSwapCreatedLog(transfer)).toBeUndefined();
+  });
+});
+
+describe("findSwapCreated", () => {
+  const filter = {
+    htlcAddress: HTLC,
+    hashLock: HASH_LOCK,
+    claimAddress: SERVER,
+    senders: [COORDINATOR],
+    token: WBTC,
+  };
+
+  it("keeps the log that matches the swap on every field", () => {
+    expect(findSwapCreated([REAL_LOG], filter)).toHaveLength(1);
+    expect(findSwapCreated([REAL_LOG], filter)[0].amount).toBe(20305n);
+  });
+
+  it("drops a log from another contract, sender, claimer or token", () => {
+    expect(findSwapCreated([{ ...REAL_LOG, address: USDC }], filter)).toEqual(
+      [],
+    );
+    expect(findSwapCreated([logFrom(SIGNER_ADDRESS)], filter)).toEqual([]);
+    expect(
+      findSwapCreated([logFrom(COORDINATOR, SIGNER_ADDRESS)], filter),
+    ).toEqual([]);
+    expect(findSwapCreated([REAL_LOG], { ...filter, token: USDC })).toEqual([]);
+  });
+
+  it("accepts any sender when none is given", () => {
+    const anySender = { ...filter, senders: undefined };
+    expect(findSwapCreated([logFrom(SIGNER_ADDRESS)], anySender)).toHaveLength(
+      1,
+    );
   });
 });
 

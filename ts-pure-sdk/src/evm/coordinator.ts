@@ -782,6 +782,8 @@ export interface Permit2TypedData {
 export interface UnsignedPermit2FundingData {
   /** Coordinator contract address */
   coordinatorAddress: string;
+  /** The HTLC the coordinator creates the swap on. */
+  htlcAddress: string;
   /** Source token address */
   sourceTokenAddress: string;
   /** Source amount in smallest units */

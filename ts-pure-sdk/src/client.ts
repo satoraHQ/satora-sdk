@@ -87,7 +87,6 @@ import {
   buildPermit2TypedData,
   type CollabRefundEvmDigestParams,
   type CollabRefundEvmTypedData,
-  decodeSwapCreatedLog,
   deriveEvmAddress,
   encodeApproveCallData,
   encodeDepositsCallData,
@@ -95,10 +94,10 @@ import {
   encodeHtlcErc20IsActiveCallData,
   encodeHtlcErc20RefundCallData,
   encodeRefundTo,
+  findSwapCreated,
   normalizeBytes32,
   PERMIT2_ADDRESS,
   type Permit2SignedFundingCallData,
-  type SwapCreatedLog,
   signEvmDigest,
   type UnsignedPermit2FundingData,
 } from "./evm/index.js";
@@ -4556,28 +4555,17 @@ export class Client {
         "Refunding without the server needs the funding receipt's logs, which this signer's waitForReceipt does not return",
       );
     }
-    const htlc = leg.htlcAddress.toLowerCase();
     const hashLock = `0x${normalizeBytes32(leg.hashLock)}`;
-    const claimAddress = leg.claimAddress.toLowerCase();
     const self = signer.address.toLowerCase();
     const coordinator = leg.coordinatorAddress?.toLowerCase();
-    // The coordinator runs the server-supplied DEX calls before it creates
-    // the HTLC, so a call could plant a decoy with our hash lock earlier in
-    // the same receipt. Its create is non-reentrant and its calls cannot
-    // target the HTLC, so no decoy can name the coordinator as sender: the
-    // sender is what tells the HTLCs apart.
-    const matches = receipt.logs
-      .filter((log) => log.address.toLowerCase() === htlc)
-      .map((log) => decodeSwapCreatedLog(log))
-      .filter(
-        (created): created is SwapCreatedLog =>
-          created !== undefined &&
-          created.preimageHash === hashLock &&
-          created.claimAddress === claimAddress &&
-          (created.refundAddress === self ||
-            coordinator === undefined ||
-            created.refundAddress === coordinator),
-      );
+    // The coordinator's create is non-reentrant and its DEX calls cannot
+    // target the HTLC, so no decoy can name the coordinator as sender.
+    const matches = findSwapCreated(receipt.logs, {
+      htlcAddress: leg.htlcAddress,
+      hashLock,
+      claimAddress: leg.claimAddress,
+      senders: coordinator === undefined ? undefined : [self, coordinator],
+    });
     if (matches.length === 0) {
       // This tx did not fund the swap, so another one may have.
       throw new FundingTxUnavailableError(
@@ -5840,6 +5828,7 @@ export class Client {
 
     return {
       coordinatorAddress: serverData.coordinator_address,
+      htlcAddress: swap.evm_htlc_address,
       sourceTokenAddress: serverData.source_token_address,
       sourceAmount,
       lockTokenAddress: serverData.lock_token_address,
@@ -6110,7 +6099,8 @@ export class Client {
       throw new Error(`Funding transaction failed: ${reason}`);
     }
     // waitForReceipt follows replacements, and a cancel mines with status
-    // success and no logs; the receipt has to show the HTLC was created.
+    // success and no logs; the receipt has to show the coordinator created
+    // this swap's HTLC.
     const mined = receipt.transactionHash || txHash;
     if (receipt.logs === undefined) {
       this.#logger.warn({
@@ -6120,11 +6110,14 @@ export class Client {
         swapId,
       });
     } else {
-      const hashLock = `0x${normalizeBytes32(freshFunding.preimageHash)}`;
-      const created = receipt.logs.some(
-        (log) => decodeSwapCreatedLog(log)?.preimageHash === hashLock,
-      );
-      if (!created) {
+      const created = findSwapCreated(receipt.logs, {
+        htlcAddress: freshFunding.htlcAddress,
+        hashLock: freshFunding.preimageHash,
+        claimAddress: freshFunding.claimAddress,
+        senders: [freshFunding.coordinatorAddress],
+        token: freshFunding.lockTokenAddress,
+      });
+      if (created.length === 0) {
         throw new Error(
           `Transaction ${mined} is on-chain but did not create the HTLC; the wallet may have replaced or cancelled the funding`,
         );
