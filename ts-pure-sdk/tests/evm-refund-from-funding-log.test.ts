@@ -513,12 +513,36 @@ describe("refundSwap for an EVM-sourced swap", () => {
     expect(trusted.success).toBe(true);
     expect(trusted.evmRefundData?.to).toBe(COORDINATOR);
 
-    // an EOA answers a deposits() call with no data
-    const untrusted = await client.refundSwap(SWAP_ID, {
+    // A fresh record, since the call above has just put the coordinator on
+    // this one; an EOA answers deposits() with no data.
+    const { client: another } = await clientWith(
+      storedSwap({ evmCoordinatorAddress: undefined }),
+    );
+    const untrusted = await another.refundSwap(SWAP_ID, {
       signer: signerWith({ deposit: false }),
     });
     expect(untrusted.success).toBe(false);
     expect(untrusted.message).toMatch(/deposits returned no data/);
+  });
+
+  it("remembers the coordinator the deposits probe proved", async () => {
+    serverGone();
+    const { client, storage } = await clientWith(
+      storedSwap({ evmCoordinatorAddress: undefined }),
+    );
+    const first = await client.refundSwap(SWAP_ID, { signer: signerWith() });
+    expect(first.success).toBe(true);
+    expect(await storage.get(SWAP_ID)).toMatchObject({
+      evmCoordinatorAddress: COORDINATOR,
+    });
+    // From now on only that coordinator's log counts, even when another
+    // sender holds a deposit for the same hash lock.
+    const stranger = `0x${"5".repeat(40)}`;
+    const second = await client.refundSwap(SWAP_ID, {
+      signer: signerWith({ logs: [logFrom(stranger)] }),
+    });
+    expect(second.success).toBe(false);
+    expect(second.message).toMatch(new RegExp(`created by .*${COORDINATOR}`));
   });
 
   it("trusts the coordinator the server names on the Lightning direction", async () => {

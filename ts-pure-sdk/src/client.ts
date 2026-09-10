@@ -4443,8 +4443,19 @@ export class Client {
             ...leg,
             fundTxid,
           });
-          if (fundTxid.toLowerCase() !== stored.evmFundTxid?.toLowerCase()) {
-            await this.#recordEvmFunding(id, { txid: fundTxid });
+          // A coordinator the chain just proved is worth keeping: with it on
+          // record, only its own SwapCreated counts next time.
+          const coordinatorProved =
+            refund.sender !== signer.address.toLowerCase() &&
+            stored.evmCoordinatorAddress === undefined;
+          if (
+            fundTxid.toLowerCase() !== stored.evmFundTxid?.toLowerCase() ||
+            coordinatorProved
+          ) {
+            await this.#recordEvmFunding(id, {
+              txid: fundTxid,
+              coordinatorAddress: coordinatorProved ? refund.sender : undefined,
+            });
           }
           return ready(refund, refund.timelock);
         } catch (error) {
@@ -4523,7 +4534,7 @@ export class Client {
       claimAddress: string;
       coordinatorAddress?: string;
     },
-  ): Promise<{ to: string; data: string; timelock: number }> {
+  ): Promise<{ to: string; data: string; timelock: number; sender: string }> {
     // A hash the node does not know would keep waitForReceipt polling until
     // its timeout, or forever on an adapter without one.
     let known: unknown;
@@ -4612,7 +4623,12 @@ export class Client {
     const { to, data } = ownHtlc
       ? encodeHtlcErc20RefundCallData(leg.htlcAddress, created)
       : encodeRefundTo(created.refundAddress, created);
-    return { to, data, timelock: created.timelock };
+    return {
+      to,
+      data,
+      timelock: created.timelock,
+      sender: created.refundAddress,
+    };
   }
 
   /**
