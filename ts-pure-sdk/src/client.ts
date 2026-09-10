@@ -4428,6 +4428,9 @@ export class Client {
       timelock: number,
       payoutNote: string,
     ): RefundResult => {
+      // Wall-clock, like the server path: EvmSigner has no block-time read,
+      // and refundEvmWithSigner simulates before sending, so chain time is
+      // enforced where a transaction is at stake.
       const timelockExpired = Math.floor(Date.now() / 1000) >= timelock;
       const status = timelockExpired
         ? "EVM refund calldata ready. Submit this transaction with your EVM wallet."
