@@ -145,6 +145,32 @@ describe("Client bitcoinMinConfirmations", () => {
       Client.builder().withBitcoinMinConfirmations(Number.NaN),
     ).toThrow(/non-negative integer/);
   });
+
+  it("shortens the at-risk reconcile cadence when the depth is raised after start", async () => {
+    vi.useFakeTimers();
+    const m = managers();
+    let reconciles = 0;
+    m.arkade.reconcile = async () => {
+      reconciles++;
+    };
+    const client = new Client(fakeLegacy([arkadeEvmSwap]), {
+      ...withManagers(m.map),
+      refreshIntervalMs: 1_000,
+      bitcoinMinConfirmations: 0,
+    });
+    try {
+      await client.startTracking();
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(reconciles).toBe(0); // 60s cadence at depth 0
+
+      client.setBitcoinMinConfirmations(3);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(reconciles).toBe(1); // 15s cadence, 21s elapsed
+    } finally {
+      client.stopTracking();
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("Client tracking", () => {

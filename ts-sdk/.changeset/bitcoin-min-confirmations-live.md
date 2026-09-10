@@ -7,7 +7,9 @@ Let the Bitcoin confirmation depth change after the client is built.
 `setBitcoinMinConfirmations` updates the depth a server-funded Bitcoin HTLC
 needs before it reads as claimable, so callers that cache a single client can
 change it without rebuilding and orphaning tracking already in flight. It
-applies to every swap the client tracks, including ones already in flight.
+applies to every swap the client tracks, including ones already in flight,
+and at a depth above 1 the at-risk chain re-read runs every 15s instead of 60s
+so the claim follows the satisfying block promptly.
 
 Only the chain monitors read a depth, so it needs `withChainVerifiedTracking`;
 setting one without it now warns rather than silently doing nothing. A depth

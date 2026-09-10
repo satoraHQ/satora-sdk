@@ -52,10 +52,13 @@ export type SwapTrackerOptions = {
    * leg holds funds on-chain (≥ clientfunded, unresolved), where refund safety
    * must not depend on the server. Everything else advances on server hints
    * only ({@link applyHint}); a swap with nothing at stake costs zero chain
-   * reads. Default 60s.
+   * reads. A getter is read on every tick, so the cadence can follow a
+   * setting that changes on a live client. Default 60s.
    */
-  atRiskReconcileIntervalMs?: number;
+  atRiskReconcileIntervalMs?: number | (() => number);
 };
+
+export const DEFAULT_AT_RISK_RECONCILE_INTERVAL_MS = 60_000;
 
 export class SwapTracker {
   readonly #managers: Map<Ledger, ContractManager>;
@@ -70,7 +73,7 @@ export class SwapTracker {
   readonly #lastActions = new Map<string, SwapActions>();
   readonly #subscribers = new Set<ActionSubscriber>();
   readonly #refreshIntervalMs: number;
-  readonly #atRiskReconcileIntervalMs: number;
+  readonly #atRiskReconcileIntervalMs: () => number;
   #lastAtRiskReconcileAt = 0;
   #eventUnsubs: Array<() => void> = [];
   #timer: ReturnType<typeof setInterval> | undefined;
@@ -81,8 +84,11 @@ export class SwapTracker {
   ) {
     this.#managers = managers;
     this.#refreshIntervalMs = options?.refreshIntervalMs ?? 0;
+    const atRisk =
+      options?.atRiskReconcileIntervalMs ??
+      DEFAULT_AT_RISK_RECONCILE_INTERVAL_MS;
     this.#atRiskReconcileIntervalMs =
-      options?.atRiskReconcileIntervalMs ?? 60_000;
+      typeof atRisk === "function" ? atRisk : () => atRisk;
   }
 
   /**
@@ -209,7 +215,10 @@ export class SwapTracker {
    */
   async #tick(): Promise<void> {
     const now = Date.now();
-    if (now - this.#lastAtRiskReconcileAt >= this.#atRiskReconcileIntervalMs) {
+    if (
+      now - this.#lastAtRiskReconcileAt >=
+      this.#atRiskReconcileIntervalMs()
+    ) {
       this.#lastAtRiskReconcileAt = now;
       await this.#retryUnregistered();
       const legs = [...this.#swaps.values()]

@@ -450,7 +450,9 @@ describe("SwapTracker", () => {
   });
 
   describe("at-risk chain reconciles (fake time)", () => {
-    const buildTimed = () => {
+    const buildTimed = (
+      atRiskReconcileIntervalMs: number | (() => number) = 60_000,
+    ) => {
       vi.useFakeTimers();
       const arkade = new FakeManager("arkade", 1_000);
       const evm = new FakeManager("evm", 1_000);
@@ -459,7 +461,7 @@ describe("SwapTracker", () => {
           ["arkade", arkade],
           ["evm", evm],
         ]),
-        { refreshIntervalMs: 1_000, atRiskReconcileIntervalMs: 60_000 },
+        { refreshIntervalMs: 1_000, atRiskReconcileIntervalMs },
       );
       return { arkade, evm, tracker };
     };
@@ -478,6 +480,26 @@ describe("SwapTracker", () => {
         // Both legs re-read: refund availability AND the counterparty's state.
         expect(arkade.reconciled.map(htlcKey)).toEqual([htlcKey(clientHtlc)]);
         expect(evm.reconciled.map(htlcKey)).toEqual([htlcKey(serverHtlc)]);
+      } finally {
+        tracker.stop();
+        vi.useRealTimers();
+      }
+    });
+
+    it("reads a getter interval on each tick, so a change applies live", async () => {
+      let intervalMs = 60_000;
+      const { arkade, evm, tracker } = buildTimed(() => intervalMs);
+      try {
+        await tracker.startTracking([swap]);
+        arkade.emit(clientHtlc, "confirmed"); // at risk
+        evm.emit(serverHtlc, "absent");
+
+        await vi.advanceTimersByTimeAsync(20_000);
+        expect(arkade.reconciled).toHaveLength(0);
+
+        intervalMs = 15_000; // the depth was raised on the live client
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(arkade.reconciled).toHaveLength(1);
       } finally {
         tracker.stop();
         vi.useRealTimers();

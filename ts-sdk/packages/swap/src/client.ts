@@ -28,6 +28,7 @@ import { WsStatusSource } from "./hints/ws-status-source.js";
 import { swapToTracked } from "./tracker/from-swap.js";
 import {
   type ActionSubscriber,
+  DEFAULT_AT_RISK_RECONCILE_INTERVAL_MS,
   SwapTracker,
   type TrackedSwap,
 } from "./tracker/swap-tracker.js";
@@ -723,10 +724,12 @@ export class Client {
             // Depth is only re-derived on a chain read, and nothing pushes on a
             // new block (an Electrum scripthash status doesn't change once the
             // funding is in a block), so a deep policy would otherwise sit out
-            // the default interval after the block that satisfied it.
-            ...((this.#bitcoinMinConfirmations ?? 0) > 1
-              ? { atRiskReconcileIntervalMs: 15_000 }
-              : {}),
+            // the default interval after the block that satisfied it. Read per
+            // tick, like the depth itself, so a setter call after start counts.
+            atRiskReconcileIntervalMs: () =>
+              (this.#bitcoinMinConfirmations ?? 0) > 1
+                ? 15_000
+                : DEFAULT_AT_RISK_RECONCILE_INTERVAL_MS,
           })
         : new HintTracker({
             fetchStatus: async (swapId) =>
