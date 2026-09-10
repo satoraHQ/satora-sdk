@@ -59,14 +59,15 @@ export type SwapTrackerOptions = {
 };
 
 export const DEFAULT_AT_RISK_RECONCILE_INTERVAL_MS = 60_000;
+const RETRY_UNREGISTERED_INTERVAL_MS = 60_000;
 
 export class SwapTracker {
   readonly #managers: Map<Ledger, ContractManager>;
   readonly #swaps = new Map<string, TrackedSwap>();
   /**
    * Swaps whose startup registration failed (a chain read that errored).
-   * Retried on the at-risk cadence; dropping them would leave an active
-   * swap unwatched for the whole session with no claim or refund surfaced.
+   * Retried every minute; dropping them would leave an active swap
+   * unwatched for the whole session with no claim or refund surfaced.
    */
   readonly #unregistered = new Map<string, TrackedSwap>();
   /** Last actions emitted per swap — for dedupe and the subscribe-time snapshot. */
@@ -75,6 +76,7 @@ export class SwapTracker {
   readonly #refreshIntervalMs: number;
   readonly #atRiskReconcileIntervalMs: () => number;
   #lastAtRiskReconcileAt = 0;
+  #lastRetryAt = 0;
   #eventUnsubs: Array<() => void> = [];
   #timer: ReturnType<typeof setInterval> | undefined;
 
@@ -148,6 +150,7 @@ export class SwapTracker {
     // Tick onward: local recomputes off extrapolated clocks, plus the gated
     // at-risk chain reconcile. The prime above counts as the first reconcile.
     this.#lastAtRiskReconcileAt = Date.now();
+    this.#lastRetryAt = this.#lastAtRiskReconcileAt;
     if (this.#refreshIntervalMs > 0)
       this.#timer = setInterval(
         () => void this.#tick(),
@@ -215,12 +218,15 @@ export class SwapTracker {
    */
   async #tick(): Promise<void> {
     const now = Date.now();
+    if (now - this.#lastRetryAt >= RETRY_UNREGISTERED_INTERVAL_MS) {
+      this.#lastRetryAt = now;
+      await this.#retryUnregistered();
+    }
     if (
       now - this.#lastAtRiskReconcileAt >=
       this.#atRiskReconcileIntervalMs()
     ) {
       this.#lastAtRiskReconcileAt = now;
-      await this.#retryUnregistered();
       const legs = [...this.#swaps.values()]
         .filter((swap) => this.#isAtRisk(swap))
         .flatMap((swap) => legsOf(swap));
@@ -238,9 +244,10 @@ export class SwapTracker {
   }
 
   /**
-   * Second attempt at swaps whose startup registration failed. `track` is
-   * idempotent and rolls back on failure, so a chain that is still down just
-   * leaves the swap here for the next round.
+   * Second attempt at swaps whose startup registration failed, on its own
+   * cadence so a slow at-risk interval can't delay it. `track` is idempotent
+   * and rolls back on failure, so a chain that is still down just leaves the
+   * swap here for the next round.
    */
   async #retryUnregistered(): Promise<void> {
     for (const [swapId, swap] of this.#unregistered) {

@@ -506,8 +506,9 @@ describe("SwapTracker", () => {
       }
     });
 
-    it("retries a swap whose startup registration failed", async () => {
-      const { arkade, evm, tracker } = buildTimed();
+    it("retries a failed startup registration on its own cadence", async () => {
+      // A slow at-risk interval must not delay the retry.
+      const { arkade, evm, tracker } = buildTimed(300_000);
       try {
         // One transient failure on the EVM leg's initial chain read.
         let attempts = 0;
