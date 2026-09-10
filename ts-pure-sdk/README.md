@@ -184,6 +184,11 @@ const signer: EvmSigner = {
 **ethers.js v6:**
 
 ```typescript
+import { isError, type TransactionReceipt, type TransactionResponse } from "ethers";
+
+// provider.waitForTransaction does not follow a sped-up or cancelled
+// replacement, so wait on the TransactionResponse when we have it.
+const sent = new Map<string, TransactionResponse>();
 const signer: EvmSigner = {
   address: await wallet.getAddress(),
   chainId: Number((await wallet.provider.getNetwork()).chainId),
@@ -191,17 +196,25 @@ const signer: EvmSigner = {
     wallet.signTypedData(td.domain, td.types, td.message),
   sendTransaction: (tx) =>
     wallet.sendTransaction({to: tx.to, data: tx.data, gasLimit: tx.gas})
-      .then((r) => r.hash),
-  waitForReceipt: (hash) =>
-    wallet.provider.waitForTransaction(hash, 1, 180_000).then((r) => {
-      if (!r) throw new Error(`Transaction ${hash} was dropped`);
-      return {
-        status: r.status === 1 ? "success" : "reverted",
-        blockNumber: BigInt(r.blockNumber),
-        transactionHash: r.hash,
-        logs: r.logs,
-      };
-    }),
+      .then((r) => { sent.set(r.hash, r); return r.hash; }),
+  waitForReceipt: async (hash) => {
+    let r: TransactionReceipt | null;
+    try {
+      r = await (sent.get(hash)?.wait(1, 180_000) ??
+        wallet.provider.waitForTransaction(hash, 1, 180_000));
+    } catch (e) {
+      // ethers reports a replacement as an error carrying its receipt
+      if (!isError(e, "TRANSACTION_REPLACED")) throw e;
+      r = e.receipt;
+    }
+    if (!r) throw new Error(`Transaction ${hash} timed out after 180s`);
+    return {
+      status: r.status === 1 ? "success" : "reverted",
+      blockNumber: BigInt(r.blockNumber),
+      transactionHash: r.hash,
+      logs: r.logs,
+    };
+  },
   getTransaction: (hash) =>
     wallet.provider.getTransaction(hash).then((tx) => {
       if (!tx) throw new Error(`Transaction ${hash} is unknown to the node`);
