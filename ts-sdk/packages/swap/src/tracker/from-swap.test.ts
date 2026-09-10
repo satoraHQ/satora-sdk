@@ -211,7 +211,6 @@ describe("swapToTracked", () => {
     expect(serverLeg.minConfirmations).toBeUndefined();
   });
 
-
   // ─── Lightning: one on-chain leg, the other side off-chain (undefined) ──────
 
   const lnArkadeFields = {

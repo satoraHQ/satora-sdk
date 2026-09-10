@@ -21,6 +21,14 @@ type EsploraTx = {
   status?: { confirmed?: boolean; block_height?: number };
 };
 
+/** A depth already resolved to a number, for the pure classifier below. */
+export type BitcoinConfirmationPolicy = {
+  minConfirmations?: number;
+};
+
+/** A depth, or a getter resolved per read so it can change without a rebuild. */
+export type MinConfirmationsSource = number | (() => number | undefined);
+
 /**
  * When a funding tx counts as `confirmed` for observation purposes.
  *
@@ -33,14 +41,6 @@ type EsploraTx = {
  * `1` (or more) for a policy that doesn't rely on the funder's good behaviour;
  * values above 1 make the reader fetch the tip height to compute depth.
  */
-/** A depth already resolved to a number, for the pure classifier below. */
-export type BitcoinConfirmationPolicy = {
-  minConfirmations?: number;
-};
-
-/** A depth, or a getter resolved per read so it can change without a rebuild. */
-export type MinConfirmationsSource = number | (() => number | undefined);
-
 export type BitcoinReaderPolicy = {
   minConfirmations?: MinConfirmationsSource;
 };

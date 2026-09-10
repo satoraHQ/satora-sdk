@@ -1217,15 +1217,6 @@ export class ClientBuilder {
 }
 
 /**
- * Stored statuses where the client's money is fully settled — already received,
- * already refunded, or (for `expired`) never deposited: the server only marks a
- * swap expired while it is unfunded (a late-funded one becomes
- * `clientfundedtoolate`, which is NOT in this set). Safe to skip registering
- * entirely, so tracking doesn't re-scan every historical swap on each start;
- * anything ambiguous stays chain-verified.
- */
-/** The legacy client's resolved base URL, or `undefined` if it can't provide one. */
-/**
  * A depth is a block count, so a fractional or non-finite value is a caller
  * bug. Left unchecked it reaches the readers, where every depth comparison is
  * false and the funding reads `mempool` forever instead of erroring.
@@ -1238,6 +1229,7 @@ function assertMinConfirmations(value: number | undefined): void {
     );
 }
 
+/** The legacy client's resolved base URL, or `undefined` if it can't provide one. */
 function legacyBaseUrl(legacy: LegacyClient): string | undefined {
   try {
     return legacy.baseUrl;
@@ -1246,6 +1238,14 @@ function legacyBaseUrl(legacy: LegacyClient): string | undefined {
   }
 }
 
+/**
+ * Stored statuses where the client's money is fully settled — already received,
+ * already refunded, or (for `expired`) never deposited: the server only marks a
+ * swap expired while it is unfunded (a late-funded one becomes
+ * `clientfundedtoolate`, which is NOT in this set). Safe to skip registering
+ * entirely, so tracking doesn't re-scan every historical swap on each start;
+ * anything ambiguous stays chain-verified.
+ */
 const SETTLED_STORED_STATUSES = new Set<SwapStatus>([
   "serverredeemed",
   "clientrefunded",
