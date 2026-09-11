@@ -32,4 +32,6 @@ the depositor the server recorded; anything else fails the chain path.
 `evmRefundData.recipient` names where the refund pays out, and the message
 points at `recoverGaslessFunds` when that is an SDK key. `fundSwap` records a
 replacement only if its receipt carries this swap's `SwapCreated` from the
-coordinator on the HTLC.
+coordinator on the HTLC or, for a signer without logs, if the mined
+transaction is the same call repriced; a mined funding is never reported as
+failed.

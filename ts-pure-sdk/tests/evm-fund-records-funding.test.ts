@@ -138,6 +138,68 @@ describe("fundSwap records the funding on the stored swap", () => {
     }
   });
 
+  it("returns the mined hash and only warns when its receipt shows no SwapCreated", async () => {
+    // The call this client sent mined with status success, so the HTLC exists
+    // whatever a filtered receipt shows; failing would invite a second funding.
+    serverAnswering({ swap: swapResponse(), permit2: permit2Params });
+    const warn = vi.fn();
+    const { client, storage } = await unfundedClient({ warn });
+    const { txHash } = await client.fundSwap(
+      SWAP_ID,
+      fundingSigner({ transactionHash: SENT, logs: [] }),
+    );
+    expect(txHash).toBe(SENT);
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "client.fundSwap.htlcLogNotFound" }),
+    );
+    expect(await storage.get(SWAP_ID)).toMatchObject({ evmFundTxid: SENT });
+  });
+
+  it("verifies a replacement through the mined call when the signer has no logs", async () => {
+    // A repriced funding is the same call under a new hash; a cancel is not.
+    for (const [replacement, sameCall] of [
+      [MINED, true],
+      [`0x${"cc".repeat(32)}`, false],
+    ] as const) {
+      serverAnswering({ swap: swapResponse(), permit2: permit2Params });
+      const { client, storage } = await unfundedClient();
+      let sent: { to: string; data: string } | undefined;
+      const signer = signerWith({
+        signTypedData: async () => `0x${"11".repeat(64)}1b`,
+        sendTransaction: async (tx) => {
+          sent = { to: tx.to, data: tx.data };
+          return SENT;
+        },
+        waitForReceipt: async () => ({
+          status: "success",
+          blockNumber: 1n,
+          transactionHash: replacement,
+        }),
+        getTransaction: async () =>
+          sameCall
+            ? {
+                to: sent?.to ?? null,
+                input: sent?.data ?? "0x",
+                from: SIGNER_ADDRESS,
+              }
+            : { to: SIGNER_ADDRESS, input: "0x", from: SIGNER_ADDRESS },
+      });
+      if (sameCall) {
+        expect((await client.fundSwap(SWAP_ID, signer)).txHash).toBe(
+          replacement,
+        );
+        expect(await storage.get(SWAP_ID)).toMatchObject({
+          evmFundTxid: replacement,
+        });
+      } else {
+        await expect(client.fundSwap(SWAP_ID, signer)).rejects.toThrow(
+          /did not create the HTLC/,
+        );
+        expect(await storage.get(SWAP_ID)).toMatchObject({ evmFundTxid: SENT });
+      }
+    }
+  });
+
   it("warns when the signer's receipt carries no logs", async () => {
     serverAnswering({ swap: swapResponse(), permit2: permit2Params });
     const warn = vi.fn();

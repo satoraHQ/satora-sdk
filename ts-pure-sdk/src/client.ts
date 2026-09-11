@@ -428,6 +428,22 @@ function uniqueAddresses(values: (string | null | undefined)[]): string[] {
   ];
 }
 
+async function isSameCall(
+  signer: EvmSigner,
+  hash: string,
+  call: { to: string; data: string },
+): Promise<boolean> {
+  try {
+    const tx = await signer.getTransaction(hash);
+    return (
+      tx?.to?.toLowerCase() === call.to.toLowerCase() &&
+      tx.input.toLowerCase() === call.data.toLowerCase()
+    );
+  } catch {
+    return false;
+  }
+}
+
 function dedupeTxids(txids: (string | null | undefined)[]): string[] {
   const seen = new Set<string>();
   const unique: string[] = [];
@@ -6175,9 +6191,12 @@ export class Client {
       throw new Error(`Funding transaction failed: ${reason}`);
     }
     // waitForReceipt follows replacements, and a cancel mines with status
-    // success and no logs; the receipt has to show the coordinator created
-    // this swap's HTLC.
+    // success and no logs, so a replacement counts as the funding only when
+    // the receipt shows the coordinator created this swap's HTLC or, for a
+    // signer without logs, when it is the same call repriced.
     const mined = receipt.transactionHash || txHash;
+    const replaced = mined.toLowerCase() !== txHash.toLowerCase();
+    let created: boolean;
     if (receipt.logs === undefined) {
       this.#logger.warn({
         event: "client.fundSwap.receiptWithoutLogs",
@@ -6185,21 +6204,35 @@ export class Client {
           "this signer's waitForReceipt returns no logs, so the swap can only be refunded through the server",
         swapId,
       });
+      created = !replaced || (await isSameCall(signer, mined, encoded));
     } else {
-      const created = findSwapCreated(receipt.logs, {
-        htlcAddress: freshFunding.htlcAddress,
-        hashLock: freshFunding.preimageHash,
-        claimAddress: freshFunding.claimAddress,
-        senders: [freshFunding.coordinatorAddress],
-        token: freshFunding.lockTokenAddress,
-      });
-      if (created.length === 0) {
-        throw new Error(
-          `Transaction ${mined} is on-chain but did not create the HTLC; the wallet may have replaced or cancelled the funding`,
-        );
-      }
+      created =
+        findSwapCreated(receipt.logs, {
+          htlcAddress: freshFunding.htlcAddress,
+          hashLock: freshFunding.preimageHash,
+          claimAddress: freshFunding.claimAddress,
+          senders: [freshFunding.coordinatorAddress],
+          token: freshFunding.lockTokenAddress,
+        }).length > 0;
     }
-    if (mined.toLowerCase() !== txHash.toLowerCase()) {
+    if (!created && replaced) {
+      throw new Error(
+        `Transaction ${mined} is on-chain but did not create the HTLC; the wallet may have replaced or cancelled the funding`,
+      );
+    }
+    if (!created) {
+      // The call this client sent mined with status success, so the HTLC
+      // exists whatever this receipt shows; failing here would invite a
+      // second funding.
+      this.#logger.warn({
+        event: "client.fundSwap.htlcLogNotFound",
+        message:
+          "the funding receipt carries no SwapCreated for this swap, so the swap can only be refunded through the server",
+        swapId,
+        data: { txHash: mined },
+      });
+    }
+    if (replaced) {
       await this.#recordEvmFunding(swapId, {
         txid: mined,
         coordinatorAddress: freshFunding.coordinatorAddress,
