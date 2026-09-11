@@ -567,6 +567,25 @@ describe("refundSwap for an EVM-sourced swap", () => {
     expect(result.evmRefundData?.to).toBe(COORDINATOR);
   });
 
+  it("gives up on a funding still in the mempool and falls back", async () => {
+    // getTransaction answers for a pending tx, so only a bound on the receipt
+    // wait keeps the refund from hanging on a signer without a timeout.
+    vi.useFakeTimers();
+    try {
+      serverGone();
+      const { client } = await clientWith(storedSwap());
+      const pending = client.refundSwap(SWAP_ID, {
+        signer: signerWith({ waitForReceipt: () => new Promise(() => {}) }),
+      });
+      await vi.advanceTimersByTimeAsync(30_000);
+      const result = await pending;
+      expect(result.success).toBe(false);
+      expect(result.message).toMatch(/not mined within 30s.*server is gone/s);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("pays the wallet itself when it is the depositor", async () => {
     serverGone();
     const { client } = await clientWith(storedSwap());

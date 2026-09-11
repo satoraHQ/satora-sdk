@@ -404,6 +404,22 @@ class HtlcNotActiveError extends Error {}
 /** The funding tx could not be read from the chain; another txid may work. */
 class FundingTxUnavailableError extends Error {}
 
+// A funding still in the mempool has nothing to refund yet, and a mined one
+// answers in one round trip, so a pending hash must not hold the refund.
+const FUNDING_RECEIPT_WAIT_MS = 30_000;
+
+function withDeadline<T>(
+  promise: Promise<T>,
+  ms: number,
+  what: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(what)), ms);
+  });
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -4603,7 +4619,8 @@ export class Client {
     recipient: string;
   }> {
     // A hash the node does not know would keep waitForReceipt polling until
-    // its timeout, or forever on an adapter without one.
+    // its timeout, or forever on an adapter without one; a known but
+    // pending one is bounded below.
     let known: unknown;
     try {
       known = await signer.getTransaction(leg.fundTxid);
@@ -4617,7 +4634,11 @@ export class Client {
     }
     let receipt: Awaited<ReturnType<EvmSigner["waitForReceipt"]>>;
     try {
-      receipt = await signer.waitForReceipt(leg.fundTxid);
+      receipt = await withDeadline(
+        signer.waitForReceipt(leg.fundTxid),
+        FUNDING_RECEIPT_WAIT_MS,
+        `not mined within ${FUNDING_RECEIPT_WAIT_MS / 1000}s`,
+      );
     } catch (error) {
       throw new FundingTxUnavailableError(
         `Funding tx ${leg.fundTxid}: ${errorMessage(error)}`,
