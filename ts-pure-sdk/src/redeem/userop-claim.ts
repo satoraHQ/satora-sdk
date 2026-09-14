@@ -95,15 +95,23 @@ function derivedKeyToAaSigner(
   };
 }
 
-/**
- * Build, sign and publish `redeemAndExecute` as a sponsored UserOp.
- */
-export async function claimViaUserOp(
-  params: UserOpClaimParams,
-): Promise<ClaimGaslessResult> {
-  const { preimage, secretKey, swap, destination, calls, minAmountOut, aa } =
-    params;
+/** Everything needed to build a signed `redeemAndExecute` transaction. */
+export type RedeemTxParams = Omit<UserOpClaimParams, "aa">;
 
+/**
+ * Builds the `redeemAndExecute` call for the coordinator: EIP-712 digest over
+ * the claim, signed with the swap's derived EVM key, then ABI-encoded. The
+ * coordinator does not care who submits the transaction - only the signature
+ * matters - so the same `{ to, data }` can go out as a sponsored UserOp
+ * ({@link claimViaUserOp}) or from any wallet that pays its own gas
+ * (`claimViaSigner`).
+ */
+export function buildRedeemAndExecuteTx(params: RedeemTxParams): {
+  to: string;
+  data: string;
+} {
+  const { preimage, secretKey, swap, destination, calls, minAmountOut } =
+    params;
   const secretHex = preimage.startsWith("0x") ? preimage : `0x${preimage}`;
   const wbtcAddress = swap.wbtc_address;
   const amount = BigInt(swap.evm_expected_sats);
@@ -148,6 +156,7 @@ export async function claimViaUserOp(
     r: sig.r,
     s: sig.s,
   });
+  return { to, data };
 
   // ── Publish ──────────────────────────────────────────────────────────────
   // Default mode: paymaster-sponsored 7702 UserOp via the Alchemy bundler. The
@@ -162,6 +171,16 @@ export async function claimViaUserOp(
   //       `await signer.sendTransaction({ to, data })` then
   //       `signer.waitForReceipt(hash)`. That publisher must hold native gas;
   //       the coordinator accepts any caller, so no other change is needed.
+}
+
+/**
+ * Build, sign and publish `redeemAndExecute` as a sponsored UserOp.
+ */
+export async function claimViaUserOp(
+  params: UserOpClaimParams,
+): Promise<ClaimGaslessResult> {
+  const { secretKey, swap, aa } = params;
+  const { to, data } = buildRedeemAndExecuteTx(params);
   const signer = derivedKeyToAaSigner(secretKey, swap.evm_chain_id);
   const { client } = await createSwapSmartAccountClient({
     signer,

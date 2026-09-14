@@ -121,6 +121,7 @@ import {
   buildArkadeClaim,
   type ClaimGaslessResult,
   type ClaimResult,
+  claimViaSigner,
   claimViaUserOp,
   continueArkadeClaim,
   claimViaGasless as gaslessClaim,
@@ -264,6 +265,18 @@ export type {
   CoordinatorClaimData,
   EthereumClaimData,
 } from "./redeem/index.js";
+
+/** How an EVM-targeted swap has to be claimed (see `#classifyEvmClaim`). */
+interface EvmClaimClassification {
+  targetTokenAddr: string;
+  dexSwapNeeded: boolean;
+  bridgeTargetChain: string | undefined;
+  bridgeTargetToken: string | undefined;
+  isBridge: boolean;
+  isCctpBridge: boolean;
+  isSolanaBridge: boolean;
+  arbitrumHubClaim: boolean;
+}
 
 /** A support agent's Nostr identity */
 export interface SupportAgentInfo {
@@ -2648,6 +2661,254 @@ export class Client {
     });
   }
 
+  /** Loads the stored swap + fresh server state for an EVM-targeted claim. */
+  async #loadEvmClaimSwap(id: string): Promise<{
+    stored: StoredSwap;
+    swap: ArkadeToEvmSwapResponse & { direction: string };
+  }> {
+    if (!this.#swapStorage) {
+      throw new Error(
+        "Swap storage is not configured. Cannot retrieve preimage needed for the claim.",
+      );
+    }
+    const stored = await this.#swapStorage.get(id);
+    if (!stored) {
+      throw new Error(`Swap ${id} not found in local storage.`);
+    }
+    const swap = (await this.getSwap(id, {
+      updateStorage: true,
+    })) as ArkadeToEvmSwapResponse & {
+      direction: string;
+    };
+    if (
+      swap.direction !== "arkade_to_evm" &&
+      swap.direction !== "bitcoin_to_evm" &&
+      swap.direction !== "lightning_to_evm"
+    ) {
+      throw new Error(
+        `Expected an EVM-targeted swap (arkade_to_evm, bitcoin_to_evm or lightning_to_evm), got ${swap.direction}.`,
+      );
+    }
+    return { stored, swap };
+  }
+
+  /**
+   * The user-facing EVM address the claim pays out to, as recorded at swap
+   * creation (falls back to the SDK's own EVM address for legacy swaps).
+   */
+  #resolveEvmClaimDestination(
+    swap: ArkadeToEvmSwapResponse,
+  ): string | undefined {
+    const bridgeTargetChain = (swap as { bridge_target_chain?: string })
+      .bridge_target_chain;
+    const isSolanaBridge = bridgeTargetChain === "Solana";
+    return isSolanaBridge
+      ? swap.client_evm_address
+      : (swap.target_evm_address ?? swap.client_evm_address);
+  }
+
+  /** Static facts about how an EVM-targeted swap has to be claimed. */
+  #classifyEvmClaim(
+    swap: ArkadeToEvmSwapResponse & { direction: string },
+  ): EvmClaimClassification {
+    const targetTokenAddr = String(swap.target_token.token_id);
+    const dexSwapNeeded =
+      targetTokenAddr.toLowerCase() !== swap.wbtc_address.toLowerCase();
+    const bridgeSwap = swap as {
+      bridge_target_chain?: string | null;
+      bridge_target_token_address?: string | null;
+    };
+    const bridgeTargetChain = bridgeSwap.bridge_target_chain || undefined;
+    const bridgeTargetToken =
+      bridgeSwap.bridge_target_token_address || undefined;
+    const isBridge = bridgeTargetChain != null;
+    // A USDT0 target token is a LayerZero OFT bridge; everything else CCTP.
+    const isOftBridge =
+      isBridge &&
+      bridgeTargetToken != null &&
+      Object.values(USDT0_ADDRESSES).some(
+        (a) => a.toLowerCase() === bridgeTargetToken.toLowerCase(),
+      );
+    const isCctpBridge = isBridge && !isOftBridge && bridgeTargetToken != null;
+    const isSolanaBridge = isBridge && isSolanaToken(bridgeTargetChain);
+
+    // TODO: this needs some refactoring, this function is ugly as a naked cat
+    // The sponsored path exists for the Arbitrum hub only (Ethereum/Polygon
+    // claims and OFT bridges stay on the server-submitted path).
+    const arbitrumHubClaim =
+      swap.evm_chain_id === 42161 && (!isBridge || isCctpBridge);
+    return {
+      targetTokenAddr,
+      dexSwapNeeded,
+      bridgeTargetChain,
+      bridgeTargetToken,
+      isBridge,
+      isCctpBridge,
+      isSolanaBridge,
+      arbitrumHubClaim,
+    };
+  }
+
+  /**
+   * The coordinator calls (DEX / CCTP legs from `/dex-calldata/fund`) and
+   * the sweep floor for an Arbitrum-hub claim. Shared by the sponsored
+   * UserOp path and the wallet-paid path so both publish identical calldata.
+   */
+  async #fetchArbitrumHubCalls(
+    swap: ArkadeToEvmSwapResponse & { direction: string },
+    destination: string,
+    cls: EvmClaimClassification,
+    {
+      bridgeRecipient,
+      bridgeRecipientWallet,
+    }: { bridgeRecipient?: string; bridgeRecipientWallet?: string },
+  ): Promise<{ calls: CoordinatorCall[]; minAmountOut: bigint }> {
+    const {
+      targetTokenAddr,
+      dexSwapNeeded,
+      bridgeTargetChain,
+      bridgeTargetToken,
+      isBridge,
+      isCctpBridge,
+      isSolanaBridge,
+    } = cls;
+    let calls: CoordinatorCall[] = [];
+    let minAmountOut = BigInt(swap.evm_expected_sats);
+    if (dexSwapNeeded) {
+      // The swap leg always runs on Arbitrum. For a CCTP target the `to` Token
+      // names the destination (USDC on the dest chain / Solana) — the server
+      // reads the bridge from it; for same-chain it's the hub target itself.
+      const toToken = !isBridge
+        ? { kind: "evm" as const, chain_id: 42161, address: targetTokenAddr }
+        : isSolanaBridge
+          ? { kind: "solana" as const, address: bridgeTargetToken as string }
+          : {
+              kind: "evm" as const,
+              chain_id: Number(ALL_EVM_CHAIN_IDS[bridgeTargetChain as string]),
+              address: bridgeTargetToken as string,
+            };
+      // A Solana bridge target's mint recipient is its USDC ATA, which only
+      // rides on `bridgeRecipient` — reject a missing one here with an
+      // actionable error instead of round-tripping "" to the server (which
+      // fails opaquely in `solana_pubkey_to_bytes32`).
+      if (isCctpBridge && isSolanaBridge && !bridgeRecipient) {
+        throw new Error(
+          "Solana bridge claim requires `bridgeRecipient` (the recipient's USDC ATA).",
+        );
+      }
+      // CCTP mint recipient: the user's address for EVM (same address cross-
+      // chain), the recipient ATA (+ optional wallet for ATA-setup) for Solana.
+      const bridgeRecipientParam = !isCctpBridge
+        ? undefined
+        : isSolanaBridge
+          ? {
+              kind: "solana" as const,
+              address: bridgeRecipient ?? "",
+              wallet: bridgeRecipientWallet,
+            }
+          : { kind: "evm" as const, address: destination };
+
+      // Mirror the per-direction slippage floor the legacy server path uses;
+      // the coordinator's `_sweep` enforces `min_amount_out` on-chain.
+      const slippageBps = swap.direction === "bitcoin_to_evm" ? 200 : 100;
+      const fundResp = await this.#apiClient.POST("/dex-calldata/fund", {
+        body: {
+          from: {
+            kind: "evm",
+            chain_id: swap.evm_chain_id,
+            address: swap.wbtc_address,
+          },
+          to: toToken,
+          amount: { kind: "exact_in", value: String(swap.evm_expected_sats) },
+          sender: swap.evm_coordinator_address,
+          slippage_bps: slippageBps,
+          bridge_recipient: bridgeRecipientParam,
+        },
+      });
+      if (fundResp.error || !fundResp.data) {
+        throw new Error(
+          `Failed to fetch /dex-calldata/fund: ${JSON.stringify(fundResp.error)}`,
+        );
+      }
+      const payload = fundResp.data.payload;
+      if (payload.kind !== "evm") {
+        throw new Error(
+          `Unexpected /dex-calldata payload kind: ${payload.kind}`,
+        );
+      }
+      calls = payload.calls.map((c) => ({
+        target: c.target,
+        value: BigInt(c.value),
+        data: c.data,
+      }));
+      // A CCTP bridge claim's `_sweep` is a no-op (USDC is forwarded), so the
+      // floor is 0; a same-chain claim sweeps the swapped token to destination.
+      minAmountOut = isBridge ? 0n : BigInt(fundResp.data.estimated_amount_out);
+    }
+    return { calls, minAmountOut };
+  }
+
+  /**
+   * Claims an EVM-targeted swap from the user's own wallet, paying gas.
+   *
+   * Uses the exact `redeemAndExecute` calldata the sponsored UserOp path
+   * would publish - the swap's derived key signs the redeem, the wallet only
+   * broadcasts - so it works without any AA / paymaster configuration and is
+   * the manual fallback when the automatic claim fails. Arbitrum-hub swaps
+   * only (same coverage as the sponsored path).
+   *
+   * @param id - Swap ID.
+   * @param signer - A connected wallet on the swap's EVM chain.
+   * @param options - Bridge recipient details for non-EVM (Solana) targets.
+   */
+  async claimEvmWithSigner(
+    id: string,
+    signer: EvmSigner,
+    options: { bridgeRecipient?: string; bridgeRecipientWallet?: string } = {},
+  ): Promise<ClaimGaslessResult> {
+    const { stored, swap } = await this.#loadEvmClaimSwap(id);
+    const destination = this.#resolveEvmClaimDestination(swap);
+    if (!destination) {
+      throw new Error(
+        "No target address found for this swap; cannot build the claim.",
+      );
+    }
+    if (signer.chainId !== swap.evm_chain_id) {
+      throw new Error(
+        `Wallet is on chain ${signer.chainId}; switch it to chain ${swap.evm_chain_id} to claim.`,
+      );
+    }
+    const cls = this.#classifyEvmClaim(swap);
+    if (!cls.arbitrumHubClaim) {
+      throw new Error(
+        "Wallet-paid claims are only supported for Arbitrum-hub swaps (same-chain or CCTP targets).",
+      );
+    }
+    const bridgeRecipient = options.bridgeRecipient ?? stored.bridgeRecipient;
+    const bridgeRecipientWallet =
+      options.bridgeRecipient !== undefined
+        ? options.bridgeRecipientWallet
+        : stored.bridgeRecipientWallet;
+    const { calls, minAmountOut } = await this.#fetchArbitrumHubCalls(
+      swap,
+      destination,
+      cls,
+      { bridgeRecipient, bridgeRecipientWallet },
+    );
+    const result = await claimViaSigner({
+      preimage: stored.preimage,
+      secretKey: hexToBytes(this.#getEvmSigningKey()),
+      swap,
+      destination,
+      calls,
+      minAmountOut,
+      signer,
+    });
+    // Refresh the stored status so callers see `clientredeemed` right away.
+    await this.getSwap(id, { updateStorage: true }).catch(() => undefined);
+    return result;
+  }
+
   /**
    * Claims an Arkade-to-EVM swap gaslessly via the server.
    *
@@ -2676,33 +2937,7 @@ export class Client {
       bridgeRecipientWallet?: string;
     } = {},
   ): Promise<ClaimGaslessResult> {
-    if (!this.#swapStorage) {
-      throw new Error(
-        "Swap storage is not configured. Cannot retrieve preimage needed for gasless claim.",
-      );
-    }
-
-    // Fetch all data upfront
-    const stored = await this.#swapStorage.get(id);
-    if (!stored) {
-      throw new Error(`Swap ${id} not found in local storage.`);
-    }
-
-    const swap = (await this.getSwap(id, {
-      updateStorage: true,
-    })) as ArkadeToEvmSwapResponse & {
-      direction: string;
-    };
-
-    if (
-      swap.direction !== "arkade_to_evm" &&
-      swap.direction !== "bitcoin_to_evm" &&
-      swap.direction !== "lightning_to_evm"
-    ) {
-      throw new Error(
-        `Expected an EVM-targeted swap (arkade_to_evm, bitcoin_to_evm or lightning_to_evm), got ${swap.direction}. claimViaGasless is for EVM-targeted swaps.`,
-      );
-    }
+    const { stored, swap } = await this.#loadEvmClaimSwap(id);
 
     // Client-side claim via a paymaster-sponsored UserOp. Covers Arbitrum-hub
     // DEX swaps (e.g. EURe — LI.FI-only, broken on the legacy fixed-gas Uniswap
@@ -2721,32 +2956,8 @@ export class Client {
     // entirely. Unlike DEX/CCTP claims they have a working legacy fallback, so
     // a missing AA config or a failed publish degrades to the
     // server-submitted path instead of throwing.
-    const targetTokenAddr = String(swap.target_token.token_id);
-    const dexSwapNeeded =
-      targetTokenAddr.toLowerCase() !== swap.wbtc_address.toLowerCase();
-    const bridgeSwap = swap as {
-      bridge_target_chain?: string | null;
-      bridge_target_token_address?: string | null;
-    };
-    const bridgeTargetChain = bridgeSwap.bridge_target_chain || undefined;
-    const bridgeTargetToken =
-      bridgeSwap.bridge_target_token_address || undefined;
-    const isBridge = bridgeTargetChain != null;
-    // A USDT0 target token is a LayerZero OFT bridge; everything else CCTP.
-    const isOftBridge =
-      isBridge &&
-      bridgeTargetToken != null &&
-      Object.values(USDT0_ADDRESSES).some(
-        (a) => a.toLowerCase() === bridgeTargetToken.toLowerCase(),
-      );
-    const isCctpBridge = isBridge && !isOftBridge && bridgeTargetToken != null;
-    const isSolanaBridge = isBridge && isSolanaToken(bridgeTargetChain);
-
-    // TODO: this needs some refactoring, this function is ugly as a naked cat
-    // The sponsored path exists for the Arbitrum hub only (Ethereum/Polygon
-    // claims and OFT bridges stay on the server-submitted path).
-    const arbitrumHubClaim =
-      swap.evm_chain_id === 42161 && (!isBridge || isCctpBridge);
+    const cls = this.#classifyEvmClaim(swap);
+    const { arbitrumHubClaim, dexSwapNeeded } = cls;
     if (arbitrumHubClaim && dexSwapNeeded && this.#config.aa == null) {
       throw new Error(
         "Claiming an Arbitrum EVM DEX/CCTP swap requires AA config for the " +
@@ -2758,83 +2969,12 @@ export class Client {
       // Direct claim default: no DEX leg — the coordinator redeems and
       // sweeps the locked token itself, so the sweep floor is the full HTLC
       // amount.
-      let calls: CoordinatorCall[] = [];
-      let minAmountOut = BigInt(swap.evm_expected_sats);
-      if (dexSwapNeeded) {
-        // The swap leg always runs on Arbitrum. For a CCTP target the `to` Token
-        // names the destination (USDC on the dest chain / Solana) — the server
-        // reads the bridge from it; for same-chain it's the hub target itself.
-        const toToken = !isBridge
-          ? { kind: "evm" as const, chain_id: 42161, address: targetTokenAddr }
-          : isSolanaBridge
-            ? { kind: "solana" as const, address: bridgeTargetToken as string }
-            : {
-                kind: "evm" as const,
-                chain_id: Number(
-                  ALL_EVM_CHAIN_IDS[bridgeTargetChain as string],
-                ),
-                address: bridgeTargetToken as string,
-              };
-        // A Solana bridge target's mint recipient is its USDC ATA, which only
-        // rides on `bridgeRecipient` — reject a missing one here with an
-        // actionable error instead of round-tripping "" to the server (which
-        // fails opaquely in `solana_pubkey_to_bytes32`).
-        if (isCctpBridge && isSolanaBridge && !bridgeRecipient) {
-          throw new Error(
-            "Solana bridge claim requires `bridgeRecipient` (the recipient's USDC ATA).",
-          );
-        }
-        // CCTP mint recipient: the user's address for EVM (same address cross-
-        // chain), the recipient ATA (+ optional wallet for ATA-setup) for Solana.
-        const bridgeRecipientParam = !isCctpBridge
-          ? undefined
-          : isSolanaBridge
-            ? {
-                kind: "solana" as const,
-                address: bridgeRecipient ?? "",
-                wallet: bridgeRecipientWallet,
-              }
-            : { kind: "evm" as const, address: destination };
-
-        // Mirror the per-direction slippage floor the legacy server path uses;
-        // the coordinator's `_sweep` enforces `min_amount_out` on-chain.
-        const slippageBps = swap.direction === "bitcoin_to_evm" ? 200 : 100;
-        const fundResp = await this.#apiClient.POST("/dex-calldata/fund", {
-          body: {
-            from: {
-              kind: "evm",
-              chain_id: swap.evm_chain_id,
-              address: swap.wbtc_address,
-            },
-            to: toToken,
-            amount: { kind: "exact_in", value: String(swap.evm_expected_sats) },
-            sender: swap.evm_coordinator_address,
-            slippage_bps: slippageBps,
-            bridge_recipient: bridgeRecipientParam,
-          },
-        });
-        if (fundResp.error || !fundResp.data) {
-          throw new Error(
-            `Failed to fetch /dex-calldata/fund: ${JSON.stringify(fundResp.error)}`,
-          );
-        }
-        const payload = fundResp.data.payload;
-        if (payload.kind !== "evm") {
-          throw new Error(
-            `Unexpected /dex-calldata payload kind: ${payload.kind}`,
-          );
-        }
-        calls = payload.calls.map((c) => ({
-          target: c.target,
-          value: BigInt(c.value),
-          data: c.data,
-        }));
-        // A CCTP bridge claim's `_sweep` is a no-op (USDC is forwarded), so the
-        // floor is 0; a same-chain claim sweeps the swapped token to destination.
-        minAmountOut = isBridge
-          ? 0n
-          : BigInt(fundResp.data.estimated_amount_out);
-      }
+      const { calls, minAmountOut } = await this.#fetchArbitrumHubCalls(
+        swap,
+        destination,
+        cls,
+        { bridgeRecipient, bridgeRecipientWallet },
+      );
       try {
         return await claimViaUserOp({
           preimage: stored.preimage,
