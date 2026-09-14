@@ -25,6 +25,8 @@ pub enum KnownChain {
     Ethereum,
     #[serde(rename = "42161")]
     Arbitrum,
+    #[serde(rename = "30")]
+    Rootstock,
 }
 
 impl KnownChain {
@@ -37,6 +39,7 @@ impl KnownChain {
             Self::Polygon => "137",
             Self::Ethereum => "1",
             Self::Arbitrum => "42161",
+            Self::Rootstock => "30",
         }
     }
 
@@ -50,6 +53,7 @@ impl KnownChain {
             "137" => Some(Self::Polygon),
             "1" => Some(Self::Ethereum),
             "42161" => Some(Self::Arbitrum),
+            "30" => Some(Self::Rootstock),
             _ => None,
         }
     }
@@ -61,6 +65,7 @@ impl KnownChain {
             Self::Polygon => Some(137),
             Self::Ethereum => Some(1),
             Self::Arbitrum => Some(42161),
+            Self::Rootstock => Some(30),
             Self::Bitcoin | Self::Lightning | Self::Arkade => None,
         }
     }
@@ -81,6 +86,8 @@ impl KnownChain {
             // pub/sub. For request/response the https URL is fine.
             Self::Ethereum => Some("https://ethereum-rpc.publicnode.com"),
             Self::Polygon => Some("https://polygon.drpc.org"),
+            // HTTP only; the public node has no WebSocket endpoint.
+            Self::Rootstock => Some("https://public-node.rsk.co"),
             Self::Bitcoin | Self::Lightning | Self::Arkade => None,
         }
     }
@@ -138,6 +145,10 @@ impl Chain {
     }
     pub fn arbitrum() -> Self {
         Self::Known(KnownChain::Arbitrum)
+    }
+
+    pub fn rootstock() -> Self {
+        Self::Known(KnownChain::Rootstock)
     }
 }
 
