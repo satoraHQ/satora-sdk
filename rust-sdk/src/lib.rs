@@ -15,6 +15,8 @@ pub mod error;
 pub mod request;
 pub mod signer;
 pub mod storage;
+#[cfg(feature = "websocket")]
+pub mod subscription;
 pub mod types;
 
 // Account-abstraction: gasless EVM funding via ERC-4337 + EIP-7702.

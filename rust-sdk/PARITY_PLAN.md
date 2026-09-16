@@ -89,7 +89,7 @@ state the actual change and validation, without tool attribution.
    typed signing and relay calldata helpers implemented. Sponsored accounts use
    the existing Rust EIP-7702 owner model; external wallets can submit transactions. External providers must remain injectable in offline tests.
 
-8. [ ] **Add status subscriptions.** WebSocket connect/subscribe/unsubscribe,
+8. [x] **Add status subscriptions.** WebSocket connect/subscribe/unsubscribe,
    event decoding, reconnect/resubscribe, bounded queues, explicit shutdown,
    cancellation, and HTTP reconciliation. Test a local WebSocket server with
    disconnects, duplicate/out-of-order updates, malformed payloads, and shutdown.

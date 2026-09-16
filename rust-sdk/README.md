@@ -293,3 +293,13 @@ submission. Reconcile the original transaction with `attach_evm_claim_transactio
 bridge resumption verifies both the HTLC redemption and bridge receipt. Stored
 bridge intent preserves recipient bytes without changing the original API-facing
 EVM address or Solana base58 recipient.
+
+With the `websocket` feature, `Client::subscribe_status` starts a
+`StatusSubscription`. Add UUIDs with `subscribe`, remove them with `unsubscribe`,
+and receive `StatusEvent`s with `recv`. Shutdown is explicit and awaited;
+dropping the handle cancels its workers. The source reconnects with bounded
+backoff, resubscribes in batches, maintains heartbeats, and reconciles over HTTP
+periodically and after reconnects. IDs beyond the socket's 256 limit continue
+through HTTP and are promoted when slots become free. A slow consumer receives
+`Lagged` and triggers reconciliation. Unknown statuses and backwards transitions
+are preserved as hints; neither this feed nor HTTP status proves settlement.

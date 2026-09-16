@@ -30,8 +30,12 @@ crate-type = ["rlib"]
 gasless = ["dep:alloy", "dep:alloy-provider", "dep:alloy-dyn-abi"]
 
 electrum = ["dep:electrum-client"]
+websocket = ["dep:tokio-tungstenite", "dep:futures-util", "dep:uuid", "tokio/net"]
 
 [dependencies]
+tokio-tungstenite = { version = "0.28", optional = true, features = ["native-tls"] }
+futures-util = { version = "0.3", optional = true, features = ["sink"] }
+uuid = { version = "1", optional = true }
 electrum-client = { version = "0.24.1", optional = true }
 # Crypto: HD wallet derivation, secp256k1, hashes.
 # `bitcoin` re-exports `secp256k1`; no need to pull it in directly.
