@@ -6,6 +6,7 @@
 
 #![doc = include_str!("../README.md")]
 
+pub mod actions;
 pub mod bitcoin;
 #[cfg(feature = "gasless")]
 pub mod bridge;
@@ -18,6 +19,7 @@ pub mod signer;
 pub mod storage;
 #[cfg(feature = "websocket")]
 pub mod subscription;
+pub mod tracker;
 pub mod types;
 
 // Account-abstraction: gasless EVM funding via ERC-4337 + EIP-7702.

@@ -75,6 +75,12 @@ impl ContractManager {
         self.0.reader.can_observe(reference)
     }
     pub async fn register(&self, reference: ContractRef) -> Result<()> {
+        let key = reference.key()?;
+        self.register_unread(reference)?;
+        self.reconcile(&key).await
+    }
+    /// Register without network I/O. State remains Unknown until reconciled.
+    pub fn register_unread(&self, reference: ContractRef) -> Result<()> {
         if !self.can_observe(&reference) {
             return Err(invalid("no configured reader for contract"));
         }
@@ -105,7 +111,7 @@ impl ContractManager {
                 );
             }
         }
-        self.reconcile(&key).await
+        Ok(())
     }
     pub fn unregister(&self, key: &str) -> Result<()> {
         self.0

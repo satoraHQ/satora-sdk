@@ -99,12 +99,15 @@ state the actual change and validation, without tool attribution.
    chain-verified funding/spend/expiry observations, reorg/confirmation behavior,
    and cancellation-safe manager lifecycles. Port TypeScript observation vectors.
 
-10. [ ] **Implement action tracking and optional automation.** Derive funding,
+10. [x] **Implement action tracking and optional automation.** Derive funding,
     claim, cooperative/unilateral refund, bridge recovery, wait, and terminal
     actions from observations; persist/resume tracked swaps; expose action
     subscriptions; reconcile at-risk swaps; optional auto-claim with bounded
     concurrency and failure recovery. Port action-state tests and exercise full
-    mocked create→fund→claim/refund→terminal lifecycles.
+    mocked funding→claim/refund→terminal lifecycles alongside the existing
+    creation tests. Executors are application adapters; automation is opt-in,
+    reserves attempts durably, and never retries ambiguous submissions. Bridge
+    inputs must come from verified bridge execution/tracking results.
 
 11. [ ] **Finish public API/documentation and integration verification.** Export
     supported entry points; provide examples for each route and recovery path;

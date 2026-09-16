@@ -22,6 +22,9 @@ pub enum EvmKeySource {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct SwapMetadata {
+    /// Feature-independent tracker journal; may contain EVM references even when
+    /// the current process was built without EVM execution support.
+    pub tracking: Option<serde_json::Value>,
     /// Non-secret bridge intents, persisted before submission.
     pub bridge_operations: Option<std::collections::BTreeMap<String, BridgeOperation>>,
     pub arkade_delegate: Option<crate::arkade::ArkadeDelegateState>,
@@ -53,6 +56,7 @@ impl SwapMetadata {
             )*};
         }
         merge!(
+            tracking,
             bridge_operations,
             arkade_delegate,
             arkade_pending,
