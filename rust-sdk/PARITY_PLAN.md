@@ -237,3 +237,22 @@ chains; no production payments are part of this work.
   broadcasts successfully. The new regression test checks request content and
   rejection of mismatched IDs. All-feature tests: 207 passed including doctests;
   Bitcoin-focused tests and strict all-target/all-feature Clippy passed.
+
+## On-chain Bitcoin ↔ EVM E2E follow-up
+
+- Added Rust creation/HTLC validation for Bitcoin→EVM and EVM→Bitcoin, a Bitcoin
+  claim driver, and complete current server-detail reads through the public SDK.
+- Bitcoin→USDC on the Arbitrum fork passed with a 50,000-sat regtest deposit and
+  37.459524 USDC payout. The server's confirmed Bitcoin claim spends that HTLC;
+  EVM balances and the persisted claim transaction passed assertions.
+- USDC on Arbitrum→Bitcoin passed through Rust gasless funding and a Rust-signed
+  Bitcoin claim. The confirmed payout was 49,722 sats after a 279-sat claim fee
+  (the server funded 50,001 sats for a 50,000-sat quote). Exact input/output/fee
+  accounting, destination, EVM balances and server redemption were verified.
+- Reopening the driver resumes the same Bitcoin claim without a new spend.
+  Funding and both claim journals survive process restarts.
+- Both happy paths join the default Rust recipe/manual CI selection. Bitcoin
+  refund scenarios and the TS forced-P2WPKH/direct-funding variants remain outside
+  these Rust adapters.
+- Driver formatting, strict Clippy, process-restart tests, TypeScript checking,
+  new-scenario Biome, runner ShellCheck and workflow actionlint passed.
