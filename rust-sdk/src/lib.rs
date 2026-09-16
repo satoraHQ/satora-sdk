@@ -12,6 +12,7 @@ pub mod bridge;
 pub mod client;
 pub mod control;
 pub mod error;
+pub mod observation;
 pub mod request;
 pub mod signer;
 pub mod storage;

@@ -303,3 +303,21 @@ periodically and after reconnects. IDs beyond the socket's 256 limit continue
 through HTTP and are promoted when slots become free. A slow consumer receives
 `Lagged` and triggers reconciliation. Unknown statuses and backwards transitions
 are preserved as hints; neither this feed nor HTTP status proves settlement.
+
+`observation` provides `BitcoinReader` (Esplora or Electrum), `ArkadeReader`, and
+`EvmRpcReader`, combined through `ReaderSet` and `ContractManager`. References
+include the HTLC's full identity and expected funding. `contract_references`
+reconstructs them from stored swaps; configure the source coordinator and locked
+EVM token when older API responses omit them. Specify an EVM starting block at
+or before creation to bound historical scans. Confirmation requirements default
+to one on both legs; accepting zero-confirmation Bitcoin funding is explicit.
+
+Observers verify hash locks, funding amounts, spend inputs/scripts, EVM swap
+keys, canonical log blocks, and revealed preimages. An unclassified spend stays
+`SpentUnknown`. They do not permanently latch terminal states across reorgs.
+Bitcoin uses MTP/height and EVM uses block timestamps for expiry. Arkade funding
+uses the Ark server's signed VTXO model; its refund clock comes from Bitcoin.
+Readers trust the configured node/indexer rather than implementing consensus
+validation. Missing, failed, or stale observations cannot authorize an action.
+The manager bounds its cache, concurrency and read deadlines, emits changes,
+supports targeted reconciliation, and owns an optional cancellable poller.

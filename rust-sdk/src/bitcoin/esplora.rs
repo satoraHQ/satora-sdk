@@ -31,6 +31,9 @@ impl BitcoinBackend for EsploraBackend {
         self.network
     }
     fn observe<'a>(&'a self, address: &'a Address) -> ChainFuture<'a, BitcoinObservation> {
+        Box::pin(async move { Ok(self.history(address).await?.observation) })
+    }
+    fn history<'a>(&'a self, address: &'a Address) -> ChainFuture<'a, BitcoinHistory> {
         Box::pin(async move {
             self.verify_network().await?;
             let tip = self.client.get_tip_hash().await.map_err(transport)?;
@@ -62,6 +65,7 @@ impl BitcoinBackend for EsploraBackend {
             let median_time_past = times[times.len() / 2];
             let script = address.script_pubkey();
             let mut utxos = vec![];
+            let mut transactions = vec![];
             let mut seen = HashSet::new();
             let mut last_seen = None;
             loop {
@@ -105,6 +109,10 @@ impl BitcoinBackend for EsploraBackend {
                     if raw.compute_txid() != tx.txid {
                         return Err(invalid("Bitcoin funding transaction ID mismatch"));
                     }
+                    transactions.push(BitcoinHistoryTransaction {
+                        transaction: raw.clone(),
+                        confirmed_height,
+                    });
                     for (vout, output) in raw
                         .output
                         .iter()
@@ -140,11 +148,14 @@ impl BitcoinBackend for EsploraBackend {
             if self.client.get_tip_hash().await.map_err(transport)? != tip {
                 return Err(invalid("Bitcoin tip changed during observation"));
             }
-            Ok(BitcoinObservation {
-                tip,
-                height,
-                median_time_past,
-                utxos,
+            Ok(BitcoinHistory {
+                observation: BitcoinObservation {
+                    tip,
+                    height,
+                    median_time_past,
+                    utxos,
+                },
+                transactions,
             })
         })
     }

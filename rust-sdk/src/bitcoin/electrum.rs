@@ -112,6 +112,53 @@ impl BitcoinBackend for ElectrumBackend {
             .map_err(transport)?
         })
     }
+    fn history<'a>(&'a self, address: &'a Address) -> ChainFuture<'a, BitcoinHistory> {
+        Box::pin(async move {
+            let observation = self.observe(address).await?;
+            let client = self.client.clone();
+            let script = address.script_pubkey();
+            let tip = observation.tip;
+            let height = observation.height;
+            let transactions = tokio::task::spawn_blocking(move || {
+                let mut transactions = Vec::new();
+                for entry in client.script_get_history(&script).map_err(transport)? {
+                    let confirmed_height = if entry.height > 0 {
+                        let height = u32::try_from(entry.height).map_err(decode)?;
+                        Some(height)
+                    } else {
+                        None
+                    };
+                    if confirmed_height.is_some_and(|h| h > height) {
+                        return Err(invalid("Electrum history height exceeds tip"));
+                    }
+                    let transaction = client.transaction_get(&entry.tx_hash).map_err(transport)?;
+                    if transaction.compute_txid() != entry.tx_hash {
+                        return Err(invalid("Electrum history transaction ID mismatch"));
+                    }
+                    transactions.push(BitcoinHistoryTransaction {
+                        transaction,
+                        confirmed_height,
+                    });
+                }
+                if client
+                    .block_headers_subscribe()
+                    .map_err(transport)?
+                    .header
+                    .block_hash()
+                    != tip
+                {
+                    return Err(invalid("Electrum tip changed during history read"));
+                }
+                Ok(transactions)
+            })
+            .await
+            .map_err(transport)??;
+            Ok(BitcoinHistory {
+                observation,
+                transactions,
+            })
+        })
+    }
     fn transaction(&self, id: Txid) -> ChainFuture<'_, Option<Transaction>> {
         let client = self.client.clone();
         Box::pin(async move {

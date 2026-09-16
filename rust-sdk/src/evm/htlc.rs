@@ -24,7 +24,7 @@ sol! {
 }
 
 /// Fully specified on-chain HTLC identity, independent of API status.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EvmHtlc {
     pub chain_id: u64,
     pub address: Address,

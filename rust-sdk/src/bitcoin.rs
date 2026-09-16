@@ -65,17 +65,36 @@ pub struct BitcoinObservation {
     pub utxos: Vec<BitcoinUtxo>,
 }
 
+/// Full address history at a consistent chain tip, including spent outputs.
+#[derive(Clone, Debug)]
+pub struct BitcoinHistory {
+    pub observation: BitcoinObservation,
+    pub transactions: Vec<BitcoinHistoryTransaction>,
+}
+#[derive(Clone, Debug)]
+pub struct BitcoinHistoryTransaction {
+    pub transaction: Transaction,
+    pub confirmed_height: Option<u32>,
+}
+
 /// Implementations must verify their network, exclude spent outputs, return
 /// actual transaction outputs, and reject an observation spanning a tip change.
 pub trait BitcoinBackend: Send + Sync {
     fn network(&self) -> Network;
+    fn history<'a>(&'a self, _address: &'a Address) -> ChainFuture<'a, BitcoinHistory> {
+        Box::pin(async {
+            Err(invalid(
+                "Bitcoin backend does not expose transaction history",
+            ))
+        })
+    }
     fn observe<'a>(&'a self, address: &'a Address) -> ChainFuture<'a, BitcoinObservation>;
     fn transaction(&self, id: Txid) -> ChainFuture<'_, Option<Transaction>>;
     fn fee_rate(&self, confirmation_target: u16) -> ChainFuture<'_, FeeRate>;
     fn broadcast<'a>(&'a self, tx: &'a Transaction) -> ChainFuture<'a, Txid>;
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BitcoinHtlc {
     pub network: Network,
     pub hash_lock: [u8; 20],

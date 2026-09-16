@@ -35,7 +35,7 @@ enum TaprootTreeNode {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StrictVhtlcOptions {
     pub sender: XOnlyPublicKey,
     pub receiver: XOnlyPublicKey,

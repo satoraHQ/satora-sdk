@@ -24,6 +24,14 @@ pub type ArkadeFuture<'a, T> =
 /// Injectable Arkade reader/executor. Returned PSBTs are checked against locally
 /// built transactions before further signatures are added.
 pub trait ArkadeBackend: Send + Sync {
+    /// Fetch a spending virtual/checkpoint transaction for chain observation.
+    fn virtual_transaction(&self, _id: Txid) -> ArkadeFuture<'_, Option<Psbt>> {
+        Box::pin(async {
+            Err(invalid(
+                "Arkade backend does not expose virtual transactions",
+            ))
+        })
+    }
     fn info(&self) -> ArkadeFuture<'_, Info>;
     fn vtxos(&self, address: ArkAddress) -> ArkadeFuture<'_, Vec<VirtualTxOutPoint>>;
     fn submit(
@@ -40,6 +48,21 @@ pub trait ArkadeBackend: Send + Sync {
     }
 }
 impl ArkadeBackend for ArkadeWallet {
+    fn virtual_transaction(&self, id: Txid) -> ArkadeFuture<'_, Option<Psbt>> {
+        Box::pin(async move {
+            let result = self
+                .client
+                .network_client()
+                .get_virtual_txs(vec![id.to_string()], None, None)
+                .await
+                .map_err(transport)?;
+            Ok(result
+                .txs
+                .into_iter()
+                .find(|tx| tx.unsigned_tx.compute_txid() == id))
+        })
+    }
+
     fn pending(
         &self,
         intent: ark_rs::core::intent::Intent,

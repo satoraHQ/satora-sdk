@@ -94,7 +94,7 @@ state the actual change and validation, without tool attribution.
    cancellation, and HTTP reconciliation. Test a local WebSocket server with
    disconnects, duplicate/out-of-order updates, malformed payloads, and shutdown.
 
-9. [ ] **Implement contract observations and managers.** Typed HTLC references,
+9. [x] **Implement contract observations and managers.** Typed HTLC references,
    consistent keys, Bitcoin/Arkade/EVM readers, preimage extraction/validation,
    chain-verified funding/spend/expiry observations, reorg/confirmation behavior,
    and cancellation-safe manager lifecycles. Port TypeScript observation vectors.
