@@ -166,6 +166,19 @@ chains; no production payments are part of this work.
 - The Rust SDK CI job explicitly runs the local EVM suite and driver checks.
   Ordinary all-feature tests skip these four EVM tests in addition to the seven
   existing live tests.
-- Polygon and Arbitrum fork RPC connectivity was verified. Full-stack daemon,
-  Arkade and Lightning scenarios could not run locally because this session
-  cannot access the Docker socket. No production funds were used.
+- Full-stack EVM→Arkade passed with the swap daemon, Arbitrum fork, local alto
+  bundler and Arkade regtest: Rust funded 1 USDC through gasless Permit2, claimed
+  1,217 Arkade sats, and the server redeemed the EVM HTLC. Balance assertions
+  passed. Polygon was also forked and its contracts deployed during setup.
+- Rust wallet boarding passed: 100,000 regtest sats became 100,000 confirmed
+  Arkade sats. This is wallet settlement, not a Bitcoin→Arkade server swap.
+- Repeated boarding exposed missing single-output spend-status support in the
+  local Mempool API. The Rust adapter now falls back to bulk outspends and rejects
+  unknown status instead of reselecting spent deposits. Three regression tests
+  pass; the boarding scenario now deposits twice into the same wallet.
+- All-feature tests after the spend-status fix: 202 passed including doctests;
+  strict all-target/all-feature Clippy passed.
+- Setup now supports alto host networking and refreshes the daemon's liquidity
+  cache after CLI settlement. ShellCheck and shell syntax checks pass.
+- Full-stack Lightning and bridge scenarios remain untested. No production
+  funds were used.

@@ -366,6 +366,8 @@ impl ArkadeWallet {
 /// so it can stay backend-agnostic.
 pub(crate) struct EsploraBlockchain {
     inner: esplora_client::AsyncClient,
+    http: reqwest::Client,
+    base_url: String,
 }
 
 impl EsploraBlockchain {
@@ -373,7 +375,47 @@ impl EsploraBlockchain {
         let inner = esplora_client::Builder::new(url)
             .build_async()
             .map_err(|e| Error::Transport(format!("esplora client: {e}")))?;
-        Ok(Self { inner })
+        let http = reqwest::Client::builder()
+            .timeout(ARK_NETWORK_TIMEOUT)
+            .build()
+            .map_err(|e| Error::Transport(format!("esplora client: {e}")))?;
+        Ok(Self {
+            inner,
+            http,
+            base_url: url.trim_end_matches('/').into(),
+        })
+    }
+
+    async fn output_status(
+        &self,
+        txid: &Txid,
+        vout: u32,
+    ) -> std::result::Result<OutputStatus, ArkError> {
+        if let Some(status) = self
+            .inner
+            .get_output_status(txid, u64::from(vout))
+            .await
+            .map_err(ArkError::consumer)?
+        {
+            return Ok(status);
+        }
+        // Mempool's Esplora-compatible API may expose only the bulk endpoint.
+        // A missing single-output response does not establish that it is unspent.
+        let statuses: Vec<OutputStatus> = self
+            .http
+            .get(format!("{}/tx/{txid}/outspends", self.base_url))
+            .send()
+            .await
+            .map_err(ArkError::consumer)?
+            .error_for_status()
+            .map_err(ArkError::consumer)?
+            .json()
+            .await
+            .map_err(ArkError::consumer)?;
+        statuses
+            .into_iter()
+            .nth(vout as usize)
+            .ok_or_else(|| ArkError::consumer("Esplora output spend status unknown"))
     }
 }
 
@@ -424,14 +466,10 @@ impl Blockchain for EsploraBlockchain {
         let mut utxos = Vec::new();
         for output in outputs.iter() {
             let outpoint = output.outpoint;
-            let status = self
-                .inner
-                .get_output_status(&outpoint.txid, outpoint.vout as u64)
-                .await
-                .map_err(ArkError::consumer)?;
+            let status = self.output_status(&outpoint.txid, outpoint.vout).await?;
             match status {
-                Some(OutputStatus { spent: false, .. }) | None => utxos.push(*output),
-                Some(OutputStatus { spent: true, .. }) => utxos.push(ExplorerUtxo {
+                OutputStatus { spent: false, .. } => utxos.push(*output),
+                OutputStatus { spent: true, .. } => utxos.push(ExplorerUtxo {
                     is_spent: true,
                     ..*output
                 }),
@@ -460,13 +498,14 @@ impl Blockchain for EsploraBlockchain {
         txid: &Txid,
         vout: u32,
     ) -> std::result::Result<SpendStatus, ArkError> {
-        let status = self
-            .inner
-            .get_output_status(txid, vout as u64)
-            .await
-            .map_err(ArkError::consumer)?;
+        let status = self.output_status(txid, vout).await?;
+        if status.spent && status.txid.is_none() {
+            return Err(ArkError::consumer(
+                "Esplora spent output missing spending transaction",
+            ));
+        }
         Ok(SpendStatus {
-            spend_txid: status.as_ref().and_then(|s| s.txid),
+            spend_txid: if status.spent { status.txid } else { None },
         })
     }
 
@@ -561,5 +600,82 @@ impl Client {
             },
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod esplora_tests {
+    use super::*;
+    use serde_json::json;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::path;
+
+    #[tokio::test]
+    async fn bulk_outspends_preserve_spent_and_unspent_outputs() {
+        let server = MockServer::start().await;
+        let txid = Txid::from_str(&"11".repeat(32)).unwrap();
+        let spending_txid = Txid::from_str(&"22".repeat(32)).unwrap();
+        Mock::given(path(format!("/tx/{txid}/outspends")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {"spent": false},
+                {"spent": true, "txid": spending_txid, "vin": 0}
+            ])))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let chain = EsploraBlockchain::new(&server.uri()).unwrap();
+        assert!(!chain.output_status(&txid, 0).await.unwrap().spent);
+        assert_eq!(
+            Blockchain::get_output_status(&chain, &txid, 1)
+                .await
+                .unwrap()
+                .spend_txid,
+            Some(spending_txid)
+        );
+    }
+
+    #[tokio::test]
+    async fn absent_output_status_never_means_unspent() {
+        for status in [404, 200] {
+            let server = MockServer::start().await;
+            let txid = Txid::from_str(&"11".repeat(32)).unwrap();
+            Mock::given(path(format!("/tx/{txid}/outspends")))
+                .respond_with(ResponseTemplate::new(status).set_body_json(json!([])))
+                .mount(&server)
+                .await;
+            let chain = EsploraBlockchain::new(&server.uri()).unwrap();
+            assert!(chain.output_status(&txid, 0).await.is_err());
+            assert!(
+                Blockchain::get_output_status(&chain, &txid, 0)
+                    .await
+                    .is_err()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn single_output_endpoint_is_used_when_available() {
+        let server = MockServer::start().await;
+        let txid = Txid::from_str(&"11".repeat(32)).unwrap();
+        Mock::given(path(format!("/tx/{txid}/outspend/0")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"spent": false})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(path(format!("/tx/{txid}/outspends")))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let chain = EsploraBlockchain::new(&server.uri()).unwrap();
+        assert!(
+            Blockchain::get_output_status(&chain, &txid, 0)
+                .await
+                .unwrap()
+                .spend_txid
+                .is_none()
+        );
     }
 }

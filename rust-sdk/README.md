@@ -413,8 +413,8 @@ Use one tracker and exclusive execution ownership per store across processes.
   consensus or SPV validator. Ambiguous Arkade batch spends remain unknown.
 - Validation includes local mocks, deterministic vectors and real local-EVM
   execution. Live BTCPayServer integration, production bundler/paymaster
-  sponsorship, Circle/LayerZero delivery, and real Arkade batch settlement still
-  need deployment testing.
+  sponsorship, Circle/LayerZero delivery, and production Arkade batch settlement
+  still need deployment testing.
 - The Arkade dependencies remain pinned to git to avoid an upstream yanked
   dependency. Source/path/git consumption works; crates.io publication requires
   a migration to compatible registry versions of those dependencies.
