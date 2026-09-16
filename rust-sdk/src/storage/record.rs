@@ -22,6 +22,7 @@ pub enum EvmKeySource {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct SwapMetadata {
+    pub arkade_delegate: Option<crate::arkade::ArkadeDelegateState>,
     pub arkade_pending: Option<crate::arkade::ArkadePending>,
     pub btc_spend_txid: Option<String>,
     pub btc_spend_fee: Option<u64>,
@@ -47,6 +48,7 @@ impl SwapMetadata {
             )*};
         }
         merge!(
+            arkade_delegate,
             arkade_pending,
             btc_spend_txid,
             btc_spend_fee,

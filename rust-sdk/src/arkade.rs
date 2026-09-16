@@ -492,7 +492,10 @@ impl Blockchain for EsploraBlockchain {
 
 // ── claim entry point ──────────────────────────────────────────────────
 
+mod delegate;
 mod execution;
+pub use delegate::ArkadeDelegateState;
+pub use delegate::ArkadeSettlement;
 pub use execution::ArkadeBackend;
 pub use execution::ArkadeFuture;
 pub use execution::ArkadeHtlc;

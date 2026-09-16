@@ -212,4 +212,18 @@ with the same operation and destination: the SDK re-derives the preimage, querie
 pending transactions after interrupted submission, and resumes checkpoint
 finalization. Cosigner responses must preserve the locally constructed transaction
 and contain valid signatures; receiver signatures survive Arkade's cosigning step.
-Recoverable/expired VTXOs require delegated settlement (a separate parity step).
+Recoverable/expired VTXOs use delegated settlement.
+
+`settle_arkade` chooses offchain or delegated settlement from VTXO state and
+resumes the persisted path. `delegate_arkade` exposes the batch path explicitly.
+Pin the expected delegate public key, obtainable with `delegate_cosigner_key`.
+Claims and cooperative/timeout refunds support mixed and swept VTXOs. Delegated
+intent signatures use ALL; forfeits use ALL|ANYONECANPAY for the batch connector.
+Timeout-refund forfeits carry the refund locktime and a non-final sequence.
+
+A delegated request persists its exact intent before submission and records the
+commitment transaction after success. After a lost response, retry reconciles
+settled inputs first. An expired intent with no observable settlement is left
+unresolved for investigation; it is never silently replaced with new authorization.
+The timeout refund path still requires the Arkade server, as in TypeScript.
+`StrictVhtlcOptions` exposes all six script paths for wallet-level exit integrations.

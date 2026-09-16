@@ -87,13 +87,13 @@ impl ArkadeBackend for ArkadeWallet {
         })
     }
 }
-fn invalid(message: impl Into<String>) -> Error {
+pub(super) fn invalid(message: impl Into<String>) -> Error {
     Error::InvalidSwap(message.into())
 }
-fn decode(error: impl std::fmt::Display) -> Error {
+pub(super) fn decode(error: impl std::fmt::Display) -> Error {
     Error::Decode(error.to_string())
 }
-fn transport(error: impl std::fmt::Display) -> Error {
+pub(super) fn transport(error: impl std::fmt::Display) -> Error {
     Error::Transport(error.to_string())
 }
 
@@ -144,7 +144,7 @@ impl ArkadeHtlc {
     pub fn address(&self) -> ArkAddress {
         self.script.address()
     }
-    fn spend_script(&self, operation: ArkadeSpend) -> Result<ScriptBuf> {
+    pub(super) fn spend_script(&self, operation: ArkadeSpend) -> Result<ScriptBuf> {
         match operation {
             ArkadeSpend::Claim if self.is_receiver => Ok(self.options.claim_script()),
             ArkadeSpend::Refund if !self.is_receiver => {
@@ -331,6 +331,11 @@ impl Client {
             let stored = self
                 .get_stored_swap(id)?
                 .ok_or_else(|| invalid("swap record missing"))?;
+            if stored.metadata.arkade_delegate.is_some() {
+                return Err(invalid(
+                    "a delegated Arkade spend is already persisted; reconcile it first",
+                ));
+            }
             let params = self
                 .signer
                 .as_ref()
@@ -594,7 +599,7 @@ impl Client {
     }
 }
 
-fn validate_info(htlc: &ArkadeHtlc, info: &Info) -> Result<()> {
+pub(super) fn validate_info(htlc: &ArkadeHtlc, info: &Info) -> Result<()> {
     if info.network != htlc.network
         || (info.signer_pk.x_only_public_key().0 != htlc.options.server
             && !info
@@ -606,7 +611,7 @@ fn validate_info(htlc: &ArkadeHtlc, info: &Info) -> Result<()> {
     }
     Ok(())
 }
-fn validate_vtxos(htlc: &ArkadeHtlc, vtxos: &[VirtualTxOutPoint]) -> Result<()> {
+pub(super) fn validate_vtxos(htlc: &ArkadeHtlc, vtxos: &[VirtualTxOutPoint]) -> Result<()> {
     let mut seen = HashSet::new();
     for v in vtxos {
         if v.script != htlc.script.script_pubkey()
@@ -621,7 +626,7 @@ fn validate_vtxos(htlc: &ArkadeHtlc, vtxos: &[VirtualTxOutPoint]) -> Result<()> 
     }
     Ok(())
 }
-fn condition(input: &mut psbt::Input, preimage: Option<[u8; 32]>) {
+pub(super) fn condition(input: &mut psbt::Input, preimage: Option<[u8; 32]>) {
     let key = psbt::raw::Key {
         type_value: 222,
         key: VTXO_CONDITION_KEY.to_vec(),
@@ -632,7 +637,7 @@ fn condition(input: &mut psbt::Input, preimage: Option<[u8; 32]>) {
         input.unknown.insert(key, data);
     }
 }
-fn sign_psbt(psbt: &mut Psbt, pair: &Keypair, preimage: Option<[u8; 32]>) -> Result<()> {
+pub(super) fn sign_psbt(psbt: &mut Psbt, pair: &Keypair, preimage: Option<[u8; 32]>) -> Result<()> {
     let prevouts: Vec<TxOut> = psbt
         .inputs
         .iter()
@@ -652,12 +657,24 @@ fn sign_psbt(psbt: &mut Psbt, pair: &Keypair, preimage: Option<[u8; 32]>) -> Res
             .first_key_value()
             .ok_or_else(|| invalid("Arkade spend script missing"))?;
         let leaf = TapLeafHash::from_script(script, *version);
+        let sighash_type = input
+            .sighash_type
+            .map(|s| s.taproot_hash_ty())
+            .transpose()
+            .map_err(decode)?
+            .unwrap_or(TapSighashType::Default);
+        if !matches!(
+            sighash_type,
+            TapSighashType::Default | TapSighashType::All | TapSighashType::AllPlusAnyoneCanPay
+        ) {
+            return Err(invalid("unsupported Arkade signature mode"));
+        }
         let sighash = SighashCache::new(&psbt.unsigned_tx)
             .taproot_script_spend_signature_hash(
                 index,
                 &Prevouts::All(&prevouts),
                 leaf,
-                TapSighashType::Default,
+                sighash_type,
             )
             .map_err(decode)?;
         let signature = Secp256k1::new().sign_schnorr_no_aux_rand(
@@ -668,14 +685,14 @@ fn sign_psbt(psbt: &mut Psbt, pair: &Keypair, preimage: Option<[u8; 32]>) -> Res
             (pair.x_only_public_key().0, leaf),
             bitcoin::taproot::Signature {
                 signature,
-                sighash_type: TapSighashType::Default,
+                sighash_type,
             },
         );
         condition(input, preimage);
     }
     Ok(())
 }
-fn archive(psbt: &Psbt) -> String {
+pub(super) fn archive(psbt: &Psbt) -> String {
     let mut psbt = psbt.clone();
     for input in &mut psbt.inputs {
         input.unknown.remove(&psbt::raw::Key {
@@ -687,7 +704,7 @@ fn archive(psbt: &Psbt) -> String {
     }
     psbt.to_string()
 }
-fn restore(encoded: &str, preimage: Option<[u8; 32]>) -> Result<Psbt> {
+pub(super) fn restore(encoded: &str, preimage: Option<[u8; 32]>) -> Result<Psbt> {
     let mut psbt = Psbt::from_str(encoded).map_err(decode)?;
     for input in &mut psbt.inputs {
         condition(input, preimage);
@@ -697,7 +714,11 @@ fn restore(encoded: &str, preimage: Option<[u8; 32]>) -> Result<Psbt> {
 fn verify_cosigned(original: &Psbt, signed: &Psbt, cosigner: XOnlyPublicKey) -> Result<()> {
     merge_cosigned(original, signed, cosigner).map(|_| ())
 }
-fn merge_cosigned(original: &Psbt, signed: &Psbt, cosigner: XOnlyPublicKey) -> Result<Psbt> {
+pub(super) fn merge_cosigned(
+    original: &Psbt,
+    signed: &Psbt,
+    cosigner: XOnlyPublicKey,
+) -> Result<Psbt> {
     if original.unsigned_tx != signed.unsigned_tx || original.inputs.len() != signed.inputs.len() {
         return Err(invalid("cosigner changed the Arkade transaction"));
     }
@@ -722,17 +743,23 @@ fn merge_cosigned(original: &Psbt, signed: &Psbt, cosigner: XOnlyPublicKey) -> R
             .first_key_value()
             .ok_or_else(|| invalid("Arkade script missing"))?;
         let leaf = TapLeafHash::from_script(script, *version);
+        let sighash_type = expected
+            .sighash_type
+            .map(|s| s.taproot_hash_ty())
+            .transpose()
+            .map_err(decode)?
+            .unwrap_or(TapSighashType::Default);
         let hash = SighashCache::new(&original.unsigned_tx)
             .taproot_script_spend_signature_hash(
                 index,
                 &Prevouts::All(&prevouts),
                 leaf,
-                TapSighashType::Default,
+                sighash_type,
             )
             .map_err(decode)?;
         let message = secp256k1::Message::from_digest(hash.to_byte_array());
         let valid = |sig: &bitcoin::taproot::Signature| {
-            sig.sighash_type == TapSighashType::Default
+            sig.sighash_type == sighash_type
                 && Secp256k1::new()
                     .verify_schnorr(&sig.signature, &message, &cosigner)
                     .is_ok()

@@ -62,14 +62,17 @@ state the actual change and validation, without tool attribution.
    signing, broadcast, and recovery. Test golden scripts/transactions, invalid
    script parameters, insufficient funding, fees/dust, and premature refunds.
 
-6. [ ] **Complete Arkade claims and refunds.** BTC→Arkade claim support, VHTLC
-   balances and receipt detection, cooperative and unilateral refunds,
+6. [x] **Complete Arkade claims and refunds.** BTC→Arkade claim support, VHTLC
+   balances and receipt detection, cooperative and timeout refunds without the receiver,
    delegate/cosigner flows, and continuation after interrupted claims. Reuse
    strict VHTLC vectors and validate expected keys, script/address, network,
    amounts, spend state, and preimages before signing or submission.
    Offchain checkpoint: all five Arkade directions, multi-VTXO claims, balances,
    timelocked/cooperative refunds, verified cosigner PSBTs, and persisted
-   submit/finalize resumption implemented. Delegate and unilateral exits remain.
+   submit/finalize resumption implemented. Delegated claims, timeout/cooperative
+   refunds, mixed/recoverable routing, cosigner verification, and interrupted batch
+   reconciliation implemented. Full unilateral wallet exit orchestration is not
+   exposed by the reference swap SDK; all six strict script paths remain available.
 
 7. [ ] **Implement bridge orchestration.** CCTP domains/tokens and fee estimates,
    burn/approval/permit/user-operation construction, attestation polling,

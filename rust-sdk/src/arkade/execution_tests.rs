@@ -538,3 +538,237 @@ async fn finalized_server_psbts_are_verified_before_restoring_signature_metadata
     finalized.unsigned_tx.output[0].value = Amount::from_sat(1);
     assert!(merge_cosigned(&original, &finalized, backend.server.x_only_public_key().0).is_err());
 }
+
+#[tokio::test]
+async fn delegated_claim_handles_swept_outputs_and_signs_the_typescript_intent_and_forfeit_modes() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    let (_, mut backend, store, destination) = setup("btc_to_arkade");
+    backend.vtxos[0].is_swept = true;
+    backend.vtxos[0].expires_at = 0;
+    let captured = Arc::new(Mutex::new(Value::Null));
+    let capture = captured.clone();
+    let server = MockServer::start().await;
+    let commitment = Txid::from_byte_array([12; 32]);
+    Mock::given(wiremock::matchers::path("/api/delegate/settle"))
+        .respond_with(move |request: &wiremock::Request| {
+            *capture.lock().unwrap() = request.body_json().unwrap();
+            ResponseTemplate::new(200).set_body_json(json!({"commitment_txid":commitment}))
+        })
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .base_url(server.uri())
+        .build()
+        .unwrap();
+    let cosigner = pair(5).public_key();
+    assert_eq!(
+        client
+            .delegate_arkade(
+                "arkade",
+                &backend,
+                None,
+                ArkadeSpend::Claim,
+                cosigner,
+                spend_options(destination.clone())
+            )
+            .await
+            .unwrap(),
+        commitment
+    );
+    assert_eq!(
+        client
+            .delegate_arkade(
+                "arkade",
+                &backend,
+                None,
+                ArkadeSpend::Claim,
+                cosigner,
+                spend_options(destination)
+            )
+            .await
+            .unwrap(),
+        commitment
+    );
+    let body = captured.lock().unwrap();
+    let proof = restore(body["intent_proof"].as_str().unwrap(), None).unwrap();
+    assert_eq!(proof.inputs.len(), 3);
+    assert_eq!(proof.unsigned_tx.output[0].value, Amount::from_sat(100_000));
+    assert!(proof.inputs.iter().all(|i| {
+        i.tap_script_sigs
+            .values()
+            .all(|s| s.sighash_type == TapSighashType::All)
+    }));
+    let forfeits = body["forfeit_psbts"].as_array().unwrap();
+    assert_eq!(forfeits.len(), 1);
+    let forfeit = restore(forfeits[0].as_str().unwrap(), None).unwrap();
+    assert_eq!(
+        forfeit.unsigned_tx.output[0].value,
+        Amount::from_sat(50_330)
+    );
+    assert!(
+        forfeit.inputs[0]
+            .tap_script_sigs
+            .values()
+            .all(|s| s.sighash_type == TapSighashType::AllPlusAnyoneCanPay)
+    );
+    let params = Signer::from_mnemonic(MNEMONIC)
+        .unwrap()
+        .derive_swap_params(0)
+        .unwrap();
+    let own = key(&hex::encode(params.public_key)).unwrap();
+    merge_cosigned(&proof, &proof, own).unwrap();
+    merge_cosigned(&forfeit, &forfeit, own).unwrap();
+    let state = store
+        .get_swap("arkade")
+        .unwrap()
+        .unwrap()
+        .metadata
+        .arkade_delegate
+        .unwrap();
+    let stored_proof = restore(&state.intent_proof, None).unwrap();
+    assert!(
+        stored_proof
+            .inputs
+            .iter()
+            .all(|i| i.unknown.keys().all(|key| key.key != VTXO_CONDITION_KEY))
+    );
+}
+
+#[tokio::test]
+async fn interrupted_delegate_settlement_reconciles_observed_commitment_without_another_request() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    let (_, mut backend, store, destination) = setup("arkade_to_lightning");
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::path("/api/delegate/settle"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .base_url(server.uri())
+        .build()
+        .unwrap();
+    let cosigner = pair(5).public_key();
+    assert!(
+        client
+            .delegate_arkade(
+                "arkade",
+                &backend,
+                Some(&Chain(144)),
+                ArkadeSpend::Refund,
+                cosigner,
+                spend_options(destination.clone())
+            )
+            .await
+            .is_err()
+    );
+    let state = store
+        .get_swap("arkade")
+        .unwrap()
+        .unwrap()
+        .metadata
+        .arkade_delegate
+        .unwrap();
+    let forfeit = restore(&state.forfeit_psbts[0], None).unwrap();
+    assert_eq!(forfeit.unsigned_tx.lock_time.to_consensus_u32(), 144);
+    assert!(
+        forfeit.unsigned_tx.input[0]
+            .sequence
+            .enables_absolute_lock_time()
+    );
+    let commitment = Txid::from_byte_array([13; 32]);
+    for v in &mut backend.vtxos {
+        v.is_spent = true;
+        v.settled_by = Some(commitment);
+    }
+    assert_eq!(
+        client
+            .delegate_arkade(
+                "arkade",
+                &backend,
+                Some(&Chain(144)),
+                ArkadeSpend::Refund,
+                cosigner,
+                spend_options(destination)
+            )
+            .await
+            .unwrap(),
+        commitment
+    );
+}
+
+#[tokio::test]
+async fn cooperative_delegate_verifies_receiver_signatures_including_forfeits() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    let (_, mut backend, store, destination) = setup("arkade_to_evm");
+    backend.vtxos[0].is_swept = true;
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::path(
+        "/api/swap/arkade-evm/arkade/collab-refund-delegate",
+    ))
+    .respond_with(|request: &wiremock::Request| {
+        let body: Value = request.body_json().unwrap();
+        let mut proof = restore(body["intent_proof"].as_str().unwrap(), None).unwrap();
+        sign_psbt(&mut proof, &pair(2), None).unwrap();
+        let forfeits: Vec<_> = body["forfeit_psbts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| {
+                let mut p = restore(p.as_str().unwrap(), None).unwrap();
+                sign_psbt(&mut p, &pair(2), None).unwrap();
+                p.to_string()
+            })
+            .collect();
+        ResponseTemplate::new(200)
+            .set_body_json(json!({"intent_proof":proof.to_string(),"forfeit_psbts":forfeits}))
+    })
+    .expect(1)
+    .mount(&server)
+    .await;
+    Mock::given(wiremock::matchers::path("/api/delegate/settle"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: Value = request.body_json().unwrap();
+            assert!(body["preimage"].is_null() && body["swap_id"].is_null());
+            let proof = restore(body["intent_proof"].as_str().unwrap(), None).unwrap();
+            merge_cosigned(&proof, &proof, pair(2).x_only_public_key().0).unwrap();
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"commitment_txid":Txid::from_byte_array([15;32])}))
+        })
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(store)
+        .base_url(server.uri())
+        .build()
+        .unwrap();
+    let result = client
+        .settle_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::CooperativeRefund,
+            Some(pair(5).public_key()),
+            spend_options(destination),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        result,
+        super::super::ArkadeSettlement::Delegated { .. }
+    ));
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 0);
+}
