@@ -5,6 +5,7 @@
 export const SDK_NAME = "lendaswap-sdk-pure";
 export const SDK_VERSION = "2.4.0";
 export const SDK_COMMIT_HASH = "unknown";
+/** @deprecated Retained for source compatibility; requests no longer send it. */
 export const SATORA_SERVER_VERSION = "0.3.15";
 export const CLIENT_AGENT = `${SDK_NAME}/${SDK_VERSION}`;
 export const DEFAULT_AA_BUNDLER_URL = "";

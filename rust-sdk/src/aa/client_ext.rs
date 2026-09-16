@@ -17,6 +17,9 @@ use crate::aa::orchestrate::FundSwapReceipt;
 use crate::aa::orchestrate::PaymasterRef;
 use crate::aa::orchestrate::fund_swap;
 use crate::aa::paymaster::PaymasterClient;
+use crate::client::CLIENT_AGENT;
+use crate::client::CLIENT_AGENT_HEADER;
+use crate::client::protocol_headers;
 use crate::error::Error;
 use crate::error::Result;
 use alloy::primitives::Address;
@@ -497,10 +500,12 @@ impl Client {
         // GET /swap/{id}/swap-and-lock-calldata-userop — sidesteps the
         // `Endpoint` trait because the trait's `PATH` is static, and
         // this URL is per-swap.
+        let swap = self.fetch_swap_response(swap_id).await?;
         let url = self
             .base_url
             .join(&format!("/swap/{swap_id}/swap-and-lock-calldata-userop"))?;
-        let resp = self.http.get(url).send().await?;
+        let req = self.http.get(url).header(CLIENT_AGENT_HEADER, CLIENT_AGENT);
+        let resp = protocol_headers(req).send().await?;
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
         if !status.is_success() {

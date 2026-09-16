@@ -53,15 +53,31 @@ pub const DEFAULT_BASE_URL: &str = "https://api.satora.io";
 /// staying well under any HTTP / API rate limit a user could hit
 /// during one swap creation.
 const MAX_KEY_INDEX_GRIND_ATTEMPTS: u32 = 1000;
-const CLIENT_AGENT_HEADER: &str = "X-Lendaswap-Client";
-const SATORA_SERVER_VERSION_HEADER: &str = "x-satora-server-version";
-const CLIENT_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
-const SATORA_SERVER_VERSION: &str = env!("SATORA_SERVER_VERSION");
+pub(crate) const CLIENT_AGENT_HEADER: &str = "X-Lendaswap-Client";
+pub(crate) const CLIENT_AGENT: &str =
+    concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
+/// Protocol epoch this SDK speaks for each protocol component, sent on every
+/// request. Mirrors the server's `protocol_compat::Component`.
+pub(crate) const PROTOCOL_HEADERS: [(&str, &str); 5] = [
+    ("x-satora-bitcoin-htlc-version", "1"),
+    ("x-satora-arkade-vhtlc-version", "1"),
+    ("x-satora-lightning-version", "1"),
+    ("x-satora-evm-erc20-htlc-version", "1"),
+    ("x-satora-evm-native-htlc-version", "1"),
+];
 
 /// Detect the backend's "this preimage hash already exists" rejection.
 /// Anchored on HTTP 409 + a substring match (case-insensitive) on
 /// "preimage" so unrelated 409s (e.g. some future "duplicate referral")
 /// don't make us grind forever.
+pub(crate) fn protocol_headers(builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    PROTOCOL_HEADERS
+        .iter()
+        .fold(builder, |builder, (name, value)| {
+            builder.header(*name, *value)
+        })
+}
+
 fn is_preimage_collision(err: &Error) -> bool {
     matches!(
         err,
@@ -156,8 +172,8 @@ impl Client {
         let builder = self
             .http
             .request(E::METHOD, url)
-            .header(CLIENT_AGENT_HEADER, CLIENT_AGENT)
-            .header(SATORA_SERVER_VERSION_HEADER, SATORA_SERVER_VERSION);
+            .header(CLIENT_AGENT_HEADER, CLIENT_AGENT);
+        let builder = protocol_headers(builder);
         let builder = attach_payload(builder, &req, E::PAYLOAD);
         let resp = builder.send().await?;
         tracing::debug!(status = %resp.status(), "response received");
@@ -177,7 +193,6 @@ impl Client {
             .http
             .get(url)
             .header(CLIENT_AGENT_HEADER, CLIENT_AGENT)
-            .header(SATORA_SERVER_VERSION_HEADER, SATORA_SERVER_VERSION)
             .send()
             .await?;
         tracing::debug!(status = %resp.status(), "response received");

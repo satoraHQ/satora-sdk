@@ -117,6 +117,7 @@ import {
   type LogLevel,
   type SdkLogger,
 } from "./logging.js";
+import { PROTOCOL_HEADERS } from "./protocol.js";
 import {
   buildArkadeClaim,
   type ClaimGaslessResult,
@@ -189,7 +190,6 @@ import {
   CLIENT_AGENT,
   DEFAULT_AA_BUNDLER_URL,
   DEFAULT_AA_POLICY_ID,
-  SATORA_SERVER_VERSION,
 } from "./version.js";
 import {
   createSwapStatusWatcher,
@@ -1296,7 +1296,7 @@ export class Client {
   #apiHeaders(extra?: Record<string, string>): Record<string, string> {
     return {
       "X-Lendaswap-Client": CLIENT_AGENT,
-      "x-satora-server-version": SATORA_SERVER_VERSION,
+      ...PROTOCOL_HEADERS,
       ...(this.#config.defaultHeaders ?? {}),
       ...(extra ?? {}),
     };
@@ -5860,7 +5860,9 @@ export class Client {
     const baseUrl = this.#config.baseUrl.replace(/\/$/, "");
     const url = `${baseUrl}/swap/${swapId}/swap-and-lock-calldata-permit2`;
 
-    const resp = await fetch(url, { headers: this.#apiHeaders() });
+    const resp = await fetch(url, {
+      headers: this.#apiHeaders(),
+    });
     if (!resp.ok) {
       const body = await resp.text();
       throw new Error(
@@ -6030,7 +6032,9 @@ export class Client {
     const baseUrl = this.#config.baseUrl.replace(/\/$/, "");
     const url = `${baseUrl}/swap/${swapId}/swap-and-lock-calldata-permit2`;
 
-    const resp = await fetch(url, { headers: this.#apiHeaders() });
+    const resp = await fetch(url, {
+      headers: this.#apiHeaders(),
+    });
     if (!resp.ok) {
       const body = await resp.text();
       throw new Error(
@@ -6798,7 +6802,9 @@ export class Client {
     const baseUrl = this.#config.baseUrl.replace(/\/$/, "");
     const url = `${baseUrl}/swap/${swapId}/swap-and-lock-calldata-permit2`;
 
-    const resp = await fetch(url, { headers: this.#apiHeaders() });
+    const resp = await fetch(url, {
+      headers: this.#apiHeaders(),
+    });
     if (!resp.ok) {
       const body = await resp.text();
       throw new Error(

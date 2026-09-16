@@ -22,26 +22,12 @@ use wiremock::matchers::header;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
-fn openapi_version() -> String {
-    let spec_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("openapi.json");
-    let spec: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(&spec_path)
-            .unwrap_or_else(|err| panic!("failed to read {}: {err}", spec_path.display())),
-    )
-    .expect("openapi.json is not valid JSON");
-    spec.pointer("/info/version")
-        .and_then(|v| v.as_str())
-        .expect("openapi.json has no string info.version")
-        .to_string()
-}
-
 #[tokio::test]
 async fn version_returns_decoded_response() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/version"))
         .and(header("X-Lendaswap-Client", "satora-rust-sdk/0.0.1"))
-        .and(header("x-satora-server-version", openapi_version()))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "tag": "v0.2.30",
             "commit_hash": "abc123",

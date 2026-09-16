@@ -253,6 +253,13 @@ export {
   calculateTargetAmount,
   computeExchangeRate,
 } from "./price-calculations.js";
+export {
+  PROTOCOL_HEADERS,
+  PROTOCOL_VERSIONS,
+  ProtocolComponent,
+  ProtocolEpoch,
+  protocolHeaderName,
+} from "./protocol.js";
 // Redeem module (Arkade claim)
 export {
   type ArkadeClaimParams,

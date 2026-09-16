@@ -13,7 +13,8 @@ import {
   NATIVE_TOKEN_ADDRESS,
   signEvmDigest,
 } from "../evm/index.js";
-import { CLIENT_AGENT, SATORA_SERVER_VERSION } from "../version.js";
+import { PROTOCOL_HEADERS } from "../protocol.js";
+import { CLIENT_AGENT } from "../version.js";
 import type { ClaimGaslessResult } from "./types.js";
 
 /** Swap types that support gasless claiming */
@@ -195,7 +196,7 @@ async function postClaim(
     headers: {
       "Content-Type": "application/json",
       "X-Lendaswap-Client": CLIENT_AGENT,
-      "x-satora-server-version": SATORA_SERVER_VERSION,
+      ...PROTOCOL_HEADERS,
     },
     body: JSON.stringify(body),
   });

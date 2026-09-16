@@ -18,7 +18,7 @@ npm install @satora/swap
 
 ## Compatibility headers
 
-API requests include `X-Lendaswap-Client: <sdk-name>/<semver>` and `x-satora-server-version: <server-api-semver>`. The server-version header declares the server/API version this SDK was built against; the API logs it for diagnostics and does not enforce compatibility yet.
+API requests include `X-Lendaswap-Client: <sdk-name>/<semver>` and one `x-satora-<component>-version: <epoch>` header per protocol component (`bitcoin-htlc`, `arkade-vhtlc`, `lightning`, `evm-erc20-htlc`, `evm-native-htlc`). The server rejects a client whose epoch for a component the swap uses is too old.
 
 ## Supported swaps
 
