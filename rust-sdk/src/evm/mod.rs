@@ -12,19 +12,41 @@ use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
 
+pub mod claim;
 pub mod funding;
+pub use claim::EvmClaimOptions;
+pub use claim::RedeemCalldata;
+pub mod htlc;
+pub mod refund;
+pub use refund::CollabRefundParams;
+pub use refund::EvmSubmission;
+pub use refund::RefundOptions;
+mod wallet;
 pub use funding::FundingOptions;
 pub use funding::Permit2FundingData;
+pub use wallet::RpcWallet;
 
 pub type WalletFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct EvmTransaction {
     pub chain_id: u64,
     pub from: Address,
     pub to: Address,
     pub value: U256,
     pub data: Bytes,
+}
+
+impl std::fmt::Debug for EvmTransaction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EvmTransaction")
+            .field("chain_id", &self.chain_id)
+            .field("from", &self.from)
+            .field("to", &self.to)
+            .field("value", &self.value)
+            .field("data", &"[REDACTED]")
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -65,6 +87,10 @@ pub trait EvmWallet: Send + Sync {
     fn call<'a>(&'a self, transaction: &'a EvmTransaction) -> WalletFuture<'a, Bytes>;
     fn send_transaction<'a>(&'a self, transaction: &'a EvmTransaction) -> WalletFuture<'a, B256>;
     fn wait_for_receipt(&self, hash: B256) -> WalletFuture<'_, EvmReceipt>;
+    /// Chain time is required for unilateral refunds. Funding-only adapters may omit it.
+    fn block_timestamp(&self) -> WalletFuture<'_, u64> {
+        Box::pin(async { Err(invalid("wallet adapter does not expose chain time")) })
+    }
 }
 
 pub(super) fn invalid(message: impl Into<String>) -> Error {
@@ -165,3 +191,6 @@ impl EvmContext {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

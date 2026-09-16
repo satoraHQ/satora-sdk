@@ -80,6 +80,7 @@ pub use creation::SwapOptions;
 
 mod dex;
 pub use dex::BridgeRate;
+pub use dex::BridgeRecipient;
 pub use dex::DexAmount;
 pub use dex::DexCall;
 pub use dex::DexCalldataRequest;

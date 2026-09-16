@@ -43,7 +43,8 @@ strings on the wire, while Bitcoin amounts must be positive and fit in `i64`.
 | Inspect | All nine API swap directions through `get_swap_details`; compact `get_swap`; bulk status |
 | Recovery | One-page `recover_swaps` and paginated `recover_all_swaps` |
 | EVM funding | Optional `gasless` feature: external-wallet Permit2 execution, deposit probes/polling and ERC-4337 funding |
-| Claim | EVM→Arkade and Lightning→Arkade, with `ArkadeConfig` |
+| Claim | EVM→Arkade and Lightning→Arkade; EVM targets via external/local wallets or server gasless submission |
+| EVM refunds | Receipt-derived unilateral and cooperative refunds with owner/domain checks |
 | Arkade wallet | Address, balance, send, boarding, settle |
 
 Lightning sends accept `LightningDestination::Invoice`, `Address`, or `Lnurl`.
@@ -56,8 +57,7 @@ invoice description of at most 639 bytes, and a per-swap surcharge.
 into payment instructions; its `receive_address` is empty for an EVM→Bitcoin
 swap whose server response has no target address.
 
-This is not full TypeScript SDK parity. Rust still lacks EVM/on-chain claims and
-refunds; collaborative refunds; bridge orchestration; WebSocket tracking and contract managers. Reading/recovering those
+This is not full TypeScript SDK parity. Rust still lacks on-chain Bitcoin execution, complete Arkade refunds, EVM refund continuation, bridge orchestration; WebSocket tracking and contract managers. Reading/recovering those
 swap records does not implement their execution flows. The TypeScript reference
 is `../ts-sdk/packages/swap` and its underlying `../ts-pure-sdk` client.
 
@@ -129,6 +129,16 @@ and gasless operation hashes are persisted before receipt polling. A pending
 submission prevents another funding attempt through that client/store.
 Execution calls through cloned clients are serialized. Separate processes must
 coordinate exclusive ownership of a swap before executing it.
+
+`RpcWallet::connect` adapts a locally derived EVM key and checks the RPC chain.
+`claim_evm_with_wallet` and `claim_evm_gasless` verify the funded HTLC, preimage,
+contract version and remaining claim window before signing. Wallet-submitted
+claims/refunds verify the exact terminal event in the mined receipt.
+`refund_evm_with_wallet` derives the locked amount from the funding receipt and
+checks chain time; `collab_refund_evm_with_wallet` validates the coordinator's
+EIP-712 parameters and deposit ownership before authorizing a cooperative refund.
+These operations require complete stored records and the relevant contract
+addresses and output limits supplied by the caller.
 
 ## Build and test
 

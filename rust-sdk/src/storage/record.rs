@@ -27,6 +27,8 @@ pub struct SwapMetadata {
     pub bridge_recipient_wallet: Option<String>,
     pub bridge_recipient_setup: Option<bool>,
     pub evm_fund_txid: Option<String>,
+    pub evm_refund_txid: Option<String>,
+    pub evm_claim_txid: Option<String>,
     pub evm_fund_userop_hash: Option<String>,
     pub evm_coordinator_address: Option<String>,
     pub evm_key_source: Option<EvmKeySource>,
@@ -45,6 +47,8 @@ impl SwapMetadata {
             bridge_recipient_wallet,
             bridge_recipient_setup,
             evm_fund_txid,
+            evm_refund_txid,
+            evm_claim_txid,
             evm_fund_userop_hash,
             evm_coordinator_address,
             evm_key_source

@@ -49,7 +49,10 @@ state the actual change and validation, without tool attribution.
    signing. Compare signatures/calldata against TypeScript/contract vectors.
    Funding checkpoint: external-wallet interface, bounded Permit2 approvals,
    fresh-quote validation, receipt checks, transaction/UserOperation persistence,
-   and recovered-key selection implemented. Claims/refunds/continuation remain.
+   and recovered-key selection implemented.
+   Settlement checkpoint: RPC wallet, chain-verified EVM claims, server gasless
+   claims, receipt-derived refunds, and cooperative refunds implemented.
+   Refunded-swap continuation, deposit recovery, and sponsored claims remain.
 
 5. [ ] **Implement on-chain Bitcoin claims and refunds.** Strict and legacy HTLC
    reconstruction, UTXO observation through Esplora/Electrum, minimum confirmations,

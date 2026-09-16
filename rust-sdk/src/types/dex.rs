@@ -65,7 +65,7 @@ pub struct DexCalldataRequest {
     pub sender: String,
     pub slippage_bps: u16,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub bridge_recipient: Option<String>,
+    pub bridge_recipient: Option<BridgeRecipient>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -90,4 +90,18 @@ pub struct DexCalldataResponse {
     pub estimated_amount_out: String,
     pub estimated_settlement_seconds: u32,
     pub router: String,
+}
+
+/// Destination-chain CCTP mint recipient, matching the current server and TypeScript SDK.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BridgeRecipient {
+    Evm {
+        address: String,
+    },
+    Solana {
+        address: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        wallet: Option<String>,
+    },
 }
