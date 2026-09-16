@@ -190,3 +190,16 @@ chains; no production payments are part of this work.
   All four isolated EVM tests pass. The full-stack run passes EVM→Arkade and
   two consecutive boarding deposits with confirmed and total balance assertions.
 - Registry package verification now succeeds and runs in the Rust SDK CI job.
+
+## Arkade→EVM E2E follow-up
+
+- The Rust driver now creates Arkade→EVM swaps, funds their VHTLCs through the
+  Rust Arkade wallet, and signs gasless EVM claims with the stored per-swap key.
+- Full-stack USDC payouts passed on Polygon and Arbitrum, each spending 10,000
+  Arkade sats. The runs received 7.451883 USDC and 7.454733 USDC respectively,
+  reached `serverredeemed`, and verified client/server balances and the durable
+  claim transaction across driver processes.
+- The default Rust E2E selection includes both swap directions and repeated
+  boarding. Arkade→EVM refund modes still require separate E2E coverage.
+- Driver formatting, strict Clippy, process-restart tests, the new scenario's
+  Biome checks, and workflow actionlint pass.
