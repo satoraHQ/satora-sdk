@@ -215,7 +215,8 @@ impl Client {
         let stored = self
             .get_stored_swap(id)?
             .ok_or_else(|| invalid("recover or create the swap before funding"))?;
-        if stored.metadata.evm_fund_txid.is_some() {
+        if stored.metadata.evm_fund_txid.is_some() || stored.metadata.evm_fund_userop_hash.is_some()
+        {
             return Err(invalid(
                 "funding already submitted; inspect its receipt before another attempt",
             ));

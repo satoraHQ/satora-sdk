@@ -164,3 +164,22 @@ LENDASWAP_API_URL=http://localhost:3333 cargo test --test integration_live -- --
 Both SDKs pin the same `openapi.json`. Refresh it from the repository root with
 `just export-openapi-sdk`, then run schema and client tests. API requests include
 `X-Lendaswap-Client` and `x-satora-server-version` compatibility headers.
+
+Refund recovery APIs (`gasless` feature):
+
+- `get_refunded_evm_swap_continuation` verifies the funding/refund receipts,
+  transfer to the depositor, safe refund status, and current token balance.
+- `continue_refunded_evm_swap` persists a replacement swap before wallet funding.
+  For AA funding, compose `prepare_refunded_evm_swap_continuation` with
+  `fund_swap_gasless`; the persisted replacement ID is reused after interruption.
+- `recover_evm_deposit_with_wallet` transfers an explicit ERC-20 amount to an
+  explicit destination, verifies the transfer receipt, and resumes a stored submission.
+- `resume_gasless_funding` resolves a previously submitted UserOperation without
+  sending it again. An operation receipt is not a substitute for verifying the
+  HTLC funding event before proceeding with settlement.
+
+Refresh the original swap before refund continuation. Each recovery submission is
+retained in storage; a failed or mismatched receipt requires explicit investigation.
+Use one executor per swap across processes. Replacement creation and local storage
+cannot be atomic across the server boundary: a crash immediately after the API
+accepts creation may require swap recovery before attempting continuation again.

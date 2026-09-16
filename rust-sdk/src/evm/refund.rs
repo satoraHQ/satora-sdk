@@ -57,6 +57,16 @@ impl Client {
         wallet: &dyn EvmWallet,
         options: &RefundOptions,
     ) -> Result<EvmHtlc> {
+        self.read_funded_evm_htlc(id, wallet, options, true).await
+    }
+
+    pub(super) async fn read_funded_evm_htlc(
+        &self,
+        id: &str,
+        wallet: &dyn EvmWallet,
+        options: &RefundOptions,
+        require_depositor: bool,
+    ) -> Result<EvmHtlc> {
         let stored = self
             .get_stored_swap(id)?
             .ok_or_else(|| invalid("swap record missing"))?;
@@ -95,7 +105,7 @@ impl Client {
         if htlc.key() != created.key {
             return Err(invalid("funding event HTLC key mismatch"));
         }
-        if let Some(coordinator) = options.coordinator {
+        if let Some(coordinator) = options.coordinator.filter(|_| require_depositor) {
             let depositor = wallet
                 .call(&transaction(
                     wallet,

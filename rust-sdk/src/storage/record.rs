@@ -29,6 +29,8 @@ pub struct SwapMetadata {
     pub evm_fund_txid: Option<String>,
     pub evm_refund_txid: Option<String>,
     pub evm_claim_txid: Option<String>,
+    pub evm_recovery_txid: Option<String>,
+    pub continuation_swap_id: Option<String>,
     pub evm_fund_userop_hash: Option<String>,
     pub evm_coordinator_address: Option<String>,
     pub evm_key_source: Option<EvmKeySource>,
@@ -49,6 +51,8 @@ impl SwapMetadata {
             evm_fund_txid,
             evm_refund_txid,
             evm_claim_txid,
+            evm_recovery_txid,
+            continuation_swap_id,
             evm_fund_userop_hash,
             evm_coordinator_address,
             evm_key_source

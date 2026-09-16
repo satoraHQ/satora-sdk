@@ -33,6 +33,7 @@ struct Wallet {
     sent: Mutex<Vec<EvmTransaction>>,
     signatures: AtomicU64,
     funding_hash: B256,
+    token_balance: AtomicU64,
 }
 fn event_log(event: impl SolEvent, address: Address) -> EvmLog {
     let data = event.encode_log_data();
@@ -57,7 +58,17 @@ impl EvmWallet for Wallet {
     }
     fn call<'a>(&'a self, tx: &'a EvmTransaction) -> WalletFuture<'a, Bytes> {
         Box::pin(async move {
-            let word = if tx.data.starts_with(&Htlc::VERSIONCall::SELECTOR) {
+            let word = if tx
+                .data
+                .starts_with(&crate::aa::abi::IERC20::balanceOfCall::SELECTOR)
+            {
+                U256::from(self.token_balance.load(Ordering::Relaxed))
+            } else if tx
+                .data
+                .starts_with(&super::recovery::RecoveryToken::transferCall::SELECTOR)
+            {
+                U256::ONE
+            } else if tx.data.starts_with(&Htlc::VERSIONCall::SELECTOR) {
                 U256::from(self.version.load(Ordering::Relaxed))
             } else if tx.data.starts_with(&Htlc::isActiveCall::SELECTOR) {
                 U256::ONE
@@ -109,11 +120,29 @@ impl EvmWallet for Wallet {
                     h.address,
                 )
             };
+            let mut logs = vec![log];
+            if hash != self.funding_hash && self.owner != h.claimer {
+                let transfer = self.sent.lock().unwrap().last().and_then(|tx| {
+                    super::recovery::RecoveryToken::transferCall::abi_decode(&tx.data).ok()
+                });
+                logs.push(event_log(
+                    super::recovery::Transfer {
+                        from: if transfer.is_some() {
+                            self.owner
+                        } else {
+                            self.coordinator
+                        },
+                        to: transfer.as_ref().map_or(self.owner, |t| t.to),
+                        value: transfer.map_or(h.amount, |t| t.amount),
+                    },
+                    h.token,
+                ));
+            }
             Ok(EvmReceipt {
                 transaction_hash: hash,
                 success: true,
                 block_number: 10,
-                logs: vec![log],
+                logs,
             })
         })
     }
@@ -191,6 +220,7 @@ fn setup(claim: bool) -> (Client, Wallet, Arc<InMemorySwapStorage>) {
         sent: Mutex::new(vec![]),
         signatures: AtomicU64::new(0),
         funding_hash,
+        token_balance: AtomicU64::new(100_000),
     };
     (client, wallet, store)
 }
@@ -430,6 +460,146 @@ async fn gasless_claim_binds_the_minimum_and_persists_submission() {
             .unwrap()
             .metadata
             .evm_claim_txid,
+        Some(B256::repeat_byte(9).to_string())
+    );
+}
+
+#[tokio::test]
+async fn recovery_checks_balance_and_recipient_and_resumes_without_resending() {
+    let (client, wallet, _) = setup(false);
+    let mut options = DepositRecovery {
+        token: wallet.htlc.token,
+        destination: Address::repeat_byte(8),
+        amount: wallet.htlc.amount,
+        timeout: Duration::from_secs(10),
+    };
+    wallet.token_balance.store(1, Ordering::Relaxed);
+    assert!(
+        client
+            .recover_evm_deposit_with_wallet("test", &wallet, options.clone())
+            .await
+            .is_err()
+    );
+    assert!(wallet.sent.lock().unwrap().is_empty());
+    wallet.token_balance.store(100_000, Ordering::Relaxed);
+    client
+        .recover_evm_deposit_with_wallet("test", &wallet, options.clone())
+        .await
+        .unwrap();
+    client
+        .recover_evm_deposit_with_wallet("test", &wallet, options.clone())
+        .await
+        .unwrap();
+    options.destination = Address::repeat_byte(9);
+    assert!(
+        client
+            .recover_evm_deposit_with_wallet("test", &wallet, options)
+            .await
+            .is_err()
+    );
+    assert_eq!(wallet.sent.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn continuation_requires_a_safe_refund_status_verified_receipt_and_available_balance() {
+    let (client, wallet, store) = setup(false);
+    let options = RefundOptions {
+        htlc: wallet.htlc.address,
+        lock_token: wallet.htlc.token,
+        coordinator: Some(wallet.coordinator),
+        timeout: Duration::from_secs(10),
+    };
+    client
+        .update_swap_metadata(
+            "test",
+            SwapMetadata {
+                evm_refund_txid: Some(B256::repeat_byte(99).to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(
+        client
+            .get_refunded_evm_swap_continuation("test", &wallet, &options)
+            .await
+            .is_err()
+    );
+    let mut stored = store.get_swap("test").unwrap().unwrap();
+    if let crate::types::GetSwapResponse::EvmToArkade(ref mut response) = stored.response {
+        response.status = crate::types::SwapStatus::ClientRefundedServerFunded;
+    }
+    store.store_swap(stored.clone()).unwrap();
+    assert!(
+        client
+            .get_refunded_evm_swap_continuation("test", &wallet, &options)
+            .await
+            .is_err()
+    );
+    if let crate::types::GetSwapResponse::EvmToArkade(ref mut response) = stored.response {
+        response.status = crate::types::SwapStatus::ClientRefunded;
+    }
+    store.store_swap(stored).unwrap();
+    let funds = client
+        .get_refunded_evm_swap_continuation("test", &wallet, &options)
+        .await
+        .unwrap();
+    assert_eq!(funds.amount, wallet.htlc.amount);
+    wallet.token_balance.store(1, Ordering::Relaxed);
+    assert!(
+        client
+            .get_refunded_evm_swap_continuation("test", &wallet, &options)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn funding_resume_distinguishes_pending_failed_and_successful_operations() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    let (client, _, store) = setup(false);
+    let mut stored = store.get_swap("test").unwrap().unwrap();
+    store.delete_swap("test").unwrap();
+    stored.metadata.evm_fund_txid = None;
+    stored.metadata.evm_fund_userop_hash = Some(B256::repeat_byte(8).to_string());
+    store.store_swap(stored).unwrap();
+    let server = MockServer::start().await;
+    let bundler =
+        crate::aa::bundler::BundlerClient::new(server.uri().parse().unwrap(), Default::default())
+            .unwrap();
+    for result in [
+        Value::Null,
+        json!({"success":false,"receipt":{"transactionHash":B256::repeat_byte(9)}}),
+        json!({"success":true,"receipt":{"transactionHash":B256::repeat_byte(9)}}),
+    ] {
+        server.reset().await;
+        let expected = result.clone();
+        Mock::given(method("POST"))
+            .respond_with(move |request: &wiremock::Request| {
+                let body: Value = request.body_json().unwrap();
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"jsonrpc":"2.0","id":body["id"],"result":result}))
+            })
+            .mount(&server)
+            .await;
+        let resumed = client.resume_gasless_funding("test", &bundler).await;
+        if expected.is_null() {
+            assert_eq!(resumed.unwrap(), None);
+        } else if expected["success"] == false {
+            assert!(resumed.is_err());
+        } else {
+            assert_eq!(resumed.unwrap(), Some(B256::repeat_byte(9)));
+        }
+    }
+    assert_eq!(
+        store
+            .get_swap("test")
+            .unwrap()
+            .unwrap()
+            .metadata
+            .evm_fund_txid,
         Some(B256::repeat_byte(9).to_string())
     );
 }

@@ -52,7 +52,9 @@ state the actual change and validation, without tool attribution.
    and recovered-key selection implemented.
    Settlement checkpoint: RPC wallet, chain-verified EVM claims, server gasless
    claims, receipt-derived refunds, and cooperative refunds implemented.
-   Refunded-swap continuation, deposit recovery, and sponsored claims remain.
+   Recovery checkpoint: receipt-verified refunded-token continuation, persisted
+   replacement IDs, stranded ERC-20 recovery, and pending funding UserOperation
+   resumption implemented. Sponsored claims remain (shared publisher in step 7).
 
 5. [ ] **Implement on-chain Bitcoin claims and refunds.** Strict and legacy HTLC
    reconstruction, UTXO observation through Esplora/Electrum, minimum confirmations,
