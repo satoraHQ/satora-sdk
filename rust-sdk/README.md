@@ -415,9 +415,8 @@ Use one tracker and exclusive execution ownership per store across processes.
   execution. Live BTCPayServer integration, production bundler/paymaster
   sponsorship, Circle/LayerZero delivery, and production Arkade batch settlement
   still need deployment testing.
-- The Arkade dependencies remain pinned to git to avoid an upstream yanked
-  dependency. Source/path/git consumption works; crates.io publication requires
-  a migration to compatible registry versions of those dependencies.
+- Arkade dependencies use the published 0.11.0 crates, which remove the yanked
+  dependency that previously required Git pins.
 
 ## Build and test
 

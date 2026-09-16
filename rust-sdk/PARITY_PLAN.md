@@ -116,9 +116,8 @@ state the actual change and validation, without tool attribution.
     Keep a precise list of live network/chain validations that were not executed.
     Added compiled route/tracking/recovery examples, default/all-feature rustdoc
     checks, independent transport-feature checks, and matching CI gates. Package
-    contents include examples and this plan. Cargo's registry package validation
-    remains blocked by the existing git-only Arkade dependency declarations;
-    registry migration and live deployment testing are explicit follow-ups.
+    contents include examples and this plan. The Arkade 0.11.0 follow-up replaces
+    Git pins with published crates; deployment validation remains a follow-up.
     Final review also added pre-submission reservations for EVM funding, refunds,
     and deposit recovery; original-hash reconciliation; refund receipt resumption
     after coordinator deposit deletion; and stricter funding event identity checks.
@@ -142,15 +141,15 @@ chains; no production payments are part of this work.
 
 ## Final local verification
 
-- Default features: 131 passing tests including two doctests; seven live tests ignored.
-- All features: 199 passing tests including two doctests; seven live tests ignored.
+- Default features: 134 passing tests including two doctests; seven live tests ignored.
+- All features: 202 passing tests including two doctests; seven live tests and four
+  separately executed local-EVM tests ignored by the ordinary test command.
 - Formatting, strict all-target/all-feature Clippy, default/all-feature rustdoc
   with warnings denied, and the websocket+electrum build without EVM: passed.
 - All three examples compile with optional features; CI workflow YAML parses.
 - `cargo package --list --allow-dirty`: includes source, fixtures, examples and docs.
-- `cargo package --locked --no-verify --allow-dirty`: blocked by the existing
-  git-only `ark-bdk-wallet` dependency lacking a registry version requirement.
-  Do not treat this source-validation checkpoint as a crates.io release.
+- `cargo package --locked --allow-dirty`: packaging and verification build passed
+  after migrating to the published Arkade 0.11.0 crates. No package was published.
 - No production transactions, live bridges, BTCPayServer plugin runs, or .NET
   builds were performed. The README records account-model and trust limitations.
 
@@ -182,3 +181,12 @@ chains; no production payments are part of this work.
   cache after CLI settlement. ShellCheck and shell syntax checks pass.
 - Full-stack Lightning and bridge scenarios remain untested. No production
   funds were used.
+
+## Arkade 0.11.0 follow-up
+
+- Replaced the `ark-rs` and `ark-bdk-wallet` Git pins with crates.io 0.11.0 and
+  updated the standalone SDK and E2E driver lockfiles.
+- Default/all-feature tests and strict Clippy pass with the published crates.
+  All four isolated EVM tests pass. The full-stack run passes EVM→Arkade and
+  two consecutive boarding deposits with confirmed and total balance assertions.
+- Registry package verification now succeeds and runs in the Rust SDK CI job.
