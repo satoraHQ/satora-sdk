@@ -140,7 +140,7 @@ impl Client {
             .send()
             .await?;
         let swap: EvmToLightningSwapResponse = check_status(response).await?.json().await?;
-        self.storage.put_swap_key_index(&swap.id, index)?;
+        self.persist_swap(index, GetSwapResponse::EvmToLightning(swap.clone()))?;
         Ok(Swap::from_response(GetSwapResponse::EvmToLightning(swap)))
     }
 }

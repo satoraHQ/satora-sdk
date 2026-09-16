@@ -172,20 +172,24 @@ impl Signer {
             .master
             .derive_priv(&secp, &path)
             .map_err(derivation_err)?;
-        let secret_key = derived.private_key;
-        let public_key = secret_key.public_key(&secp);
-        // EVM address: keccak256(uncompressed_pubkey[1..])[12..], lowercase hex.
-        let uncompressed = public_key.serialize_uncompressed();
-        let mut keccak = tiny_keccak::Keccak::v256();
-        let mut digest = [0u8; 32];
-        use tiny_keccak::Hasher as _;
-        keccak.update(&uncompressed[1..]);
-        keccak.finalize(&mut digest);
-        let address = format!("0x{}", hex::encode(&digest[12..]));
-        Ok(EvmKey {
-            secret_key: secret_key.secret_bytes(),
-            address,
-        })
+        Ok(evm_key(derived.private_key))
+    }
+
+    /// TypeScript SDK's current wallet EVM key at `m/44'/60'/0'/0/0`.
+    pub fn derive_wallet_evm_key(&self) -> Result<EvmKey> {
+        let derived = self
+            .master
+            .derive_priv(&Secp256k1::new(), &parse_path("m/44'/60'/0'/0/0")?)
+            .map_err(derivation_err)?;
+        Ok(evm_key(derived.private_key))
+    }
+
+    /// Older TypeScript swaps use the swap signing key directly as their EVM key.
+    pub fn derive_legacy_evm_key(&self, key_index: u32) -> Result<EvmKey> {
+        let params = self.derive_swap_params(key_index)?;
+        let secret = bitcoin::secp256k1::SecretKey::from_slice(&params.secret)
+            .map_err(|e| Error::InvalidSigner(e.to_string()))?;
+        Ok(evm_key(secret))
     }
 
     /// Xpub used as the parent for non-hardened `user_id` derivations.
@@ -276,6 +280,21 @@ impl std::fmt::Debug for EvmKey {
             .field("secret_key", &"<redacted>")
             .field("address", &self.address)
             .finish()
+    }
+}
+
+fn evm_key(secret_key: bitcoin::secp256k1::SecretKey) -> EvmKey {
+    use tiny_keccak::Hasher as _;
+    let uncompressed = secret_key
+        .public_key(&Secp256k1::new())
+        .serialize_uncompressed();
+    let mut keccak = tiny_keccak::Keccak::v256();
+    let mut digest = [0u8; 32];
+    keccak.update(&uncompressed[1..]);
+    keccak.finalize(&mut digest);
+    EvmKey {
+        secret_key: secret_key.secret_bytes(),
+        address: format!("0x{}", hex::encode(&digest[12..])),
     }
 }
 

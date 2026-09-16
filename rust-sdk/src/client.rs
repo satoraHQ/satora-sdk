@@ -41,6 +41,7 @@ use url::Url;
 
 mod api;
 mod lightning;
+mod storage;
 
 /// Production Lendaswap API endpoint. Used by [`ClientBuilder`] when no
 /// `.base_url(…)` override is set, and by callers who don't care to spell
@@ -397,7 +398,7 @@ impl Client {
                 Ok(response) => {
                     // Persist the key_index so claim/refund can re-derive every
                     // secret from `(signer, key_index)`.
-                    self.storage.put_swap_key_index(&response.id, key_index)?;
+                    self.persist_swap(key_index, GetSwapResponse::EvmToArkade(response.clone()))?;
                     return Ok(Swap::from_evm_response(response));
                 }
                 Err(err) if is_preimage_collision(&err) => {
@@ -505,7 +506,10 @@ impl Client {
             req.invoice_description = invoice_description.clone();
             match self.send(req).await {
                 Ok(response) => {
-                    self.storage.put_swap_key_index(&response.id, key_index)?;
+                    self.persist_swap(
+                        key_index,
+                        GetSwapResponse::LightningToArkade(response.clone()),
+                    )?;
                     return Ok(Swap::from_lightning_response(response));
                 }
                 Err(err) if is_preimage_collision(&err) => {
@@ -589,7 +593,10 @@ impl Client {
         req.extra_fees_bps = extra_fees_bps;
         // The invoice owns the hash: deriving another key cannot fix a duplicate invoice.
         let response = self.send(req).await?;
-        self.storage.put_swap_key_index(&response.id, key_index)?;
+        self.persist_swap(
+            key_index,
+            GetSwapResponse::ArkadeToLightning(response.clone()),
+        )?;
         Ok(Swap::from_arkade_to_lightning_response(response))
     }
 

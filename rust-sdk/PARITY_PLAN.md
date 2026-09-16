@@ -21,7 +21,7 @@ state the actual change and validation, without tool attribution.
 
 ## Remaining steps
 
-1. [ ] **Persist complete swap records and execution metadata.** Extend memory and
+1. [x] **Persist complete swap records and execution metadata.** Extend memory and
    SQLite stores with list/get/update/delete/clear, preserving allocation counters.
    Retain original key indices, bridge recipients, deposit transaction data, and
    response snapshots across restarts. Add explicit key ownership/derivation data

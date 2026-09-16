@@ -71,12 +71,21 @@ partitions counters and swap key indices by the signing wallet's recovery xpub.
 Independent connections/processes allocate indices transactionally. The parent
 directory must exist and the filesystem must support SQLite locking.
 
-The database stores key indices, not private keys or preimages. Back up both the
+The database stores key indices, complete swap responses, and local execution
+metadata, without private keys or preimages. Back up both the
 seed and database. The default in-memory store is ephemeral. Reopen the same
 file with the same seed to resume swaps after a restart. If the database is lost,
 call `recover_all_swaps(None)` before creating more swaps. Recovery advances the
 counter without moving an existing counter backwards. Custom stores must
-implement `ensure_next_key_index` to support recovery.
+implement `ensure_next_key_index` to support recovery. Existing index-only SQLite
+databases upgrade on open; refresh or recover swaps to populate their snapshots.
+Custom stores retain index-only behavior until they implement the record methods.
+
+Use `get_stored_swap` and `list_all_swaps` for offline snapshots, `refresh_swap`
+for a persisted API refresh, and `update_swap_metadata` to merge local execution
+details atomically. `delete_swap` and `clear_swap_storage` remove local records
+without cancelling swaps or resetting the key allocation counter. Keep the seed
+and recover from the server if you delete a record that still holds funds.
 
 Swap creation allocates an index before making its HTTP request and persists the
 swap ID after a successful response. If the process dies between those steps,
@@ -87,6 +96,8 @@ use `recover_swaps(Some(start_index))` for explicit deeper scans.
 Swap/preimage and recovery derivation follow the TypeScript SDK. EVM deposit
 keys in this Rust client use a separate per-swap derivation, so recovering a
 TypeScript-created record does not transfer control of an external EVM wallet.
+Records identify Rust per-swap, TypeScript BIP44, legacy swap-key, and external
+EVM ownership explicitly. The original Rust derivation remains unchanged.
 
 ## Build and test
 

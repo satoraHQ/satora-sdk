@@ -1,4 +1,6 @@
 use super::KEY_INDEX_LIMIT;
+use super::StoredSwap;
+use super::SwapMetadata;
 use super::SwapStorage;
 use crate::Error;
 use crate::Result;
@@ -43,6 +45,12 @@ impl SqliteSwapStorage {
                 swap_id TEXT NOT NULL,
                 key_index INTEGER NOT NULL CHECK(key_index BETWEEN 0 AND 2147483647),
                 PRIMARY KEY(wallet_id, swap_id)
+            );
+            CREATE TABLE IF NOT EXISTS sdk_swap_records (
+                wallet_id TEXT NOT NULL,
+                swap_id TEXT NOT NULL,
+                record_json TEXT NOT NULL,
+                PRIMARY KEY(wallet_id, swap_id)
             );",
         )?;
         connection.execute(
@@ -55,6 +63,42 @@ impl SqliteSwapStorage {
         })
     }
 
+    fn read_record(
+        connection: &Connection,
+        wallet_id: &str,
+        swap_id: &str,
+    ) -> Result<Option<StoredSwap>> {
+        let json: Option<String> = connection
+            .query_row(
+                "SELECT record_json FROM sdk_swap_records WHERE wallet_id = ?1 AND swap_id = ?2",
+                params![wallet_id, swap_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        json.map(|json| {
+            let record: StoredSwap =
+                serde_json::from_str(&json).map_err(|e| Error::Storage(e.to_string()))?;
+            record.validate()?;
+            if record.response.id() != swap_id {
+                return Err(Error::Storage(
+                    "swap record ID does not match its database key".into(),
+                ));
+            }
+            Ok(record)
+        })
+        .transpose()
+    }
+
+    fn write_record(connection: &Connection, wallet_id: &str, record: &StoredSwap) -> Result<()> {
+        let json = serde_json::to_string(record).map_err(|e| Error::Storage(e.to_string()))?;
+        connection.execute(
+            "INSERT INTO sdk_swap_records(wallet_id, swap_id, record_json) VALUES (?1, ?2, ?3)
+             ON CONFLICT(wallet_id, swap_id) DO UPDATE SET record_json = excluded.record_json",
+            params![wallet_id, record.response.id(), json],
+        )?;
+        Ok(())
+    }
+
     fn connection(&self) -> Result<MutexGuard<'_, Connection>> {
         self.connection
             .lock()
@@ -63,6 +107,105 @@ impl SqliteSwapStorage {
 }
 
 impl SwapStorage for SqliteSwapStorage {
+    fn store_swap(&self, mut record: StoredSwap) -> Result<()> {
+        record.validate()?;
+        let mut connection = self.connection()?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let index: Option<u32> = tx
+            .query_row(
+                "SELECT key_index FROM sdk_swap_keys WHERE wallet_id = ?1 AND swap_id = ?2",
+                params![self.wallet_id, record.response.id()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if index.is_some_and(|index| index != record.key_index) {
+            return Err(Error::Storage(
+                "cannot replace a stored swap's key index".into(),
+            ));
+        }
+        if let Some(mut old) = Self::read_record(&tx, &self.wallet_id, record.response.id())? {
+            old.merge(record)?;
+            record = old;
+        }
+        tx.execute("INSERT OR IGNORE INTO sdk_swap_keys(wallet_id, swap_id, key_index) VALUES (?1, ?2, ?3)",
+            params![self.wallet_id, record.response.id(), record.key_index])?;
+        tx.execute(
+            "UPDATE sdk_key_indices SET next_index = MAX(next_index, ?1) WHERE wallet_id = ?2",
+            params![record.key_index + 1, self.wallet_id],
+        )?;
+        Self::write_record(&tx, &self.wallet_id, &record)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn get_swap(&self, swap_id: &str) -> Result<Option<StoredSwap>> {
+        let connection = self.connection()?;
+        Self::read_record(&connection, &self.wallet_id, swap_id)
+    }
+
+    fn list_swaps(&self) -> Result<Vec<StoredSwap>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare("SELECT swap_id, record_json FROM sdk_swap_records WHERE wallet_id = ?1 ORDER BY swap_id")?;
+        let rows = statement.query_map([&self.wallet_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.map(|row| {
+            let (id, json) = row?;
+            let record: StoredSwap =
+                serde_json::from_str(&json).map_err(|e| Error::Storage(e.to_string()))?;
+            record.validate()?;
+            if record.response.id() != id {
+                return Err(Error::Storage(
+                    "swap record ID does not match its database key".into(),
+                ));
+            }
+            Ok(record)
+        })
+        .collect()
+    }
+
+    fn update_metadata(&self, swap_id: &str, metadata: SwapMetadata) -> Result<()> {
+        let mut connection = self.connection()?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut record = Self::read_record(&tx, &self.wallet_id, swap_id)?
+            .ok_or_else(|| Error::Storage("swap record not found".into()))?;
+        record.metadata.merge(metadata);
+        record.updated_at = super::record::now()?.max(record.updated_at);
+        Self::write_record(&tx, &self.wallet_id, &record)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn delete_swap(&self, swap_id: &str) -> Result<()> {
+        let mut connection = self.connection()?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "DELETE FROM sdk_swap_records WHERE wallet_id = ?1 AND swap_id = ?2",
+            params![self.wallet_id, swap_id],
+        )?;
+        tx.execute(
+            "DELETE FROM sdk_swap_keys WHERE wallet_id = ?1 AND swap_id = ?2",
+            params![self.wallet_id, swap_id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn clear(&self) -> Result<()> {
+        let mut connection = self.connection()?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "DELETE FROM sdk_swap_records WHERE wallet_id = ?1",
+            [&self.wallet_id],
+        )?;
+        tx.execute(
+            "DELETE FROM sdk_swap_keys WHERE wallet_id = ?1",
+            [&self.wallet_id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     fn ensure_next_key_index(&self, next_index: u32) -> Result<()> {
         if next_index > KEY_INDEX_LIMIT {
             return Err(Error::Storage("next key index exceeds 2^31".into()));
@@ -99,6 +242,13 @@ impl SwapStorage for SqliteSwapStorage {
         }
         let mut connection = self.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if Self::read_record(&transaction, &self.wallet_id, swap_id)?
+            .is_some_and(|r| r.key_index != key_index)
+        {
+            return Err(Error::Storage(
+                "cannot replace a stored swap's key index".into(),
+            ));
+        }
         transaction.execute(
             "INSERT INTO sdk_swap_keys(wallet_id, swap_id, key_index) VALUES (?1, ?2, ?3)
              ON CONFLICT(wallet_id, swap_id) DO UPDATE SET key_index = excluded.key_index",
