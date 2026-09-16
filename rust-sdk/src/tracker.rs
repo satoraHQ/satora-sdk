@@ -529,6 +529,10 @@ impl SwapTracker {
                     || metadata.evm_claim_userop_hash.is_some()
                     || submitted.is_some_and(|a| a.action == ActionKind::Claim),
                 submission_uncertain: uncertain
+                    || (metadata.evm_fund_started == Some(true)
+                        && metadata.evm_fund_txid.is_none()
+                        && metadata.evm_fund_userop_hash.is_none())
+                    || metadata.evm_refund_started == Some(true)
                     || metadata.btc_spend_txid.is_some()
                     || metadata.arkade_pending.is_some()
                     || metadata.arkade_delegate.is_some()

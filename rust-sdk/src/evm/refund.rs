@@ -86,6 +86,9 @@ impl Client {
                 invalid("funding transaction is unknown; refresh or recover this swap")
             })?;
         let receipt = wallet.wait_for_receipt(parse(hash)?).await?;
+        if receipt.transaction_hash != parse::<B256>(hash)? {
+            return Err(invalid("funding receipt transaction hash mismatch"));
+        }
         if !receipt.success {
             return Err(invalid("funding transaction reverted"));
         }
@@ -131,7 +134,27 @@ impl Client {
     ) -> Result<EvmReceipt> {
         tokio::time::timeout(options.timeout, async {
             let _execution = self.evm_execution.lock().await;
-            let htlc = self.get_funded_evm_htlc(id, wallet, &options).await?;
+            let metadata = self
+                .get_stored_swap(id)?
+                .ok_or_else(|| invalid("swap record missing"))?
+                .metadata;
+            let htlc = self
+                .read_funded_evm_htlc(id, wallet, &options, metadata.evm_refund_txid.is_none())
+                .await?;
+            if let Some(hash) = metadata.evm_refund_txid {
+                let hash = parse::<B256>(&hash)?;
+                let receipt = wallet.wait_for_receipt(hash).await?;
+                if receipt.transaction_hash != hash {
+                    return Err(invalid("refund receipt hash mismatch"));
+                }
+                htlc.verify_refund_receipt(&receipt)?;
+                return Ok(receipt);
+            }
+            if metadata.evm_refund_started == Some(true) {
+                return Err(invalid(
+                    "refund submission unresolved; reconcile its transaction before retrying",
+                ));
+            }
             if !htlc.is_active(wallet).await? {
                 return Err(invalid("HTLC is no longer active"));
             }
@@ -165,6 +188,13 @@ impl Client {
             };
             let tx = transaction(wallet, to, data);
             wallet.call(&tx).await?;
+            self.update_swap_metadata(
+                id,
+                SwapMetadata {
+                    evm_refund_started: Some(true),
+                    ..Default::default()
+                },
+            )?;
             let hash = wallet.send_transaction(&tx).await?;
             self.update_swap_metadata(
                 id,
@@ -174,6 +204,9 @@ impl Client {
                 },
             )?;
             let receipt = wallet.wait_for_receipt(hash).await?;
+            if receipt.transaction_hash != hash {
+                return Err(invalid("refund receipt hash mismatch"));
+            }
             htlc.verify_refund_receipt(&receipt)?;
             Ok(receipt)
         })
@@ -204,7 +237,12 @@ impl Client {
     ) -> Result<EvmSubmission> {
         tokio::time::timeout(options.timeout, async {
             let _execution = self.evm_execution.lock().await;
-            let htlc = self.get_funded_evm_htlc(id,wallet,&options).await?;
+            let metadata = self.get_stored_swap(id)?.ok_or_else(|| invalid("swap record missing"))?.metadata;
+            let htlc = self.read_funded_evm_htlc(id,wallet,&options,metadata.evm_refund_txid.is_none()).await?;
+            if let Some(hash) = metadata.evm_refund_txid {
+                return Ok(EvmSubmission { id: id.into(), tx_hash: hash, message: "previously submitted; verify its receipt".into() });
+            }
+            if metadata.evm_refund_started == Some(true) { return Err(invalid("refund submission unresolved; reconcile its transaction before retrying")); }
             if !htlc.is_active(wallet).await? { return Err(invalid("HTLC is no longer active")); }
             let coordinator = options.coordinator.ok_or_else(|| invalid("collaborative refunds require coordinator funding"))?;
             let params = self.get_collab_refund_evm_params(id).await?;
@@ -223,6 +261,7 @@ impl Client {
             verify_signature(&signature,typed.digest,wallet.address())?;
             let mut url = self.base_url.join("/api/swap/")?;
             url.path_segments_mut().map_err(|_| invalid("invalid API URL"))?.pop_if_empty().push(id).push("collab-refund-evm");
+            self.update_swap_metadata(id, SwapMetadata { evm_refund_started: Some(true), ..Default::default() })?;
             let response = self.api_request(Method::POST,url).json(&json!({"v":u8::from(signature.v())+27,"r":format!("0x{:064x}",signature.r()),"s":format!("0x{:064x}",signature.s()),"depositor_address":wallet.address()})).send().await?;
             let submitted: EvmSubmission = crate::client::check_status(response).await?.json().await?;
             if submitted.id != id { return Err(Error::Decode("refund response ID mismatch".into())); }

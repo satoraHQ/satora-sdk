@@ -84,6 +84,75 @@ fn verify_transfer(
 }
 
 impl Client {
+    /// Attach the original funding hash after a lost broadcast response. This
+    /// records identity only; call `get_funded_evm_htlc` to verify its receipt.
+    pub async fn attach_evm_funding_transaction(&self, id: &str, hash: B256) -> Result<()> {
+        let _guard = self.evm_execution.lock().await;
+        let metadata = self
+            .get_stored_swap(id)?
+            .ok_or_else(|| invalid("swap record missing"))?
+            .metadata;
+        if hash.is_zero()
+            || metadata.evm_fund_started != Some(true)
+            || metadata.evm_fund_txid.is_some()
+        {
+            return Err(invalid("no unresolved funding submission to reconcile"));
+        }
+        self.update_swap_metadata(
+            id,
+            SwapMetadata {
+                evm_fund_txid: Some(hash.to_string()),
+                ..Default::default()
+            },
+        )
+    }
+    /// Attach the original refund hash after a lost response, then call the
+    /// refund method again to verify the receipt without rebroadcasting.
+    pub async fn attach_evm_refund_transaction(&self, id: &str, hash: B256) -> Result<()> {
+        let _guard = self.evm_execution.lock().await;
+        let metadata = self
+            .get_stored_swap(id)?
+            .ok_or_else(|| invalid("swap record missing"))?
+            .metadata;
+        if hash.is_zero()
+            || metadata.evm_refund_started != Some(true)
+            || metadata.evm_refund_txid.is_some()
+        {
+            return Err(invalid("no unresolved refund submission to reconcile"));
+        }
+        self.update_swap_metadata(
+            id,
+            SwapMetadata {
+                evm_refund_txid: Some(hash.to_string()),
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Reconcile the original stranded-token transfer after a lost response.
+    /// Retry `recover_evm_deposit_with_wallet` with the same approved limits to
+    /// verify its receipt; attaching a hash alone does not establish settlement.
+    pub async fn attach_evm_recovery_transaction(&self, id: &str, hash: B256) -> Result<()> {
+        let _guard = self.evm_execution.lock().await;
+        let metadata = self
+            .get_stored_swap(id)?
+            .ok_or_else(|| invalid("swap record missing"))?
+            .metadata;
+        if hash.is_zero()
+            || metadata.evm_recovery_started != Some(true)
+            || metadata.evm_recovery_txid.is_some()
+        {
+            return Err(invalid("no unresolved recovery submission to reconcile"));
+        }
+        self.update_swap_metadata(
+            id,
+            SwapMetadata {
+                evm_recovery_txid: Some(hash.to_string()),
+                ..Default::default()
+            },
+        )
+    }
+
     /// Resume receipt discovery after a process restart, without submitting another UserOperation.
     /// `None` means the bundler still reports the persisted operation as pending.
     pub async fn resume_gasless_funding(
@@ -305,6 +374,11 @@ impl Client {
             let hash = if let Some(hash) = stored.metadata.evm_recovery_txid {
                 parse(&hash)?
             } else {
+                if stored.metadata.evm_recovery_started == Some(true) {
+                    return Err(invalid(
+                        "recovery submission unresolved; reconcile its transaction before retrying",
+                    ));
+                }
                 if balance(wallet, options.token).await? < options.amount {
                     return Err(invalid("insufficient token balance for recovery"));
                 }
@@ -321,6 +395,13 @@ impl Client {
                 if !result.is_empty() && word(&result)? != U256::ONE {
                     return Err(invalid("token transfer simulation returned false"));
                 }
+                self.update_swap_metadata(
+                    id,
+                    SwapMetadata {
+                        evm_recovery_started: Some(true),
+                        ..Default::default()
+                    },
+                )?;
                 let hash = wallet.send_transaction(&tx).await?;
                 self.update_swap_metadata(
                     id,
@@ -332,6 +413,9 @@ impl Client {
                 hash
             };
             let receipt = wallet.wait_for_receipt(hash).await?;
+            if receipt.transaction_hash != hash {
+                return Err(invalid("recovery receipt hash mismatch"));
+            }
             verify_transfer(
                 &receipt,
                 options.token,

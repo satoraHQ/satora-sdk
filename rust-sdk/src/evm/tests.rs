@@ -16,6 +16,7 @@ use alloy::sol_types::SolEvent;
 use serde_json::json;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -32,6 +33,8 @@ struct Wallet {
     version: AtomicU64,
     sent: Mutex<Vec<EvmTransaction>>,
     signatures: AtomicU64,
+    fail_send: AtomicBool,
+    settled: AtomicBool,
     funding_hash: B256,
     extra_logs: Vec<EvmLog>,
     token_balance: AtomicU64,
@@ -72,9 +75,13 @@ impl EvmWallet for Wallet {
             } else if tx.data.starts_with(&Htlc::VERSIONCall::SELECTOR) {
                 U256::from(self.version.load(Ordering::Relaxed))
             } else if tx.data.starts_with(&Htlc::isActiveCall::SELECTOR) {
-                U256::ONE
+                U256::from(u8::from(!self.settled.load(Ordering::Relaxed)))
             } else if tx.data.starts_with(&Coordinator::depositsCall::SELECTOR) {
-                U256::from_be_slice(self.owner.as_slice())
+                if self.settled.load(Ordering::Relaxed) {
+                    U256::ZERO
+                } else {
+                    U256::from_be_slice(self.owner.as_slice())
+                }
             } else {
                 U256::ZERO
             };
@@ -84,6 +91,9 @@ impl EvmWallet for Wallet {
     fn send_transaction<'a>(&'a self, tx: &'a EvmTransaction) -> WalletFuture<'a, B256> {
         Box::pin(async move {
             self.sent.lock().unwrap().push(tx.clone());
+            if self.fail_send.load(Ordering::Relaxed) {
+                return Err(Error::Transport("broadcast response lost".into()));
+            }
             Ok(B256::repeat_byte(99))
         })
     }
@@ -221,6 +231,8 @@ fn setup(claim: bool) -> (Client, Wallet, Arc<InMemorySwapStorage>) {
         version: AtomicU64::new(6),
         sent: Mutex::new(vec![]),
         signatures: AtomicU64::new(0),
+        fail_send: AtomicBool::new(false),
+        settled: AtomicBool::new(false),
         funding_hash,
         extra_logs: Vec::new(),
         token_balance: AtomicU64::new(100_000),
@@ -830,5 +842,88 @@ async fn outbound_cctp_claim_reconstructs_actual_burn_and_resumes_after_expiry()
             .await
             .is_err()
     );
+    assert_eq!(wallet.sent.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn refund_lost_response_is_reserved_and_resumes_after_deposit_is_removed() {
+    let (client, wallet, store) = setup(false);
+    let options = RefundOptions {
+        htlc: wallet.htlc.address,
+        lock_token: wallet.htlc.token,
+        coordinator: Some(wallet.coordinator),
+        timeout: Duration::from_secs(5),
+    };
+    wallet.now.store(wallet.htlc.timelock, Ordering::Relaxed);
+    wallet.fail_send.store(true, Ordering::Relaxed);
+    assert!(
+        client
+            .refund_evm_with_wallet("test", &wallet, options.clone())
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        store
+            .get_swap("test")
+            .unwrap()
+            .unwrap()
+            .metadata
+            .evm_refund_started,
+        Some(true)
+    );
+    assert!(
+        client
+            .refund_evm_with_wallet("test", &wallet, options.clone())
+            .await
+            .is_err()
+    );
+    assert_eq!(wallet.sent.lock().unwrap().len(), 1);
+    client
+        .attach_evm_refund_transaction("test", B256::repeat_byte(99))
+        .await
+        .unwrap();
+    wallet.settled.store(true, Ordering::Relaxed);
+    client
+        .refund_evm_with_wallet("test", &wallet, options.clone())
+        .await
+        .unwrap();
+    client
+        .refund_evm_with_wallet("test", &wallet, options)
+        .await
+        .unwrap();
+    assert_eq!(wallet.sent.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn deposit_recovery_does_not_resubmit_after_a_lost_response() {
+    let (client, wallet, _) = setup(false);
+    let options = DepositRecovery {
+        token: wallet.htlc.token,
+        destination: Address::repeat_byte(80),
+        amount: U256::from(100),
+        timeout: Duration::from_secs(5),
+    };
+    wallet.fail_send.store(true, Ordering::Relaxed);
+    assert!(
+        client
+            .recover_evm_deposit_with_wallet("test", &wallet, options.clone())
+            .await
+            .is_err()
+    );
+    assert!(
+        client
+            .recover_evm_deposit_with_wallet("test", &wallet, options.clone())
+            .await
+            .is_err()
+    );
+    assert_eq!(wallet.sent.lock().unwrap().len(), 1);
+    client
+        .attach_evm_recovery_transaction("test", B256::repeat_byte(99))
+        .await
+        .unwrap();
+    client
+        .recover_evm_deposit_with_wallet("test", &wallet, options)
+        .await
+        .unwrap();
     assert_eq!(wallet.sent.lock().unwrap().len(), 1);
 }

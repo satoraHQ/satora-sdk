@@ -219,7 +219,8 @@ impl Client {
         let stored = self
             .get_stored_swap(id)?
             .ok_or_else(|| invalid("recover or create the swap before funding"))?;
-        if stored.metadata.evm_fund_txid.is_some()
+        if stored.metadata.evm_fund_started == Some(true)
+            || stored.metadata.evm_fund_txid.is_some()
             || stored.metadata.evm_fund_userop_hash.is_some()
             || stored
                 .metadata
@@ -272,6 +273,9 @@ impl Client {
             );
             let hash = wallet.send_transaction(&approve).await?;
             let receipt = wallet.wait_for_receipt(hash).await?;
+            if receipt.transaction_hash != hash {
+                return Err(invalid("funding receipt transaction hash mismatch"));
+            }
             if !receipt.success {
                 return Err(invalid("token approval reverted"));
             }
@@ -336,6 +340,14 @@ impl Client {
         };
         let tx = transaction(wallet, options.coordinator, call.abi_encode());
         wallet.call(&tx).await?;
+        self.update_swap_metadata(
+            id,
+            SwapMetadata {
+                evm_fund_started: Some(true),
+                evm_coordinator_address: Some(options.coordinator.to_string()),
+                ..Default::default()
+            },
+        )?;
         let hash = wallet.send_transaction(&tx).await?;
         self.update_swap_metadata(
             id,
@@ -363,15 +375,6 @@ impl Client {
                 "receipt contains no matching HTLC creation; inspect the stored transaction before retrying",
             ));
         }
-        if receipt.transaction_hash != hash {
-            self.update_swap_metadata(
-                id,
-                SwapMetadata {
-                    evm_fund_txid: Some(receipt.transaction_hash.to_string()),
-                    ..Default::default()
-                },
-            )?;
-        }
         Ok(receipt)
     }
 }
@@ -396,6 +399,19 @@ pub(crate) fn matching_creation(
             && created.token == token
             && created.timelock == U256::from(context.timelock)
         {
+            let htlc = crate::evm::htlc::EvmHtlc {
+                chain_id: context.chain_id,
+                address: context.htlc,
+                hash_lock: context.hash,
+                amount: created.amount,
+                token,
+                sender,
+                claimer: context.server,
+                timelock: context.timelock,
+            };
+            if created.amount.is_zero() || created.key != htlc.key() {
+                return Err(invalid("funding event has invalid amount or HTLC key"));
+            }
             if matching.is_some() {
                 return Err(invalid("multiple matching HTLC creation events"));
             }
@@ -501,6 +517,7 @@ mod tests {
         receipt: EvmReceipt,
         transactions: Mutex<Vec<EvmTransaction>>,
         fail_receipt: bool,
+        fail_send: bool,
     }
     impl EvmWallet for Wallet {
         fn address(&self) -> Address {
@@ -518,6 +535,9 @@ mod tests {
         fn send_transaction<'a>(&'a self, tx: &'a EvmTransaction) -> WalletFuture<'a, B256> {
             Box::pin(async move {
                 self.transactions.lock().unwrap().push(tx.clone());
+                if self.fail_send {
+                    return Err(Error::Transport("broadcast response lost".into()));
+                }
                 Ok(self.receipt.transaction_hash)
             })
         }
@@ -534,7 +554,7 @@ mod tests {
 
     #[tokio::test]
     async fn funding_checks_receipt_and_persists_before_a_failed_wait() {
-        for fail_receipt in [false, true] {
+        for (fail_receipt, fail_send) in [(false, false), (true, false), (false, true)] {
             let server = MockServer::start().await;
             let (mut context, mut funding, policy) = data();
             let signer = Signer::from_mnemonic(MNEMONIC).unwrap();
@@ -576,7 +596,7 @@ mod tests {
                 .storage(store.clone())
                 .build()
                 .unwrap();
-            let created = SwapCreated {
+            let mut created = SwapCreated {
                 preimageHash: context.hash,
                 refundAddress: policy.coordinator,
                 claimAddress: context.server,
@@ -585,6 +605,17 @@ mod tests {
                 timelock: U256::from(context.timelock),
                 key: B256::repeat_byte(9),
             };
+            created.key = crate::evm::htlc::EvmHtlc {
+                chain_id: context.chain_id,
+                address: context.htlc,
+                hash_lock: context.hash,
+                amount: created.amount,
+                token: policy.lock_token,
+                sender: policy.coordinator,
+                claimer: context.server,
+                timelock: context.timelock,
+            }
+            .key();
             let log = created.encode_log_data();
             let receipt = EvmReceipt {
                 transaction_hash: B256::repeat_byte(8),
@@ -602,17 +633,25 @@ mod tests {
                 receipt,
                 transactions: Mutex::new(vec![]),
                 fail_receipt,
+                fail_send,
             };
             let result = client
                 .fund_swap_with_wallet("test", &wallet, policy.clone())
                 .await;
-            assert_eq!(result.is_err(), fail_receipt);
+            assert_eq!(result.is_err(), fail_receipt || fail_send);
             assert_eq!(wallet.transactions.lock().unwrap().len(), 1);
             let stored = store.get_swap("test").unwrap().unwrap();
             assert_eq!(
                 stored.metadata.evm_fund_txid,
-                Some(wallet.receipt.transaction_hash.to_string())
+                (!fail_send).then(|| wallet.receipt.transaction_hash.to_string())
             );
+            assert_eq!(stored.metadata.evm_fund_started, Some(true));
+            if fail_send {
+                client
+                    .attach_evm_funding_transaction("test", wallet.receipt.transaction_hash)
+                    .await
+                    .unwrap();
+            }
             // Prevent accidental resubmission after a mined transaction or an interrupted wait.
             assert!(
                 client

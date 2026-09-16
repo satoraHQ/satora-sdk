@@ -169,7 +169,7 @@ impl Client {
     ///
     /// Lets consumers avoid hard-coding bundler URLs (which embed a
     /// provider API key the server rotates). Use
-    /// [`RemoteAaConfig::into_config`] to combine the response with the
+    /// [`crate::aa::RemoteAaConfig::into_config`] to combine the response with the
     /// caller-supplied node RPC, paymaster context, and gas overrides
     /// into the full [`AaConfig`] [`Self::fund_swap_gasless`] expects.
     ///
@@ -194,7 +194,7 @@ impl Client {
     /// Internally:
     /// 1. `GET /swap/{id}` to learn the source chain.
     /// 2. `GET /aa/config?chain={id}` for bundler/paymaster details.
-    /// 3. Existing bundler + paymaster + 7702 flow via [`fund_swap`].
+    /// 3. Existing bundler + paymaster + 7702 flow via [`crate::aa::orchestrate::fund_swap`].
     ///
     /// Errors:
     /// - [`Error::InvalidSigner`] if the client wasn't built with a signer.
@@ -216,7 +216,8 @@ impl Client {
         let stored = self
             .get_stored_swap(swap_id)?
             .ok_or_else(|| Error::InvalidSwap("recover the swap before funding".into()))?;
-        if stored.metadata.evm_fund_txid.is_some()
+        if stored.metadata.evm_fund_started == Some(true)
+            || stored.metadata.evm_fund_txid.is_some()
             || stored.metadata.evm_fund_userop_hash.is_some()
             || stored
                 .metadata
@@ -348,6 +349,14 @@ impl Client {
                 .map(|pm| pm.context.clone())
                 .unwrap_or(Value::Null),
         });
+        self.update_swap_metadata(
+            swap_id,
+            crate::SwapMetadata {
+                evm_fund_started: Some(true),
+                evm_coordinator_address: Some(coordinator.clone()),
+                ..Default::default()
+            },
+        )?;
         let receipt = fund_swap_observed(
             inputs,
             FundSwapClients {
