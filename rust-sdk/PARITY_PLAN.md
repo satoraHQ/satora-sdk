@@ -84,7 +84,8 @@ state the actual change and validation, without tool attribution.
    attestation and delivery polling, forwarding and explicit reattestation implemented;
    durable wallet/sponsored burn, mint, OFT send, and bounded balance recovery
    implemented with receipt validation and lost-response reconciliation. Atomic
-   inbound funding and outbound claim integration follow. External providers must remain injectable in offline tests.
+   inbound mint/funding and outbound claim/bridge integration implemented and
+   covered by mocked end-to-end/restart tests. EIP-2612 helper parity remains. External providers must remain injectable in offline tests.
 
 8. [ ] **Add status subscriptions.** WebSocket connect/subscribe/unsubscribe,
    event decoding, reconnect/resubscribe, bounded queues, explicit shutdown,

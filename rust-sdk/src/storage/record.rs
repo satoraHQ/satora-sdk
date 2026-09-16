@@ -34,6 +34,8 @@ pub struct SwapMetadata {
     pub bridge_recipient_setup: Option<bool>,
     pub evm_fund_txid: Option<String>,
     pub evm_refund_txid: Option<String>,
+    /// Reserved immediately before a claim can leave this process.
+    pub evm_claim_started: Option<bool>,
     pub evm_claim_userop_hash: Option<String>,
     pub evm_claim_txid: Option<String>,
     pub evm_recovery_txid: Option<String>,
@@ -62,6 +64,7 @@ impl SwapMetadata {
             bridge_recipient_setup,
             evm_fund_txid,
             evm_refund_txid,
+            evm_claim_started,
             evm_claim_userop_hash,
             evm_claim_txid,
             evm_recovery_txid,

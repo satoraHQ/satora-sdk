@@ -1,6 +1,12 @@
 //! CCTP v2 and USDT0 transfers, attestation validation, and resumable execution.
 pub mod cctp;
 mod execution;
+mod inbound;
+mod outbound;
+pub use inbound::CctpFunding;
+pub use outbound::OutboundBridge;
+pub use outbound::OutboundClaim;
+pub use outbound::OutboundReceipt;
 pub mod usdt0;
 use crate::Error;
 use crate::Result;
@@ -51,4 +57,4 @@ async fn pending_json<T: DeserializeOwned>(response: Response) -> Result<Option<
 #[cfg(test)]
 mod execution_tests;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

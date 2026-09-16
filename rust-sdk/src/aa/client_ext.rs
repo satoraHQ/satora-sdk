@@ -216,7 +216,13 @@ impl Client {
         let stored = self
             .get_stored_swap(swap_id)?
             .ok_or_else(|| Error::InvalidSwap("recover the swap before funding".into()))?;
-        if stored.metadata.evm_fund_txid.is_some() || stored.metadata.evm_fund_userop_hash.is_some()
+        if stored.metadata.evm_fund_txid.is_some()
+            || stored.metadata.evm_fund_userop_hash.is_some()
+            || stored
+                .metadata
+                .bridge_operations
+                .as_ref()
+                .is_some_and(|operations| operations.contains_key("cctp_fund"))
         {
             return Err(Error::InvalidSwap(
                 "funding already submitted; inspect its receipt before another attempt".into(),

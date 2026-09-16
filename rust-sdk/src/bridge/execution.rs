@@ -49,7 +49,7 @@ impl CctpDestination {
             usdc: chain.usdc,
         })
     }
-    fn validate(&self, burn: &cctp::CctpBurn, wallet: &dyn EvmWallet) -> Result<()> {
+    pub(super) fn validate(&self, burn: &cctp::CctpBurn, wallet: &dyn EvmWallet) -> Result<()> {
         if wallet.chain_id() != self.chain_id
             || self.domain != burn.destination_domain
             || self.transmitter.is_zero()
@@ -103,7 +103,10 @@ fn validate_burn_receipt(receipt: &EvmReceipt, burn: &cctp::CctpBurn) -> Result<
     }
     Ok(())
 }
-fn validate_oft_receipt(receipt: &EvmReceipt, transfer: &usdt0::OftTransfer) -> Result<B256> {
+pub(super) fn validate_oft_receipt(
+    receipt: &EvmReceipt,
+    transfer: &usdt0::OftTransfer,
+) -> Result<B256> {
     let matching: Vec<_> = receipt
         .logs
         .iter()
@@ -129,7 +132,7 @@ fn validate_oft_receipt(receipt: &EvmReceipt, transfer: &usdt0::OftTransfer) -> 
 }
 
 impl Client {
-    fn bridge_operation(&self, id: &str, key: &str) -> Result<Option<BridgeOperation>> {
+    pub(super) fn bridge_operation(&self, id: &str, key: &str) -> Result<Option<BridgeOperation>> {
         let stored = self
             .get_stored_swap(id)?
             .ok_or_else(|| invalid("swap record missing"))?;
@@ -138,7 +141,12 @@ impl Client {
             .bridge_operations
             .and_then(|mut map| map.remove(key)))
     }
-    fn save_bridge_operation(&self, id: &str, key: &str, operation: BridgeOperation) -> Result<()> {
+    pub(super) fn save_bridge_operation(
+        &self,
+        id: &str,
+        key: &str,
+        operation: BridgeOperation,
+    ) -> Result<()> {
         let stored = self
             .get_stored_swap(id)?
             .ok_or_else(|| invalid("swap record missing"))?;
@@ -153,7 +161,7 @@ impl Client {
         )?;
         Ok(())
     }
-    async fn bridge_receipt(
+    pub(super) async fn bridge_receipt(
         &self,
         id: &str,
         key: &str,
@@ -218,14 +226,14 @@ impl Client {
         state.transaction_hash = Some(hash.to_string());
         self.save_bridge_operation(id, operation, state)
     }
-    fn complete_bridge(&self, id: &str, key: &str) -> Result<()> {
+    pub(super) fn complete_bridge(&self, id: &str, key: &str) -> Result<()> {
         let mut state = self
             .bridge_operation(id, key)?
             .ok_or_else(|| invalid("bridge operation missing"))?;
         state.complete = true;
         self.save_bridge_operation(id, key, state)
     }
-    async fn submit_bridge(
+    pub(super) async fn submit_bridge(
         &self,
         id: &str,
         key: &str,

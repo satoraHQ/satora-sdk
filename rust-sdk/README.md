@@ -270,3 +270,26 @@ renewed with `reattest_cctp`. Bridge receipts establish inclusion, not finality;
 applications should apply their chain confirmation policy before treating a
 payment as final. These paths have mocked execution and restart tests, but have
 not been exercised against live bridges in this change.
+
+`fund_swap_from_cctp` atomically combines a validated attestation's mint with
+bounded Permit2 funding in a sponsored Kernel batch. It checks the destination
+account, USDC token, net mint amount, coordinator, HTLC, approved DEX targets, and
+funding receipt. It also supports a nonce already consumed by the forwarder,
+provided the account still holds the required USDC. An interrupted `cctp_fund`
+operation blocks other funding paths until its original receipt is reconciled.
+
+`claim_evm_to_bridge` appends CCTP or USDT0 adapter calls to reviewed DEX calldata
+and returns the actual CCTP burn or LayerZero message query for delivery tracking.
+Use `get_dex_calldata_fund` with the coordinator as recipient; the DEX calls must
+enforce their own minimum output. Bridge calls consume that output, so the
+coordinator's final sweep minimum is zero. Adapter approval is capped and revoked
+in the same transaction. USDT0 native fees require an explicit cap; excess passed
+to the deployed adapter stays with that adapter, as its contract specifies.
+Outbound adapters currently use the repository's Arbitrum deployments.
+
+A claim is reserved before its submission can leave the process, including
+server-submitted and sponsored claims. A lost response prevents another claim
+submission. Reconcile the original transaction with `attach_evm_claim_transaction`;
+bridge resumption verifies both the HTLC redemption and bridge receipt. Stored
+bridge intent preserves recipient bytes without changing the original API-facing
+EVM address or Solana base58 recipient.

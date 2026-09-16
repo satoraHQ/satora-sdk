@@ -386,3 +386,162 @@ async fn oft_send_bounds_native_fee_and_recovers_from_persisted_guid() {
     assert_eq!(wallet.calls.lock().unwrap().len(), 1);
     assert_eq!(wallet.calls.lock().unwrap()[0].value, U256::from(12));
 }
+
+#[tokio::test]
+async fn sponsored_cctp_mint_and_funding_share_one_batch_and_resume_after_restart() {
+    use crate::aa::AaConfig;
+    use crate::aa::UserOpConfig;
+    use crate::aa::abi::Call;
+    use crate::aa::abi::IERC20;
+    use crate::aa::abi::IHTLCCoordinator;
+    use crate::aa::abi::IKernel;
+    use crate::evm::FundingOptions;
+    use crate::evm::funding::SwapCreated;
+    use crate::evm::htlc::EvmHtlc;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+    let (_, id, storage) = client();
+    let server = MockServer::start().await;
+    let sdk=Client::builder().base_url(server.uri()).mnemonic("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about").storage(storage.clone()).build().unwrap();
+    let owner: Address = sdk
+        .signer
+        .as_ref()
+        .unwrap()
+        .derive_evm_key(0)
+        .unwrap()
+        .address
+        .parse()
+        .unwrap();
+    let mut burn = tests::burn();
+    burn.mint_recipient = owner.into_word();
+    let destination = CctpDestination::mainnet(42161).unwrap();
+    let coordinator = Address::repeat_byte(22);
+    let htlc = EvmHtlc {
+        chain_id: 42161,
+        address: Address::repeat_byte(23),
+        hash_lock: B256::repeat_byte(24),
+        amount: U256::from(100_000),
+        token: Address::repeat_byte(25),
+        sender: coordinator,
+        claimer: Address::repeat_byte(26),
+        timelock: 2_000_000_000,
+    };
+    let mut response =
+        serde_json::to_value(storage.get_swap(&id).unwrap().unwrap().response).unwrap();
+    response["evm_chain_id"] = json!(42161);
+    response["evm_htlc_address"] = json!(htlc.address);
+    response["hash_lock"] = json!(htlc.hash_lock);
+    response["client_evm_address"] = json!(owner);
+    response["server_evm_address"] = json!(htlc.claimer);
+    response["evm_refund_locktime"] = json!(htlc.timelock);
+    response["source_token"]["token_id"] = json!(destination.usdc);
+    storage
+        .store_swap(
+            StoredSwap::new(
+                0,
+                serde_json::from_value(response).unwrap(),
+                SwapMetadata::default(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let wallet = wallet(
+        42161,
+        owner,
+        vec![log(
+            htlc.address,
+            SwapCreated {
+                preimageHash: htlc.hash_lock,
+                refundAddress: coordinator,
+                claimAddress: htlc.claimer,
+                token: htlc.token,
+                amount: htlc.amount,
+                timelock: U256::from(htlc.timelock),
+                key: htlc.key(),
+            },
+        )],
+    );
+    let calls: Vec<Call> = vec![];
+    let payload = json!({"coordinator_address":coordinator,"permit2_address":crate::aa::permit2::PERMIT2_ADDRESS,"source_token_address":destination.usdc,"source_amount":"9999000","lock_token_address":htlc.token,"preimage_hash":htlc.hash_lock,"claim_address":htlc.claimer,"timelock":htlc.timelock,"calls":[],"calls_hash":alloy::primitives::keccak256(calls.abi_encode())});
+    Mock::given(method("GET"))
+        .and(path(format!("/swap/{id}/swap-and-lock-calldata-permit2")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(payload))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let operation = B256::repeat_byte(19);
+    let txid = wallet.receipt.transaction_hash;
+    let persisted = storage.clone();
+    let swap_id = id.clone();
+    Mock::given(method("POST")).respond_with(move |request:&wiremock::Request| {
+        let body:serde_json::Value=request.body_json().unwrap();
+        let result=match body["method"].as_str().unwrap() {
+            "eth_chainId"=>json!("0xa4b1"),"eth_getTransactionCount"=>json!("0x3"),"eth_call"=>json!(format!("0x{:064x}",0)),"eth_gasPrice"=>json!("0x100000"),
+            "eth_estimateUserOperationGas"=>json!({"callGasLimit":"0x70000","verificationGasLimit":"0x20000","preVerificationGas":"0x10000"}),
+            "eth_sendUserOperation"=>{
+                let encoded:Bytes=body["params"][0]["callData"].as_str().unwrap().parse().unwrap();
+                let execute=IKernel::executeCall::abi_decode(&encoded).unwrap();
+                let calls=Vec::<Call>::abi_decode(&execute.executionCalldata).unwrap();
+                assert_eq!(calls.len(),3);
+                assert_eq!(calls[0].target,cctp::MESSAGE_TRANSMITTER);assert!(calls[0].callData.starts_with(&cctp::receiveMessageCall::SELECTOR));
+                let approval=IERC20::approveCall::abi_decode(&calls[1].callData).unwrap();assert_eq!(approval.amount,U256::from(9_999_000));
+                let funding=IHTLCCoordinator::executeAndCreateWithPermit2Call::abi_decode(&calls[2].callData).unwrap();
+                assert_eq!(funding.depositor,owner);assert_eq!(funding.permit.permitted.amount,approval.amount);
+                assert!(!funding.signature.is_empty());
+                assert!(persisted.get_swap(&swap_id).unwrap().unwrap().metadata.bridge_operations.unwrap().contains_key("cctp_fund"));
+                json!(operation)
+            },
+            "eth_getUserOperationReceipt"=>{
+                assert_eq!(persisted.get_swap(&swap_id).unwrap().unwrap().metadata.bridge_operations.unwrap()["cctp_fund"].user_operation_hash,Some(operation.to_string()));
+                json!({"success":true,"receipt":{"transactionHash":txid}})
+            },other=>panic!("unexpected RPC {other}"),
+        };
+        ResponseTemplate::new(200).set_body_json(json!({"jsonrpc":"2.0","id":body["id"],"result":result}))
+    }).mount(&server).await;
+    let config = UserOpConfig {
+        entry_point: Address::repeat_byte(12),
+        delegation_target: Address::repeat_byte(13),
+        aa: AaConfig {
+            node_rpc_url: server.uri().parse().unwrap(),
+            bundler_url: server.uri().parse().unwrap(),
+            paymaster: None,
+            bundler_casing: Default::default(),
+            gas_overrides: None,
+        },
+    };
+    let attestation:cctp::CctpAttestation=serde_json::from_value(json!({"message":format!("0x{}",hex::encode(tests::message(&burn))),"attestation":"0x1234","status":"complete"})).unwrap();
+    let request = CctpFunding {
+        mint: CctpMint {
+            burn: &burn,
+            destination: &destination,
+            attestation: &attestation,
+        },
+        limits: FundingOptions {
+            coordinator,
+            htlc: htlc.address,
+            lock_token: htlc.token,
+            max_source_amount: U256::from(9_999_900),
+            allowed_call_targets: vec![],
+            timeout: std::time::Duration::from_secs(10),
+        },
+        account: &config,
+    };
+    sdk.fund_swap_from_cctp(&id, &wallet, request.clone(), &PollOptions::default())
+        .await
+        .unwrap();
+    sdk.fund_swap_from_cctp(&id, &wallet, request, &PollOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        storage
+            .get_swap(&id)
+            .unwrap()
+            .unwrap()
+            .metadata
+            .evm_fund_txid,
+        Some(txid.to_string())
+    );
+}

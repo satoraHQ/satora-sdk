@@ -33,6 +33,7 @@ struct Wallet {
     sent: Mutex<Vec<EvmTransaction>>,
     signatures: AtomicU64,
     funding_hash: B256,
+    extra_logs: Vec<EvmLog>,
     token_balance: AtomicU64,
 }
 fn event_log(event: impl SolEvent, address: Address) -> EvmLog {
@@ -138,6 +139,7 @@ impl EvmWallet for Wallet {
                     h.token,
                 ));
             }
+            logs.extend(self.extra_logs.clone());
             Ok(EvmReceipt {
                 transaction_hash: hash,
                 success: true,
@@ -220,6 +222,7 @@ fn setup(claim: bool) -> (Client, Wallet, Arc<InMemorySwapStorage>) {
         sent: Mutex::new(vec![]),
         signatures: AtomicU64::new(0),
         funding_hash,
+        extra_logs: Vec::new(),
         token_balance: AtomicU64::new(100_000),
     };
     (client, wallet, store)
@@ -690,4 +693,142 @@ async fn sponsored_claim_signs_a_kernel_batch_and_persists_before_receipt_pollin
             .await
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn native_claim_values_require_an_explicit_budget_and_reserve_submission() {
+    let (client, wallet, store) = setup(true);
+    let calls = vec![crate::types::DexCall {
+        target: Address::repeat_byte(20).to_string(),
+        data: "0x1234".into(),
+        value: "123".into(),
+    }];
+    assert!(
+        client
+            .claim_evm_with_wallet("test", &wallet, claim_options(&wallet), calls.clone())
+            .await
+            .is_err()
+    );
+    assert!(
+        client
+            .claim_evm_with_native_fee(
+                "test",
+                &wallet,
+                claim_options(&wallet),
+                calls.clone(),
+                U256::from(122)
+            )
+            .await
+            .is_err()
+    );
+    assert!(wallet.sent.lock().unwrap().is_empty());
+    client
+        .claim_evm_with_native_fee(
+            "test",
+            &wallet,
+            claim_options(&wallet),
+            calls,
+            U256::from(123),
+        )
+        .await
+        .unwrap();
+    assert_eq!(wallet.sent.lock().unwrap()[0].value, U256::from(123));
+    assert_eq!(
+        store
+            .get_swap("test")
+            .unwrap()
+            .unwrap()
+            .metadata
+            .evm_claim_started,
+        Some(true)
+    );
+}
+
+#[tokio::test]
+async fn outbound_cctp_claim_reconstructs_actual_burn_and_resumes_after_expiry() {
+    use crate::bridge::BridgeSubmission;
+    use crate::bridge::OutboundBridge;
+    use crate::bridge::OutboundClaim;
+    use crate::bridge::OutboundReceipt;
+    use crate::bridge::cctp;
+    let (client, mut wallet, store) = setup(true);
+    wallet.htlc.chain_id = 42161;
+    let mut record = store.get_swap("test").unwrap().unwrap();
+    let mut response = serde_json::to_value(&record.response).unwrap();
+    response["evm_chain_id"] = json!(42161);
+    record.response = serde_json::from_value(response).unwrap();
+    store.store_swap(record).unwrap();
+    let mut burn = crate::bridge::tests::burn();
+    burn.source_chain_id = 42161;
+    burn.source_domain = 3;
+    burn.destination_domain = 6;
+    burn.burn_token = cctp::CctpChain::for_chain(42161).unwrap().usdc;
+    burn.sender = cctp::ARBITRUM_ADAPTER;
+    let mut actual = burn.clone();
+    actual.amount = U256::from(9_000_000);
+    wallet.extra_logs.push(event_log(
+        cctp::MessageSent {
+            message: crate::bridge::tests::message(&actual).into(),
+        },
+        burn.source_transmitter,
+    ));
+    let mut options = claim_options(&wallet);
+    options.sweep_token = burn.burn_token;
+    options.min_amount_out = U256::ZERO;
+    let request = OutboundClaim {
+        dex_calls: vec![crate::types::DexCall {
+            target: Address::repeat_byte(18).to_string(),
+            data: "0x1234".into(),
+            value: "0".into(),
+        }],
+        bridge: OutboundBridge::Cctp {
+            burn,
+            minimum_amount: U256::from(8_900_000),
+        },
+    };
+    let result = client
+        .claim_evm_to_bridge(
+            "test",
+            &wallet,
+            options.clone(),
+            request.clone(),
+            BridgeSubmission::Wallet,
+        )
+        .await
+        .unwrap();
+    let OutboundReceipt::Cctp { burn: observed, .. } = result else {
+        panic!("expected CCTP transfer")
+    };
+    assert_eq!(*observed, actual);
+    wallet
+        .now
+        .store(wallet.htlc.timelock + 1, Ordering::Relaxed);
+    let restarted = Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(store)
+        .build()
+        .unwrap();
+    restarted
+        .claim_evm_to_bridge(
+            "test",
+            &wallet,
+            options.clone(),
+            request.clone(),
+            BridgeSubmission::Wallet,
+        )
+        .await
+        .unwrap();
+    assert_eq!(wallet.sent.lock().unwrap().len(), 1);
+    let mut changed = request;
+    let OutboundBridge::Cctp { burn, .. } = &mut changed.bridge else {
+        unreachable!()
+    };
+    burn.mint_recipient = B256::repeat_byte(77);
+    assert!(
+        restarted
+            .claim_evm_to_bridge("test", &wallet, options, changed, BridgeSubmission::Wallet)
+            .await
+            .is_err()
+    );
+    assert_eq!(wallet.sent.lock().unwrap().len(), 1);
 }

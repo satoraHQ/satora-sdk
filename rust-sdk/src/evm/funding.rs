@@ -72,7 +72,11 @@ impl Permit2FundingData {
             })
             .collect()
     }
-    fn validate(&self, context: &EvmContext, policy: &FundingOptions) -> Result<Vec<Call>> {
+    pub(crate) fn validate(
+        &self,
+        context: &EvmContext,
+        policy: &FundingOptions,
+    ) -> Result<Vec<Call>> {
         if !context.is_source
             || context.htlc != policy.htlc
             || parse::<Address>(&self.permit2_address)? != PERMIT2_ADDRESS
@@ -215,7 +219,13 @@ impl Client {
         let stored = self
             .get_stored_swap(id)?
             .ok_or_else(|| invalid("recover or create the swap before funding"))?;
-        if stored.metadata.evm_fund_txid.is_some() || stored.metadata.evm_fund_userop_hash.is_some()
+        if stored.metadata.evm_fund_txid.is_some()
+            || stored.metadata.evm_fund_userop_hash.is_some()
+            || stored
+                .metadata
+                .bridge_operations
+                .as_ref()
+                .is_some_and(|operations| operations.contains_key("cctp_fund"))
         {
             return Err(invalid(
                 "funding already submitted; inspect its receipt before another attempt",

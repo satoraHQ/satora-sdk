@@ -82,11 +82,38 @@ impl Client {
         wallet: &dyn EvmWallet,
         options: &EvmClaimOptions,
     ) -> Result<ClaimMaterial> {
+        self.claim_material_checked(id, wallet, options, true).await
+    }
+
+    pub(crate) async fn verify_evm_claim_receipt(
+        &self,
+        id: &str,
+        wallet: &dyn EvmWallet,
+        options: &EvmClaimOptions,
+        receipt: &EvmReceipt,
+    ) -> Result<()> {
+        let material = self
+            .claim_material_checked(id, wallet, options, false)
+            .await?;
+        material
+            .htlc
+            .verify_redeem_receipt(receipt, material.preimage)
+    }
+
+    async fn claim_material_checked(
+        &self,
+        id: &str,
+        wallet: &dyn EvmWallet,
+        options: &EvmClaimOptions,
+        verify_live: bool,
+    ) -> Result<ClaimMaterial> {
         let stored = self
             .get_stored_swap(id)?
             .ok_or_else(|| invalid("swap record missing"))?;
-        if stored.metadata.evm_claim_txid.is_some()
-            || stored.metadata.evm_claim_userop_hash.is_some()
+        if verify_live
+            && (stored.metadata.evm_claim_started == Some(true)
+                || stored.metadata.evm_claim_txid.is_some()
+                || stored.metadata.evm_claim_userop_hash.is_some())
         {
             return Err(invalid(
                 "claim already submitted; inspect the persisted transaction or operation",
@@ -120,16 +147,18 @@ impl Client {
             claimer: context.owner,
             timelock: context.timelock,
         };
-        if !htlc.is_active(wallet).await? {
-            return Err(invalid("expected HTLC is not funded and active on chain"));
+        if verify_live {
+            if !htlc.is_active(wallet).await? {
+                return Err(invalid("expected HTLC is not funded and active on chain"));
+            }
+            let remaining = htlc
+                .timelock
+                .saturating_sub(wallet.block_timestamp().await?);
+            if remaining == 0 || remaining < options.minimum_remaining_seconds {
+                return Err(invalid("insufficient time to claim before server refund"));
+            }
+            verify_version(wallet, htlc.address, version).await?;
         }
-        let remaining = htlc
-            .timelock
-            .saturating_sub(wallet.block_timestamp().await?);
-        if remaining == 0 || remaining < options.minimum_remaining_seconds {
-            return Err(invalid("insufficient time to claim before server refund"));
-        }
-        verify_version(wallet, htlc.address, version).await?;
         let signer = self
             .signer
             .as_ref()
@@ -156,11 +185,34 @@ impl Client {
         options: EvmClaimOptions,
         calls: Vec<crate::types::DexCall>,
     ) -> Result<EvmReceipt> {
+        self.claim_evm_with_native_fee(id, wallet, options, calls, U256::ZERO)
+            .await
+    }
+
+    /// Claim with an explicit total native-value budget for reviewed bridge calls.
+    /// The exact per-call values are included in the signed calls hash.
+    pub async fn claim_evm_with_native_fee(
+        &self,
+        id: &str,
+        wallet: &dyn EvmWallet,
+        options: EvmClaimOptions,
+        calls: Vec<crate::types::DexCall>,
+        max_native_fee: U256,
+    ) -> Result<EvmReceipt> {
         tokio::time::timeout(options.timeout, async {
             let _execution = self.evm_execution.lock().await;
-            let (material, tx) = self.prepare_evm_claim(id, wallet, &options, calls).await?;
+            let (material, tx) = self
+                .prepare_evm_claim(id, wallet, &options, calls, max_native_fee)
+                .await?;
             // The preimage is only sent to RPC after the funded identity and deadline checks.
             wallet.call(&tx).await?;
+            self.update_swap_metadata(
+                id,
+                SwapMetadata {
+                    evm_claim_started: Some(true),
+                    ..Default::default()
+                },
+            )?;
             let hash = wallet.send_transaction(&tx).await?;
             self.update_swap_metadata(
                 id,
@@ -186,6 +238,7 @@ impl Client {
         wallet: &dyn EvmWallet,
         options: &EvmClaimOptions,
         calls: Vec<crate::types::DexCall>,
+        max_native_fee: U256,
     ) -> Result<(ClaimMaterial, EvmTransaction)> {
         let material = self.claim_material(id, wallet, options).await?;
         if calls.is_empty()
@@ -206,8 +259,13 @@ impl Client {
                 })
             })
             .collect::<Result<_>>()?;
-        if calls.iter().any(|c| !c.value.is_zero()) {
-            return Err(invalid("native-fee calls require bridge execution"));
+        let native_fee = calls.iter().try_fold(U256::ZERO, |total, call| {
+            total
+                .checked_add(call.value)
+                .ok_or_else(|| invalid("native fee overflow"))
+        })?;
+        if native_fee > max_native_fee {
+            return Err(invalid("native fees exceed the approved bridge budget"));
         }
         let typed = material.typed_data(options, keccak256(calls.abi_encode()))?;
         let signature = wallet.sign_typed_data(&typed).await?;
@@ -226,7 +284,8 @@ impl Client {
             r: signature.r().into(),
             s: signature.s().into(),
         };
-        let tx = transaction(wallet, options.coordinator, call.abi_encode());
+        let mut tx = transaction(wallet, options.coordinator, call.abi_encode());
+        tx.value = native_fee;
         Ok((material, tx))
     }
 
@@ -276,6 +335,7 @@ impl Client {
             let signature = wallet.sign_typed_data(&typed).await?;
             verify_signature(&signature,typed.digest,wallet.address())?;
             let stored = self.get_stored_swap(id)?.ok_or_else(|| invalid("swap record missing"))?;
+            self.update_swap_metadata(id,SwapMetadata {evm_claim_started:Some(true),..Default::default()})?;
             let response = self.api_request(Method::POST,self.swap_action_url(id,"claim-gasless")?).json(&json!({
                 "secret":material.preimage,"destination":options.destination,"v":u8::from(signature.v())+27,"r":format!("0x{:064x}",signature.r()),"s":format!("0x{:064x}",signature.s()),
                 "dex_calldata":calldata.dex_calldata,"bridge_recipient":stored.metadata.bridge_recipient,"bridge_recipient_wallet":stored.metadata.bridge_recipient_wallet
@@ -301,6 +361,20 @@ impl Client {
         calls: Vec<crate::types::DexCall>,
         config: &crate::aa::UserOpConfig,
     ) -> Result<crate::aa::FundSwapReceipt> {
+        self.claim_evm_userop_with_native_fee(id, wallet, options, calls, config, U256::ZERO)
+            .await
+    }
+
+    /// Sponsored counterpart with a caller-approved native bridge fee cap.
+    pub async fn claim_evm_userop_with_native_fee(
+        &self,
+        id: &str,
+        wallet: &dyn EvmWallet,
+        options: EvmClaimOptions,
+        calls: Vec<crate::types::DexCall>,
+        config: &crate::aa::UserOpConfig,
+        max_native_fee: U256,
+    ) -> Result<crate::aa::orchestrate::FundSwapReceipt> {
         tokio::time::timeout(options.timeout, async {
             let _execution = self.evm_execution.lock().await;
             let stored = self
@@ -320,8 +394,17 @@ impl Client {
                 .as_ref()
                 .ok_or_else(|| invalid("signer missing"))?
                 .evm_key_for_address(stored.key_index, &context.owner.to_string())?;
-            let (material, tx) = self.prepare_evm_claim(id, wallet, &options, calls).await?;
+            let (material, tx) = self
+                .prepare_evm_claim(id, wallet, &options, calls, max_native_fee)
+                .await?;
             wallet.call(&tx).await?;
+            self.update_swap_metadata(
+                id,
+                SwapMetadata {
+                    evm_claim_started: Some(true),
+                    ..Default::default()
+                },
+            )?;
             let receipt = crate::aa::orchestrate::publish_with_config(
                 key.secret_key,
                 context.owner,
@@ -364,6 +447,28 @@ impl Client {
         .map_err(|_| {
             Error::Timeout("sponsored EVM claim timed out; inspect the persisted operation".into())
         })?
+    }
+
+    /// Reconcile a lost claim submission response with its original transaction.
+    /// This records identity only; verify its HTLC receipt before treating it as settled.
+    pub async fn attach_evm_claim_transaction(&self, id: &str, hash: B256) -> Result<()> {
+        let _guard = self.evm_execution.lock().await;
+        let stored = self
+            .get_stored_swap(id)?
+            .ok_or_else(|| invalid("swap record missing"))?;
+        if hash.is_zero()
+            || stored.metadata.evm_claim_started != Some(true)
+            || stored.metadata.evm_claim_txid.is_some()
+        {
+            return Err(invalid("no unresolved claim submission to reconcile"));
+        }
+        self.update_swap_metadata(
+            id,
+            SwapMetadata {
+                evm_claim_txid: Some(hash.to_string()),
+                ..Default::default()
+            },
+        )
     }
 
     /// Resolve a submitted claim operation without releasing the preimage again.

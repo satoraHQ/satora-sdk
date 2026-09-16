@@ -13,7 +13,7 @@ use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
-pub(super) fn burn() -> CctpBurn {
+pub(crate) fn burn() -> CctpBurn {
     CctpBurn {
         source_chain_id: 8453,
         source_domain: 6,
@@ -31,7 +31,7 @@ pub(super) fn burn() -> CctpBurn {
         hook: forwarding_hook(None),
     }
 }
-pub(super) fn message(b: &CctpBurn) -> Vec<u8> {
+pub(crate) fn message(b: &CctpBurn) -> Vec<u8> {
     let mut result = Vec::new();
     result.extend(1u32.to_be_bytes());
     result.extend(b.source_domain.to_be_bytes());

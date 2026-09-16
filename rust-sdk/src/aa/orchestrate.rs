@@ -222,6 +222,27 @@ pub(crate) async fn fund_swap_observed(
         "fund_swap: starting"
     );
 
+    let call_data = kernel::encode_execute_batch(&funding_calls(&inputs)?);
+
+    publish_batch_observed(
+        PublishInputs {
+            secret_key: inputs.secret_key,
+            eoa_address: inputs.eoa_address,
+            chain_id: inputs.chain_id,
+            entry_point: inputs.entry_point,
+            delegation_target: inputs.delegation_target,
+            call_data,
+            gas_overrides: inputs.gas_overrides,
+        },
+        clients,
+        submitted,
+    )
+    .await
+}
+
+/// Build the bounded Permit2 approval and signed funding call for an atomic
+/// batch. Callers must validate the backend payload against their swap and limits.
+pub fn funding_calls(inputs: &FundSwapInputs) -> Result<Vec<Call>> {
     // 1. Permit2 witness signature.
     let (permit2_nonce, permit2_deadline) = generate_permit2_nonce_and_deadline();
     let permit2_witness_digest = permit2_digest(
@@ -251,23 +272,8 @@ pub(crate) async fn fund_swap_observed(
     let approve_call =
         build_approve_permit2_call(inputs.source_token_address, inputs.source_amount);
     let execute_and_create_call =
-        build_execute_and_create_call(&inputs, permit2_nonce, permit2_deadline, permit2_signature);
-    let call_data = kernel::encode_execute_batch(&[approve_call, execute_and_create_call]);
-
-    publish_batch_observed(
-        PublishInputs {
-            secret_key: inputs.secret_key,
-            eoa_address: inputs.eoa_address,
-            chain_id: inputs.chain_id,
-            entry_point: inputs.entry_point,
-            delegation_target: inputs.delegation_target,
-            call_data,
-            gas_overrides: inputs.gas_overrides,
-        },
-        clients,
-        submitted,
-    )
-    .await
+        build_execute_and_create_call(inputs, permit2_nonce, permit2_deadline, permit2_signature);
+    Ok(vec![approve_call, execute_and_create_call])
 }
 
 /// Fully encoded Kernel execution, signed by its EIP-7702 owner.
