@@ -106,6 +106,7 @@ pub struct ActionInput<'a> {
     pub funding_submitted: bool,
     pub claim_submitted: bool,
     pub submission_uncertain: bool,
+    /// Application-verified Arkade capability; ignored for other client rails.
     pub collaborative_refund_available: bool,
     pub bridge: &'a BridgeState,
 }
@@ -203,7 +204,11 @@ fn refunds(input: &ActionInput<'_>, waiting: WaitingOn) -> Vec<Action> {
     match expired(input.contracts.client.as_ref(), input.client) {
         Some(true) => vec![action(ActionKind::RefundUnilateral, Automation::Confirm)],
         Some(false) => {
-            let mut actions = if input.collaborative_refund_available {
+            let mut actions = if input.collaborative_refund_available
+                && matches!(
+                    input.contracts.client,
+                    Some(crate::observation::ContractRef::Arkade { .. })
+                ) {
                 vec![action(ActionKind::RefundCollaborative, Automation::Confirm)]
             } else {
                 wait(waiting)

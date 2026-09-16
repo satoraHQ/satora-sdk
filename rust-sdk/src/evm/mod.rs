@@ -22,7 +22,6 @@ pub mod recovery;
 pub mod refund;
 pub use recovery::DepositRecovery;
 pub use recovery::RefundedEvmBalance;
-pub use refund::CollabRefundParams;
 pub use refund::EvmSubmission;
 pub use refund::RefundOptions;
 mod wallet;

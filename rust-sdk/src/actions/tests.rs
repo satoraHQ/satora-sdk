@@ -279,3 +279,88 @@ fn submitted_claims_bridges_and_lightning_are_not_assumed_complete() {
         .all(|a| a.kind != ActionKind::Claim)
     );
 }
+
+#[cfg(feature = "gasless")]
+#[test]
+fn evm_refunds_ignore_legacy_cooperative_capability_and_wait_for_maturity() {
+    use crate::evm::Address;
+    use crate::evm::B256;
+    use crate::evm::U256;
+    let deadline = 600_000_200;
+    let contracts = SwapContracts {
+        client: Some(ContractRef::Evm {
+            htlc: crate::evm::htlc::EvmHtlc {
+                chain_id: 42161,
+                address: Address::repeat_byte(1),
+                hash_lock: B256::repeat_byte(2),
+                amount: U256::from(1000),
+                token: Address::repeat_byte(3),
+                sender: Address::repeat_byte(4),
+                claimer: Address::repeat_byte(5),
+                timelock: deadline,
+            },
+            from_block: 0,
+            confirmations: 1,
+        }),
+        server: Some(reference(100)),
+    };
+    for (timestamp, expected) in [
+        (
+            deadline - 1,
+            ActionKind::Wait {
+                on: WaitingOn::RefundTimelock,
+            },
+        ),
+        (deadline, ActionKind::RefundUnilateral),
+    ] {
+        let mut client = observation(HtlcState::Confirmed, 150);
+        client.point.as_mut().unwrap().timestamp = timestamp;
+        let server = observation(HtlcState::SpentRefund, 150);
+        let mut data = input(&contracts, &client, &server);
+        data.collaborative_refund_available = true;
+        let result = derive_actions(data, &ActionPolicy::default());
+        assert_eq!(result.recommended().unwrap().kind, expected);
+        assert!(
+            result
+                .actions
+                .iter()
+                .all(|a| a.kind != ActionKind::RefundCollaborative)
+        );
+    }
+}
+
+#[test]
+fn arkade_still_offers_verified_cooperative_refunds() {
+    use bitcoin::hashes::Hash;
+    let ContractRef::Bitcoin { htlc, .. } = reference(200) else {
+        unreachable!()
+    };
+    let contracts = SwapContracts {
+        client: Some(ContractRef::Arkade {
+            options: crate::arkade::StrictVhtlcOptions {
+                sender: htlc.refunder,
+                receiver: htlc.claimer,
+                server: htlc.claimer,
+                preimage_hash: bitcoin::hashes::ripemd160::Hash::from_byte_array(htlc.hash_lock),
+                refund_locktime: 200,
+                unilateral_claim_delay: bitcoin::Sequence::from_height(10),
+                unilateral_refund_delay: bitcoin::Sequence::from_height(20),
+                unilateral_refund_without_receiver_delay: bitcoin::Sequence::from_height(30),
+            },
+            network: bitcoin::Network::Regtest,
+            expected_sats: 1000,
+        }),
+        server: Some(reference(100)),
+    };
+    let client = observation(HtlcState::Confirmed, 150);
+    let server = observation(HtlcState::SpentRefund, 150);
+    let mut data = input(&contracts, &client, &server);
+    data.collaborative_refund_available = true;
+    assert_eq!(
+        derive_actions(data, &ActionPolicy::default())
+            .recommended()
+            .unwrap()
+            .kind,
+        ActionKind::RefundCollaborative
+    );
+}

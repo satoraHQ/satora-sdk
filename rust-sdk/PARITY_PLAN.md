@@ -43,7 +43,7 @@ state the actual change and validation, without tool attribution.
 
 4. [x] **Complete EVM execution.** Typed calldata retrieval; external wallet
    signer interface; Permit2 funding and approvals; EIP-712 claims; gasless claim;
-   unilateral/cooperative refunds; refunded-swap continuation; stranded deposit
+   timeout refunds; refunded-swap continuation; stranded deposit
    recovery. Validate chain IDs, recipients, HTLC versions, hash locks, nonces,
    typed-data domains, and submitted transactions before releasing a preimage or
    signing. Compare signatures/calldata against TypeScript/contract vectors.
@@ -51,7 +51,8 @@ state the actual change and validation, without tool attribution.
    fresh-quote validation, receipt checks, transaction/UserOperation persistence,
    and recovered-key selection implemented.
    Settlement checkpoint: RPC wallet, chain-verified EVM claims, server gasless
-   claims, receipt-derived refunds, and cooperative refunds implemented.
+   claims and receipt-derived timeout refunds implemented. EVM cooperative
+   refunds are intentionally unsupported and excluded from the SDK.
    Recovery checkpoint: receipt-verified refunded-token continuation, persisted
    replacement IDs, stranded ERC-20 recovery, and pending funding UserOperation
    resumption implemented. Sponsored claims now share the validated UserOperation
@@ -276,10 +277,10 @@ chains; no production payments are part of this work.
   Mempool to index mined blocks before refund snapshots and for wall time to
   catch up between scenarios. This fixes a real `Bitcoin tip changed during
   observation` test race without relaxing the SDK's consistency checks.
-- A real cooperative EVM attempt reached `Unimplemented()` in HTLC v6
-  `refundBySig`. This blocks EVM→Bitcoin/Arkade/Lightning cooperative refunds on
-  the current deployment. The scenario now rejects that mode before funding;
-  the guard was verified. Solidity implementation remains outside Rust scope.
+- HTLC v6 intentionally does not support cooperative EVM refunds. Removed the
+  Rust parameter/signing/submission API, its tests and driver mode. Action
+  discovery ignores cooperative capability flags for EVM client legs and keeps
+  timeout refunds; Arkade cooperative refunds remain supported and tested.
 - Refund cases are selectable by name in the runner and manual Rust CI workflow;
   Lightning cases require the opt-in local LND harness. Default Rust CI selection
   retains the happy-path cases.
@@ -287,3 +288,8 @@ chains; no production payments are part of this work.
   fork with local alto. Driver restart tests, formatting and strict all-target
   Clippy passed; TypeScript checking, scenario Biome, runner ShellCheck, changed
   workflow actionlint and whitespace checks passed.
+- After removing EVM cooperative execution: 208 SDK tests passed, including
+  regressions for EVM capability flags and retained Arkade cooperative actions.
+  Strict SDK/driver Clippy, driver restart tests, formatting, TypeScript checking
+  and scenario Biome passed. EVM→Lightning timeout and Arkade→EVM cooperative
+  E2Es both passed again with the updated driver.

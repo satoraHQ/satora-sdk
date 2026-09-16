@@ -31,7 +31,7 @@ use tokio::task::JoinSet;
 pub struct TrackingOptions {
     pub auto_claim: bool,
     pub auto_cctp: bool,
-    /// Application-verified capability, not inferred from server status.
+    /// Application-verified Arkade capability; ignored for other client rails.
     pub collaborative_refund_available: bool,
     /// Feed verified bridge receipts/attestations/delivery results here.
     pub bridge: BridgeState,

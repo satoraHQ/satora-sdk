@@ -40,7 +40,7 @@ strings on the wire, while Bitcoin amounts must be positive and fit in `i64`.
 | --- | --- |
 | Discovery and quotes | Health, tokens, pairs, chain/AA configuration, fees, MTP, referral/support data, typed DEX calls, exact local quote composition |
 | Creation and recovery | All nine swap directions, paginated recovery, SQLite snapshots and execution journals |
-| EVM execution (`gasless`) | External/local wallets, Permit2 and EIP-2612, ERC-4337 funding/claims, server claims, timeout refunds, cooperative refund API (see v6 limitation below), deposit recovery and refund continuation |
+| EVM execution (`gasless`) | External/local wallets, Permit2 and EIP-2612, ERC-4337 funding/claims, server claims, timeout refunds, deposit recovery and refund continuation |
 | Bitcoin execution | Strict version 1 Taproot claims/refunds, multiple outputs, Esplora and optional Electrum |
 | Arkade execution | All supported directions, offchain claims/refunds, cooperative refunds, delegated settlement, interrupted-batch recovery |
 | Bridges (`gasless`) | CCTP v2 and USDT0 fees/messages, wallet/sponsored transfers, atomic inbound funding, outbound claims, delivery tracking and recovery |
@@ -159,11 +159,8 @@ coordinate exclusive ownership of a swap before executing it.
 contract version and remaining claim window before signing. Wallet-submitted
 claims/refunds verify the exact terminal event in the mined receipt.
 `refund_evm_with_wallet` derives the locked amount from the funding receipt and
-checks chain time; `collab_refund_evm_with_wallet` validates the coordinator's
-EIP-712 parameters and deposit ownership before authorizing a cooperative refund.
-The current HTLC v6 contract leaves `refundBySig` unimplemented, so cooperative
-EVM refunds revert on that deployment despite the SDK API being present. Timeout
-refunds are covered by full-stack tests.
+checks chain time. EVM cooperative refunds are intentionally unsupported by HTLC
+v6 and are not exposed by the Rust SDK. Arkade cooperative refunds remain supported.
 These operations require complete stored records and the relevant contract
 addresses and output limits supplied by the caller.
 
