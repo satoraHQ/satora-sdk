@@ -256,3 +256,34 @@ chains; no production payments are part of this work.
   these Rust adapters.
 - Driver formatting, strict Clippy, process-restart tests, TypeScript checking,
   new-scenario Biome, runner ShellCheck and workflow actionlint passed.
+
+## Full-stack refund E2E follow-up
+
+- Added a Rust refund driver for Bitcoin, Arkade and EVM, plus Bitcoin→Arkade
+  creation, preserving SQLite journals across separate SDK processes.
+- Added ten sequential refund/cancellation scenarios across all nine routes:
+  EVM→Bitcoin/Arkade/Lightning timeout refunds; Bitcoin→EVM/Arkade timeout
+  refunds; Arkade→EVM timeout and cooperative refunds; Arkade→Lightning timeout
+  refund; Lightning→EVM/Arkade held-payment cancellation and server-leg refund.
+- Client refund cases reject premature timeout spends, verify returned balances
+  and resume the original refund transaction after restarting the driver.
+  Bitcoin refunds additionally verify confirmed HTLC inputs, destinations and
+  exact fee accounting; EVM refunds verify mined receipts and the locked amount.
+- Lightning-source tests explicitly cancel accepted hold invoices through local
+  LND and verify the payer's channel balance returns in full. Automatic Lightning
+  HTLC expiry, an SDK cancellation API and hosted providers are outside coverage.
+- Clock advancement preserves the canonical Bitcoin chain. The harness waits for
+  Mempool to index mined blocks before refund snapshots and for wall time to
+  catch up between scenarios. This fixes a real `Bitcoin tip changed during
+  observation` test race without relaxing the SDK's consistency checks.
+- A real cooperative EVM attempt reached `Unimplemented()` in HTLC v6
+  `refundBySig`. This blocks EVM→Bitcoin/Arkade/Lightning cooperative refunds on
+  the current deployment. The scenario now rejects that mode before funding;
+  the guard was verified. Solidity implementation remains outside Rust scope.
+- Refund cases are selectable by name in the runner and manual Rust CI workflow;
+  Lightning cases require the opt-in local LND harness. Default Rust CI selection
+  retains the happy-path cases.
+- All ten cases passed against the local Bitcoin/Arkade/LND stack and Arbitrum
+  fork with local alto. Driver restart tests, formatting and strict all-target
+  Clippy passed; TypeScript checking, scenario Biome, runner ShellCheck, changed
+  workflow actionlint and whitespace checks passed.
