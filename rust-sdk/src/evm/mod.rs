@@ -17,6 +17,7 @@ pub mod funding;
 pub use claim::EvmClaimOptions;
 pub use claim::RedeemCalldata;
 pub mod htlc;
+pub mod permit;
 pub mod recovery;
 pub mod refund;
 pub use recovery::DepositRecovery;

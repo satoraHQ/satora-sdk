@@ -75,7 +75,7 @@ state the actual change and validation, without tool attribution.
    reconciliation implemented. Full unilateral wallet exit orchestration is not
    exposed by the reference swap SDK; all six strict script paths remain available.
 
-7. [ ] **Implement bridge orchestration.** CCTP domains/tokens and fee estimates,
+7. [x] **Implement bridge orchestration.** CCTP domains/tokens and fee estimates,
    burn/approval/permit/user-operation construction, attestation polling,
    inbound funding and recovery, outbound forwarding and recipient persistence;
    USDT0/LayerZero routing, fees, message tracking and recovery. Test fixtures for
@@ -85,7 +85,9 @@ state the actual change and validation, without tool attribution.
    durable wallet/sponsored burn, mint, OFT send, and bounded balance recovery
    implemented with receipt validation and lost-response reconciliation. Atomic
    inbound mint/funding and outbound claim/bridge integration implemented and
-   covered by mocked end-to-end/restart tests. EIP-2612 helper parity remains. External providers must remain injectable in offline tests.
+   covered by mocked end-to-end/restart tests. EIP-2612 domain/nonce validation,
+   typed signing and relay calldata helpers implemented. Sponsored accounts use
+   the existing Rust EIP-7702 owner model; external wallets can submit transactions. External providers must remain injectable in offline tests.
 
 8. [ ] **Add status subscriptions.** WebSocket connect/subscribe/unsubscribe,
    event decoding, reconnect/resubscribe, bounded queues, explicit shutdown,
