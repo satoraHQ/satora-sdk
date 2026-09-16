@@ -1,8 +1,13 @@
 //! CCTP v2 and USDT0 transfers, attestation validation, and resumable execution.
 pub mod cctp;
+mod execution;
 pub mod usdt0;
 use crate::Error;
 use crate::Result;
+pub use execution::BridgeRecovery;
+pub use execution::BridgeSubmission;
+pub use execution::CctpDestination;
+pub use execution::CctpMint;
 use reqwest::Client;
 use reqwest::Response;
 use serde::de::DeserializeOwned;
@@ -43,5 +48,7 @@ async fn pending_json<T: DeserializeOwned>(response: Response) -> Result<Option<
     ))
 }
 
+#[cfg(test)]
+mod execution_tests;
 #[cfg(test)]
 mod tests;

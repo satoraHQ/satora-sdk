@@ -242,3 +242,31 @@ the mined transaction after interruption. As with funding resumption, verify the
 HTLC event before treating a bundler receipt as completed settlement. The local
 publisher requires a key owned by the SDK seed; external accounts can use the
 wallet-submitted claim API.
+
+Bridge execution (`gasless` feature) uses `bridge::BridgeApi` for Circle and
+LayerZero tracking, and `Client::{burn_cctp,mint_cctp,send_usdt0,recover_bridge_balance}`
+for wallet or sponsored submissions. Pin both token and messaging contracts;
+USDT0's OFT address is not necessarily its ERC20 address. CCTP fees use integer
+arithmetic; OFT native fees require a fresh quote within an explicit spending cap.
+CCTP Solana destinations accept decoded 32-byte ATA and wallet keys, including
+Circle's ATA setup hook. Source signing currently supports EVM chains, matching
+the reference SDK.
+
+Bridge progress lives in `SwapMetadata::bridge_operations`, under `cctp_burn`,
+`cctp_mint`, `usdt0_send`, and `bridge_sweep`. Intents are written before submitting;
+transaction/UserOperation hashes are saved before receipt polling. Repeat the
+same method and intent after a restart to verify its receipt without broadcasting
+again. If a broadcast response was lost, reconcile the transaction externally and
+use `attach_bridge_transaction`; an unresolved intent deliberately prevents an
+automatic replacement. Supplied recovery hashes must identify the original
+transaction (OFT events do not encode the destination recipient). Failed operations
+remain available for inspection instead of authorizing another transfer.
+
+`control::PollOptions` bounds the entire operation, including stalled network
+requests, and supports a cloneable `Cancellation`. Cancellation stops local work;
+it does not cancel an already broadcast transaction. Circle forwarding failures
+retain an attestation for explicit mint recovery; expired attestations can be
+renewed with `reattest_cctp`. Bridge receipts establish inclusion, not finality;
+applications should apply their chain confirmation policy before treating a
+payment as final. These paths have mocked execution and restart tests, but have
+not been exercised against live bridges in this change.

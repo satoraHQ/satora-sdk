@@ -22,6 +22,8 @@ pub enum EvmKeySource {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct SwapMetadata {
+    /// Non-secret bridge intents, persisted before submission.
+    pub bridge_operations: Option<std::collections::BTreeMap<String, BridgeOperation>>,
     pub arkade_delegate: Option<crate::arkade::ArkadeDelegateState>,
     pub arkade_pending: Option<crate::arkade::ArkadePending>,
     pub btc_spend_txid: Option<String>,
@@ -49,6 +51,7 @@ impl SwapMetadata {
             )*};
         }
         merge!(
+            bridge_operations,
             arkade_delegate,
             arkade_pending,
             btc_spend_txid,
@@ -130,4 +133,14 @@ pub(super) fn now() -> Result<u64> {
         .map_err(|e| Error::Storage(e.to_string()))?
         .as_millis();
     u64::try_from(millis).map_err(|e| Error::Storage(e.to_string()))
+}
+
+/// Durable bridge operation. An intent without a hash means submission may have
+/// succeeded before its response was lost: reconcile it, never submit blindly.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BridgeOperation {
+    pub intent: serde_json::Value,
+    pub transaction_hash: Option<String>,
+    pub user_operation_hash: Option<String>,
+    pub complete: bool,
 }

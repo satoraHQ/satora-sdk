@@ -48,6 +48,7 @@ sol! {
     function receiveMessage(bytes message, bytes attestation) external returns (bool);
     function usedNonces(bytes32 nonce) external view returns (uint256);
     event MessageSent(bytes message);
+    event MessageReceived(address indexed caller, uint32 sourceDomain, bytes32 indexed nonce, bytes32 sender, uint32 indexed finalityThresholdExecuted, bytes messageBody);
     function bridgeBalance(uint32 destinationDomain, bytes32 mintRecipient, uint256 maxFee, bytes hookData) external;
 }
 

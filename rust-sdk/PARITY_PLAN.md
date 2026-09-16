@@ -82,7 +82,9 @@ state the actual change and validation, without tool attribution.
    each supported route, pending/failed/complete states, retries, and restart
    resumption. Registry, exact fee arithmetic, burn/OFT call encoding, validated
    attestation and delivery polling, forwarding and explicit reattestation implemented;
-   persisted execution and inbound/outbound integration follow. External providers must remain injectable in offline tests.
+   durable wallet/sponsored burn, mint, OFT send, and bounded balance recovery
+   implemented with receipt validation and lost-response reconciliation. Atomic
+   inbound funding and outbound claim integration follow. External providers must remain injectable in offline tests.
 
 8. [ ] **Add status subscriptions.** WebSocket connect/subscribe/unsubscribe,
    event decoding, reconnect/resubscribe, bounded queues, explicit shutdown,

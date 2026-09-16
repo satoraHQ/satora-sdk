@@ -18,6 +18,7 @@ use std::sync::atomic::Ordering;
 
 mod record;
 mod sqlite;
+pub use record::BridgeOperation;
 pub use record::EvmKeySource;
 pub use record::StoredSwap;
 pub use record::SwapMetadata;
