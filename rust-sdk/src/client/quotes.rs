@@ -95,6 +95,21 @@ impl Client {
         Ok(check_status(response).await?.json().await?)
     }
 
+    /// Funding/claim calls use the coordinator as recipient so its signed sweep
+    /// enforces the user's destination and minimum output after DEX execution.
+    pub async fn get_dex_calldata_fund(
+        &self,
+        request: DexCalldataRequest,
+    ) -> Result<DexCalldataResponse> {
+        validate_dex(&request.amount, request.slippage_bps)?;
+        let response = self
+            .api_request(Method::POST, self.url("dex-calldata/fund")?)
+            .json(&request)
+            .send()
+            .await?;
+        Ok(check_status(response).await?.json().await?)
+    }
+
     /// Drop cached session-static quote primitives. Network and DEX fees are always fetched fresh.
     pub async fn clear_quote_cache(&self) {
         self.quote_cache.lock().await.0.clear();

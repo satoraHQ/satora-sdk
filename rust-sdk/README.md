@@ -227,3 +227,18 @@ settled inputs first. An expired intent with no observable settlement is left
 unresolved for investigation; it is never silently replaced with new authorization.
 The timeout refund path still requires the Arkade server, as in TypeScript.
 `StrictVhtlcOptions` exposes all six script paths for wallet-level exit integrations.
+
+`claim_evm_userop` publishes the same chain-verified claim through the local
+EIP-7702 account with optional paymaster sponsorship. Supply reviewed DEX calls,
+claim output limits, and a `UserOpConfig` with pinned EntryPoint/Kernel contracts.
+The publisher verifies RPC chain ID and account ownership, then handles nonces,
+EIP-7702 authorization, gas estimation, sponsorship, signing and submission.
+`get_dex_calldata_fund` fetches the coordinator-recipient DEX call variant used by
+this flow. Its calls still require caller review before signing.
+
+Claim operation hashes are stored before receipt polling and prevent another
+claim submission through any execution path. `resume_evm_claim_userop` discovers
+the mined transaction after interruption. As with funding resumption, verify the
+HTLC event before treating a bundler receipt as completed settlement. The local
+publisher requires a key owned by the SDK seed; external accounts can use the
+wallet-submitted claim API.

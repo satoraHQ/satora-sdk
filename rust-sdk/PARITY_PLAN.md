@@ -41,7 +41,7 @@ state the actual change and validation, without tool attribution.
    bridge fees and cache expiry. Reuse TypeScript test vectors and cover large
    ERC-20 amounts without floating-point amount loss.
 
-4. [ ] **Complete EVM execution.** Typed calldata retrieval; external wallet
+4. [x] **Complete EVM execution.** Typed calldata retrieval; external wallet
    signer interface; Permit2 funding and approvals; EIP-712 claims; gasless claim;
    unilateral/cooperative refunds; refunded-swap continuation; stranded deposit
    recovery. Validate chain IDs, recipients, HTLC versions, hash locks, nonces,
@@ -54,7 +54,8 @@ state the actual change and validation, without tool attribution.
    claims, receipt-derived refunds, and cooperative refunds implemented.
    Recovery checkpoint: receipt-verified refunded-token continuation, persisted
    replacement IDs, stranded ERC-20 recovery, and pending funding UserOperation
-   resumption implemented. Sponsored claims remain (shared publisher in step 7).
+   resumption implemented. Sponsored claims now share the validated UserOperation
+   publisher with funding, with operation persistence and receipt verification.
 
 5. [x] **Implement on-chain Bitcoin claims and refunds.** Strict HTLC
    reconstruction (version 1, matching current TypeScript/server; reject older versions), UTXO observation through Esplora/Electrum, minimum confirmations,

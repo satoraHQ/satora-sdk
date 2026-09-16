@@ -603,3 +603,91 @@ async fn funding_resume_distinguishes_pending_failed_and_successful_operations()
         Some(B256::repeat_byte(9).to_string())
     );
 }
+
+#[tokio::test]
+async fn sponsored_claim_signs_a_kernel_batch_and_persists_before_receipt_polling() {
+    use alloy::sol_types::SolValue;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    let (client, wallet, store) = setup(true);
+    let server = MockServer::start().await;
+    let owner = wallet.owner;
+    let coordinator = wallet.coordinator;
+    let persisted = store.clone();
+    let operation = B256::repeat_byte(8);
+    let transaction_hash = B256::repeat_byte(99);
+    let sent = Arc::new(Mutex::new(false));
+    let submitted = sent.clone();
+    Mock::given(wiremock::matchers::method("POST")).respond_with(move |request:&wiremock::Request| {
+        let body:Value=request.body_json().unwrap();
+        let result=match body["method"].as_str().unwrap() {
+            "eth_chainId"=>json!("0x89"),
+            "eth_getTransactionCount"=>json!("0x3"),
+            "eth_call"=>json!(format!("0x{:064x}",0)),
+            "eth_gasPrice"=>json!("0x100000"),
+            "pm_getPaymasterStubData"=>json!({"paymaster":Address::repeat_byte(20),"paymasterVerificationGasLimit":"0x10000","paymasterPostOpGasLimit":"0x10000","paymasterData":"0x","isFinal":true}),
+            "eth_estimateUserOperationGas"=>json!({"callGasLimit":"0x70000","verificationGasLimit":"0x20000","preVerificationGas":"0x10000"}),
+            "eth_sendUserOperation"=>{
+                let op=&body["params"][0];
+                assert_eq!(op["sender"].as_str().unwrap().parse::<Address>().unwrap(),owner);
+                assert_eq!(op["nonce"],"0x0");
+                assert_eq!(op["paymaster"].as_str().unwrap().parse::<Address>().unwrap(),Address::repeat_byte(20));
+                let data:Bytes=op["callData"].as_str().unwrap().parse().unwrap();
+                let execution=crate::aa::abi::IKernel::executeCall::abi_decode(&data).unwrap();
+                let calls=Vec::<crate::aa::abi::Call>::abi_decode(&execution.executionCalldata).unwrap();
+                assert_eq!(calls.len(),1);assert_eq!(calls[0].target,coordinator);
+                assert!(calls[0].callData.starts_with(&super::claim::ClaimCoordinator::redeemAndExecuteCall::SELECTOR));
+                *submitted.lock().unwrap()=true;
+                json!(operation)
+            },
+            "eth_getUserOperationReceipt"=>{
+                assert!(*submitted.lock().unwrap());
+                assert_eq!(persisted.get_swap("test").unwrap().unwrap().metadata.evm_claim_userop_hash,Some(operation.to_string()));
+                json!({"success":true,"receipt":{"transactionHash":transaction_hash}})
+            },
+            method=>panic!("unexpected RPC method {method}"),
+        };
+        ResponseTemplate::new(200).set_body_json(json!({"jsonrpc":"2.0","id":body["id"],"result":result}))
+    }).mount(&server).await;
+    let config = crate::aa::UserOpConfig {
+        entry_point: Address::repeat_byte(12),
+        delegation_target: Address::repeat_byte(13),
+        aa: crate::aa::AaConfig {
+            node_rpc_url: server.uri().parse().unwrap(),
+            bundler_url: server.uri().parse().unwrap(),
+            paymaster: Some(crate::aa::PaymasterConfig {
+                url: server.uri().parse().unwrap(),
+                context: Value::Null,
+            }),
+            bundler_casing: Default::default(),
+            gas_overrides: None,
+        },
+    };
+    let receipt = client
+        .claim_evm_userop("test", &wallet, claim_options(&wallet), vec![], &config)
+        .await
+        .unwrap();
+    assert_eq!(receipt.transaction_hash, Some(transaction_hash));
+    assert_eq!(
+        store
+            .get_swap("test")
+            .unwrap()
+            .unwrap()
+            .metadata
+            .evm_claim_txid,
+        Some(transaction_hash.to_string())
+    );
+    assert!(
+        client
+            .claim_evm_with_wallet("test", &wallet, claim_options(&wallet), vec![])
+            .await
+            .is_err()
+    );
+    assert!(
+        client
+            .claim_evm_userop("test", &wallet, claim_options(&wallet), vec![], &config)
+            .await
+            .is_err()
+    );
+}

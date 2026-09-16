@@ -254,6 +254,78 @@ pub(crate) async fn fund_swap_observed(
         build_execute_and_create_call(&inputs, permit2_nonce, permit2_deadline, permit2_signature);
     let call_data = kernel::encode_execute_batch(&[approve_call, execute_and_create_call]);
 
+    publish_batch_observed(
+        PublishInputs {
+            secret_key: inputs.secret_key,
+            eoa_address: inputs.eoa_address,
+            chain_id: inputs.chain_id,
+            entry_point: inputs.entry_point,
+            delegation_target: inputs.delegation_target,
+            call_data,
+            gas_overrides: inputs.gas_overrides,
+        },
+        clients,
+        submitted,
+    )
+    .await
+}
+
+/// Fully encoded Kernel execution, signed by its EIP-7702 owner.
+/// Call data may contain preimages; diagnostics omit both it and the key.
+pub struct PublishInputs {
+    pub secret_key: [u8; 32],
+    pub eoa_address: Address,
+    pub chain_id: u64,
+    pub entry_point: Address,
+    pub delegation_target: Address,
+    pub call_data: Bytes,
+    pub gas_overrides: Option<GasOverrides>,
+}
+impl std::fmt::Debug for PublishInputs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PublishInputs")
+            .field("eoa_address", &self.eoa_address)
+            .field("chain_id", &self.chain_id)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Publish a reviewed Kernel call batch with optional sponsorship. The callback
+/// must persist the operation hash before the function starts receipt polling.
+pub async fn publish_batch_observed(
+    inputs: PublishInputs,
+    clients: FundSwapClients<'_>,
+    submitted: &(dyn Fn(B256) -> Result<()> + Send + Sync),
+) -> Result<FundSwapReceipt> {
+    if clients
+        .node
+        .get_chain_id()
+        .await
+        .map_err(|e| Error::Transport(e.to_string()))?
+        != inputs.chain_id
+    {
+        return Err(Error::InvalidSwap(
+            "UserOperation node chain mismatch".into(),
+        ));
+    }
+    let ownership = signing::sign_hash(&inputs.secret_key, B256::ZERO)?;
+    if ownership
+        .recover_address_from_prehash(&B256::ZERO)
+        .map_err(|e| Error::InvalidSigner(e.to_string()))?
+        != inputs.eoa_address
+    {
+        return Err(Error::InvalidSigner(
+            "UserOperation key does not match account".into(),
+        ));
+    }
+    if inputs.entry_point.is_zero()
+        || inputs.delegation_target.is_zero()
+        || inputs.call_data.is_empty()
+    {
+        return Err(Error::InvalidSwap(
+            "invalid UserOperation contracts or calls".into(),
+        ));
+    }
     // 3. Nonces.
     info!("fund_swap: fetching userOp nonce (EntryPoint.getNonce)");
     let userop_nonce =
@@ -290,7 +362,7 @@ pub(crate) async fn fund_swap_observed(
         nonce: userop_nonce,
         factory: None,
         factory_data: None,
-        call_data,
+        call_data: inputs.call_data.clone(),
         call_gas_limit: U256::ZERO,
         verification_gas_limit: U256::ZERO,
         pre_verification_gas: U256::ZERO,
@@ -565,6 +637,58 @@ fn sig_to_array(sig: &alloy::primitives::Signature) -> [u8; 65] {
     let mut out = [0u8; 65];
     out.copy_from_slice(&bytes);
     out
+}
+
+/// Explicitly pinned AA contracts plus RPC and sponsorship settings.
+#[derive(Clone, Debug)]
+pub struct UserOpConfig {
+    pub aa: crate::aa::AaConfig,
+    pub entry_point: Address,
+    pub delegation_target: Address,
+}
+
+pub async fn publish_with_config(
+    secret_key: [u8; 32],
+    account: Address,
+    chain_id: u64,
+    calls: &[Call],
+    config: &UserOpConfig,
+    submitted: &(dyn Fn(B256) -> Result<()> + Send + Sync),
+) -> Result<FundSwapReceipt> {
+    let bundler = BundlerClient::new(config.aa.bundler_url.clone(), config.aa.bundler_casing)?;
+    let paymaster = config
+        .aa
+        .paymaster
+        .as_ref()
+        .map(|pm| PaymasterClient::new(pm.url.clone(), config.aa.bundler_casing))
+        .transpose()?;
+    let node = RootProvider::new_http(config.aa.node_rpc_url.clone());
+    publish_batch_observed(
+        PublishInputs {
+            secret_key,
+            eoa_address: account,
+            chain_id,
+            entry_point: config.entry_point,
+            delegation_target: config.delegation_target,
+            call_data: kernel::encode_execute_batch(calls),
+            gas_overrides: config.aa.gas_overrides,
+        },
+        FundSwapClients {
+            bundler: &bundler,
+            node: &node,
+            paymaster: paymaster.as_ref().map(|client| PaymasterRef {
+                client,
+                context: config
+                    .aa
+                    .paymaster
+                    .as_ref()
+                    .map(|pm| pm.context.clone())
+                    .unwrap_or(Value::Null),
+            }),
+        },
+        submitted,
+    )
+    .await
 }
 
 #[cfg(test)]

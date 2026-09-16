@@ -85,6 +85,13 @@ impl Client {
         let stored = self
             .get_stored_swap(id)?
             .ok_or_else(|| invalid("swap record missing"))?;
+        if stored.metadata.evm_claim_txid.is_some()
+            || stored.metadata.evm_claim_userop_hash.is_some()
+        {
+            return Err(invalid(
+                "claim already submitted; inspect the persisted transaction or operation",
+            ));
+        }
         let context = EvmContext::from_response(&stored.response)?;
         context.validate_wallet(wallet)?;
         if context.is_source || context.htlc != options.htlc {
@@ -151,46 +158,7 @@ impl Client {
     ) -> Result<EvmReceipt> {
         tokio::time::timeout(options.timeout, async {
             let _execution = self.evm_execution.lock().await;
-            let material = self.claim_material(id, wallet, &options).await?;
-            if calls.is_empty()
-                && (options.sweep_token != material.htlc.token
-                    || options.min_amount_out > material.htlc.amount)
-            {
-                return Err(invalid(
-                    "direct claim output does not match locked token/amount",
-                ));
-            }
-            let calls: Vec<Call> = calls
-                .iter()
-                .map(|c| {
-                    Ok(Call {
-                        target: parse(&c.target)?,
-                        value: decimal(&c.value)?,
-                        callData: parse(&c.data)?,
-                    })
-                })
-                .collect::<Result<_>>()?;
-            if calls.iter().any(|c| !c.value.is_zero()) {
-                return Err(invalid("native-fee calls require bridge execution"));
-            }
-            let typed = material.typed_data(&options, keccak256(calls.abi_encode()))?;
-            let signature = wallet.sign_typed_data(&typed).await?;
-            verify_signature(&signature, typed.digest, wallet.address())?;
-            let call = ClaimCoordinator::redeemAndExecuteCall {
-                preimage: material.preimage,
-                amount: material.htlc.amount,
-                token: material.htlc.token,
-                sender: material.htlc.sender,
-                timelock: U256::from(material.htlc.timelock),
-                calls,
-                sweepToken: options.sweep_token,
-                minAmountOut: options.min_amount_out,
-                destination: options.destination,
-                v: u8::from(signature.v()) + 27,
-                r: signature.r().into(),
-                s: signature.s().into(),
-            };
-            let tx = transaction(wallet, options.coordinator, call.abi_encode());
+            let (material, tx) = self.prepare_evm_claim(id, wallet, &options, calls).await?;
             // The preimage is only sent to RPC after the funded identity and deadline checks.
             wallet.call(&tx).await?;
             let hash = wallet.send_transaction(&tx).await?;
@@ -210,6 +178,56 @@ impl Client {
         })
         .await
         .map_err(|_| Error::Timeout("EVM claim timed out; inspect its stored transaction".into()))?
+    }
+
+    async fn prepare_evm_claim(
+        &self,
+        id: &str,
+        wallet: &dyn EvmWallet,
+        options: &EvmClaimOptions,
+        calls: Vec<crate::types::DexCall>,
+    ) -> Result<(ClaimMaterial, EvmTransaction)> {
+        let material = self.claim_material(id, wallet, options).await?;
+        if calls.is_empty()
+            && (options.sweep_token != material.htlc.token
+                || options.min_amount_out > material.htlc.amount)
+        {
+            return Err(invalid(
+                "direct claim output does not match locked token/amount",
+            ));
+        }
+        let calls: Vec<Call> = calls
+            .iter()
+            .map(|c| {
+                Ok(Call {
+                    target: parse(&c.target)?,
+                    value: decimal(&c.value)?,
+                    callData: parse(&c.data)?,
+                })
+            })
+            .collect::<Result<_>>()?;
+        if calls.iter().any(|c| !c.value.is_zero()) {
+            return Err(invalid("native-fee calls require bridge execution"));
+        }
+        let typed = material.typed_data(options, keccak256(calls.abi_encode()))?;
+        let signature = wallet.sign_typed_data(&typed).await?;
+        verify_signature(&signature, typed.digest, wallet.address())?;
+        let call = ClaimCoordinator::redeemAndExecuteCall {
+            preimage: material.preimage,
+            amount: material.htlc.amount,
+            token: material.htlc.token,
+            sender: material.htlc.sender,
+            timelock: U256::from(material.htlc.timelock),
+            calls,
+            sweepToken: options.sweep_token,
+            minAmountOut: options.min_amount_out,
+            destination: options.destination,
+            v: u8::from(signature.v()) + 27,
+            r: signature.r().into(),
+            s: signature.s().into(),
+        };
+        let tx = transaction(wallet, options.coordinator, call.abi_encode());
+        Ok((material, tx))
     }
 
     pub async fn get_redeem_calldata(
@@ -268,6 +286,118 @@ impl Client {
             self.update_swap_metadata(id,SwapMetadata { evm_claim_txid:Some(submitted.tx_hash.clone()),target_address:Some(options.destination.to_string()),..Default::default() })?;
             Ok(submitted)
         }).await.map_err(|_| Error::Timeout("gasless EVM claim timed out".into()))?
+    }
+}
+
+impl Client {
+    /// Publish a locally authorized claim through EIP-7702 with optional gas
+    /// sponsorship. The reader must expose the stored owner; its private key is
+    /// recovered from the SDK seed, including imported TypeScript derivations.
+    pub async fn claim_evm_userop(
+        &self,
+        id: &str,
+        wallet: &dyn EvmWallet,
+        options: EvmClaimOptions,
+        calls: Vec<crate::types::DexCall>,
+        config: &crate::aa::UserOpConfig,
+    ) -> Result<crate::aa::FundSwapReceipt> {
+        tokio::time::timeout(options.timeout, async {
+            let _execution = self.evm_execution.lock().await;
+            let stored = self
+                .get_stored_swap(id)?
+                .ok_or_else(|| invalid("swap record missing"))?;
+            if stored.metadata.evm_claim_txid.is_some()
+                || stored.metadata.evm_claim_userop_hash.is_some()
+            {
+                return Err(invalid(
+                    "claim already submitted; resume its persisted UserOperation or transaction",
+                ));
+            }
+            let context = EvmContext::from_response(&stored.response)?;
+            context.validate_wallet(wallet)?;
+            let key = self
+                .signer
+                .as_ref()
+                .ok_or_else(|| invalid("signer missing"))?
+                .evm_key_for_address(stored.key_index, &context.owner.to_string())?;
+            let (material, tx) = self.prepare_evm_claim(id, wallet, &options, calls).await?;
+            wallet.call(&tx).await?;
+            let receipt = crate::aa::orchestrate::publish_with_config(
+                key.secret_key,
+                context.owner,
+                context.chain_id,
+                &[crate::aa::abi::Call {
+                    target: tx.to,
+                    value: tx.value,
+                    callData: tx.data,
+                }],
+                config,
+                &|hash| {
+                    self.update_swap_metadata(
+                        id,
+                        SwapMetadata {
+                            evm_claim_userop_hash: Some(hash.to_string()),
+                            target_address: Some(options.destination.to_string()),
+                            ..Default::default()
+                        },
+                    )?;
+                    Ok(())
+                },
+            )
+            .await?;
+            if let Some(hash) = receipt.transaction_hash {
+                self.update_swap_metadata(
+                    id,
+                    SwapMetadata {
+                        evm_claim_txid: Some(hash.to_string()),
+                        ..Default::default()
+                    },
+                )?;
+                material.htlc.verify_redeem_receipt(
+                    &wallet.wait_for_receipt(hash).await?,
+                    material.preimage,
+                )?;
+            }
+            Ok(receipt)
+        })
+        .await
+        .map_err(|_| {
+            Error::Timeout("sponsored EVM claim timed out; inspect the persisted operation".into())
+        })?
+    }
+
+    /// Resolve a submitted claim operation without releasing the preimage again.
+    pub async fn resume_evm_claim_userop(
+        &self,
+        id: &str,
+        bundler: &crate::aa::bundler::BundlerClient,
+    ) -> Result<Option<B256>> {
+        let _execution = self.evm_execution.lock().await;
+        let stored = self
+            .get_stored_swap(id)?
+            .ok_or_else(|| invalid("swap record missing"))?;
+        if let Some(hash) = stored.metadata.evm_claim_txid {
+            return Ok(Some(parse(&hash)?));
+        }
+        let hash = stored
+            .metadata
+            .evm_claim_userop_hash
+            .ok_or_else(|| invalid("no persisted claim operation"))?;
+        let Some(receipt) = bundler.get_user_operation_receipt(parse(&hash)?).await? else {
+            return Ok(None);
+        };
+        if !receipt.success {
+            return Err(invalid("claim UserOperation reverted"));
+        }
+        let hash = receipt.receipt.transaction_hash;
+        self.update_swap_metadata(
+            id,
+            SwapMetadata {
+                evm_claim_txid: Some(hash.to_string()),
+                ..Default::default()
+            },
+        )?;
+        Ok(Some(hash))
     }
 }
 
