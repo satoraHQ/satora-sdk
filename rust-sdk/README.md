@@ -411,9 +411,10 @@ Use one tracker and exclusive execution ownership per store across processes.
 - Confirmation policy belongs to the application. Configured RPCs, indexers,
   Ark servers and bridge APIs remain data dependencies; this SDK is not a full
   consensus or SPV validator. Ambiguous Arkade batch spends remain unknown.
-- Validation here uses local mocks and deterministic vectors. Live BTCPayServer
-  integration, production bundler/paymaster sponsorship, Circle/LayerZero
-  delivery, and real Arkade batch settlement still need deployment testing.
+- Validation includes local mocks, deterministic vectors and real local-EVM
+  execution. Live BTCPayServer integration, production bundler/paymaster
+  sponsorship, Circle/LayerZero delivery, and real Arkade batch settlement still
+  need deployment testing.
 - The Arkade dependencies remain pinned to git to avoid an upstream yanked
   dependency. Source/path/git consumption works; crates.io publication requires
   a migration to compatible registry versions of those dependencies.
@@ -444,3 +445,10 @@ LENDASWAP_API_URL=http://localhost:3333 cargo test --test integration_live -- --
 Both SDKs pin the same `openapi.json`. Refresh it from the repository root with
 `just export-openapi-sdk`, then run schema and client tests. API requests include
 `X-Lendaswap-Client` and `x-satora-server-version` compatibility headers.
+
+For real EVM execution tests, run `scripts/e2e/test-rust-sdk-local.sh` from the
+repository root (Rust, Foundry and native build dependencies required). The suite
+starts isolated Anvil nodes, deploys the repository contracts, and verifies claims,
+Permit2 funding/refunds, restart recovery, tracker execution and reorgs. Swap API
+snapshots/quotes remain fixtures; full-daemon coverage uses the separate Rust
+process driver. See `scripts/e2e-rust/README.md` for setup and coverage boundaries.

@@ -153,3 +153,19 @@ chains; no production payments are part of this work.
   Do not treat this source-validation checkpoint as a crates.io release.
 - No production transactions, live bridges, BTCPayServer plugin runs, or .NET
   builds were performed. The README records account-model and trust limitations.
+
+## E2E follow-up
+
+- Four isolated Anvil tests pass against freshly compiled repository contracts:
+  signed claims, Permit2 funding and timed refunds, canonical observations after
+  a reorg, and restored automatic claim tracking. API snapshots and funding quote
+  responses remain fixtures; chain execution is real.
+- The full-stack Rust driver now uses the SDK's SQLite store. A separate-process
+  regression verifies complete swap records and submission journals survive
+  driver restarts. Its tests and strict Clippy pass.
+- The Rust SDK CI job explicitly runs the local EVM suite and driver checks.
+  Ordinary all-feature tests skip these four EVM tests in addition to the seven
+  existing live tests.
+- Polygon and Arbitrum fork RPC connectivity was verified. Full-stack daemon,
+  Arkade and Lightning scenarios could not run locally because this session
+  cannot access the Docker socket. No production funds were used.
