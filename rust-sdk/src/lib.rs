@@ -7,7 +7,10 @@
 #![doc = include_str!("../README.md")]
 
 pub mod bitcoin;
+#[cfg(feature = "gasless")]
+pub mod bridge;
 pub mod client;
+pub mod control;
 pub mod error;
 pub mod request;
 pub mod signer;
