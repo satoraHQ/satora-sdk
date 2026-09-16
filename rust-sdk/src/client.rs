@@ -64,6 +64,7 @@ fn is_preimage_collision(err: &Error) -> bool {
 
 #[derive(Clone)]
 pub struct Client {
+    pub(crate) bitcoin_execution: Arc<tokio::sync::Mutex<()>>,
     quote_cache: Arc<tokio::sync::Mutex<quotes::QuoteCache>>,
     #[cfg(feature = "gasless")]
     pub(crate) evm_execution: Arc<tokio::sync::Mutex<()>>,
@@ -118,6 +119,7 @@ impl Client {
             referral_code: None,
             arkade_config: None,
             arkade_wallet: Arc::new(tokio::sync::OnceCell::new()),
+            bitcoin_execution: Arc::default(),
             quote_cache: Arc::default(),
             #[cfg(feature = "gasless")]
             evm_execution: Arc::default(),
@@ -841,6 +843,7 @@ impl ClientBuilder {
             referral_code: self.referral_code,
             arkade_config: self.arkade_config,
             arkade_wallet: Arc::new(tokio::sync::OnceCell::new()),
+            bitcoin_execution: Arc::default(),
             quote_cache: Arc::default(),
             #[cfg(feature = "gasless")]
             evm_execution: Arc::default(),

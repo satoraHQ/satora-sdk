@@ -56,8 +56,8 @@ state the actual change and validation, without tool attribution.
    replacement IDs, stranded ERC-20 recovery, and pending funding UserOperation
    resumption implemented. Sponsored claims remain (shared publisher in step 7).
 
-5. [ ] **Implement on-chain Bitcoin claims and refunds.** Strict and legacy HTLC
-   reconstruction, UTXO observation through Esplora/Electrum, minimum confirmations,
+5. [x] **Implement on-chain Bitcoin claims and refunds.** Strict HTLC
+   reconstruction (version 1, matching current TypeScript/server; reject older versions), UTXO observation through Esplora/Electrum, minimum confirmations,
    network/address checks, timelocks, fee estimation, transaction construction,
    signing, broadcast, and recovery. Test golden scripts/transactions, invalid
    script parameters, insufficient funding, fees/dust, and premature refunds.

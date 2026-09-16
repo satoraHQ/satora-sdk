@@ -6,6 +6,7 @@
 
 #![doc = include_str!("../README.md")]
 
+pub mod bitcoin;
 pub mod client;
 pub mod error;
 pub mod request;

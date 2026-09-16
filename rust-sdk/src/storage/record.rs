@@ -22,6 +22,8 @@ pub enum EvmKeySource {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct SwapMetadata {
+    pub btc_spend_txid: Option<String>,
+    pub btc_spend_fee: Option<u64>,
     pub target_address: Option<String>,
     pub bridge_recipient: Option<String>,
     pub bridge_recipient_wallet: Option<String>,
@@ -44,6 +46,8 @@ impl SwapMetadata {
             )*};
         }
         merge!(
+            btc_spend_txid,
+            btc_spend_fee,
             target_address,
             bridge_recipient,
             bridge_recipient_wallet,

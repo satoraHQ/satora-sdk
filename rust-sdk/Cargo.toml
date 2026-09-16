@@ -29,7 +29,10 @@ crate-type = ["rlib"]
 # layer can opt out.
 gasless = ["dep:alloy", "dep:alloy-provider", "dep:alloy-dyn-abi"]
 
+electrum = ["dep:electrum-client"]
+
 [dependencies]
+electrum-client = { version = "0.24.1", optional = true }
 # Crypto: HD wallet derivation, secp256k1, hashes.
 # `bitcoin` re-exports `secp256k1`; no need to pull it in directly.
 bip39 = "2"
@@ -65,7 +68,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # pulls a tokio runtime in transitively — the `time` feature is tiny
 # and gating it would force a feature flag onto a fundamental client
 # primitive.
-tokio = { version = "1", features = ["sync", "time"] }
+tokio = { version = "1", features = ["sync", "time", "rt"] }
 
 # Arkade VHTLC claim + balance + settle. `ark-rs` for the core VHTLC
 # script + gRPC client to arkd, `ark-bdk-wallet` for the on-chain
