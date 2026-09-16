@@ -1,4 +1,4 @@
-//! Account abstraction: gasless EVM funding for swaps.
+//! Account abstraction: sponsored EVM funding, claims and bridge batches.
 //!
 //! The depositor's per-swap EVM key (derived by [`crate::Signer`]) is an
 //! ephemeral EOA. Under EIP-7702 that EOA delegates its code to a ZeroDev
@@ -11,9 +11,10 @@
 //! - [`abi`]    — `sol!` ABI blocks for the contracts we encode calls to.
 //! - [`userop`] — `PackedUserOperation` assembly + EntryPoint v0.7 `getUserOpHash`.
 //!
-//! Later phases add: `permit2` (Permit2 witness EIP-712 signing),
-//! `kernel` (Kernel V3.3 `execute` batch encoding + signature envelopes),
-//! `bundler` (bundler + paymaster RPC, 7702-auth attachment).
+//! - [`permit2`] — Permit2 witness EIP-712 signing.
+//! - [`kernel`] — Kernel V3.3 batch encoding and signature envelopes.
+//! - [`bundler`] / [`paymaster`] — ERC-4337 RPC and EIP-7702 authorization.
+//! - [`orchestrate`] — shared durable submission callbacks and receipt polling.
 //!
 //! The verified encoding details this module relies on are documented
 //! inline in each submodule; the source spike checked them against the

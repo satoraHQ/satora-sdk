@@ -8,7 +8,7 @@
 //! ## What this module owns
 //!
 //! `ark-client` requires the consumer to plug in:
-//!   - a [`Persistence`] impl for boarding outputs,
+//!   - a `Persistence` impl for boarding outputs,
 //!   - a [`Blockchain`] impl for esplora-style chain queries,
 //!   - an on-chain wallet,
 //!   - a [`SwapStorage`](ark_rs::client::swap_storage) for Boltz state.
@@ -80,7 +80,7 @@ const ARK_NETWORK_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Caller-supplied configuration for the Arkade claim flow.
 ///
-/// Mirrors [`crate::aa::AaConfig`] in shape: URLs + a wallet hook the
+/// Mirrors `aa::AaConfig` in shape: URLs + a wallet hook the
 /// SDK uses to instantiate the underlying client. The SDK never opens
 /// network connections from this struct alone — they happen lazily
 /// inside [`crate::Client::claim`].
@@ -164,7 +164,7 @@ pub struct ClaimReceipt {
 
 /// Connected Arkade client wrapper. Construction performs the gRPC
 /// handshake and primes the on-chain wallet; [`Self::offchain_address`]
-/// and [`Self::offchain_balance_sats`] are local + cheap once
+/// and [`Self::offchain_balance`] are local + cheap once
 /// connected, while [`crate::Client::claim`] uses an instance
 /// internally for the VHTLC spend.
 ///

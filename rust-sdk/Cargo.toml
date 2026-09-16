@@ -5,17 +5,20 @@
 name = "satora-rust-sdk"
 version = "0.0.1"
 edition = "2024"
+rust-version = "1.94"
 include = [
   "/build.rs",
   "/Cargo.lock",
   "/Cargo.toml",
   "/README.md",
+  "/PARITY_PLAN.md",
+  "/examples/**",
   "/openapi.json",
   "/src/**",
   "/tests/**",
 ]
 license = "MIT"
-repository = "https://github.com/satoraHQ/satora-sdk"
+repository = "https://github.com/satoraHQ/swap"
 description = "Lendaswap Client SDK (Rust). FFI-friendly public API; the schema is verified against the upstream OpenAPI spec."
 
 [lib]
@@ -72,7 +75,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # pulls a tokio runtime in transitively — the `time` feature is tiny
 # and gating it would force a feature flag onto a fundamental client
 # primitive.
-tokio = { version = "1", features = ["sync", "time", "rt"] }
+tokio = { version = "1", features = ["sync", "time", "rt", "macros"] }
 
 # Arkade VHTLC claim + balance + settle. `ark-rs` for the core VHTLC
 # script + gRPC client to arkd, `ark-bdk-wallet` for the on-chain

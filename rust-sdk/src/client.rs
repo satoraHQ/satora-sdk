@@ -397,17 +397,14 @@ impl Client {
     /// `gasless = true` runs the gasless deposit flow: the user is given
     /// an EVM deposit address derived from the configured [`Signer`] (see
     /// [`Signer::derive_evm_key`]) and just sends tokens to it from any
-    /// wallet. The SDK then relays the funds into the HTLC via a
-    /// Permit2-signed transaction — the user never needs ETH/MATIC for
-    /// gas and never signs the HTLC funding tx themselves.
+    /// wallet. Calling `fund_swap_gasless` then relays the funds into the
+    /// HTLC with Permit2 authorization. Paymaster sponsorship is optional;
+    /// without it the account needs native gas funds.
     ///
-    /// `gasless = false` returns the HTLC contract address, but funding it
-    /// requires the user to broadcast a transaction calling the contract
-    /// with specific encoded calldata. That calldata is served by
-    /// `GET /swap/{id}/swap-and-lock-calldata-userop`. **The SDK does not
-    /// yet fetch this calldata** — callers who set `gasless = false`
-    /// today have to issue that follow-up request themselves. A typed
-    /// helper for it will land in a later revision.
+    /// `gasless = false` requires a wallet transaction. With the `gasless`
+    /// feature enabled, use `get_permit2_funding_data` to inspect the typed
+    /// request or `fund_swap_with_wallet` to validate, sign and submit it under
+    /// explicit `FundingOptions` limits. Creation itself never broadcasts.
     ///
     /// **Referral code**: attached to every swap from this client; set
     /// once on the builder via [`ClientBuilder::referral_code`].
@@ -511,7 +508,7 @@ impl Client {
     /// Create an Arkade → BTC-on-Lightning swap.
     ///
     /// The user funds an Arkade VHTLC; the server uses Boltz to pay the
-    /// user-provided Lightning [`LightningDestination`] and claims the
+    /// user-provided Lightning [`crate::types::LightningDestination`] and claims the
     /// VHTLC with the resulting preimage. **No client-side claim path**
     /// — once the user funds the returned [`SwapFunding::ArkadeAddress`],
     /// the server owns the rest of the flow.
@@ -557,7 +554,7 @@ impl Client {
     /// Not routed through [`Self::send`] because the endpoint has a
     /// path parameter and [`Endpoint::PATH`] is a `&'static str`. The
     /// shape varies per direction (the server wraps it in a
-    /// `direction`-tagged enum); the projection in [`Swap::from_response`]
+    /// `direction`-tagged enum); the projection in `Swap::from_response`
     /// dispatches on the variant.
     #[tracing::instrument(name = "get_swap", skip_all, fields(%swap_id))]
     pub async fn get_swap(&self, swap_id: &str) -> Result<Swap> {
@@ -893,27 +890,23 @@ pub enum SwapFunding {
     /// from any wallet. The SDK relays the funds into the HTLC via a
     /// Permit2-signed transaction so the user never pays gas.
     Gasless {
-        /// EVM address derived from the configured [`Signer`]
-        /// (`m/44'/60'/0'/0/0`). The same address is reused across
-        /// every swap from this client.
+        /// EVM depositor address recorded by the server. New locally owned
+        /// Rust swaps derive a separate key at `m/83696968'/121923'/{index}'/60'`.
+        /// Recovered records can use TypeScript BIP44 or an external wallet.
         deposit_address: String,
     },
     /// `gasless = false` flow: the user submits the funding transaction
     /// themselves, calling the HTLC coordinator with specific calldata.
     ///
-    /// The calldata + AA configuration come from the separate
-    /// `GET /swap/{id}/swap-and-lock-calldata-userop` endpoint, which
-    /// the SDK does not yet fetch. A later revision will populate this
-    /// variant with the fields a caller needs (contract address, calls
-    /// array, AA addresses, etc.). For now this variant carries no
-    /// payload — its presence is the signal that "you asked for a
-    /// non-gasless swap and need to do the funding step yourself."
+    /// Use `fund_swap_with_wallet` with reviewed `FundingOptions` when the
+    /// `gasless` feature is enabled. Funding calls and contract configuration
+    /// are fetched separately and checked against those application limits.
     #[non_exhaustive]
     UserSubmitted {},
     /// On-chain Bitcoin HTLC address to fund.
     BitcoinAddress { address: String },
     /// Lightning → Arkade flow: the user must pay this Bolt11 invoice
-    /// over Lightning. The server (via Boltz) observes the payment and
+    /// over Lightning. The server observes the payment and
     /// then funds the Arkade VHTLC; the user offchain-claims with the
     /// preimage via [`Client::claim`].
     Bolt11Invoice {
@@ -923,7 +916,7 @@ pub enum SwapFunding {
     },
     /// Arkade → Lightning flow: the user must fund this Arkade VHTLC
     /// address with `deposit_amount` sats. Once funded, the server
-    /// (via Boltz) pays the user's Lightning invoice and claims the
+    /// pays the user's Lightning invoice and claims the
     /// VHTLC with the resulting preimage — no client-side claim
     /// needed.
     ArkadeAddress {

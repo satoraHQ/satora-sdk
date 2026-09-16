@@ -1,7 +1,8 @@
 # satora-rust-sdk
 
-Rust client for the Satora swap API. The crate is published as
-`satora-rust-sdk`; its Rust library name is `lendaswap_sdk`.
+Rust client for Satora swaps across Bitcoin, Arkade, Lightning and EVM chains.
+The package name is `satora-rust-sdk`; the Rust library is `lendaswap_sdk`.
+This crate is standalone and uses the repository’s pinned Rust toolchain.
 
 ## Usage
 
@@ -37,15 +38,36 @@ strings on the wire, while Bitcoin amounts must be positive and fit in `i64`.
 
 | Operation | Rust support |
 | --- | --- |
-| Discovery | Health/status (including unhealthy HTTP 503), tokens, pairs, chain config, network fees, referral fee, MTP, support agents |
-| Quotes | `/quote`, `/quote/lightning-send`, typed DEX quotes/calldata, and local BTC↔EVM/Solana composition |
-| Create | All nine directions via `SwapCreation` and `create_swap_request`; generic EVM assets with explicit chain IDs |
-| Inspect | All nine API swap directions through `get_swap_details`; compact `get_swap`; bulk status |
-| Recovery | One-page `recover_swaps` and paginated `recover_all_swaps` |
-| EVM funding | Optional `gasless` feature: external-wallet Permit2 execution, deposit probes/polling and ERC-4337 funding |
-| Claim | EVM→Arkade and Lightning→Arkade; EVM targets via external/local wallets or server gasless submission |
-| EVM refunds | Receipt-derived unilateral and cooperative refunds with owner/domain checks |
-| Arkade wallet | Address, balance, send, boarding, settle |
+| Discovery and quotes | Health, tokens, pairs, chain/AA configuration, fees, MTP, referral/support data, typed DEX calls, exact local quote composition |
+| Creation and recovery | All nine swap directions, paginated recovery, SQLite snapshots and execution journals |
+| EVM execution (`gasless`) | External/local wallets, Permit2 and EIP-2612, ERC-4337 funding/claims, server claims, cooperative/unilateral refunds, deposit recovery and refund continuation |
+| Bitcoin execution | Strict version 1 Taproot claims/refunds, multiple outputs, Esplora and optional Electrum |
+| Arkade execution | All supported directions, offchain claims/refunds, cooperative refunds, delegated settlement, interrupted-batch recovery |
+| Bridges (`gasless`) | CCTP v2 and USDT0 fees/messages, wallet/sponsored transfers, atomic inbound funding, outbound claims, delivery tracking and recovery |
+| Status feed (`websocket`) | Reconnect/resubscribe, bounded queues, HTTP reconciliation, cancellation |
+| Observations | Bitcoin/Arkade/EVM HTLC readers, confirmation policy, verified preimages, reorg-aware bounded managers |
+| Actions and automation | Chain-derived actions, persisted tracking, bounded workers, opt-in automatic claims/CCTP recovery, conservative retry journals |
+
+The reference implementations are `../ts-sdk/packages/swap` and
+`../ts-pure-sdk`. The completed implementation checkpoints and scope decisions
+are in [PARITY_PLAN.md](PARITY_PLAN.md). .NET bindings are outside this change.
+
+| Creation route | Client funding | Client settlement or recovery |
+| --- | --- | --- |
+| Bitcoin→Arkade | Send BTC to the HTLC | Claim Arkade; refund Bitcoin on failure |
+| Bitcoin→EVM | Send BTC to the HTLC | Claim EVM; refund Bitcoin on failure |
+| Arkade→EVM | Send VTXOs to the VHTLC | Claim EVM; refund Arkade on failure |
+| Arkade→Lightning | Send VTXOs to the VHTLC | Server pays the invoice; refund Arkade on failure |
+| Lightning→Arkade | Pay the returned invoice | Claim Arkade |
+| Lightning→EVM | Pay the returned invoice | Claim EVM |
+| EVM→Bitcoin | Wallet or sponsored HTLC funding | Claim Bitcoin; refund EVM on failure |
+| EVM→Arkade | Wallet or sponsored HTLC funding | Claim Arkade; refund EVM on failure |
+| EVM→Lightning | Wallet or sponsored HTLC funding | Server pays the invoice; refund EVM on failure |
+
+Examples are compiled templates: [routes.rs](examples/routes.rs) constructs every
+route, [tracking.rs](examples/tracking.rs) wires observations and automation,
+and [recovery.rs](examples/recovery.rs) illustrates settlement and restart recovery.
+Their `main` functions do not create swaps or send payments.
 
 Lightning sends accept `LightningDestination::Invoice`, `Address`, or `Lnurl`.
 The `AddressSendMax` and `LnurlSendMax` variants specify a source amount instead
@@ -56,10 +78,6 @@ invoice description of at most 639 bytes, and a per-swap surcharge.
 `get_swap_details` preserves the server's full response. `get_swap` projects it
 into payment instructions; its `receive_address` is empty for an EVM→Bitcoin
 swap whose server response has no target address.
-
-This is not full TypeScript SDK parity. Rust still lacks on-chain Bitcoin execution, complete Arkade refunds, EVM refund continuation, bridge orchestration; WebSocket tracking and contract managers. Reading/recovering those
-swap records does not implement their execution flows. The TypeScript reference
-is `../ts-sdk/packages/swap` and its underlying `../ts-pure-sdk` client.
 
 `create_swap_request(SwapCreation, SwapOptions)` provides explicit routes for all
 nine directions. `EvmAsset` accepts a chain ID and either a named token or a
@@ -127,6 +145,12 @@ Quotes are checked again after approval; signatures are recovered locally;
 receipts must contain the matching HTLC creation event. Funding transaction IDs
 and gasless operation hashes are persisted before receipt polling. A pending
 submission prevents another funding attempt through that client/store.
+Funding, refunds and stranded-token recovery reserve submission before sending,
+including before a bundler or server can receive it. A lost response leaves an
+unresolved reservation. Reconcile the original transaction with
+`attach_evm_funding_transaction`, `attach_evm_refund_transaction`, or
+`attach_evm_recovery_transaction`, then verify its receipt. Retrying a known
+refund verifies the receipt even after the coordinator deletes its deposit entry.
 Execution calls through cloned clients are serialized. Separate processes must
 coordinate exclusive ownership of a swap before executing it.
 
@@ -140,30 +164,7 @@ EIP-712 parameters and deposit ownership before authorizing a cooperative refund
 These operations require complete stored records and the relevant contract
 addresses and output limits supplied by the caller.
 
-## Build and test
-
-This is a standalone crate, outside the root Cargo workspace. Use the repository's
-pinned Rust toolchain; native builds need OpenSSL development libraries and
-`protoc` for the Arkade dependencies.
-
-```sh
-cd client-sdk/rust-sdk
-cargo test --locked
-cargo test --locked --all-features
-cargo clippy --locked --all-targets --all-features -- -D warnings
-cargo +nightly-2025-11-01 fmt --check
-```
-
-Tests use local HTTP/RPC mocks, SQLite reopen/concurrency checks, signer vectors,
-and the pinned OpenAPI schema. Live tests are ignored by default:
-
-```sh
-LENDASWAP_API_URL=http://localhost:3333 cargo test --test integration_live -- --ignored
-```
-
-Both SDKs pin the same `openapi.json`. Refresh it from the repository root with
-`just export-openapi-sdk`, then run schema and client tests. API requests include
-`X-Lendaswap-Client` and `x-satora-server-version` compatibility headers.
+## EVM recovery
 
 Refund recovery APIs (`gasless` feature):
 
@@ -184,6 +185,8 @@ Use one executor per swap across processes. Replacement creation and local stora
 cannot be atomic across the server boundary: a crash immediately after the API
 accepts creation may require swap recovery before attempting continuation again.
 
+## Bitcoin execution
+
 On-chain Bitcoin execution uses `bitcoin_htlc`, `claim_bitcoin`, and
 `refund_bitcoin`. Configure an `EsploraBackend`, or enable `electrum` and connect
 an `ElectrumBackend`. Both verify the configured network's genesis block and
@@ -200,7 +203,9 @@ and reject a different unresolved spend. Only strict script version 1 is support
 matching the current server and TypeScript SDK. Backends are trusted chain data
 providers, not independent consensus validators.
 
-Arkade `claim` now supports Bitcoin, EVM and Lightning inputs and spends all
+## Arkade execution
+
+Arkade `claim` supports Bitcoin, EVM and Lightning inputs and spends all
 eligible VTXOs after checking the expected funding amount. `refund_arkade` checks
 maturity against Bitcoin chain data; `collab_refund_arkade` obtains and verifies
 the receiver's signatures for Arkade→EVM refunds. `arkade_htlc`, `vhtlc_balance`,
@@ -228,6 +233,8 @@ unresolved for investigation; it is never silently replaced with new authorizati
 The timeout refund path still requires the Arkade server, as in TypeScript.
 `StrictVhtlcOptions` exposes all six script paths for wallet-level exit integrations.
 
+## Sponsored claims
+
 `claim_evm_userop` publishes the same chain-verified claim through the local
 EIP-7702 account with optional paymaster sponsorship. Supply reviewed DEX calls,
 claim output limits, and a `UserOpConfig` with pinned EntryPoint/Kernel contracts.
@@ -242,6 +249,8 @@ the mined transaction after interruption. As with funding resumption, verify the
 HTLC event before treating a bundler receipt as completed settlement. The local
 publisher requires a key owned by the SDK seed; external accounts can use the
 wallet-submitted claim API.
+
+## Bridges
 
 Bridge execution (`gasless` feature) uses `bridge::BridgeApi` for Circle and
 LayerZero tracking, and `Client::{burn_cctp,mint_cctp,send_usdt0,recover_bridge_balance}`
@@ -294,6 +303,8 @@ bridge resumption verifies both the HTLC redemption and bridge receipt. Stored
 bridge intent preserves recipient bytes without changing the original API-facing
 EVM address or Solana base58 recipient.
 
+## Status and observations
+
 With the `websocket` feature, `Client::subscribe_status` starts a
 `StatusSubscription`. Add UUIDs with `subscribe`, remove them with `unsubscribe`,
 and receive `StatusEvent`s with `recv`. Shutdown is explicit and awaited;
@@ -321,3 +332,115 @@ Readers trust the configured node/indexer rather than implementing consensus
 validation. Missing, failed, or stale observations cannot authorize an action.
 The manager bounds its cache, concurrency and read deadlines, emits changes,
 supports targeted reconciliation, and owns an optional cancellable poller.
+
+## Actions and tracking
+
+`actions::derive_actions` is a pure policy function. It requires current chain
+observations, explicit submission/bridge state, and chain clocks. It produces
+fund, claim, cooperative/timeout refund, bridge recovery, wait, or terminal
+actions. Funding is manual; refunds require application confirmation. Missing or
+unknown observations never authorize a claim. Claim safety margins and expiry
+grace periods are configurable through `ActionPolicy`.
+
+`tracker::SwapTracker` registers stored swaps with a dedicated `ContractManager`,
+persists references/options/attempts, restores enabled records, and emits changed
+actions through a bounded broadcast channel. Configure one reader per ledger
+and EVM chain using `ReaderSet`. Use `contract_references` to reconstruct and
+validate references; manually supplied references are trusted application input.
+
+```rust,no_run
+use std::sync::Arc;
+use lendaswap_sdk::{Client, Result};
+use lendaswap_sdk::observation::{ContractManager, ContractReader, ManagerOptions, ReferenceOptions};
+use lendaswap_sdk::tracker::{SwapTracker, TrackerOptions, TrackingOptions};
+
+# async fn track(client: Client, reader: Arc<dyn ContractReader>, id: &str, references: ReferenceOptions) -> Result<()> {
+let contracts = client.contract_references(id, &references)?;
+let manager = ContractManager::new(reader, ManagerOptions::default())?;
+let tracker = SwapTracker::new(client, manager, TrackerOptions::default(), None)?;
+let failures = tracker.restore().await?;
+// Surface unsupported/corrupt records; they remain in storage for recovery.
+assert!(failures.is_empty(), "tracking restore failures: {failures:?}");
+if tracker.record(id).await.is_err() {
+    tracker.track(id, contracts, TrackingOptions::default()).await?;
+}
+let mut events = tracker.events();
+let worker = tracker.start()?;
+match events.recv().await {
+    Ok(event) => println!("{event:?}"),
+    Err(_) => tracker.hint_all()?, // reconcile after a slow consumer misses events
+}
+worker.shutdown().await?;
+# Ok(())
+# }
+```
+
+Use `status_hint` to feed WebSocket events into the tracker; status values only
+trigger chain reads. `hint` coalesces IDs, `refresh(true)` reconciles at-risk
+swaps, and periodic full refreshes also revisit apparently completed swaps after
+reorgs. `actions` returns the last published snapshot; use `reconcile` for a fresh
+read before acting. `untrack` disables a record without deleting its journal;
+`resume` re-enables it. Dropping the worker cancels local work.
+
+Automatic execution needs both an `ActionExecutor` adapter and per-swap
+`auto_claim` or `auto_cctp` opt-in. Adapters should call the SDK's durable execution
+methods with application-approved addresses, limits and bridge plans. Supply
+bridge state from verified receipts, attestations and delivery queries via
+`update_options`; server swap status does not establish bridge delivery. No
+executor is configured by default, and funding/refunds are never automated.
+
+An attempt is persisted before invoking the adapter. A callback must explicitly
+return `Retryable` only if nothing was submitted; retries have backoff and a cap.
+Errors, timeouts, cancellation and lost responses remain unresolved until the
+application reconciles the rail journal/chain and calls `resolve_attempt`.
+`Submitted` waits for observed settlement; it never declares success by itself.
+Resolving a tracker attempt does not erase underlying transaction journals.
+Use one tracker and exclusive execution ownership per store across processes.
+
+## Compatibility and validation limits
+
+- Strict Bitcoin/Arkade script version 1 matches the current server. Arkade
+  timeout refunds still involve the Ark server; a wallet-wide unilateral exit
+  service is not part of either swap SDK.
+- Sponsored accounts use Rust's local-owner EIP-7702 model. TypeScript's external
+  factory smart-account model is not interchangeable. External wallets can use
+  direct transaction execution; their keys are never guessed from the seed.
+- EVM execution and bridges currently share the historical `gasless` feature
+  flag, including direct wallet execution. `websocket` and `electrum` are
+  independently optional. Observations/actions/storage compile by default.
+- Confirmation policy belongs to the application. Configured RPCs, indexers,
+  Ark servers and bridge APIs remain data dependencies; this SDK is not a full
+  consensus or SPV validator. Ambiguous Arkade batch spends remain unknown.
+- Validation here uses local mocks and deterministic vectors. Live BTCPayServer
+  integration, production bundler/paymaster sponsorship, Circle/LayerZero
+  delivery, and real Arkade batch settlement still need deployment testing.
+- The Arkade dependencies remain pinned to git to avoid an upstream yanked
+  dependency. Source/path/git consumption works; crates.io publication requires
+  a migration to compatible registry versions of those dependencies.
+
+## Build and test
+
+This is a standalone crate, outside the root Cargo workspace. Use the repository's
+pinned Rust toolchain; native builds need OpenSSL development libraries and
+`protoc` for the Arkade dependencies.
+
+```sh
+cd client-sdk/rust-sdk
+cargo test --locked
+cargo test --locked --all-features
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo check --locked --no-default-features --features websocket,electrum
+cargo doc --locked --all-features --no-deps
+cargo +nightly-2025-11-01 fmt --check
+```
+
+Tests use local HTTP/RPC mocks, SQLite reopen/concurrency checks, signer vectors,
+and the pinned OpenAPI schema. Live tests are ignored by default:
+
+```sh
+LENDASWAP_API_URL=http://localhost:3333 cargo test --test integration_live -- --ignored
+```
+
+Both SDKs pin the same `openapi.json`. Refresh it from the repository root with
+`just export-openapi-sdk`, then run schema and client tests. API requests include
+`X-Lendaswap-Client` and `x-satora-server-version` compatibility headers.

@@ -28,7 +28,7 @@
 //! 11. `eth_sendUserOperation` (with auth) → returns userOpHash.
 //! 12. Poll `eth_getUserOperationReceipt` until mined (bounded).
 //!
-//! All RPC calls inherit the [`BundlerCasing`] chosen on the clients —
+//! All RPC calls inherit the [`crate::aa::bundler::BundlerCasing`] chosen on the clients —
 //! the orchestration is bundler-agnostic.
 
 use crate::aa::abi::Call;

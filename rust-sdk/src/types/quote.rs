@@ -34,7 +34,7 @@ pub enum QuoteAmount {
 /// Parameters for `GET /quote`.
 ///
 /// Serializes to the spec's flat query-parameter shape via the private
-/// [`QuoteRequestWire`] (the `#[serde(into = …)]` attribute below). Callers
+/// `QuoteRequestWire` (the `#[serde(into = …)]` attribute below). Callers
 /// interact only with this struct.
 #[derive(Clone, Debug, Serialize)]
 #[serde(into = "QuoteRequestWire")]

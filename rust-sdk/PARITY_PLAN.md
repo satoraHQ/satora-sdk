@@ -109,11 +109,19 @@ state the actual change and validation, without tool attribution.
     reserves attempts durably, and never retries ambiguous submissions. Bridge
     inputs must come from verified bridge execution/tracking results.
 
-11. [ ] **Finish public API/documentation and integration verification.** Export
+11. [x] **Finish public API/documentation and integration verification.** Export
     supported entry points; provide examples for each route and recovery path;
     update the coverage table and migration notes; check package contents,
     default and optional feature builds, documentation, and the full test suite.
     Keep a precise list of live network/chain validations that were not executed.
+    Added compiled route/tracking/recovery examples, default/all-feature rustdoc
+    checks, independent transport-feature checks, and matching CI gates. Package
+    contents include examples and this plan. Cargo's registry package validation
+    remains blocked by the existing git-only Arkade dependency declarations;
+    registry migration and live deployment testing are explicit follow-ups.
+    Final review also added pre-submission reservations for EVM funding, refunds,
+    and deposit recovery; original-hash reconciliation; refund receipt resumption
+    after coordinator deposit deletion; and stricter funding event identity checks.
 
 ## Validation gates
 
@@ -131,3 +139,17 @@ Focused regression suites may run during implementation. A committed step must
 pass the applicable gates and record meaningful behavior tests, not only type
 compilation. Broadcasting tests use local mocks or explicitly configured local
 chains; no production payments are part of this work.
+
+## Final local verification
+
+- Default features: 131 passing tests including two doctests; seven live tests ignored.
+- All features: 199 passing tests including two doctests; seven live tests ignored.
+- Formatting, strict all-target/all-feature Clippy, default/all-feature rustdoc
+  with warnings denied, and the websocket+electrum build without EVM: passed.
+- All three examples compile with optional features; CI workflow YAML parses.
+- `cargo package --list --allow-dirty`: includes source, fixtures, examples and docs.
+- `cargo package --locked --no-verify --allow-dirty`: blocked by the existing
+  git-only `ark-bdk-wallet` dependency lacking a registry version requirement.
+  Do not treat this source-validation checkpoint as a crates.io release.
+- No production transactions, live bridges, BTCPayServer plugin runs, or .NET
+  builds were performed. The README records account-model and trust limitations.
