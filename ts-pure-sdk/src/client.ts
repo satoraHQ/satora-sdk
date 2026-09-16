@@ -154,6 +154,7 @@ import {
   isBtcOnchain,
   isEvmToken,
   isLightning,
+  isNativeLockTarget,
   isSolanaToken,
   isSourceEvmChain,
   toChainName,
@@ -2075,7 +2076,10 @@ export class Client {
     let targetChain = params.targetChain;
     let targetToken = params.targetToken;
     let bridgeTargetChain: string | undefined;
-    if (isBridgeOnlyChain(targetChain)) {
+    if (
+      isBridgeOnlyChain(targetChain) &&
+      !isNativeLockTarget(targetChain, targetToken)
+    ) {
       bridgeTargetChain = toChainName(targetChain);
       // Determine if this is a USDT0 or USDC bridge token by checking
       // if the target token matches a known USDT0 address on the destination.
@@ -5043,7 +5047,11 @@ export class Client {
     // so the backend knows to bridge after. This keeps the remapping logic
     // in one place — SDK consumers just pass their desired target.
     let bridgeParams = options.bridgeParams;
-    if (!bridgeParams && isBridgeOnlyChain(targetChain)) {
+    if (
+      !bridgeParams &&
+      isBridgeOnlyChain(targetChain) &&
+      !isNativeLockTarget(targetChain, tokenAddress)
+    ) {
       const chainName = toChainName(targetChain as Chain);
       if (chainName) {
         const isUsdt0 = Object.values(USDT0_ADDRESSES).some(

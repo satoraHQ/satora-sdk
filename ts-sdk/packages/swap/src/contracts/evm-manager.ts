@@ -152,6 +152,7 @@ const AVG_BLOCK_MS: Record<number, number> = {
   1: 12_000,
   137: 2_100,
   42161: 250,
+  30: 30_000,
 };
 
 /** Extra blocks to over-scan past the estimate (reorgs + estimate slack). */

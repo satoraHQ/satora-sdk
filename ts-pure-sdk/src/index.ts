@@ -325,6 +325,7 @@ export {
   isEvmToken,
   isLightning,
   isLineaToken,
+  isNativeLockTarget,
   isOptimismToken,
   isPolygonToken,
   isSolanaToken,

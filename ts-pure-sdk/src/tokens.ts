@@ -220,6 +220,18 @@ export function isBridgeOnlyChain(chain: string): boolean {
 }
 
 /**
+ * Returns true for the native coin of a chain that locks it in its own HTLC
+ * (RBTC on Rootstock, token id = the zero address). Rootstock is also a USDT0
+ * bridge destination, so the chain alone does not say whether a target is
+ * bridged; its coin is a first-class target settled on chain 30, never
+ * remapped to the Arbitrum hub.
+ */
+export function isNativeLockTarget(chain: string, token: string): boolean {
+  const c = chain.toLowerCase();
+  return (c === "30" || c === "rootstock") && /^0x0{40}$/i.test(token);
+}
+
+/**
  * Returns true if the chain is Solana. Solana is a CCTP-only destination —
  * funds reach it via Circle's Forwarding Service after an Arbitrum-side
  * burn, never as a swap source/target chain in its own right.
@@ -291,6 +303,7 @@ export function toChain(str: string): Chain {
   if (c === "ethereum" || c === "1") return "1";
   if (c === "polygon" || c === "137") return "137";
   if (c === "arbitrum" || c === "42161") return "42161";
+  if (c === "rootstock" || c === "30") return "30";
   if (c === "lightning") return "Lightning";
   if (c === "arkade") return "Arkade";
   if (c === "bitcoin") return "Bitcoin";
@@ -315,7 +328,10 @@ export function toChainName(chain: Chain): string {
  * or is not an EVM token.
  */
 export function getBridgeTargetChain(token: TokenInfo): string | undefined {
-  if (isBridgeOnlyChain(token.chain)) {
+  if (
+    isBridgeOnlyChain(token.chain) &&
+    !isNativeLockTarget(token.chain, String(token.token_id))
+  ) {
     return CHAIN_ID_TO_NAME[token.chain] ?? toChainName(token.chain as Chain);
   }
   return undefined;

@@ -1658,7 +1658,7 @@ export interface components {
          *     EVM chains serialize to their chain ID as a string (e.g. "137" for Polygon).
          * @enum {string}
          */
-        Chain: "Arkade" | "Lightning" | "Bitcoin" | "137" | "1" | "42161";
+        Chain: "Arkade" | "Lightning" | "Bitcoin" | "137" | "1" | "42161" | "30";
         /**
          * @description Per-chain configuration. EVM chains only — Bitcoin / Lightning /
          *     Arkade don't have a meaningful chain-config shape.
@@ -2178,6 +2178,11 @@ export interface components {
         EvmChainsResponse: {
             chains: components["schemas"]["EvmChainInfo"][];
         };
+        /**
+         * @description HTLC family of an EVM lock, as the API reports it.
+         * @enum {string}
+         */
+        EvmHtlcKind: "erc20" | "native";
         /**
          * @description Request to create an EVM-to-Arkade swap.
          *
@@ -2903,6 +2908,12 @@ export interface components {
             evm_fund_txid?: string | null;
             /** @description EVM HTLC contract address */
             evm_htlc_address: string;
+            /**
+             * @description HTLC family of the lock: `erc20` (`HTLCErc20` + `HTLCCoordinator`) or
+             *     `native` (`HTLCNative` + `HTLCNativeCoordinator`). Selects the EIP-712
+             *     domain name and the claim call a client uses.
+             */
+            evm_htlc_kind: components["schemas"]["EvmHtlcKind"];
             /**
              * Format: int64
              * @description HTLCErc20 contract VERSION of the deployment this swap lives on —
@@ -3923,7 +3934,7 @@ export interface operations {
     get_evm_tokens: {
         parameters: {
             query?: {
-                /** @description Filter by EVM chain ID (1=Ethereum, 137=Polygon, 42161=Arbitrum). Omit for all chains. */
+                /** @description Filter by EVM chain ID (1=Ethereum, 137=Polygon, 42161=Arbitrum, 30=Rootstock). Omit for all chains. */
                 chain_id?: number;
             };
             header?: never;

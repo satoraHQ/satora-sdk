@@ -6,7 +6,13 @@
  */
 
 import type { ArkadeToEvmSwapResponse } from "../api/client.js";
-import { buildRedeemDigest, signEvmDigest } from "../evm/index.js";
+import {
+  buildNativeRedeemDigest,
+  buildRedeemDigest,
+  computeCoordinatorCallsHash,
+  NATIVE_TOKEN_ADDRESS,
+  signEvmDigest,
+} from "../evm/index.js";
 import { CLIENT_AGENT, SATORA_SERVER_VERSION } from "../version.js";
 import type { ClaimGaslessResult } from "./types.js";
 
@@ -81,6 +87,35 @@ export async function claimViaGasless(
   const wbtcAddress = swap.wbtc_address;
   const amount = BigInt(swap.evm_expected_sats);
 
+  // A native-coin lock (`evm_htlc_kind: "native"`, e.g. RBTC on Rootstock)
+  // has one claim shape, fixed by the server's relay: no calls, the coin
+  // swept to `destination`, the full amount as the floor. The calldata
+  // endpoint's DEX fields do not apply; only the digest's domain differs.
+  if (nativeHtlcKind(swap)) {
+    const digest = buildNativeRedeemDigest({
+      htlcAddress: swap.evm_htlc_address,
+      chainId: swap.evm_chain_id,
+      preimage: secretHex,
+      amount,
+      sender: swap.server_evm_address,
+      timelock: swap.evm_refund_locktime,
+      caller: swap.evm_coordinator_address,
+      destination,
+      sweepToken: NATIVE_TOKEN_ADDRESS,
+      minAmountOut: amount,
+      callsHash: computeCoordinatorCallsHash([]),
+      htlcVersion: swap.evm_htlc_version,
+    });
+    const sig = signEvmDigest(secretKey, digest);
+    return postClaim(baseUrl, swap.id, {
+      secret: secretHex,
+      destination,
+      v: sig.v,
+      r: sig.r,
+      s: sig.s,
+    });
+  }
+
   // target_token.token_id contains the ERC-20 contract address for the final token
   const targetTokenAddress = String(swap.target_token.token_id);
 
@@ -112,23 +147,40 @@ export async function claimViaGasless(
   const sig = signEvmDigest(secretKey, digest);
 
   // Send to server with DEX calldata if applicable
-  const response = await fetch(`${baseUrl}/swap/${swap.id}/claim-gasless`, {
+  return postClaim(baseUrl, swap.id, {
+    secret: secretHex,
+    destination,
+    v: sig.v,
+    r: sig.r,
+    s: sig.s,
+    dex_calldata: needsDexSwap ? dexCalldata : undefined,
+    bridge_recipient: bridgeRecipient,
+    bridge_recipient_wallet: bridgeRecipientWallet,
+  });
+}
+
+/**
+ * Whether the swap's lock is the native-coin HTLC family. The field is
+ * reported on the responses of the directions that can lock native coin;
+ * absent means the ERC-20 family.
+ */
+function nativeHtlcKind(swap: GaslessSwapResponse): boolean {
+  return (swap as { evm_htlc_kind?: string }).evm_htlc_kind === "native";
+}
+
+async function postClaim(
+  baseUrl: string,
+  swapId: string,
+  body: Record<string, unknown>,
+): Promise<ClaimGaslessResult> {
+  const response = await fetch(`${baseUrl}/swap/${swapId}/claim-gasless`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "X-Lendaswap-Client": CLIENT_AGENT,
       "x-satora-server-version": SATORA_SERVER_VERSION,
     },
-    body: JSON.stringify({
-      secret: secretHex,
-      destination,
-      v: sig.v,
-      r: sig.r,
-      s: sig.s,
-      dex_calldata: needsDexSwap ? dexCalldata : undefined,
-      bridge_recipient: bridgeRecipient,
-      bridge_recipient_wallet: bridgeRecipientWallet,
-    }),
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {

@@ -600,7 +600,7 @@
           {
             "name": "chain_id",
             "in": "query",
-            "description": "Filter by EVM chain ID (1=Ethereum, 137=Polygon, 42161=Arbitrum). Omit for all chains.",
+            "description": "Filter by EVM chain ID (1=Ethereum, 137=Polygon, 42161=Arbitrum, 30=Rootstock). Omit for all chains.",
             "required": false,
             "schema": {
               "type": "integer",
@@ -3316,7 +3316,7 @@
       "Chain": {
         "type": "string",
         "description": "Supported blockchain networks.\nEVM chains serialize to their chain ID as a string (e.g. \"137\" for Polygon).",
-        "enum": ["Arkade", "Lightning", "Bitcoin", "137", "1", "42161"]
+        "enum": ["Arkade", "Lightning", "Bitcoin", "137", "1", "42161", "30"]
       },
       "ChainConfigEntry": {
         "type": "object",
@@ -3983,6 +3983,11 @@
             }
           }
         }
+      },
+      "EvmHtlcKind": {
+        "type": "string",
+        "description": "HTLC family of an EVM lock, as the API reports it.",
+        "enum": ["erc20", "native"]
       },
       "EvmToArkadeGenericSwapRequest": {
         "type": "object",
@@ -5294,6 +5299,7 @@
           "client_evm_address",
           "evm_htlc_address",
           "evm_htlc_version",
+          "evm_htlc_kind",
           "evm_coordinator_address",
           "server_evm_address",
           "evm_refund_locktime",
@@ -5354,6 +5360,10 @@
           "evm_htlc_address": {
             "type": "string",
             "description": "EVM HTLC contract address"
+          },
+          "evm_htlc_kind": {
+            "$ref": "#/components/schemas/EvmHtlcKind",
+            "description": "HTLC family of the lock: `erc20` (`HTLCErc20` + `HTLCCoordinator`) or\n`native` (`HTLCNative` + `HTLCNativeCoordinator`). Selects the EIP-712\ndomain name and the claim call a client uses."
           },
           "evm_htlc_version": {
             "type": "integer",

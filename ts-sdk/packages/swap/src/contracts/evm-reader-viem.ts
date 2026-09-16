@@ -57,6 +57,8 @@ export const DEFAULT_EVM_RPCS: Record<number, string[]> = {
     "https://arbitrum.drpc.org",
     "https://arbitrum-one-rpc.publicnode.com",
   ],
+  // Rootstock: the public node, HTTP only (no WebSocket endpoint exists).
+  30: ["https://public-node.rsk.co"],
 };
 
 // The three `HTLCErc20` lifecycle events, each indexed by `preimageHash` and each
