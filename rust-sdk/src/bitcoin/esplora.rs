@@ -4,6 +4,8 @@ use std::collections::HashSet;
 pub struct EsploraBackend {
     client: esplora_client::AsyncClient,
     network: Network,
+    http: reqwest::Client,
+    base_url: String,
 }
 impl EsploraBackend {
     pub fn new(url: &str, network: Network) -> Result<Self> {
@@ -13,8 +15,74 @@ impl EsploraBackend {
                 .build_async()
                 .map_err(transport)?,
             network,
+            http: reqwest::Client::new(),
+            base_url: url.trim_end_matches('/').into(),
         })
     }
+    async fn fetch_transaction(&self, id: Txid) -> Result<Option<Transaction>> {
+        let transaction = match self.client.get_tx(&id).await.map_err(transport)? {
+            Some(tx) => Some(tx),
+            None => {
+                // Mempool exposes transaction hex but may omit Esplora's raw endpoint.
+                let response = self
+                    .http
+                    .get(format!("{}/tx/{id}/hex", self.base_url))
+                    .send()
+                    .await
+                    .map_err(transport)?;
+                if response.status() == reqwest::StatusCode::NOT_FOUND {
+                    return Ok(None);
+                }
+                let text = response
+                    .error_for_status()
+                    .map_err(transport)?
+                    .text()
+                    .await
+                    .map_err(transport)?;
+                Some(
+                    bitcoin::consensus::deserialize::<Transaction>(
+                        &hex::decode(text.trim()).map_err(decode)?,
+                    )
+                    .map_err(decode)?,
+                )
+            }
+        };
+        if transaction
+            .as_ref()
+            .is_some_and(|tx| tx.compute_txid() != id)
+        {
+            return Err(invalid("Bitcoin transaction ID mismatch"));
+        }
+        Ok(transaction)
+    }
+
+    async fn output_status(&self, txid: Txid, vout: u32) -> Result<esplora_client::OutputStatus> {
+        if let Some(status) = self
+            .client
+            .get_output_status(&txid, u64::from(vout))
+            .await
+            .map_err(transport)?
+        {
+            return Ok(status);
+        }
+        // Missing status must never be interpreted as an unspent output.
+        let statuses: Vec<esplora_client::OutputStatus> = self
+            .http
+            .get(format!("{}/tx/{txid}/outspends", self.base_url))
+            .send()
+            .await
+            .map_err(transport)?
+            .error_for_status()
+            .map_err(transport)?
+            .json()
+            .await
+            .map_err(decode)?;
+        statuses
+            .into_iter()
+            .nth(vout as usize)
+            .ok_or_else(|| invalid("Bitcoin output spend status unknown"))
+    }
+
     async fn verify_network(&self) -> Result<()> {
         if self.client.get_block_hash(0).await.map_err(transport)?
             != bitcoin::blockdata::constants::genesis_block(self.network).block_hash()
@@ -101,10 +169,8 @@ impl BitcoinBackend for EsploraBackend {
                         None
                     };
                     let raw = self
-                        .client
-                        .get_tx(&tx.txid)
-                        .await
-                        .map_err(transport)?
+                        .fetch_transaction(tx.txid)
+                        .await?
                         .ok_or_else(|| invalid("Bitcoin funding transaction missing"))?;
                     if raw.compute_txid() != tx.txid {
                         return Err(invalid("Bitcoin funding transaction ID mismatch"));
@@ -119,17 +185,13 @@ impl BitcoinBackend for EsploraBackend {
                         .enumerate()
                         .filter(|(_, o)| o.script_pubkey == script)
                     {
-                        let status = self
-                            .client
-                            .get_output_status(&tx.txid, vout as u64)
-                            .await
-                            .map_err(transport)?
-                            .ok_or_else(|| invalid("Bitcoin output spend status unknown"))?;
+                        let vout = u32::try_from(vout).map_err(decode)?;
+                        let status = self.output_status(tx.txid, vout).await?;
                         if !status.spent {
                             utxos.push(BitcoinUtxo {
                                 outpoint: OutPoint {
                                     txid: tx.txid,
-                                    vout: u32::try_from(vout).map_err(decode)?,
+                                    vout,
                                 },
                                 output: output.clone(),
                                 confirmed_height,
@@ -162,11 +224,7 @@ impl BitcoinBackend for EsploraBackend {
     fn transaction(&self, id: Txid) -> ChainFuture<'_, Option<Transaction>> {
         Box::pin(async move {
             self.verify_network().await?;
-            let tx = self.client.get_tx(&id).await.map_err(transport)?;
-            if tx.as_ref().is_some_and(|t| t.compute_txid() != id) {
-                return Err(invalid("Bitcoin transaction ID mismatch"));
-            }
-            Ok(tx)
+            self.fetch_transaction(id).await
         })
     }
     fn fee_rate(&self, target: u16) -> ChainFuture<'_, FeeRate> {
@@ -196,4 +254,102 @@ pub(super) fn fee_from_sat_vb(rate: f64) -> Result<FeeRate> {
         return Err(invalid("invalid Bitcoin fee estimate"));
     }
     Ok(FeeRate::from_sat_per_kwu((rate * 250.0).ceil() as u64))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::path;
+
+    #[tokio::test]
+    async fn mempool_hex_fallback_validates_transaction_identity() {
+        let server = MockServer::start().await;
+        let tx = bitcoin::blockdata::constants::genesis_block(Network::Regtest).txdata[0].clone();
+        let id = tx.compute_txid();
+        let wrong_id = Txid::all_zeros();
+        for requested in [id, wrong_id] {
+            Mock::given(path(format!("/tx/{requested}/hex")))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string(bitcoin::consensus::encode::serialize_hex(&tx)),
+                )
+                .mount(&server)
+                .await;
+        }
+        let backend = EsploraBackend::new(&server.uri(), Network::Regtest).unwrap();
+        assert_eq!(backend.fetch_transaction(id).await.unwrap(), Some(tx));
+        assert!(backend.fetch_transaction(wrong_id).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn unavailable_or_malformed_transaction_is_not_accepted() {
+        for status in [404, 200, 500] {
+            let server = MockServer::start().await;
+            let id = Txid::all_zeros();
+            Mock::given(path(format!("/tx/{id}/hex")))
+                .respond_with(ResponseTemplate::new(status).set_body_string("invalid hex"))
+                .mount(&server)
+                .await;
+            let backend = EsploraBackend::new(&server.uri(), Network::Regtest).unwrap();
+            let result = backend.fetch_transaction(id).await;
+            if status == 404 {
+                assert!(result.unwrap().is_none());
+            } else {
+                assert!(result.is_err());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn bulk_spend_status_preserves_spent_and_rejects_unknown_outputs() {
+        let server = MockServer::start().await;
+        let id = Txid::all_zeros();
+        Mock::given(path(format!("/tx/{id}/outspends")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {"spent": false}, {"spent": true, "txid": "11".repeat(32), "vin": 0}
+            ])))
+            .mount(&server)
+            .await;
+        let backend = EsploraBackend::new(&server.uri(), Network::Regtest).unwrap();
+        assert!(!backend.output_status(id, 0).await.unwrap().spent);
+        assert!(backend.output_status(id, 1).await.unwrap().spent);
+        assert!(backend.output_status(id, 2).await.is_err());
+        assert!(
+            backend
+                .output_status(Txid::from_byte_array([42; 32]), 0)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn existing_esplora_endpoints_do_not_use_fallbacks() {
+        let server = MockServer::start().await;
+        let tx = bitcoin::blockdata::constants::genesis_block(Network::Regtest).txdata[0].clone();
+        let id = tx.compute_txid();
+        Mock::given(path(format!("/tx/{id}/raw")))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_bytes(bitcoin::consensus::serialize(&tx)),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(path(format!("/tx/{id}/outspend/0")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"spent": false})))
+            .mount(&server)
+            .await;
+        for suffix in ["hex", "outspends"] {
+            Mock::given(path(format!("/tx/{id}/{suffix}")))
+                .respond_with(ResponseTemplate::new(500))
+                .expect(0)
+                .mount(&server)
+                .await;
+        }
+        let backend = EsploraBackend::new(&server.uri(), Network::Regtest).unwrap();
+        assert_eq!(backend.fetch_transaction(id).await.unwrap(), Some(tx));
+        assert!(!backend.output_status(id, 0).await.unwrap().spent);
+    }
 }

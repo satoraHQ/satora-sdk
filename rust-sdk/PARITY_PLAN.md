@@ -220,3 +220,14 @@ chains; no production payments are part of this work.
   typechecking, scenario Biome checks and runner ShellCheck passed.
 - These local LND scenarios are opt-in by name. Lightning refund paths, Lightning
   addresses, hosted Spark and live bridges still need full-stack validation.
+
+## Bitcoin explorer compatibility follow-up
+
+- Real on-chain E2E setup exposed Mempool endpoints missing `/tx/{id}/raw`
+  and `/tx/{id}/outspend/{vout}`. The Rust Bitcoin backend now falls back to
+  transaction hex and bulk outspends, preserving transaction-ID verification
+  and rejecting missing/unknown spend status.
+- Four regression tests cover valid hex, wrong transaction IDs, malformed/missing
+  transactions, spent/unspent/unknown outputs and native Esplora endpoint use.
+- All-feature tests: 206 passed including doctests. Bitcoin-focused tests,
+  formatting and strict all-target/all-feature Clippy passed.
