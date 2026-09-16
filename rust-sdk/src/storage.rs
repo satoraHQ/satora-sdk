@@ -10,15 +10,22 @@
 //!
 //! [`SwapStorage`] is what callers implement against their persistence
 //! layer (an embedded DB, a server-side store, …). [`InMemorySwapStorage`]
-//! is shipped for tests and quick starts; production callers should swap
-//! in something durable.
+//! is shipped for tests and quick starts. [`SqliteSwapStorage`] provides a
+//! durable local store, configured with [`crate::ClientBuilder::storage_path`].
 
+use crate::error::Error;
 use crate::error::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
+
+mod sqlite;
+pub use sqlite::SqliteSwapStorage;
+
+// BIP-32 child indices must fit in 31 bits before hardening.
+const KEY_INDEX_LIMIT: u32 = 1 << 31;
 
 /// Trait implemented by callers to persist swap state and allocate
 /// monotonically-increasing key indices.
@@ -34,6 +41,7 @@ pub trait SwapStorage: Send + Sync {
     ///
     /// Implementations backed by durable storage must persist the
     /// counter so that an SDK restart doesn't reuse indices.
+    /// Indices must be below `2^31`; return an error on exhaustion.
     fn next_key_index(&self) -> Result<u32>;
 
     /// Remember the `key_index` used to derive material for the given
@@ -47,6 +55,14 @@ pub trait SwapStorage: Send + Sync {
 
     /// Retrieve the `key_index` previously stored for `swap_id`, if any.
     fn get_swap_key_index(&self, swap_id: &str) -> Result<Option<u32>>;
+
+    /// Advance the allocation counter after recovery without ever moving it back.
+    /// Custom stores must implement this to support [`crate::Client::recover_swaps`].
+    fn ensure_next_key_index(&self, _next_index: u32) -> Result<()> {
+        Err(Error::Storage(
+            "this store does not support wallet recovery".into(),
+        ))
+    }
 }
 
 /// Thread-safe in-memory store. Useful for tests and ephemeral processes;
@@ -69,15 +85,31 @@ impl InMemorySwapStorage {
 }
 
 impl SwapStorage for InMemorySwapStorage {
+    fn ensure_next_key_index(&self, next_index: u32) -> Result<()> {
+        if next_index > KEY_INDEX_LIMIT {
+            return Err(Error::Storage("next key index exceeds 2^31".into()));
+        }
+        self.next_index.fetch_max(next_index, Ordering::Relaxed);
+        Ok(())
+    }
+
     fn next_key_index(&self) -> Result<u32> {
-        Ok(self.next_index.fetch_add(1, Ordering::Relaxed))
+        self.next_index
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |index| {
+                (index < KEY_INDEX_LIMIT).then(|| index + 1)
+            })
+            .map_err(|_| Error::Storage("key indices exhausted".into()))
     }
 
     fn put_swap_key_index(&self, swap_id: &str, key_index: u32) -> Result<()> {
+        if key_index >= KEY_INDEX_LIMIT {
+            return Err(Error::Storage("key index must be below 2^31".into()));
+        }
         self.swaps
             .lock()
-            .expect("SwapStorage mutex poisoned")
+            .map_err(|_| Error::Storage("swap storage lock poisoned".into()))?
             .insert(swap_id.to_string(), key_index);
+        self.next_index.fetch_max(key_index + 1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -85,7 +117,7 @@ impl SwapStorage for InMemorySwapStorage {
         Ok(self
             .swaps
             .lock()
-            .expect("SwapStorage mutex poisoned")
+            .map_err(|_| Error::Storage("swap storage lock poisoned".into()))?
             .get(swap_id)
             .copied())
     }

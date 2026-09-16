@@ -29,6 +29,8 @@ use serde::Serialize;
 /// under the spec's `ref` name.
 #[derive(Serialize)]
 pub(crate) struct QuoteRequestWire {
+    #[serde(rename = "extra_fees", skip_serializing_if = "Option::is_none")]
+    pub(crate) extra_fees_bps: Option<u16>,
     pub(crate) source_chain: Chain,
     pub(crate) source_token: TokenId,
     pub(crate) target_chain: Chain,
@@ -53,6 +55,7 @@ impl From<QuoteRequest> for QuoteRequestWire {
             QuoteAmount::Target(v) => (None, Some(v.to_string())),
         };
         Self {
+            extra_fees_bps: r.extra_fees_bps,
             source_chain: r.source_chain,
             source_token: r.source_token,
             target_chain: r.target_chain,
@@ -84,7 +87,7 @@ pub(crate) struct CreateEvmToArkadeSwapRequestWire {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) amount_in: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) amount_out: Option<u64>,
+    pub(crate) amount_out: Option<u128>,
     pub(crate) gasless: bool,
     pub(crate) arkade_htlc_script_version: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -103,10 +106,7 @@ impl From<CreateEvmToArkadeSwapRequest> for CreateEvmToArkadeSwapRequestWire {
     fn from(r: CreateEvmToArkadeSwapRequest) -> Self {
         let (amount_in, amount_out) = match r.amount {
             QuoteAmount::Source(v) => (Some(v.to_string()), None),
-            QuoteAmount::Target(v) => (
-                None,
-                Some(u64::try_from(v).expect("amount_out exceeds u64 BTC sat limit")),
-            ),
+            QuoteAmount::Target(v) => (None, Some(v)),
         };
         Self {
             target_address: r.target_address,
@@ -134,7 +134,15 @@ impl From<CreateEvmToArkadeSwapRequest> for CreateEvmToArkadeSwapRequestWire {
 #[derive(Serialize)]
 pub(crate) struct CreateLightningToArkadeSwapRequestWire {
     pub(crate) target_arkade_address: String,
-    pub(crate) sats_receive: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) source_amount_sats: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) target_amount_sats: Option<u128>,
+    pub(crate) arkade_htlc_script_version: i64,
+    #[serde(rename = "extra_fees", skip_serializing_if = "Option::is_none")]
+    pub(crate) extra_fees_bps: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) invoice_description: Option<String>,
     pub(crate) claim_pk: String,
     pub(crate) hash_lock: String,
     pub(crate) user_id: String,
@@ -146,7 +154,17 @@ impl From<CreateLightningToArkadeSwapRequest> for CreateLightningToArkadeSwapReq
     fn from(r: CreateLightningToArkadeSwapRequest) -> Self {
         Self {
             target_arkade_address: r.target_arkade_address,
-            sats_receive: r.sats_receive,
+            source_amount_sats: match r.amount {
+                QuoteAmount::Source(v) => Some(v),
+                _ => None,
+            },
+            target_amount_sats: match r.amount {
+                QuoteAmount::Target(v) => Some(v),
+                _ => None,
+            },
+            arkade_htlc_script_version: ARKADE_HTLC_SCRIPT_VERSION_STRICT,
+            extra_fees_bps: r.extra_fees_bps,
+            invoice_description: r.invoice_description,
             claim_pk: r.claim_pk,
             hash_lock: r.hash_lock,
             user_id: r.user_id,
@@ -169,7 +187,12 @@ pub(crate) struct CreateArkadeToLightningSwapRequestWire {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) lnurl: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) amount_sats: Option<u64>,
+    pub(crate) target_amount_sats: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) source_amount_sats: Option<u128>,
+    pub(crate) arkade_htlc_script_version: i64,
+    #[serde(rename = "extra_fees", skip_serializing_if = "Option::is_none")]
+    pub(crate) extra_fees_bps: Option<u16>,
     pub(crate) refund_pk: String,
     pub(crate) user_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -178,18 +201,30 @@ pub(crate) struct CreateArkadeToLightningSwapRequestWire {
 
 impl From<CreateArkadeToLightningSwapRequest> for CreateArkadeToLightningSwapRequestWire {
     fn from(r: CreateArkadeToLightningSwapRequest) -> Self {
-        let (lightning_invoice, lightning_address, lnurl, amount_sats) = match r.destination {
-            LightningDestination::Invoice(s) => (Some(s), None, None, None),
-            LightningDestination::Address { address, sats } => {
-                (None, Some(address), None, Some(sats))
-            }
-            LightningDestination::Lnurl { lnurl, sats } => (None, None, Some(lnurl), Some(sats)),
-        };
+        let (lightning_invoice, lightning_address, lnurl, target_amount_sats, source_amount_sats) =
+            match r.destination {
+                LightningDestination::Invoice(s) => (Some(s), None, None, None, None),
+                LightningDestination::Address { address, sats } => {
+                    (None, Some(address), None, Some(sats), None)
+                }
+                LightningDestination::Lnurl { lnurl, sats } => {
+                    (None, None, Some(lnurl), Some(sats), None)
+                }
+                LightningDestination::AddressSendMax { address, amount } => {
+                    (None, Some(address), None, None, Some(amount))
+                }
+                LightningDestination::LnurlSendMax { lnurl, amount } => {
+                    (None, None, Some(lnurl), None, Some(amount))
+                }
+            };
         Self {
             lightning_invoice,
             lightning_address,
             lnurl,
-            amount_sats,
+            target_amount_sats,
+            source_amount_sats,
+            arkade_htlc_script_version: ARKADE_HTLC_SCRIPT_VERSION_STRICT,
+            extra_fees_bps: r.extra_fees_bps,
             refund_pk: r.refund_pk,
             user_id: r.user_id,
             referral_code: r.referral_code,

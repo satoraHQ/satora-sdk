@@ -1,9 +1,4 @@
-//! Swap creation types — start of the swap-API surface.
-//!
-//! Currently models the `POST /swap/evm/arkade` endpoint (EVM ERC-20 →
-//! Bitcoin on Arkade), which is the path the btcpayserver plugin needs.
-//! Other swap directions (BTC→EVM, EVM→Lightning, …) will land here as the
-//! plugin scope grows.
+//! Swap creation inputs, status values, and direction-tagged API responses.
 
 use super::chain::Chain;
 use super::quote::QuoteAmount;
@@ -211,7 +206,9 @@ impl Endpoint for CreateEvmToArkadeSwapRequest {
 #[non_exhaustive]
 pub struct CreateLightningToArkadeSwapRequest {
     pub target_arkade_address: String,
-    pub sats_receive: u64,
+    pub amount: QuoteAmount,
+    pub extra_fees_bps: Option<u16>,
+    pub invoice_description: Option<String>,
     pub claim_pk: String,
     pub hash_lock: String,
     pub user_id: String,
@@ -230,7 +227,9 @@ impl CreateLightningToArkadeSwapRequest {
     ) -> Self {
         Self {
             target_arkade_address: target_arkade_address.into(),
-            sats_receive,
+            amount: QuoteAmount::Target(sats_receive.into()),
+            extra_fees_bps: None,
+            invoice_description: None,
             claim_pk: claim_pk.into(),
             hash_lock: hash_lock.into(),
             user_id: user_id.into(),
@@ -247,9 +246,9 @@ impl Endpoint for CreateLightningToArkadeSwapRequest {
 }
 
 /// Where Lightning funds end up for an Arkade → Lightning swap. The
-/// server resolves `Address` / `Lnurl` itself via LNURL-pay using the
-/// caller-supplied `sats`; `Invoice` carries its amount in the BOLT11
-/// payload so no separate `sats` is needed (or accepted).
+/// server resolves addresses and LNURLs via LNURL-pay. Target amounts are
+/// satoshis; send-max amounts use the source token's smallest unit.
+/// `Invoice` carries its amount in the BOLT11 payload.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LightningDestination {
     /// BOLT11 invoice (amount embedded). Server pays this exact invoice.
@@ -260,6 +259,10 @@ pub enum LightningDestination {
     /// Raw LNURL (`lnurl1…`). Server bech32-decodes and resolves via
     /// LNURL-pay using `sats`.
     Lnurl { lnurl: String, sats: u64 },
+    /// Lightning address with a fixed source amount, in source-token smallest units.
+    AddressSendMax { address: String, amount: u128 },
+    /// LNURL with a fixed source amount, in source-token smallest units.
+    LnurlSendMax { lnurl: String, amount: u128 },
 }
 
 /// Wire body for `POST /swap/arkade/lightning`. Server-side
@@ -274,6 +277,7 @@ pub struct CreateArkadeToLightningSwapRequest {
     pub refund_pk: String,
     pub user_id: String,
     pub referral_code: Option<String>,
+    pub extra_fees_bps: Option<u16>,
 }
 
 impl CreateArkadeToLightningSwapRequest {
@@ -285,6 +289,7 @@ impl CreateArkadeToLightningSwapRequest {
     ) -> Self {
         Self {
             destination,
+            extra_fees_bps: None,
             refund_pk: refund_pk.into(),
             user_id: user_id.into(),
             referral_code,
@@ -354,25 +359,51 @@ pub struct EvmToArkadeSwapResponse {
     pub evm_fund_txid: Option<String>,
 }
 
-/// Response shape for `GET /swap/{id}`. Mirrors the server's
-/// `direction`-tagged `GetSwapResponse` enum, but only carries the
-/// variants the SDK can fully model today. Other directions on the
-/// wire will fail to deserialize here with a clear serde error — fine
-/// for now, since the SDK can't do anything useful with them either.
+/// Full `GET /swap/{id}` response for every direction in the pinned API.
+/// Reading a direction does not imply that its claim/refund flow is implemented.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(tag = "direction", rename_all = "snake_case")]
 pub enum GetSwapResponse {
+    BtcToArkade(super::BtcToArkadeSwapResponse),
+    BitcoinToEvm(super::BitcoinToEvmSwapResponse),
+    ArkadeToEvm(super::ArkadeToEvmSwapResponse),
+    LightningToEvm(super::LightningToEvmSwapResponse),
+    EvmToBitcoin(super::EvmToBitcoinSwapResponse),
+    EvmToLightning(super::EvmToLightningSwapResponse),
+
     EvmToArkade(EvmToArkadeSwapResponse),
     LightningToArkade(LightningToArkadeSwapResponse),
     ArkadeToLightning(ArkadeToLightningSwapResponse),
 }
 
 impl GetSwapResponse {
+    /// Server-assigned swap ID.
+    pub fn id(&self) -> &str {
+        match self {
+            Self::EvmToArkade(r) => &r.id,
+            Self::LightningToArkade(r) => &r.id,
+            Self::ArkadeToLightning(r) => &r.id,
+            Self::BtcToArkade(r) => &r.id,
+            Self::BitcoinToEvm(r) => &r.id,
+            Self::ArkadeToEvm(r) => &r.id,
+            Self::LightningToEvm(r) => &r.id,
+            Self::EvmToBitcoin(r) => &r.id,
+            Self::EvmToLightning(r) => &r.id,
+        }
+    }
+
     /// Status of the swap, regardless of direction. Useful for the
     /// polling loop in `Client::wait_for_swap_status`.
     pub fn status(&self) -> &SwapStatus {
         match self {
             Self::EvmToArkade(r) => &r.status,
+            Self::BtcToArkade(r) => &r.status,
+            Self::BitcoinToEvm(r) => &r.status,
+            Self::ArkadeToEvm(r) => &r.status,
+            Self::LightningToEvm(r) => &r.status,
+            Self::EvmToBitcoin(r) => &r.status,
+            Self::EvmToLightning(r) => &r.status,
+
             Self::LightningToArkade(r) => &r.status,
             Self::ArkadeToLightning(r) => &r.status,
         }
@@ -393,6 +424,8 @@ pub struct LightningToArkadeSwapResponse {
     pub id: String,
     pub status: SwapStatus,
     pub fee_sats: u64,
+    pub network_fee_sats: u64,
+    pub invoice_expires_at: i64,
     pub hash_lock: String,
     pub source_token: TokenInfo,
     pub target_token: TokenInfo,
@@ -401,7 +434,6 @@ pub struct LightningToArkadeSwapResponse {
     pub target_amount: String,
     /// Bolt11 invoice the user must pay over Lightning.
     pub bolt11_invoice: String,
-    pub boltz_swap_id: String,
     /// Arkade VHTLC address the server locks BTC at — the user
     /// offchain-spends from here via the preimage path.
     pub arkade_vhtlc_address: String,
@@ -428,10 +460,8 @@ pub struct LightningToArkadeSwapResponse {
 ///
 /// Server-side flow:
 /// 1. User funds the [`Self::arkade_vhtlc_address`] with Arkade BTC ([`Self::source_amount`] sats).
-/// 2. Server creates a Boltz submarine swap for the resolved invoice
-///    ([`Self::client_lightning_invoice`]), funds Boltz's own VHTLC, Boltz pays the invoice over
-///    Lightning.
-/// 3. Server learns the preimage from Boltz's payment, claims the Arkade VHTLC.
+/// 2. The configured Lightning provider pays [`Self::client_lightning_invoice`].
+/// 3. The server learns the preimage from that payment and claims the Arkade VHTLC.
 ///
 /// The SDK doesn't need a claim path for this direction — the server
 /// owns it once the user funds the Arkade VHTLC. Amounts are decimal
@@ -442,6 +472,8 @@ pub struct ArkadeToLightningSwapResponse {
     pub id: String,
     pub status: SwapStatus,
     pub fee_sats: u64,
+    pub network_fee_sats: u64,
+    pub invoice_expires_at: i64,
     pub hash_lock: String,
     pub source_token: TokenInfo,
     pub target_token: TokenInfo,
@@ -451,9 +483,6 @@ pub struct ArkadeToLightningSwapResponse {
     /// Resolved BOLT11 invoice. For LNURL / address inputs this is
     /// what the server got back from the LNURL-pay callback.
     pub client_lightning_invoice: String,
-    pub boltz_swap_id: String,
-    pub boltz_vhtlc_address: String,
-    pub boltz_amount_sats: u64,
     /// VHTLC the user funds from Arkade.
     pub arkade_vhtlc_address: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -464,6 +493,7 @@ pub struct ArkadeToLightningSwapResponse {
     pub receiver_pk: String,
     pub arkade_server_pk: String,
     pub vhtlc_refund_locktime: u64,
+    pub arkade_htlc_script_version: i64,
     pub unilateral_claim_delay: u64,
     pub unilateral_refund_delay: u64,
     pub unilateral_refund_without_receiver_delay: u64,

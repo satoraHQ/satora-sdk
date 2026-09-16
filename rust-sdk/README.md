@@ -1,67 +1,114 @@
 # satora-rust-sdk
 
-Rust client SDK for the Lendaswap API.
+Rust client for the Satora swap API. The crate is published as
+`satora-rust-sdk`; its Rust library name is `lendaswap_sdk`.
 
-## Design
+## Usage
 
-- **Hand-written types**, not generated. Each request/response struct in `src/types.rs` mirrors a named component schema in `openapi.json`.
-- **Schema-compliance tests** (`tests/openapi_schema.rs`) serialize each Rust type to JSON and validate it against the upstream spec. If the backend's schema changes, these tests fail before runtime does.
-- **FFI-friendly public API**: no generics or borrowed inputs on public methods, errors are an owned `enum`. The intent is to project this same surface across a future C-ABI shim (e.g. `csbindgen` / `interoptopus`) to ship a NuGet package — no public-API rewrite required.
+```rust,no_run
+use lendaswap_sdk::{Client, types::{Address, QuoteAmount}};
 
-## Layout
+# async fn example(mnemonic: String) -> Result<(), lendaswap_sdk::Error> {
+let client = Client::builder()
+    .mnemonic(mnemonic)
+    .storage_path("swaps.sqlite")
+    .build()?;
 
+// Exact invoice amount; fees are deducted from the Arkade payout.
+let swap = client.create_lightning_to_arkade_swap_with_options(
+    QuoteAmount::Source(100_000),
+    Address::Arkade("ark1…".into()),
+    None,                  // optional extra fee in basis points
+    Some("Order 42".into()),
+).await?;
+
+let details = client.get_swap_details(&swap.id).await?;
+# let _ = details;
+# Ok(())
+# }
 ```
-rust-sdk/
-├── Cargo.toml          # standalone crate (not part of the root workspace)
-├── openapi.json        # pinned copy of the API spec, refreshed via `just export-openapi-sdk`
-├── src/
-│   ├── lib.rs          # public re-exports
-│   ├── client.rs       # reqwest-based HTTP client
-│   ├── error.rs        # SDK error enum
-│   └── types.rs        # request / response types
-└── tests/
-    ├── openapi_schema.rs   # validates Rust types against openapi.json
-    ├── client_mock.rs      # wiremock-based unit tests for the client
-    └── integration_live.rs # live tests against a running server (ignored by default)
-```
 
-## Develop
+`Client::new(base_url)` creates a query-only client. The builder requires a
+mnemonic or xprv. The default URL is `https://api.satora.io`. Amounts are in
+source/target token smallest units; EVM amounts use `u128` inputs and decimal
+strings on the wire, while Bitcoin amounts must be positive and fit in `i64`.
 
-```bash
+## Current coverage
+
+| Operation | Rust support |
+| --- | --- |
+| Discovery | Health/status (including unhealthy HTTP 503), tokens, pairs, chain config, network fees, referral fee, MTP, support agents |
+| Quotes | `/quote` and destination-specific `/quote/lightning-send`; referral defaults and extra fees |
+| Create | EVM→Arkade, Lightning→Arkade, Arkade→Lightning, EVM→Lightning |
+| Inspect | All nine API swap directions through `get_swap_details`; compact `get_swap`; bulk status |
+| Recovery | One-page `recover_swaps` and paginated `recover_all_swaps` |
+| EVM funding | Optional `gasless` feature: deposit probes/polling and ERC-4337 funding |
+| Claim | EVM→Arkade and Lightning→Arkade, with `ArkadeConfig` |
+| Arkade wallet | Address, balance, send, boarding, settle |
+
+Lightning sends accept `LightningDestination::Invoice`, `Address`, or `Lnurl`.
+The `AddressSendMax` and `LnurlSendMax` variants specify a source amount instead
+of an exact payout. Invoice-owned hash collisions return HTTP 409 without
+retrying. Lightning→Arkade supports both source and target amounts, a UTF-8
+invoice description of at most 639 bytes, and a per-swap surcharge.
+
+`get_swap_details` preserves the server's full response. `get_swap` projects it
+into payment instructions; its `receive_address` is empty for an EVM→Bitcoin
+swap whose server response has no target address.
+
+This is not full TypeScript SDK parity. Rust still lacks high-level creation for
+BTC→Arkade, BTC/Arkade/Lightning→EVM, and EVM→Bitcoin; EVM/on-chain claims and
+refunds; collaborative refunds; bridge orchestration; local DEX quote
+composition; WebSocket tracking and contract managers. Reading/recovering those
+swap records does not implement their execution flows. The TypeScript reference
+is `../ts-sdk/packages/swap` and its underlying `../ts-pure-sdk` client.
+
+## Persistence and recovery
+
+Use `storage_path` for a local SQLite database or provide an `Arc<dyn
+SwapStorage>` with `storage`. The options are mutually exclusive. SQLite
+partitions counters and swap key indices by the signing wallet's recovery xpub.
+Independent connections/processes allocate indices transactionally. The parent
+directory must exist and the filesystem must support SQLite locking.
+
+The database stores key indices, not private keys or preimages. Back up both the
+seed and database. The default in-memory store is ephemeral. Reopen the same
+file with the same seed to resume swaps after a restart. If the database is lost,
+call `recover_all_swaps(None)` before creating more swaps. Recovery advances the
+counter without moving an existing counter backwards. Custom stores must
+implement `ensure_next_key_index` to support recovery.
+
+Swap creation allocates an index before making its HTTP request and persists the
+swap ID after a successful response. If the process dies between those steps,
+recover from the server. Successfully recovered pages remain persisted if a
+later recovery page fails. Server recovery is subject to its gap/scan limits;
+use `recover_swaps(Some(start_index))` for explicit deeper scans.
+
+Swap/preimage and recovery derivation follow the TypeScript SDK. EVM deposit
+keys in this Rust client use a separate per-swap derivation, so recovering a
+TypeScript-created record does not transfer control of an external EVM wallet.
+
+## Build and test
+
+This is a standalone crate, outside the root Cargo workspace. Use the repository's
+pinned Rust toolchain; native builds need OpenSSL development libraries and
+`protoc` for the Arkade dependencies.
+
+```sh
 cd client-sdk/rust-sdk
-
-# Build
-cargo build
-
-# Run all tests (schema compliance + mock-server unit tests)
-cargo test
+cargo test --locked
+cargo test --locked --all-features
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo +nightly-2025-11-01 fmt --check
 ```
 
-## Live integration tests
+Tests use local HTTP/RPC mocks, SQLite reopen/concurrency checks, signer vectors,
+and the pinned OpenAPI schema. Live tests are ignored by default:
 
-`tests/integration_live.rs` hits a real server and is `#[ignore]`d by default. Defaults to `http://localhost:3333`; override with `LENDASWAP_API_URL`.
-
-```bash
-# Against a local server
-cargo test --test integration_live -- --ignored
-
-# Against another deployment
-LENDASWAP_API_URL=https://staging.example.com \
-  cargo test --test integration_live -- --ignored
+```sh
+LENDASWAP_API_URL=http://localhost:3333 cargo test --test integration_live -- --ignored
 ```
 
-## Refresh the OpenAPI spec
-
-From the repo root:
-
-```bash
-just export-openapi-sdk
-```
-
-This regenerates `ts-pure-sdk/openapi.json` from the live `swap` server and copies it into `rust-sdk/openapi.json`. Re-run `cargo test` — failing schema tests pinpoint which types need updating.
-
-## Adding a new type
-
-1. Add the struct in `src/types.rs` with `#[derive(Serialize, Deserialize)]`. Field names must match the OpenAPI property names exactly.
-2. Register it in `registered_types()` in `tests/openapi_schema.rs` and add a `#[test]` that calls `assert_matches_schema(...)` with a representative value.
-3. (If wiring an endpoint) add the method on `Client` and a `wiremock` test in `tests/client_mock.rs`.
+Both SDKs pin the same `openapi.json`. Refresh it from the repository root with
+`just export-openapi-sdk`, then run schema and client tests. API requests include
+`X-Lendaswap-Client` and `x-satora-server-version` compatibility headers.

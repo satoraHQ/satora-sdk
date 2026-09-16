@@ -93,7 +93,7 @@ const ARK_NETWORK_TIMEOUT: Duration = Duration::from_secs(30);
 /// SDK uses to instantiate the underlying client. The SDK never opens
 /// network connections from this struct alone — they happen lazily
 /// inside [`crate::Client::claim`].
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ArkadeConfig {
     /// gRPC endpoint of the Arkade server (`arkd`).
     pub arkade_server_url: String,
@@ -113,6 +113,18 @@ pub struct ArkadeConfig {
     /// ark-rs uses its default `contracts.db` path relative to the
     /// current working directory.
     pub contract_db_path: Option<PathBuf>,
+}
+
+impl std::fmt::Debug for ArkadeConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ArkadeConfig")
+            .field("arkade_server_url", &self.arkade_server_url)
+            .field("esplora_url", &self.esplora_url)
+            .field("identity_mnemonic", &"<redacted>")
+            .field("network", &self.network)
+            .field("contract_db_path", &self.contract_db_path)
+            .finish()
+    }
 }
 
 /// Offchain VTXO balance broken into the three buckets `ark-client`
@@ -837,6 +849,11 @@ impl VhtlcClaimContext {
             GetSwapResponse::ArkadeToLightning(_) => {
                 return Err(Error::InvalidSwap(
                     "claim() called on an Arkade→Lightning swap — that direction is server-claimed; the SDK has no client-side claim path for it".into(),
+                ));
+            }
+            _ => {
+                return Err(Error::InvalidSwap(
+                    "this swap direction has no implemented Arkade claim path".into(),
                 ));
             }
         })

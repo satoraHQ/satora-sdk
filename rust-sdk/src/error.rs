@@ -29,6 +29,15 @@ pub enum Error {
 
     #[error("operation timed out: {0}")]
     Timeout(String),
+
+    #[error("swap storage error: {0}")]
+    Storage(String),
+}
+
+impl From<rusqlite::Error> for Error {
+    fn from(err: rusqlite::Error) -> Self {
+        Self::Storage(err.to_string())
+    }
 }
 
 impl From<reqwest::Error> for Error {

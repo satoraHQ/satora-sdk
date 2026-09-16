@@ -4,6 +4,8 @@
 //! request and response types defined here are validated against the upstream
 //! `openapi.json` in the integration tests.
 
+#![doc = include_str!("../README.md")]
+
 pub mod client;
 pub mod error;
 pub mod request;
@@ -43,4 +45,5 @@ pub use request::Endpoint;
 pub use request::PayloadKind;
 pub use signer::Signer;
 pub use storage::InMemorySwapStorage;
+pub use storage::SqliteSwapStorage;
 pub use storage::SwapStorage;

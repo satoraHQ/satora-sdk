@@ -329,28 +329,19 @@ impl Client {
         swap_id: &str,
         node_rpc_url: Option<Url>,
     ) -> Result<DepositStatus> {
-        let resp = match self.fetch_swap_response(swap_id).await? {
-            crate::types::GetSwapResponse::EvmToArkade(r) => r,
-            other => {
-                return Err(crate::Error::InvalidSwap(format!(
-                    "check_deposit_funding called on a non-EVM swap ({swap_id}) — only EVM→Arkade has an EVM deposit address; got {other:?}",
-                )));
-            }
-        };
-        let deposit_address = parse_address(&resp.client_evm_address, "client_evm_address")?;
-        let token_address = parse_address(
-            resp.source_token.token_id.as_wire_str(),
-            "source_token_address",
-        )?;
-        let min_token_units = parse_u256_dec(&resp.source_amount, "source_amount")?;
+        let (deposit, token, amount) =
+            evm_deposit_fields(self.fetch_swap_response(swap_id).await?)?;
+        let deposit_address = parse_address(&deposit, "client_evm_address")?;
+        let token_address = parse_address(token.as_wire_str(), "source_token_address")?;
+        let min_token_units = parse_u256_dec(&amount, "source_amount")?;
 
         let node_rpc_url = match node_rpc_url {
             Some(url) => url,
             None => {
-                let chain = resp.source_token.token_id.chain().ok_or_else(|| {
+                let chain = token.chain().ok_or_else(|| {
                     Error::InvalidSwap(format!(
                         "swap `{swap_id}` deposit token `{}` has no known EVM chain — pass node_rpc_url explicitly",
-                        resp.source_token.token_id.as_wire_str(),
+                        token.as_wire_str(),
                     ))
                 })?;
                 let default = chain.default_node_rpc_url().ok_or_else(|| {
@@ -385,7 +376,7 @@ impl Client {
             .call(balance_call)
             .await
             .map_err(|e| Error::Transport(format!("balanceOf eth_call: {e}")))?;
-        let token_bal = U256::from_be_slice(token_bal_bytes.as_ref());
+        let token_bal = decode_token_balance(token_bal_bytes.as_ref())?;
 
         Ok(DepositStatus {
             source_token_balance: token_bal,
@@ -419,78 +410,68 @@ impl Client {
     ) -> Result<()> {
         const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
-        // Gasless deposit funding is EVM-only; the LN ↔ Arkade rails
-        // don't have an EVM EOA deposit address at all.
-        let resp = match self.fetch_swap_response(swap_id).await? {
-            crate::types::GetSwapResponse::EvmToArkade(r) => r,
-            other => {
-                return Err(crate::Error::InvalidSwap(format!(
-                    "wait_for_deposit_funding called on a non-EVM swap ({swap_id}) — only EVM→Arkade has an EVM deposit address; got {other:?}",
-                )));
+        let poll = async {
+            // Gasless deposit funding is EVM-only; the LN ↔ Arkade rails
+            // don't have an EVM EOA deposit address at all.
+            let (deposit, token, amount) =
+                evm_deposit_fields(self.fetch_swap_response(swap_id).await?)?;
+            let deposit_address = parse_address(&deposit, "client_evm_address")?;
+            let token_address = parse_address(token.as_wire_str(), "source_token_address")?;
+            let min_token_units = parse_u256_dec(&amount, "source_amount")?;
+            let min_eth = U256::from(min_eth_wei);
+
+            // Explicit `RootProvider` (defaults to Ethereum network) — the
+            // generic param is otherwise ambiguous when only `Provider`
+            // methods (no Network-specific filler) are touched.
+            let node: RootProvider = RootProvider::new_http(node_rpc_url.clone());
+            // The IERC20 ABI's `balanceOf(address)` selector + calldata.
+            // Encoded once per loop iteration since the deposit address
+            // doesn't change.
+            let balance_calldata = IERC20::balanceOfCall {
+                account: deposit_address,
             }
-        };
-        let deposit_address = parse_address(&resp.client_evm_address, "client_evm_address")?;
-        let token_address = parse_address(
-            resp.source_token.token_id.as_wire_str(),
-            "source_token_address",
-        )?;
-        let min_token_units = parse_u256_dec(&resp.source_amount, "source_amount")?;
-        let min_eth = U256::from(min_eth_wei);
+            .abi_encode();
+            let balance_call = alloy::rpc::types::TransactionRequest::default()
+                .to(token_address)
+                .input(balance_calldata.into());
 
-        // Explicit `RootProvider` (defaults to Ethereum network) — the
-        // generic param is otherwise ambiguous when only `Provider`
-        // methods (no Network-specific filler) are touched.
-        let node: RootProvider = RootProvider::new_http(node_rpc_url.clone());
-        // The IERC20 ABI's `balanceOf(address)` selector + calldata.
-        // Encoded once per loop iteration since the deposit address
-        // doesn't change.
-        let balance_calldata = IERC20::balanceOfCall {
-            account: deposit_address,
-        }
-        .abi_encode();
-        let balance_call = alloy::rpc::types::TransactionRequest::default()
-            .to(token_address)
-            .input(balance_calldata.into());
-
-        let deadline = std::time::Instant::now() + timeout;
-        let mut attempt = 0u32;
-        loop {
-            attempt += 1;
-            let eth_bal = node
-                .get_balance(deposit_address)
-                .await
-                .map_err(|e| Error::Transport(format!("eth_getBalance: {e}")))?;
-            let token_bal_bytes = node
-                .call(balance_call.clone())
-                .await
-                .map_err(|e| Error::Transport(format!("balanceOf eth_call: {e}")))?;
-            // Solidity returns uint256 as 32 BE bytes; `U256::from_be_slice`
-            // accepts that directly.
-            let token_bal = U256::from_be_slice(token_bal_bytes.as_ref());
-            tracing::debug!(
-                attempt,
-                eth_wei = %eth_bal,
-                token_units = %token_bal,
-                "wait_for_deposit_funding: poll",
-            );
-            if token_bal >= min_token_units && eth_bal >= min_eth {
-                tracing::info!(
+            let mut attempt = 0u32;
+            loop {
+                attempt += 1;
+                let eth_bal = node
+                    .get_balance(deposit_address)
+                    .await
+                    .map_err(|e| Error::Transport(format!("eth_getBalance: {e}")))?;
+                let token_bal_bytes = node
+                    .call(balance_call.clone())
+                    .await
+                    .map_err(|e| Error::Transport(format!("balanceOf eth_call: {e}")))?;
+                // Solidity returns uint256 as 32 BE bytes; `U256::from_be_slice`
+                // accepts that directly.
+                let token_bal = decode_token_balance(token_bal_bytes.as_ref())?;
+                tracing::debug!(
                     attempt,
                     eth_wei = %eth_bal,
                     token_units = %token_bal,
-                    "wait_for_deposit_funding: thresholds met",
+                    "wait_for_deposit_funding: poll",
                 );
-                return Ok(());
+                if token_bal >= min_token_units && eth_bal >= min_eth {
+                    tracing::info!(
+                        attempt,
+                        eth_wei = %eth_bal,
+                        token_units = %token_bal,
+                        "wait_for_deposit_funding: thresholds met",
+                    );
+                    return Ok(());
+                }
+                tokio::time::sleep(POLL_INTERVAL).await;
             }
-            if std::time::Instant::now() >= deadline {
-                return Err(Error::Timeout(format!(
-                    "deposit address {deposit_address:#x} did not receive \
-                     enough funding within {timeout:?} (have: {token_bal} token units / {eth_bal} wei; \
-                     need: {min_token_units} / {min_eth})",
-                )));
-            }
-            tokio::time::sleep(POLL_INTERVAL).await;
-        }
+        };
+        tokio::time::timeout(timeout, poll).await.map_err(|_| {
+            Error::Timeout(format!(
+                "swap {swap_id} did not receive enough deposit funding within {timeout:?}"
+            ))
+        })?
     }
 
     async fn fetch_userop_calldata(&self, swap_id: &str) -> Result<UseropFundingCalldataResponse> {
@@ -500,7 +481,7 @@ impl Client {
         let url = self
             .base_url
             .join(&format!("/swap/{swap_id}/swap-and-lock-calldata-userop"))?;
-        let resp = self.http.get(url).send().await?;
+        let resp = self.api_request(reqwest::Method::GET, url).send().await?;
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
         if !status.is_success() {
@@ -609,4 +590,39 @@ fn parse_u256_dec(s: &str, field: &str) -> Result<U256> {
 
 fn parse_bytes(s: &str, field: &str) -> Result<alloy::primitives::Bytes> {
     alloy::primitives::Bytes::from_str(s).map_err(|e| Error::Decode(format!("{field} ({s}): {e}")))
+}
+
+fn evm_deposit_fields(
+    response: crate::types::GetSwapResponse,
+) -> Result<(String, crate::types::TokenId, String)> {
+    use crate::types::GetSwapResponse;
+    match response {
+        GetSwapResponse::EvmToArkade(r) => Ok((
+            r.client_evm_address,
+            r.source_token.token_id,
+            r.source_amount,
+        )),
+        GetSwapResponse::EvmToBitcoin(r) => Ok((
+            r.client_evm_address,
+            r.source_token.token_id,
+            r.source_amount,
+        )),
+        GetSwapResponse::EvmToLightning(r) => Ok((
+            r.client_evm_address,
+            r.source_token.token_id,
+            r.source_amount,
+        )),
+        _ => Err(Error::InvalidSwap(
+            "deposit funding requires an EVM-sourced swap".into(),
+        )),
+    }
+}
+
+fn decode_token_balance(bytes: &[u8]) -> Result<U256> {
+    if bytes.len() != 32 {
+        return Err(Error::Decode(
+            "balanceOf must return exactly 32 bytes".into(),
+        ));
+    }
+    Ok(U256::from_be_slice(bytes))
 }

@@ -53,6 +53,8 @@ pub struct QuoteRequest {
     pub bridge_recipient_setup: bool,
     /// Optional referral code for tracking.
     pub referral_code: Option<String>,
+    /// Per-swap referral surcharge, in basis points.
+    pub extra_fees_bps: Option<u16>,
 }
 
 impl QuoteRequest {
@@ -75,6 +77,7 @@ impl QuoteRequest {
             bridge_source_chain: None,
             bridge_recipient_setup: false,
             referral_code: None,
+            extra_fees_bps: None,
         }
     }
 }

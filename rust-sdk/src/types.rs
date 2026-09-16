@@ -40,3 +40,34 @@ pub(crate) use version::VersionRequest;
 pub struct ErrorResponse {
     pub error: String,
 }
+
+mod discovery;
+mod responses;
+pub use discovery::BulkStatusResponse;
+pub use discovery::ChainConfigEntry;
+pub use discovery::ChainConfigResponse;
+pub use discovery::LightningSendQuoteResponse;
+pub use discovery::MtpResponse;
+pub use discovery::NetworkFee;
+pub use discovery::NetworkFeePairEntry;
+pub use discovery::NetworkFeesResponse;
+pub use discovery::ReferralFeeResponse;
+pub use discovery::ServiceStatus;
+pub use discovery::ServicesStatus;
+pub use discovery::StatusResponse;
+pub use discovery::SupportAgentInfo;
+pub use discovery::SupportAgentsResponse;
+pub use discovery::SwapPairInfo;
+pub use discovery::SwapPairsResponse;
+pub use discovery::SwapStatusEntry;
+pub use discovery::TokenInfos;
+pub use discovery::TokenRef;
+pub use responses::ArkadeToEvmSwapResponse;
+pub use responses::BitcoinToEvmSwapResponse;
+pub use responses::BtcToArkadeSwapResponse;
+pub use responses::EvmToBitcoinSwapResponse;
+pub use responses::EvmToLightningSwapResponse;
+pub use responses::LightningToEvmSwapResponse;
+mod recovery;
+pub use recovery::RecoveredSwap;
+pub use recovery::RecoveryResponse;

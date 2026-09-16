@@ -7,8 +7,8 @@
 //!
 //! ## Derivation rules
 //!
-//! Mirrors `client-sdk/core/src/hd_wallet.rs` (the canonical reference) and
-//! the ts-pure-sdk `Signer`. Every derivation goes through a BIP-32 master
+//! Swap keys and recovery identities mirror the TypeScript SDK's `Signer`.
+//! Every derivation goes through a BIP-32 master
 //! `Xpriv` produced either from a BIP-39 mnemonic (`from_mnemonic`) or
 //! from a base58check-encoded extended private key (`from_xprv`).
 //!
@@ -61,7 +61,7 @@ const PREIMAGE_TAG: &str = "lendaswap/preimage";
 ///
 /// Cheap to clone (the internal `Xpriv` is `Copy`-shaped — bitcoin's
 /// implementation copies cheaply on `.clone()`).
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Signer {
     /// Master extended private key. Derived once at construction; all
     /// derivations branch off this.
@@ -70,6 +70,15 @@ pub struct Signer {
     /// when constructed from a raw xprv — matching the ts-pure-sdk's
     /// `Signer.mnemonic` getter semantics.
     mnemonic: Option<String>,
+}
+
+impl std::fmt::Debug for Signer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Signer")
+            .field("master", &"<redacted>")
+            .field("mnemonic", &"<redacted>")
+            .finish()
+    }
 }
 
 impl Signer {
@@ -217,12 +226,10 @@ fn tagged_hash(tag: &str, data: &[u8]) -> [u8; 32] {
 }
 
 /// Per-swap key material produced by [`Signer::derive_swap_params`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SwapParams {
-    /// Raw secret-key bytes (32). Sensitive — persisted via
-    /// [`crate::SwapStorage`] keyed by swap ID so the client can sign
-    /// claim transactions later. Re-derivable from
-    /// `(mnemonic_or_xprv, key_index)`.
+    /// Raw secret-key bytes (32). Sensitive; never persisted by [`crate::SwapStorage`].
+    /// Re-derived from `(mnemonic_or_xprv, key_index)` for signing.
     pub secret: [u8; 32],
     /// `BIP-340_tagged_hash("lendaswap/preimage", secret)` — the HTLC
     /// preimage. The EVM-side HTLC unlocks on `SHA256(preimage) ==
@@ -241,13 +248,35 @@ pub struct SwapParams {
     pub key_index: u32,
 }
 
+impl std::fmt::Debug for SwapParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SwapParams")
+            .field("secret", &"<redacted>")
+            .field("preimage", &"<redacted>")
+            .field("hash_lock", &self.hash_lock)
+            .field("public_key", &self.public_key)
+            .field("user_id", &self.user_id)
+            .field("key_index", &self.key_index)
+            .finish()
+    }
+}
+
 /// EVM key material produced by [`Signer::derive_evm_key`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct EvmKey {
     /// secp256k1 secret scalar (32 bytes).
     pub secret_key: [u8; 32],
     /// `0x`-prefixed lowercase hex address (42 chars total).
     pub address: String,
+}
+
+impl std::fmt::Debug for EvmKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EvmKey")
+            .field("secret_key", &"<redacted>")
+            .field("address", &self.address)
+            .finish()
+    }
 }
 
 #[cfg(test)]

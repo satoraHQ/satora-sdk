@@ -56,6 +56,7 @@ alloy-provider = { version = "1", optional = true, features = ["erc4337-api"] }
 # `rand` is used by both the gasless flow (Permit2 nonces) and the
 # Arkade settle flow (ark-rs `Client::settle` requires a CSPRNG).
 rand = "0.8"
+rusqlite = { version = "0.32", features = ["bundled"] }
 # `tokio` for timer-based polling (`wait_for_swap_status`) and the
 # gasless receipt-poll sleep. Non-optional because `reqwest` already
 # pulls a tokio runtime in transitively — the `time` feature is tiny
@@ -90,3 +91,4 @@ jsonschema = { version = "0.46.4", default-features = false }
 tokio = { version = "1", features = ["rt", "macros", "rt-multi-thread"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 wiremock = "0.6"
+tempfile = "3"

@@ -111,7 +111,7 @@ const RECEIPT_POLL_ATTEMPTS: u32 = 30;
 /// `/swap/{id}/swap-and-lock-calldata-userop` response, plus the
 /// depositor key. Decoupled from the wire response struct so a future
 /// SDK endpoint type can map onto it without changing this layer.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct FundSwapInputs {
     // From the backend response
     pub coordinator_address: Address,
@@ -139,6 +139,28 @@ pub struct FundSwapInputs {
     /// [`crate::aa::AaConfig::gas_overrides`] is configured. See the
     /// field docs there for sizing guidance.
     pub gas_overrides: Option<GasOverrides>,
+}
+
+impl std::fmt::Debug for FundSwapInputs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FundSwapInputs")
+            .field("coordinator_address", &self.coordinator_address)
+            .field("source_token_address", &self.source_token_address)
+            .field("source_amount", &self.source_amount)
+            .field("lock_token_address", &self.lock_token_address)
+            .field("preimage_hash", &self.preimage_hash)
+            .field("claim_address", &self.claim_address)
+            .field("timelock", &self.timelock)
+            .field("calls", &self.calls)
+            .field("calls_hash", &self.calls_hash)
+            .field("entry_point", &self.entry_point)
+            .field("delegation_target", &self.delegation_target)
+            .field("secret_key", &"<redacted>")
+            .field("eoa_address", &self.eoa_address)
+            .field("chain_id", &self.chain_id)
+            .field("gas_overrides", &self.gas_overrides)
+            .finish()
+    }
 }
 
 /// The clients + optional paymaster the orchestration needs. Passed by
