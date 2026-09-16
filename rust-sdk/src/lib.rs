@@ -50,3 +50,6 @@ pub use storage::SqliteSwapStorage;
 pub use storage::StoredSwap;
 pub use storage::SwapMetadata;
 pub use storage::SwapStorage;
+
+#[cfg(feature = "gasless")]
+pub mod evm;

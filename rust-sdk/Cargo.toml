@@ -27,7 +27,7 @@ crate-type = ["rlib"]
 # to a ZeroDev Kernel V3.3 implementation. Off by default: pulls in alloy,
 # so the base SDK (quote, create_swap) stays lean and the FFI / dotnet
 # layer can opt out.
-gasless = ["dep:alloy", "dep:alloy-provider"]
+gasless = ["dep:alloy", "dep:alloy-provider", "dep:alloy-dyn-abi"]
 
 [dependencies]
 # Crypto: HD wallet derivation, secp256k1, hashes.
@@ -54,6 +54,7 @@ url = "2"
 # extension trait — `eth_sendUserOperation` / `estimate_user_operation_gas`
 # / `get_user_operation_receipt`).
 alloy = { version = "1", optional = true, features = ["sol-types", "rpc-types", "providers", "transport-http", "signer-local"] }
+alloy-dyn-abi = { version = "1", optional = true, features = ["eip712"] }
 alloy-provider = { version = "1", optional = true, features = ["erc4337-api"] }
 # `rand` is used by both the gasless flow (Permit2 nonces) and the
 # Arkade settle flow (ark-rs `Client::settle` requires a CSPRNG).

@@ -15,7 +15,7 @@ use crate::aa::orchestrate::FundSwapClients;
 use crate::aa::orchestrate::FundSwapInputs;
 use crate::aa::orchestrate::FundSwapReceipt;
 use crate::aa::orchestrate::PaymasterRef;
-use crate::aa::orchestrate::fund_swap;
+use crate::aa::orchestrate::fund_swap_observed;
 use crate::aa::paymaster::PaymasterClient;
 use crate::error::Error;
 use crate::error::Result;
@@ -207,20 +207,39 @@ impl Client {
         swap_id: &str,
         opts: GaslessOpts,
     ) -> Result<FundSwapReceipt> {
-        // 0. Resolve the source chain from the swap itself + fetch the backend-managed AA config.
+        let _execution = self.evm_execution.lock().await;
         let GaslessOpts {
             node_rpc_url,
             paymaster_context,
             gas_overrides,
         } = opts;
-        let swap = self.get_swap(swap_id).await?;
-        let chain = swap.deposit_token.chain().ok_or_else(|| {
-            Error::InvalidSwap(format!(
-                "swap `{swap_id}` deposit_token `{}` has no known EVM chain — gasless funding needs an EVM source",
-                swap.deposit_token.as_wire_str(),
+        let stored = self
+            .get_stored_swap(swap_id)?
+            .ok_or_else(|| Error::InvalidSwap("recover the swap before funding".into()))?;
+        if stored.metadata.evm_fund_txid.is_some() || stored.metadata.evm_fund_userop_hash.is_some()
+        {
+            return Err(Error::InvalidSwap(
+                "funding already submitted; inspect its receipt before another attempt".into(),
+            ));
+        }
+        let response = self.get_swap_details(swap_id).await?;
+        let context = crate::evm::EvmContext::from_response(&response)?;
+        if !context.is_source {
+            return Err(Error::InvalidSwap(
+                "gasless funding requires an EVM input".into(),
+            ));
+        }
+        let chain = crate::types::KnownChain::from_wire_str(&context.chain_id.to_string());
+        let remote = self
+            .fetch_aa_config(crate::types::Chain::from_wire_str(
+                &context.chain_id.to_string(),
             ))
-        })?;
-        let remote = self.fetch_aa_config(chain.clone().into()).await?;
+            .await?;
+        let expected_entry_point = remote.entry_point;
+        let expected_delegation_target = remote.delegation_target;
+        if remote.permit2 != crate::aa::permit2::PERMIT2_ADDRESS {
+            return Err(Error::InvalidSwap("unexpected Permit2 deployment".into()));
+        }
         // Resolve the node RPC URL: explicit override wins; otherwise
         // use the per-chain default. Error if the chain has no default
         // and the caller didn't supply one (shouldn't happen for the
@@ -229,16 +248,16 @@ impl Client {
         let node_rpc_url = match node_rpc_url {
             Some(url) => url,
             None => {
-                let default = chain.default_node_rpc_url().ok_or_else(|| {
+                let default = chain.as_ref().and_then(|chain| chain.default_node_rpc_url()).ok_or_else(|| {
                     Error::InvalidSwap(format!(
                         "swap `{swap_id}` deposit chain `{}` has no default node RPC URL — pass GaslessOpts::new(url) with one explicitly",
-                        chain.as_wire_str(),
+                        context.chain_id,
                     ))
                 })?;
                 Url::parse(default).map_err(|e| {
                     Error::InvalidSwap(format!(
                         "internal: default node RPC URL `{default}` for chain `{}` failed to parse: {e}",
-                        chain.as_wire_str(),
+                        context.chain_id,
                     ))
                 })?
             }
@@ -261,7 +280,7 @@ impl Client {
                 "no key_index in storage for swap `{swap_id}` — has create_swap been called on this Client?",
             ))
         })?;
-        let evm_key = signer.derive_evm_key(key_index)?;
+        let evm_key = signer.evm_key_for_address(key_index, &context.owner.to_string())?;
         let eoa_address = parse_address(&evm_key.address, "eoa")?;
 
         // 2. Backend payload fetch.
@@ -283,6 +302,26 @@ impl Client {
             .await
             .map_err(|e| Error::Transport(format!("eth_chainId: {e}")))?;
 
+        if chain_id != context.chain_id {
+            return Err(Error::InvalidSwap(
+                "RPC chain ID does not match swap".into(),
+            ));
+        }
+        if parse_address(&backend.permit2_address, "permit2")?
+            != crate::aa::permit2::PERMIT2_ADDRESS
+            || parse_address(&backend.aa.entry_point, "entry_point")? != expected_entry_point
+            || parse_address(&backend.aa.delegation_target, "delegation_target")?
+                != expected_delegation_target
+            || parse_b256(&backend.preimage_hash, "preimage_hash")? != context.hash
+            || parse_address(&backend.source_token_address, "source_token")? != context.source_token
+            || parse_address(&backend.claim_address, "claim_address")? != context.server
+            || backend.timelock != context.timelock
+        {
+            return Err(Error::InvalidSwap(
+                "gasless funding payload does not match swap/configuration".into(),
+            ));
+        }
+        let coordinator = backend.coordinator_address.clone();
         // 4. Map backend wire types onto the orchestration input.
         let inputs = build_fund_swap_inputs(
             backend,
@@ -303,15 +342,36 @@ impl Client {
                 .map(|pm| pm.context.clone())
                 .unwrap_or(Value::Null),
         });
-        fund_swap(
+        let receipt = fund_swap_observed(
             inputs,
             FundSwapClients {
                 bundler: &bundler,
                 node: &node,
                 paymaster: paymaster_ref,
             },
+            &|hash| {
+                self.update_swap_metadata(
+                    swap_id,
+                    crate::SwapMetadata {
+                        evm_fund_userop_hash: Some(hash.to_string()),
+                        evm_coordinator_address: Some(coordinator.clone()),
+                        ..Default::default()
+                    },
+                )
+            },
         )
-        .await
+        .await?;
+        if let Some(hash) = receipt.transaction_hash {
+            self.update_swap_metadata(
+                swap_id,
+                crate::SwapMetadata {
+                    evm_fund_txid: Some(hash.to_string()),
+                    evm_coordinator_address: Some(coordinator),
+                    ..Default::default()
+                },
+            )?;
+        }
+        Ok(receipt)
     }
 
     /// Single-shot read of the depositor EOA's funding state — no
@@ -478,9 +538,7 @@ impl Client {
         // GET /swap/{id}/swap-and-lock-calldata-userop — sidesteps the
         // `Endpoint` trait because the trait's `PATH` is static, and
         // this URL is per-swap.
-        let url = self
-            .base_url
-            .join(&format!("/swap/{swap_id}/swap-and-lock-calldata-userop"))?;
+        let url = self.swap_action_url(swap_id, "swap-and-lock-calldata-userop")?;
         let resp = self.api_request(reqwest::Method::GET, url).send().await?;
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
@@ -554,6 +612,11 @@ fn build_fund_swap_inputs(
         })
         .collect::<Result<Vec<_>>>()?;
 
+    if alloy::primitives::keccak256(alloy::sol_types::SolValue::abi_encode(&calls))
+        != parse_b256(&backend.calls_hash, "calls_hash")?
+    {
+        return Err(Error::InvalidSwap("funding calls hash mismatch".into()));
+    }
     Ok(FundSwapInputs {
         coordinator_address: parse_address(&backend.coordinator_address, "coordinator_address")?,
         source_token_address: parse_address(&backend.source_token_address, "source_token_address")?,

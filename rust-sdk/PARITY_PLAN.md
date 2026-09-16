@@ -47,6 +47,9 @@ state the actual change and validation, without tool attribution.
    recovery. Validate chain IDs, recipients, HTLC versions, hash locks, nonces,
    typed-data domains, and submitted transactions before releasing a preimage or
    signing. Compare signatures/calldata against TypeScript/contract vectors.
+   Funding checkpoint: external-wallet interface, bounded Permit2 approvals,
+   fresh-quote validation, receipt checks, transaction/UserOperation persistence,
+   and recovered-key selection implemented. Claims/refunds/continuation remain.
 
 5. [ ] **Implement on-chain Bitcoin claims and refunds.** Strict and legacy HTLC
    reconstruction, UTXO observation through Esplora/Electrum, minimum confirmations,

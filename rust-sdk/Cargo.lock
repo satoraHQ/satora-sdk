@@ -152,6 +152,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-sol-type-parser",
  "alloy-sol-types",
+ "derive_more",
  "itoa",
  "serde",
  "serde_json",
@@ -4632,6 +4633,7 @@ name = "satora-rust-sdk"
 version = "0.0.1"
 dependencies = [
  "alloy",
+ "alloy-dyn-abi",
  "alloy-provider",
  "ark-bdk-wallet",
  "ark-rs",

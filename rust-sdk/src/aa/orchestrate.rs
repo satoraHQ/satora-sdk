@@ -204,6 +204,15 @@ pub async fn fund_swap(
     inputs: FundSwapInputs,
     clients: FundSwapClients<'_>,
 ) -> Result<FundSwapReceipt> {
+    fund_swap_observed(inputs, clients, &|_| Ok(())).await
+}
+
+/// Persist the operation hash immediately after submission, before receipt polling.
+pub(crate) async fn fund_swap_observed(
+    inputs: FundSwapInputs,
+    clients: FundSwapClients<'_>,
+    submitted: &(dyn Fn(B256) -> Result<()> + Send + Sync),
+) -> Result<FundSwapReceipt> {
     info!(
         eoa = %inputs.eoa_address,
         chain_id = inputs.chain_id,
@@ -239,7 +248,8 @@ pub async fn fund_swap(
     let permit2_signature = kernel::wrap_erc1271_signature(&sig_to_array(&permit2_sig_raw));
 
     // 2. Outer batch: approve(Permit2, max) + executeAndCreateWithPermit2.
-    let approve_call = build_approve_permit2_call(inputs.source_token_address);
+    let approve_call =
+        build_approve_permit2_call(inputs.source_token_address, inputs.source_amount);
     let execute_and_create_call =
         build_execute_and_create_call(&inputs, permit2_nonce, permit2_deadline, permit2_signature);
     let call_data = kernel::encode_execute_batch(&[approve_call, execute_and_create_call]);
@@ -385,10 +395,15 @@ pub async fn fund_swap(
         .bundler
         .send_user_operation(&userop, inputs.entry_point, Some(&signed_auth))
         .await?;
+    submitted(user_op_hash_out).map_err(|e| {
+        Error::Storage(format!(
+            "submitted user operation {user_op_hash_out}, but could not persist it: {e}"
+        ))
+    })?;
     info!(user_op_hash = %user_op_hash_out, "fund_swap: submitted; polling receipt");
 
     // 12. Poll for the receipt.
-    let transaction_hash = poll_receipt(clients.bundler, user_op_hash_out).await;
+    let transaction_hash = poll_receipt(clients.bundler, user_op_hash_out).await?;
     info!(?transaction_hash, "fund_swap: poll complete");
 
     Ok(FundSwapReceipt {
@@ -412,10 +427,10 @@ fn generate_permit2_nonce_and_deadline() -> (U256, U256) {
     (nonce, U256::from(deadline_unix))
 }
 
-fn build_approve_permit2_call(source_token: Address) -> Call {
+fn build_approve_permit2_call(source_token: Address, amount: U256) -> Call {
     let calldata = IERC20::approveCall {
         spender: PERMIT2_ADDRESS,
-        amount: U256::MAX,
+        amount,
     }
     .abi_encode();
     Call {
@@ -506,7 +521,7 @@ fn apply_paymaster(
 
 /// Poll `eth_getUserOperationReceipt` until it lands or we exhaust the
 /// attempt budget. Returns the tx hash if mined.
-async fn poll_receipt(bundler: &BundlerClient, user_op_hash: B256) -> Option<B256> {
+async fn poll_receipt(bundler: &BundlerClient, user_op_hash: B256) -> Result<Option<B256>> {
     for attempt in 1..=RECEIPT_POLL_ATTEMPTS {
         match bundler.get_user_operation_receipt(user_op_hash).await {
             Ok(Some(receipt)) => {
@@ -515,7 +530,13 @@ async fn poll_receipt(bundler: &BundlerClient, user_op_hash: B256) -> Option<B25
                     tx_hash = %receipt.receipt.transaction_hash,
                     "fund_swap: receipt received"
                 );
-                return Some(receipt.receipt.transaction_hash);
+                if !receipt.success {
+                    return Err(Error::InvalidSwap(format!(
+                        "user operation {user_op_hash} failed in transaction {}",
+                        receipt.receipt.transaction_hash
+                    )));
+                }
+                return Ok(Some(receipt.receipt.transaction_hash));
             }
             Ok(None) => {
                 tracing::debug!(attempt, "fund_swap: receipt pending");
@@ -533,7 +554,7 @@ async fn poll_receipt(bundler: &BundlerClient, user_op_hash: B256) -> Option<B25
         attempts = RECEIPT_POLL_ATTEMPTS,
         "fund_swap: receipt poll exhausted without success"
     );
-    None
+    Ok(None)
 }
 
 /// Convert an `alloy::primitives::Signature` to its raw `r ‖ s ‖ v`
@@ -544,4 +565,29 @@ fn sig_to_array(sig: &alloy::primitives::Signature) -> [u8; 65] {
     let mut out = [0u8; 65];
     out.copy_from_slice(&bytes);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::aa::bundler::BundlerCasing;
+    use serde_json::json;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+
+    #[tokio::test]
+    async fn failed_user_operation_is_not_reported_as_success() {
+        let server = MockServer::start().await;
+        Mock::given(wiremock::matchers::method("POST")).respond_with(|request: &wiremock::Request| {
+            let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            ResponseTemplate::new(200).set_body_json(json!({"jsonrpc":"2.0","id":body["id"],"result":{"success":false,"receipt":{"transactionHash":B256::repeat_byte(1)}}}))
+        }).expect(1).mount(&server).await;
+        let bundler =
+            BundlerClient::new(server.uri().parse().unwrap(), BundlerCasing::CamelCase).unwrap();
+        assert!(matches!(
+            poll_receipt(&bundler, B256::repeat_byte(2)).await,
+            Err(Error::InvalidSwap(_))
+        ));
+    }
 }

@@ -192,6 +192,23 @@ impl Signer {
         Ok(evm_key(secret))
     }
 
+    /// Select a local EVM key by its on-chain owner, including TypeScript imports.
+    /// External owners return an error; there is no fallback to another wallet.
+    pub fn evm_key_for_address(&self, key_index: u32, address: &str) -> Result<EvmKey> {
+        for key in [
+            self.derive_evm_key(key_index)?,
+            self.derive_wallet_evm_key()?,
+            self.derive_legacy_evm_key(key_index)?,
+        ] {
+            if key.address.eq_ignore_ascii_case(address) {
+                return Ok(key);
+            }
+        }
+        Err(Error::InvalidSigner(
+            "swap requires an external EVM signer".into(),
+        ))
+    }
+
     /// Xpub used as the parent for non-hardened `user_id` derivations.
     /// Hardened so a leaked child key doesn't compromise the parent.
     /// Public so it can be shared with the server for recovery — the

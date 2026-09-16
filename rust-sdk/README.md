@@ -42,7 +42,7 @@ strings on the wire, while Bitcoin amounts must be positive and fit in `i64`.
 | Create | All nine directions via `SwapCreation` and `create_swap_request`; generic EVM assets with explicit chain IDs |
 | Inspect | All nine API swap directions through `get_swap_details`; compact `get_swap`; bulk status |
 | Recovery | One-page `recover_swaps` and paginated `recover_all_swaps` |
-| EVM funding | Optional `gasless` feature: deposit probes/polling and ERC-4337 funding |
+| EVM funding | Optional `gasless` feature: external-wallet Permit2 execution, deposit probes/polling and ERC-4337 funding |
 | Claim | EVM→Arkade and Lightning→Arkade, with `ArkadeConfig` |
 | Arkade wallet | Address, balance, send, boarding, settle |
 
@@ -119,6 +119,16 @@ keys in this Rust client use a separate per-swap derivation, so recovering a
 TypeScript-created record does not transfer control of an external EVM wallet.
 Records identify Rust per-swap, TypeScript BIP44, legacy swap-key, and external
 EVM ownership explicitly. The original Rust derivation remains unchanged.
+
+With the `gasless` feature, implement `evm::EvmWallet` to connect an external
+wallet and use `fund_swap_with_wallet`. `FundingOptions` pins the HTLC,
+coordinator, lock token, approved call targets, maximum input, and timeout.
+Quotes are checked again after approval; signatures are recovered locally;
+receipts must contain the matching HTLC creation event. Funding transaction IDs
+and gasless operation hashes are persisted before receipt polling. A pending
+submission prevents another funding attempt through that client/store.
+Execution calls through cloned clients are serialized. Separate processes must
+coordinate exclusive ownership of a swap before executing it.
 
 ## Build and test
 

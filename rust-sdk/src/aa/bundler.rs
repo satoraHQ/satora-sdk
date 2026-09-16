@@ -94,6 +94,7 @@ pub struct GasEstimation {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserOperationReceipt {
+    pub success: bool,
     pub receipt: InnerTxReceipt,
 }
 

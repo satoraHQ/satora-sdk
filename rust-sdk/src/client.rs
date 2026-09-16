@@ -65,6 +65,8 @@ fn is_preimage_collision(err: &Error) -> bool {
 #[derive(Clone)]
 pub struct Client {
     quote_cache: Arc<tokio::sync::Mutex<quotes::QuoteCache>>,
+    #[cfg(feature = "gasless")]
+    pub(crate) evm_execution: Arc<tokio::sync::Mutex<()>>,
     pub(crate) http: reqwest::Client,
     pub(crate) base_url: Url,
     /// Optional: only required by [`Self::create_swap`]. Constructors that
@@ -117,6 +119,8 @@ impl Client {
             arkade_config: None,
             arkade_wallet: Arc::new(tokio::sync::OnceCell::new()),
             quote_cache: Arc::default(),
+            #[cfg(feature = "gasless")]
+            evm_execution: Arc::default(),
         })
     }
 
@@ -838,6 +842,8 @@ impl ClientBuilder {
             arkade_config: self.arkade_config,
             arkade_wallet: Arc::new(tokio::sync::OnceCell::new()),
             quote_cache: Arc::default(),
+            #[cfg(feature = "gasless")]
+            evm_execution: Arc::default(),
         })
     }
 }
