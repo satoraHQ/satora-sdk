@@ -66,10 +66,7 @@ pub(crate) const PROTOCOL_HEADERS: [(&str, &str); 5] = [
     ("x-satora-evm-native-htlc-version", "1"),
 ];
 
-/// Detect the backend's "this preimage hash already exists" rejection.
-/// Anchored on HTTP 409 + a substring match (case-insensitive) on
-/// "preimage" so unrelated 409s (e.g. some future "duplicate referral")
-/// don't make us grind forever.
+/// Attach every component's protocol epoch to a request.
 pub(crate) fn protocol_headers(builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
     PROTOCOL_HEADERS
         .iter()
@@ -78,6 +75,10 @@ pub(crate) fn protocol_headers(builder: reqwest::RequestBuilder) -> reqwest::Req
         })
 }
 
+/// Detect the backend's "this preimage hash already exists" rejection.
+/// Anchored on HTTP 409 + a substring match (case-insensitive) on
+/// "preimage" so unrelated 409s (e.g. some future "duplicate referral")
+/// don't make us grind forever.
 fn is_preimage_collision(err: &Error) -> bool {
     matches!(
         err,
@@ -189,10 +190,7 @@ impl Client {
     pub async fn health(&self) -> Result<String> {
         let url = self.url("health")?;
         tracing::debug!(%url, "sending health probe");
-        let resp = self
-            .http
-            .get(url)
-            .header(CLIENT_AGENT_HEADER, CLIENT_AGENT)
+        let resp = protocol_headers(self.http.get(url).header(CLIENT_AGENT_HEADER, CLIENT_AGENT))
             .send()
             .await?;
         tracing::debug!(status = %resp.status(), "response received");

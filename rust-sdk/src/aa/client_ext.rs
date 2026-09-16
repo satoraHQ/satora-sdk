@@ -500,7 +500,6 @@ impl Client {
         // GET /swap/{id}/swap-and-lock-calldata-userop — sidesteps the
         // `Endpoint` trait because the trait's `PATH` is static, and
         // this URL is per-swap.
-        let swap = self.fetch_swap_response(swap_id).await?;
         let url = self
             .base_url
             .join(&format!("/swap/{swap_id}/swap-and-lock-calldata-userop"))?;
