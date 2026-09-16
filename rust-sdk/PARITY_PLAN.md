@@ -67,6 +67,9 @@ state the actual change and validation, without tool attribution.
    delegate/cosigner flows, and continuation after interrupted claims. Reuse
    strict VHTLC vectors and validate expected keys, script/address, network,
    amounts, spend state, and preimages before signing or submission.
+   Offchain checkpoint: all five Arkade directions, multi-VTXO claims, balances,
+   timelocked/cooperative refunds, verified cosigner PSBTs, and persisted
+   submit/finalize resumption implemented. Delegate and unilateral exits remain.
 
 7. [ ] **Implement bridge orchestration.** CCTP domains/tokens and fee estimates,
    burn/approval/permit/user-operation construction, attestation polling,

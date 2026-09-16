@@ -1,0 +1,540 @@
+use super::*;
+use crate::InMemorySwapStorage;
+use crate::Signer;
+use crate::StoredSwap;
+use crate::SwapStorage;
+use bitcoin::key::TweakedPublicKey;
+use serde_json::Value;
+use serde_json::json;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+
+const MNEMONIC: &str =
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+fn pair(byte: u8) -> Keypair {
+    Keypair::from_secret_key(
+        &Secp256k1::new(),
+        &secp256k1::SecretKey::from_slice(&[byte; 32]).unwrap(),
+    )
+}
+struct Backend {
+    info: Info,
+    vtxos: Vec<VirtualTxOutPoint>,
+    server: Keypair,
+    submit_count: AtomicUsize,
+    finalize_count: AtomicUsize,
+    fail_finalize: AtomicBool,
+    tamper: AtomicBool,
+    final_checkpoints: Mutex<Vec<Psbt>>,
+    pending: Mutex<Vec<ark_rs::core::server::PendingTx>>,
+    fail_submit: AtomicBool,
+}
+impl ArkadeBackend for Backend {
+    fn pending(
+        &self,
+        _: ark_rs::core::intent::Intent,
+    ) -> ArkadeFuture<'_, Vec<ark_rs::core::server::PendingTx>> {
+        Box::pin(async { Ok(self.pending.lock().unwrap().clone()) })
+    }
+    fn info(&self) -> ArkadeFuture<'_, Info> {
+        Box::pin(async { Ok(self.info.clone()) })
+    }
+    fn vtxos(&self, _: ArkAddress) -> ArkadeFuture<'_, Vec<VirtualTxOutPoint>> {
+        Box::pin(async { Ok(self.vtxos.clone()) })
+    }
+    fn submit(
+        &self,
+        mut ark: Psbt,
+        mut checkpoints: Vec<Psbt>,
+    ) -> ArkadeFuture<'_, SubmitOffchainTxResponse> {
+        Box::pin(async move {
+            self.submit_count.fetch_add(1, Ordering::Relaxed);
+            if self.tamper.load(Ordering::Relaxed) {
+                checkpoints[0].unsigned_tx.output[0].value = Amount::from_sat(1);
+            }
+            sign_psbt(&mut ark, &self.server, None)?;
+            for cp in &mut checkpoints {
+                sign_psbt(cp, &self.server, None)?;
+            }
+            self.pending
+                .lock()
+                .unwrap()
+                .push(ark_rs::core::server::PendingTx {
+                    ark_txid: ark.unsigned_tx.compute_txid(),
+                    signed_ark_tx: ark.clone(),
+                    signed_checkpoint_txs: checkpoints.clone(),
+                });
+            if self.fail_submit.swap(false, Ordering::Relaxed) {
+                return Err(transport("interrupted submit response"));
+            }
+            Ok(SubmitOffchainTxResponse {
+                signed_ark_tx: ark,
+                signed_checkpoint_txs: checkpoints,
+            })
+        })
+    }
+    fn finalize(&self, _: Txid, checkpoints: Vec<Psbt>) -> ArkadeFuture<'_, ()> {
+        Box::pin(async move {
+            self.finalize_count.fetch_add(1, Ordering::Relaxed);
+            if self.fail_finalize.swap(false, Ordering::Relaxed) {
+                return Err(transport("interrupted finalize"));
+            }
+            *self.final_checkpoints.lock().unwrap() = checkpoints;
+            Ok(())
+        })
+    }
+}
+fn setup(direction: &str) -> (Client, Backend, Arc<InMemorySwapStorage>, String) {
+    let params = Signer::from_mnemonic(MNEMONIC)
+        .unwrap()
+        .derive_swap_params(0)
+        .unwrap();
+    let own = key(&hex::encode(params.public_key)).unwrap();
+    let counterparty = pair(2).x_only_public_key().0;
+    let server = pair(3);
+    let claim = matches!(
+        direction,
+        "btc_to_arkade" | "evm_to_arkade" | "lightning_to_arkade"
+    );
+    let hash = if claim { params.hash_lock } else { [22; 32] };
+    let options = StrictVhtlcOptions {
+        sender: if claim { counterparty } else { own },
+        receiver: if claim { own } else { counterparty },
+        server: server.x_only_public_key().0,
+        preimage_hash: ripemd160::Hash::hash(&hash),
+        refund_locktime: 144,
+        unilateral_claim_delay: Sequence::from_height(21),
+        unilateral_refund_delay: Sequence::from_height(34),
+        unilateral_refund_without_receiver_delay: Sequence::from_height(55),
+    };
+    let script = StrictVhtlcScript::new(options.clone(), Network::Regtest).unwrap();
+    let mut fixture: Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/swap-responses.json")).unwrap();
+    let r = &mut fixture[direction];
+    r["id"] = json!("arkade");
+    r["network"] = json!("regtest");
+    r["sender_pk"] = json!(options.sender.to_string());
+    r["receiver_pk"] = json!(options.receiver.to_string());
+    r["server_vhtlc_pk"] = json!(counterparty.to_string());
+    r["arkade_server_pk"] = json!(options.server.to_string());
+    r["hash_lock"] = json!(if direction == "btc_to_arkade" {
+        options.preimage_hash.to_string()
+    } else {
+        hex::encode(hash)
+    });
+    r["vhtlc_refund_locktime"] = json!(144);
+    r["unilateral_claim_delay"] = json!(21);
+    r["unilateral_refund_delay"] = json!(34);
+    r["unilateral_refund_without_receiver_delay"] = json!(55);
+    r["arkade_htlc_script_version"] = json!(1);
+    r["target_amount"] = json!("100000");
+    r["source_amount"] = json!("100000");
+    if r.get("btc_vhtlc_address").is_some() {
+        r["btc_vhtlc_address"] = json!(script.address().encode());
+    } else {
+        r["arkade_vhtlc_address"] = json!(script.address().encode());
+    }
+    let store = Arc::new(InMemorySwapStorage::new());
+    store
+        .store_swap(
+            StoredSwap::new(
+                0,
+                serde_json::from_value(r.clone()).unwrap(),
+                SwapMetadata::default(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let client = Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .build()
+        .unwrap();
+    let info = Info {
+        version: "test".into(),
+        signer_pk: server.public_key(),
+        forfeit_pk: server.public_key(),
+        forfeit_address: Address::p2tr(&Secp256k1::new(), options.server, None, Network::Regtest),
+        checkpoint_tapscript: ScriptBuf::builder()
+            .push_int(1)
+            .push_opcode(bitcoin::opcodes::all::OP_CSV)
+            .push_opcode(bitcoin::opcodes::all::OP_DROP)
+            .push_x_only_key(&options.server)
+            .push_opcode(bitcoin::opcodes::all::OP_CHECKSIG)
+            .into_script(),
+        network: Network::Regtest,
+        session_duration: 0,
+        unilateral_exit_delay: Sequence::from_height(10),
+        boarding_exit_delay: Sequence::from_height(10),
+        utxo_min_amount: None,
+        utxo_max_amount: None,
+        vtxo_min_amount: Some(Amount::ONE_SAT),
+        vtxo_max_amount: None,
+        dust: Amount::from_sat(330),
+        fees: None,
+        scheduled_session: None,
+        deprecated_signers: vec![],
+        service_status: Default::default(),
+        digest: "test".into(),
+        max_tx_weight: 40_000,
+        max_op_return_outputs: 3,
+    };
+    let vtxos = (0..2)
+        .map(|vout| VirtualTxOutPoint {
+            outpoint: OutPoint {
+                txid: Txid::from_byte_array([4; 32]),
+                vout,
+            },
+            created_at: 0,
+            expires_at: i64::MAX,
+            amount: Amount::from_sat(50_000),
+            script: script.script_pubkey(),
+            is_preconfirmed: false,
+            is_swept: false,
+            is_unrolled: false,
+            is_spent: false,
+            spent_by: None,
+            commitment_txids: vec![],
+            settled_by: None,
+            ark_txid: None,
+            assets: vec![],
+            depth: 0,
+        })
+        .collect();
+    let backend = Backend {
+        info,
+        vtxos,
+        server,
+        submit_count: AtomicUsize::new(0),
+        finalize_count: AtomicUsize::new(0),
+        fail_finalize: AtomicBool::new(false),
+        tamper: AtomicBool::new(false),
+        final_checkpoints: Mutex::new(vec![]),
+        pending: Mutex::new(vec![]),
+        fail_submit: AtomicBool::new(false),
+    };
+    let destination = ArkAddress::new(
+        Network::Regtest,
+        options.server,
+        TweakedPublicKey::dangerous_assume_tweaked(own),
+    )
+    .encode();
+    (client, backend, store, destination)
+}
+fn spend_options(destination: String) -> ArkadeSpendOptions {
+    ArkadeSpendOptions {
+        destination,
+        timeout: Duration::from_secs(5),
+    }
+}
+
+#[tokio::test]
+async fn all_arkade_directions_validate_ownership_hash_and_address() {
+    for direction in [
+        "btc_to_arkade",
+        "evm_to_arkade",
+        "lightning_to_arkade",
+        "arkade_to_evm",
+        "arkade_to_lightning",
+    ] {
+        let (client, backend, _, _) = setup(direction);
+        let htlc = client.arkade_htlc("arkade").unwrap();
+        assert_eq!(htlc.script.script_pubkey(), backend.vtxos[0].script);
+        assert_eq!(
+            client
+                .vhtlc_balance("arkade", &backend)
+                .await
+                .unwrap()
+                .spendable_sats,
+            100_000
+        );
+    }
+}
+#[tokio::test]
+async fn multi_output_claim_resumes_finalization_without_resubmission_or_persisted_preimages() {
+    let (client, backend, store, destination) = setup("btc_to_arkade");
+    backend.fail_finalize.store(true, Ordering::Relaxed);
+    assert!(
+        client
+            .spend_arkade(
+                "arkade",
+                &backend,
+                None,
+                ArkadeSpend::Claim,
+                spend_options(destination.clone())
+            )
+            .await
+            .is_err()
+    );
+    let stored = store.get_swap("arkade").unwrap().unwrap();
+    let pending = stored.metadata.arkade_pending.unwrap();
+    assert!(pending.submitted && !pending.completed);
+    let condition_key = psbt::raw::Key {
+        type_value: 222,
+        key: VTXO_CONDITION_KEY.to_vec(),
+    };
+    for encoded in std::iter::once(&pending.ark_tx).chain(pending.checkpoints.iter()) {
+        let psbt = Psbt::from_str(encoded).unwrap();
+        assert!(
+            psbt.inputs.iter().all(
+                |i| !i.unknown.contains_key(&condition_key) && i.final_script_witness.is_none()
+            )
+        );
+    }
+    let restarted = Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(store)
+        .build()
+        .unwrap();
+    let receipt = restarted
+        .spend_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            spend_options(destination.clone()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt.claim_amount_sats, 100_000);
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 1);
+    assert_eq!(backend.final_checkpoints.lock().unwrap().len(), 2);
+    assert!(backend.final_checkpoints.lock().unwrap().iter().all(|p| {
+        p.inputs
+            .iter()
+            .all(|i| i.unknown.contains_key(&condition_key))
+    }));
+    restarted
+        .spend_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            spend_options(destination),
+        )
+        .await
+        .unwrap();
+    assert_eq!(backend.finalize_count.load(Ordering::Relaxed), 2);
+}
+#[tokio::test]
+async fn claims_reject_underfunding_and_tampered_cosigner_transactions() {
+    let (client, mut backend, _, destination) = setup("evm_to_arkade");
+    backend.vtxos.pop();
+    assert!(
+        client
+            .spend_arkade(
+                "arkade",
+                &backend,
+                None,
+                ArkadeSpend::Claim,
+                spend_options(destination)
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 0);
+    let (client, backend, _, destination) = setup("lightning_to_arkade");
+    backend.tamper.store(true, Ordering::Relaxed);
+    assert!(
+        client
+            .spend_arkade(
+                "arkade",
+                &backend,
+                None,
+                ArkadeSpend::Claim,
+                spend_options(destination)
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(backend.finalize_count.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn interrupted_submission_queries_pending_before_resubmitting() {
+    let (client, backend, _, destination) = setup("evm_to_arkade");
+    backend.fail_submit.store(true, Ordering::Relaxed);
+    assert!(
+        client
+            .spend_arkade(
+                "arkade",
+                &backend,
+                None,
+                ArkadeSpend::Claim,
+                spend_options(destination.clone())
+            )
+            .await
+            .is_err()
+    );
+    client
+        .spend_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            spend_options(destination),
+        )
+        .await
+        .unwrap();
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 1);
+}
+
+struct Chain(u32);
+impl crate::bitcoin::BitcoinBackend for Chain {
+    fn network(&self) -> Network {
+        Network::Regtest
+    }
+    fn observe<'a>(
+        &'a self,
+        _: &'a Address,
+    ) -> crate::bitcoin::ChainFuture<'a, crate::bitcoin::BitcoinObservation> {
+        Box::pin(async {
+            Ok(crate::bitcoin::BitcoinObservation {
+                tip: bitcoin::BlockHash::all_zeros(),
+                height: self.0,
+                median_time_past: 0,
+                utxos: vec![],
+            })
+        })
+    }
+    fn transaction(&self, _: Txid) -> crate::bitcoin::ChainFuture<'_, Option<Transaction>> {
+        Box::pin(async { Ok(None) })
+    }
+    fn fee_rate(&self, _: u16) -> crate::bitcoin::ChainFuture<'_, bitcoin::FeeRate> {
+        Box::pin(async { Err(invalid("unused")) })
+    }
+    fn broadcast<'a>(&'a self, _: &'a Transaction) -> crate::bitcoin::ChainFuture<'a, Txid> {
+        Box::pin(async { Err(invalid("unused")) })
+    }
+}
+#[tokio::test]
+async fn refund_checks_chain_maturity_and_does_not_require_the_invoice_preimage() {
+    let (client, backend, _, destination) = setup("arkade_to_lightning");
+    assert!(
+        client
+            .spend_arkade(
+                "arkade",
+                &backend,
+                Some(&Chain(143)),
+                ArkadeSpend::Refund,
+                spend_options(destination.clone())
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 0);
+    client
+        .spend_arkade(
+            "arkade",
+            &backend,
+            Some(&Chain(144)),
+            ArkadeSpend::Refund,
+            spend_options(destination),
+        )
+        .await
+        .unwrap();
+    let checkpoints = backend.final_checkpoints.lock().unwrap();
+    assert_eq!(checkpoints[0].unsigned_tx.lock_time.to_consensus_u32(), 144);
+    assert!(checkpoints.iter().all(|cp| {
+        cp.inputs
+            .iter()
+            .all(|i| i.unknown.keys().all(|key| key.key != VTXO_CONDITION_KEY))
+    }));
+}
+#[tokio::test]
+async fn cooperative_refund_preserves_receiver_signatures_through_server_cosigning() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    let (_, backend, store, destination) = setup("arkade_to_evm");
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::path(
+        "/api/swap/arkade-evm/arkade/collab-refund",
+    ))
+    .respond_with(|request: &wiremock::Request| {
+        let body: Value = request.body_json().unwrap();
+        let mut ark = restore(body["ark_tx"].as_str().unwrap(), None).unwrap();
+        sign_psbt(&mut ark, &pair(2), None).unwrap();
+        let cps: Vec<_> = body["checkpoint_txs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| {
+                let mut p = restore(p.as_str().unwrap(), None).unwrap();
+                sign_psbt(&mut p, &pair(2), None).unwrap();
+                p.to_string()
+            })
+            .collect();
+        ResponseTemplate::new(200)
+            .set_body_json(json!({"ark_tx":ark.to_string(),"checkpoint_txs":cps}))
+    })
+    .expect(1)
+    .mount(&server)
+    .await;
+    let client = Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(store)
+        .base_url(server.uri())
+        .build()
+        .unwrap();
+    client
+        .spend_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::CooperativeRefund,
+            spend_options(destination),
+        )
+        .await
+        .unwrap();
+    for cp in backend.final_checkpoints.lock().unwrap().iter() {
+        assert!(
+            cp.inputs[0]
+                .tap_script_sigs
+                .keys()
+                .any(|(pk, _)| *pk == pair(2).x_only_public_key().0)
+        );
+        assert_eq!(cp.inputs[0].tap_script_sigs.len(), 3);
+    }
+}
+
+#[tokio::test]
+async fn finalized_server_psbts_are_verified_before_restoring_signature_metadata() {
+    let (client, backend, _, destination) = setup("evm_to_arkade");
+    client
+        .spend_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            spend_options(destination),
+        )
+        .await
+        .unwrap();
+    let original = backend.final_checkpoints.lock().unwrap()[0].clone();
+    let mut finalized = original.clone();
+    for input in &mut finalized.inputs {
+        let (control, (script, _)) = input.tap_scripts.first_key_value().unwrap();
+        let mut witness = bitcoin::Witness::new();
+        for signature in input.tap_script_sigs.values() {
+            witness.push(signature.to_vec());
+        }
+        witness.push(script.as_bytes());
+        witness.push(control.serialize());
+        input.final_script_witness = Some(witness);
+        input.tap_script_sigs.clear();
+        input.tap_scripts.clear();
+        input.witness_utxo = None;
+    }
+    let merged =
+        merge_cosigned(&original, &finalized, backend.server.x_only_public_key().0).unwrap();
+    assert_eq!(
+        merged.inputs[0].tap_script_sigs,
+        original.inputs[0].tap_script_sigs
+    );
+    finalized.unsigned_tx.output[0].value = Amount::from_sat(1);
+    assert!(merge_cosigned(&original, &finalized, backend.server.x_only_public_key().0).is_err());
+}

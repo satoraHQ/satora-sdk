@@ -19,15 +19,14 @@
 //! This module owns the wiring so a downstream consumer's claim site
 //! collapses to `client.claim(swap_id, destination).await`.
 //!
-//! Today this is scaffolding only; the actual claim flow lands in
-//! follow-up commits as we work through the [`Client::claim`] body.
+//! Claims and refunds share validated, resumable multi-output execution.
 
 use crate::client::Client;
 use crate::error::Error;
 use crate::error::Result;
 pub use crate::strict_vhtlc::ARKADE_HTLC_SCRIPT_VERSION_STRICT;
-use crate::strict_vhtlc::StrictVhtlcOptions;
-use crate::strict_vhtlc::StrictVhtlcScript;
+pub use crate::strict_vhtlc::StrictVhtlcOptions;
+pub use crate::strict_vhtlc::StrictVhtlcScript;
 use ark_bdk_wallet::Wallet;
 use ark_rs::client::Blockchain;
 use ark_rs::client::BoltzReferralId;
@@ -47,8 +46,6 @@ use ark_rs::core::send::OffchainTransactions;
 use ark_rs::core::send::SendReceiver;
 use ark_rs::core::send::VtxoInput;
 use ark_rs::core::send::build_offchain_transactions;
-use ark_rs::core::send::sign_ark_transaction;
-use ark_rs::core::send::sign_checkpoint_transaction;
 use ark_rs::core::server::parse_sequence_number;
 use bitcoin::Address;
 use bitcoin::Amount;
@@ -56,23 +53,17 @@ use bitcoin::Network;
 use bitcoin::OutPoint;
 use bitcoin::Transaction;
 use bitcoin::Txid;
-use bitcoin::VarInt;
 use bitcoin::XOnlyPublicKey;
 use bitcoin::bip32::DerivationPath;
 use bitcoin::bip32::Xpriv;
-use bitcoin::consensus::Encodable;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::ripemd160;
-use bitcoin::hashes::sha256;
 use bitcoin::key::Secp256k1;
 use bitcoin::psbt;
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::Keypair;
-use bitcoin::secp256k1::schnorr;
 use bitcoin::taproot::LeafVersion;
-use bitcoin::taproot::TaprootSpendInfo;
 use esplora_client::OutputStatus;
-use std::io::Write;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -501,451 +492,71 @@ impl Blockchain for EsploraBlockchain {
 
 // ── claim entry point ──────────────────────────────────────────────────
 
+mod execution;
+pub use execution::ArkadeBackend;
+pub use execution::ArkadeFuture;
+pub use execution::ArkadeHtlc;
+pub use execution::ArkadePending;
+pub use execution::ArkadeSpend;
+pub use execution::ArkadeSpendOptions;
+pub use execution::VhtlcBalance;
+
 impl Client {
-    /// Redeem the Arkade VHTLC for an EVM→Arkade swap that has reached
-    /// (or passed) [`crate::types::SwapStatus::ServerFunded`].
-    ///
-    /// Re-derives the preimage from the signer + the swap's `key_index`
-    /// in [`crate::SwapStorage`], rebuilds the VHTLC script from the
-    /// backend's view of the swap, fetches the VTXO at the VHTLC
-    /// address, and offchain-spends it to `destination` via the claim
-    /// script (preimage + receiver sig + server sig).
-    ///
-    /// The body lands in follow-up commits; this commit just validates
-    /// the prerequisites (storage lookup, key derivation, response
-    /// fetch, VHTLC script reconstruction + address sanity check) so a
-    /// caller hitting a config mismatch fails fast with a clear error
-    /// rather than midway through the gRPC handshake.
-    #[tracing::instrument(name = "claim", skip_all, fields(%swap_id))]
+    /// Claim an EVM, Lightning, or Bitcoin to Arkade swap. Progress is persisted
+    /// before submission and finalization so the same call can resume after restart.
     pub async fn claim(&self, swap_id: &str, destination: &str) -> Result<ClaimReceipt> {
-        let config = self.arkade_config()?.clone();
-        // 1. Re-derive the per-swap secret material from the signer. The preimage isn't persisted
-        //    by the SDK; it's deterministic from (signer master seed, key_index), which IS
-        //    persisted.
-        let signer = self.signer.as_ref().ok_or_else(|| {
-            Error::InvalidSigner(
-                "Client constructed without a signer — use Client::builder() with .mnemonic / .xprv"
-                    .to_string(),
-            )
-        })?;
-        let key_index = self.storage.get_swap_key_index(swap_id)?.ok_or_else(|| {
-            Error::InvalidSwap(format!(
-                "no key_index in storage for swap `{swap_id}` — has create_swap been called on this Client?",
-            ))
-        })?;
-        let swap_params = signer.derive_swap_params(key_index)?;
-
-        // 2. Fetch the backend's current view of the swap — `Swap` drops the VHTLC pubkeys +
-        //    locktimes we need for the script. The response is direction-tagged; both EVM → Arkade
-        //    and Lightning → Arkade share the same VHTLC mechanics, so we project both into a
-        //    common `VhtlcClaimContext` and proceed.
-        let resp = self.fetch_swap_response(swap_id).await?;
-        let ctx = VhtlcClaimContext::from_response(resp)?;
-
-        // Sanity: SDK-derived hash_lock must match the backend's. A
-        // mismatch means a different mnemonic / wrong key_index — the
-        // claim would silently fail later when Permit2 verifies our
-        // sig against an unexpected pubkey.
-        let backend_hash_lock = parse_hash_lock(&ctx.hash_lock)?;
-        if backend_hash_lock != swap_params.hash_lock {
-            return Err(Error::InvalidSwap(format!(
-                "hash_lock mismatch: backend has {} but signer/key_index derived a different preimage",
-                ctx.hash_lock,
-            )));
+        if self.get_stored_swap(swap_id)?.is_none() {
+            self.refresh_swap(swap_id).await?;
         }
-
-        // 3. Rebuild the VHTLC script from the response and the user-derived receiver pubkey. The
-        //    sender / server pubkeys come from the backend; the receiver pubkey we trust comes from
-        //    our local signer (matches `receiver_pk` on the response by construction, but it's
-        //    safer to use the local one for signing later).
-        let vhtlc = build_vhtlc_script(&ctx, &swap_params, config.network)?;
-
-        // Sanity: computed VHTLC address must match what the backend
-        // told us. If not, we're rebuilding the wrong script — bail
-        // before spending anything.
-        let computed_address = vhtlc.address().encode();
-        if computed_address != ctx.vhtlc_address {
-            return Err(Error::InvalidSwap(format!(
-                "VHTLC address mismatch: computed `{computed_address}`, backend says `{}`",
-                ctx.vhtlc_address,
-            )));
-        }
-
-        // 4. Wire up the Arkade client. The connect blocks on gRPC, which is why everything that
-        //    can fail without network is above this line.
-        let arkade = ArkadeWallet::connect(&config).await?;
-
-        // 5. Find the VHTLC's VTXO. The VHTLC produces exactly one output, but the indexer can take
-        //    a moment to surface it even after the backend reaches ServerFunded — callers that race
-        //    the indexer should poll on top of this rather than retry inside the claim path.
-        let vhtlc_ark_address = vhtlc.address();
-        let virtual_tx_outpoints = arkade
-            .client
-            .get_virtual_tx_outpoints(std::iter::once(vhtlc_ark_address))
-            .await
-            .map_err(|e| Error::Transport(format!("get_virtual_tx_outpoints: {e}")))?;
-
-        let server_info = arkade
-            .client
-            .server_info()
-            .await
-            .map_err(|e| Error::Transport(format!("server_info: {e}")))?;
-        let vtxo_list = VtxoList::new(server_info.dust, virtual_tx_outpoints);
-        let vhtlc_outpoint = vtxo_list
-            .all_unspent()
-            .next()
-            .ok_or_else(|| {
-                Error::InvalidSwap(format!(
-                    "no unspent VTXO at VHTLC address {} — funding not yet visible to the Arkade indexer",
-                    ctx.vhtlc_address,
-                ))
-            })?
-            .clone();
-        let claim_amount = vhtlc_outpoint.amount;
-        tracing::info!(
-            amount_sats = claim_amount.to_sat(),
-            outpoint = %vhtlc_outpoint.outpoint,
-            "claim: located VHTLC VTXO",
-        );
-
-        // 6. Construct the VtxoInput spending via the VHTLC's claim script (preimage + receiver sig
-        //    + server sig). The control block lets the spending tx prove the script is in the
-        //    Taproot tree without revealing the other leaves.
-        let destination_address = ArkAddress::decode(destination)
-            .map_err(|e| Error::InvalidSwap(format!("destination ArkAddress::decode: {e}")))?;
-
-        let spend_info = vhtlc.taproot_spend_info();
-        let claim_script = vhtlc.claim_script();
-        let script_ver = (claim_script.clone(), LeafVersion::TapScript);
-        let control_block = spend_info.control_block(&script_ver).ok_or_else(|| {
-            Error::InvalidSwap(
-                "control block not found for claim script — StrictVhtlcScript out of sync"
-                    .to_string(),
-            )
-        })?;
-
-        // `tapscripts(self)` consumes the VHTLC by value, so capture
-        // any other fields we still need (script_pubkey) first.
-        let script_pubkey = vhtlc.script_pubkey();
-        let tapscripts = vhtlc.tapscripts();
-        let vhtlc_input = VtxoInput::new(
-            claim_script,
+        self.arkade_htlc(swap_id)?;
+        let backend = self.arkade_wallet().await?;
+        self.spend_arkade(
+            swap_id,
+            backend,
             None,
-            control_block,
-            tapscripts,
-            script_pubkey,
-            claim_amount,
-            vhtlc_outpoint.outpoint,
-            vhtlc_outpoint.assets.clone(),
-        );
-
-        let outputs = vec![SendReceiver::bitcoin(destination_address, claim_amount)];
-        let server_info = arkade
-            .client
-            .server_info()
-            .await
-            .map_err(|e| Error::Transport(format!("server_info: {e}")))?;
-        // We're draining the VHTLC entirely; reuse the destination as the change address (no
-        // change will actually be produced).
-        let OffchainTransactions {
-            mut ark_tx,
-            checkpoint_txs,
-        } = build_offchain_transactions(
-            &outputs,
-            &destination_address,
-            std::slice::from_ref(&vhtlc_input),
-            &server_info,
+            ArkadeSpend::Claim,
+            ArkadeSpendOptions {
+                destination: destination.into(),
+                timeout: Duration::from_secs(120),
+            },
         )
-        .map_err(|e| Error::Decode(format!("build_offchain_transactions: {e}")))?;
-
-        // 7. Sign the Ark TX with the user's per-swap secp256k1 key AND embed the preimage as a
-        //    PSBT field under the VHTLC's condition key (type=222) — the Ark server reads it on
-        //    submit to satisfy the OP_HASH160 branch of the claim script. Layout per ark-core's
-        //    witness format: 0x01 || varint(preimage_len) || preimage
-        let secret_key = secp256k1::SecretKey::from_slice(&swap_params.secret)
-            .map_err(|e| Error::InvalidSigner(format!("secp256k1 SecretKey::from_slice: {e}")))?;
-        let secp = Secp256k1::new();
-        let claimer_kp = Keypair::from_secret_key(&secp, &secret_key);
-        let preimage_bytes = swap_params.preimage;
-        let sign_fn = |input: &mut psbt::Input,
-                       msg: secp256k1::Message|
-         -> std::result::Result<
-            Vec<(schnorr::Signature, XOnlyPublicKey)>,
-            ark_rs::core::Error,
-        > {
-            // Encode the preimage witness: 0x01 (count) || varint(len) || preimage.
-            let mut bytes = vec![1u8];
-            VarInt::from(preimage_bytes.len() as u64)
-                .consensus_encode(&mut bytes)
-                .expect("varint encode never fails on Vec");
-            bytes
-                .write_all(&preimage_bytes)
-                .expect("write to Vec never fails");
-            input.unknown.insert(
-                psbt::raw::Key {
-                    type_value: 222,
-                    key: VTXO_CONDITION_KEY.to_vec(),
-                },
-                bytes,
-            );
-
-            let sig = Secp256k1::new().sign_schnorr_no_aux_rand(&msg, &claimer_kp);
-            let pk = claimer_kp.x_only_public_key().0;
-            Ok(vec![(sig, pk)])
-        };
-
-        sign_ark_transaction(sign_fn, &mut ark_tx, 0)
-            .map_err(|e| Error::Decode(format!("sign_ark_transaction: {e}")))?;
-        let ark_txid = ark_tx.unsigned_tx.compute_txid();
-        tracing::info!(%ark_txid, "claim: ark TX signed");
-
-        // 8. Submit the signed Ark TX + checkpoint PSBTs to the Arkade server. The server co-signs
-        //    the checkpoints and hands them back so we can finalize. (Two-step because the
-        //    checkpoint chain anchors the offchain spend against unilateral exit.)
-        let submit_res = arkade
-            .client
-            .network_client()
-            .submit_offchain_transaction_request(ark_tx, checkpoint_txs)
-            .await
-            .map_err(|e| Error::Transport(format!("submit_offchain_transaction_request: {e}")))?;
-
-        let mut checkpoint_psbt = submit_res
-            .signed_checkpoint_txs
-            .first()
-            .ok_or_else(|| {
-                Error::Transport(
-                    "submit_offchain_transaction_request returned no signed checkpoint TXs"
-                        .to_string(),
-                )
-            })?
-            .clone();
-
-        // 9. Sign the server-cosigned checkpoint with our key (and again embed the preimage as a
-        //    VHTLC condition — the server checks it on finalize too) and ship it back to finalize.
-        //    After this, the VHTLC is spent offchain and funds are at `destination`.
-        sign_checkpoint_transaction(sign_fn, &mut checkpoint_psbt)
-            .map_err(|e| Error::Decode(format!("sign_checkpoint_transaction: {e}")))?;
-
-        arkade
-            .client
-            .network_client()
-            .finalize_offchain_transaction(ark_txid, vec![checkpoint_psbt])
-            .await
-            .map_err(|e| Error::Transport(format!("finalize_offchain_transaction: {e}")))?;
-
-        tracing::info!(
-            %swap_id,
-            %ark_txid,
-            amount_sats = claim_amount.to_sat(),
-            "claim: VHTLC swept",
-        );
-
-        Ok(ClaimReceipt {
-            ark_txid,
-            claim_amount_sats: claim_amount.to_sat(),
-        })
+        .await
     }
-}
 
-// ── helpers ────────────────────────────────────────────────────────────
-
-/// Parse the backend's `hash_lock` hex string into a `[u8; 32]` for
-/// equality comparison with the SDK-derived value.
-fn parse_hash_lock(hex_str: &str) -> Result<[u8; 32]> {
-    let trimmed = hex_str.strip_prefix("0x").unwrap_or(hex_str);
-    let bytes = hex::decode(trimmed)
-        .map_err(|e| Error::Decode(format!("hash_lock hex: {e} (value: {hex_str})")))?;
-    bytes.try_into().map_err(|v: Vec<u8>| {
-        Error::Decode(format!(
-            "hash_lock length: expected 32 bytes, got {}",
-            v.len()
-        ))
-    })
-}
-
-/// Parse a 32-byte x-only public key from a hex string.
-///
-/// Accepts both the bare 32-byte form (64 hex chars) and the SEC-1
-/// compressed form (66 hex chars with a `02`/`03` parity prefix) —
-/// the backend uses the latter for VHTLC pubkeys.
-fn parse_xonly_pubkey(hex_str: &str, field: &str) -> Result<XOnlyPublicKey> {
-    let trimmed = hex_str.strip_prefix("0x").unwrap_or(hex_str);
-    let bytes = hex::decode(trimmed)
-        .map_err(|e| Error::Decode(format!("{field} hex: {e} (value: {hex_str})")))?;
-    let xonly_bytes: &[u8] = match bytes.len() {
-        32 => &bytes,
-        33 => &bytes[1..],
-        n => {
-            return Err(Error::Decode(format!(
-                "{field}: expected 32 or 33 bytes, got {n}"
-            )));
-        }
-    };
-    XOnlyPublicKey::from_slice(xonly_bytes)
-        .map_err(|e| Error::Decode(format!("{field} XOnlyPublicKey::from_slice: {e}")))
-}
-
-/// Build the VHTLC script from the backend's swap response.
-///
-/// The VHTLC's three roles map onto the EVM-→-Arkade swap as:
-///   - `sender` = lendaswap server (it's the one that locked BTC)
-///   - `receiver` = the user (whose key the SDK signs claims with)
-///   - `server` = Arkade server (third-party cosigner)
-///
-/// `preimage_hash` is `HASH160(preimage) = RIPEMD160(SHA256(preimage))`
-/// — distinct from the EVM HTLC's `hash_lock = SHA256(preimage)`.
-/// Fields needed to rebuild + locate the Arkade VHTLC for a claim,
-/// shared between EVM → Arkade and Lightning → Arkade. Projected from
-/// `GetSwapResponse` so the claim flow stays direction-agnostic.
-pub(crate) struct VhtlcClaimContext {
-    pub hash_lock: String,
-    pub vhtlc_address: String,
-    pub sender_pk: String,
-    pub receiver_pk: String,
-    pub arkade_server_pk: String,
-    pub vhtlc_refund_locktime: u64,
-    pub arkade_htlc_script_version: i64,
-    pub unilateral_claim_delay: u64,
-    pub unilateral_refund_delay: u64,
-    pub unilateral_refund_without_receiver_delay: u64,
-}
-
-impl VhtlcClaimContext {
-    pub(crate) fn from_response(r: crate::types::GetSwapResponse) -> Result<Self> {
-        use crate::types::GetSwapResponse;
-        Ok(match r {
-            GetSwapResponse::EvmToArkade(r) => Self {
-                hash_lock: r.hash_lock,
-                vhtlc_address: r.btc_vhtlc_address,
-                sender_pk: r.sender_pk,
-                receiver_pk: r.receiver_pk,
-                arkade_server_pk: r.arkade_server_pk,
-                vhtlc_refund_locktime: r.vhtlc_refund_locktime,
-                arkade_htlc_script_version: r.arkade_htlc_script_version,
-                unilateral_claim_delay: r.unilateral_claim_delay,
-                unilateral_refund_delay: r.unilateral_refund_delay,
-                unilateral_refund_without_receiver_delay: r
-                    .unilateral_refund_without_receiver_delay,
+    /// Refund after the VHTLC timelock, verified against the configured Bitcoin chain.
+    pub async fn refund_arkade(&self, swap_id: &str, destination: &str) -> Result<ClaimReceipt> {
+        let config = self.arkade_config()?;
+        let chain = crate::bitcoin::EsploraBackend::new(&config.esplora_url, config.network)?;
+        let backend = self.arkade_wallet().await?;
+        self.spend_arkade(
+            swap_id,
+            backend,
+            Some(&chain),
+            ArkadeSpend::Refund,
+            ArkadeSpendOptions {
+                destination: destination.into(),
+                timeout: Duration::from_secs(120),
             },
-            GetSwapResponse::LightningToArkade(r) => Self {
-                hash_lock: r.hash_lock,
-                vhtlc_address: r.arkade_vhtlc_address,
-                sender_pk: r.sender_pk,
-                receiver_pk: r.receiver_pk,
-                arkade_server_pk: r.arkade_server_pk,
-                vhtlc_refund_locktime: r.vhtlc_refund_locktime,
-                arkade_htlc_script_version: r.arkade_htlc_script_version,
-                unilateral_claim_delay: r.unilateral_claim_delay,
-                unilateral_refund_delay: r.unilateral_refund_delay,
-                unilateral_refund_without_receiver_delay: r
-                    .unilateral_refund_without_receiver_delay,
+        )
+        .await
+    }
+
+    pub async fn collab_refund_arkade(
+        &self,
+        swap_id: &str,
+        destination: &str,
+    ) -> Result<ClaimReceipt> {
+        let backend = self.arkade_wallet().await?;
+        self.spend_arkade(
+            swap_id,
+            backend,
+            None,
+            ArkadeSpend::CooperativeRefund,
+            ArkadeSpendOptions {
+                destination: destination.into(),
+                timeout: Duration::from_secs(120),
             },
-            // Arkade → Lightning is server-claimed: the user funds the
-            // Arkade VHTLC, the server pays the LN invoice via Boltz
-            // and claims the VHTLC with the resulting preimage. There
-            // is no client-side claim, so we reject this variant up
-            // front rather than silently rebuilding a script the user
-            // can never spend from.
-            GetSwapResponse::ArkadeToLightning(_) => {
-                return Err(Error::InvalidSwap(
-                    "claim() called on an Arkade→Lightning swap — that direction is server-claimed; the SDK has no client-side claim path for it".into(),
-                ));
-            }
-            _ => {
-                return Err(Error::InvalidSwap(
-                    "this swap direction has no implemented Arkade claim path".into(),
-                ));
-            }
-        })
+        )
+        .await
     }
-}
-
-struct VersionedVhtlcScript(StrictVhtlcScript);
-
-impl VersionedVhtlcScript {
-    fn address(&self) -> ArkAddress {
-        self.0.address()
-    }
-
-    fn taproot_spend_info(&self) -> &TaprootSpendInfo {
-        self.0.taproot_spend_info()
-    }
-
-    fn claim_script(&self) -> bitcoin::ScriptBuf {
-        self.0.claim_script()
-    }
-
-    fn script_pubkey(&self) -> bitcoin::ScriptBuf {
-        self.0.script_pubkey()
-    }
-
-    fn tapscripts(self) -> Vec<bitcoin::ScriptBuf> {
-        self.0.tapscripts()
-    }
-}
-
-fn build_vhtlc_script(
-    ctx: &VhtlcClaimContext,
-    swap_params: &crate::signer::SwapParams,
-    network: Network,
-) -> Result<VersionedVhtlcScript> {
-    let sender = parse_xonly_pubkey(&ctx.sender_pk, "sender_pk")?;
-    let receiver = parse_xonly_pubkey(&ctx.receiver_pk, "receiver_pk")?;
-    let server = parse_xonly_pubkey(&ctx.arkade_server_pk, "arkade_server_pk")?;
-
-    // Backend's `receiver_pk` should match what we derive from the
-    // signer — if not, this client can't sign the claim regardless of
-    // what other addresses agree on. The SDK's `derive_swap_params`
-    // returns a SEC-1 compressed (33 byte) pubkey; strip the parity
-    // byte to compare against the x-only form the VHTLC uses.
-    let derived_receiver = XOnlyPublicKey::from_slice(&swap_params.public_key[1..])
-        .map_err(|e| Error::InvalidSigner(format!("derived receiver_pk: {e}")))?;
-    if derived_receiver != receiver {
-        return Err(Error::InvalidSwap(format!(
-            "receiver_pk mismatch: backend `{}` vs locally-derived",
-            ctx.receiver_pk,
-        )));
-    }
-
-    let preimage_hash = ripemd160::Hash::hash(
-        sha256::Hash::hash(&swap_params.preimage)
-            .as_byte_array()
-            .as_slice(),
-    );
-
-    let refund_locktime = u32::try_from(ctx.vhtlc_refund_locktime).map_err(|_| {
-        Error::Decode(format!(
-            "vhtlc_refund_locktime {} doesn't fit in u32",
-            ctx.vhtlc_refund_locktime,
-        ))
-    })?;
-    let unilateral_claim_delay = parse_sequence_number(ctx.unilateral_claim_delay as i64)
-        .map_err(|e| Error::Decode(format!("unilateral_claim_delay: {e}")))?;
-    let unilateral_refund_delay = parse_sequence_number(ctx.unilateral_refund_delay as i64)
-        .map_err(|e| Error::Decode(format!("unilateral_refund_delay: {e}")))?;
-    let unilateral_refund_without_receiver_delay =
-        parse_sequence_number(ctx.unilateral_refund_without_receiver_delay as i64)
-            .map_err(|e| Error::Decode(format!("unilateral_refund_without_receiver_delay: {e}")))?;
-
-    if ctx.arkade_htlc_script_version != ARKADE_HTLC_SCRIPT_VERSION_STRICT {
-        return Err(Error::InvalidSwap(format!(
-            "unsupported Arkade HTLC script version: {}",
-            ctx.arkade_htlc_script_version
-        )));
-    }
-
-    StrictVhtlcScript::new(
-        StrictVhtlcOptions {
-            sender,
-            receiver,
-            server,
-            preimage_hash,
-            refund_locktime,
-            unilateral_claim_delay,
-            unilateral_refund_delay,
-            unilateral_refund_without_receiver_delay,
-        },
-        network,
-    )
-    .map(VersionedVhtlcScript)
 }

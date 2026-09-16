@@ -199,3 +199,17 @@ Submitted IDs and fees survive restarts; retries inspect the prior transaction
 and reject a different unresolved spend. Only strict script version 1 is supported,
 matching the current server and TypeScript SDK. Backends are trusted chain data
 providers, not independent consensus validators.
+
+Arkade `claim` now supports Bitcoin, EVM and Lightning inputs and spends all
+eligible VTXOs after checking the expected funding amount. `refund_arkade` checks
+maturity against Bitcoin chain data; `collab_refund_arkade` obtains and verifies
+the receiver's signatures for Arkade→EVM refunds. `arkade_htlc`, `vhtlc_balance`,
+and `spend_arkade` expose reconstruction, spend observations, and an injectable
+`ArkadeBackend` for external integrations.
+
+Offchain progress retains exact PSBTs with condition witnesses removed. Resume
+with the same operation and destination: the SDK re-derives the preimage, queries
+pending transactions after interrupted submission, and resumes checkpoint
+finalization. Cosigner responses must preserve the locally constructed transaction
+and contain valid signatures; receiver signatures survive Arkade's cosigning step.
+Recoverable/expired VTXOs require delegated settlement (a separate parity step).
