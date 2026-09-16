@@ -243,8 +243,27 @@ impl BitcoinBackend for EsploraBackend {
     fn broadcast<'a>(&'a self, tx: &'a Transaction) -> ChainFuture<'a, Txid> {
         Box::pin(async move {
             self.verify_network().await?;
-            self.client.broadcast(tx).await.map_err(transport)?;
-            Ok(tx.compute_txid())
+            // Mempool's body parser requires an explicit text content type.
+            let response = self
+                .http
+                .post(format!("{}/tx", self.base_url))
+                .header(reqwest::header::CONTENT_TYPE, "text/plain")
+                .body(bitcoin::consensus::encode::serialize_hex(tx))
+                .send()
+                .await
+                .map_err(transport)?
+                .error_for_status()
+                .map_err(transport)?
+                .text()
+                .await
+                .map_err(transport)?;
+            let txid = Txid::from_str(response.trim()).map_err(decode)?;
+            if txid != tx.compute_txid() {
+                return Err(invalid(
+                    "Bitcoin broadcast returned a different transaction ID",
+                ));
+            }
+            Ok(txid)
         })
     }
 }
@@ -264,6 +283,39 @@ mod tests {
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
     use wiremock::matchers::path;
+
+    #[tokio::test]
+    async fn broadcast_sends_text_and_checks_the_returned_transaction_id() {
+        use wiremock::matchers::body_string;
+        use wiremock::matchers::header;
+        use wiremock::matchers::method;
+        let genesis = bitcoin::blockdata::constants::genesis_block(Network::Regtest);
+        let tx = &genesis.txdata[0];
+        for returned in [tx.compute_txid(), Txid::all_zeros()] {
+            let server = MockServer::start().await;
+            Mock::given(path("/block-height/0"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_string(genesis.block_hash().to_string()),
+                )
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/tx"))
+                .and(header("content-type", "text/plain"))
+                .and(body_string(bitcoin::consensus::encode::serialize_hex(tx)))
+                .respond_with(ResponseTemplate::new(200).set_body_string(returned.to_string()))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let backend = EsploraBackend::new(&server.uri(), Network::Regtest).unwrap();
+            let result = backend.broadcast(tx).await;
+            if returned == tx.compute_txid() {
+                assert_eq!(result.unwrap(), returned);
+            } else {
+                assert!(result.is_err());
+            }
+        }
+    }
 
     #[tokio::test]
     async fn mempool_hex_fallback_validates_transaction_identity() {

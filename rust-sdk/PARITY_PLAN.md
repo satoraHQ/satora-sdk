@@ -231,3 +231,9 @@ chains; no production payments are part of this work.
   transactions, spent/unspent/unknown outputs and native Esplora endpoint use.
 - All-feature tests: 206 passed including doctests. Bitcoin-focused tests,
   formatting and strict all-target/all-feature Clippy passed.
+
+- Broadcast follow-up: send transaction hex as `text/plain` for Mempool's body
+  parser and verify the returned transaction ID. A real Bitcoin HTLC claim now
+  broadcasts successfully. The new regression test checks request content and
+  rejection of mismatched IDs. All-feature tests: 207 passed including doctests;
+  Bitcoin-focused tests and strict all-target/all-feature Clippy passed.
