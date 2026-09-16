@@ -1070,3 +1070,45 @@ async fn invalid_creation_does_not_allocate_keys_or_send_requests() {
     assert!(server.received_requests().await.unwrap().is_empty());
     assert_eq!(storage.next_key_index().unwrap(), 0);
 }
+
+#[tokio::test]
+async fn dex_quote_and_unsigned_calldata_match_api_schema() {
+    use lendaswap_sdk::types::*;
+    let server = MockServer::start().await;
+    let response = json!({"chain":"137","payload":{"kind":"evm","calls":[{"target":"0x1111111111111111111111111111111111111111","data":"0x1234","value":"0"}]},"expected_amount_in":"100000","estimated_amount_out":"200000","estimated_settlement_seconds":0,"router":"uniswap"});
+    assert_schema(&response, "DexCalldataResponse");
+    Mock::given(path("/dex-calldata"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let token = DexToken::Evm {
+        chain_id: 137,
+        address: "0x1111111111111111111111111111111111111111".into(),
+    };
+    let request = DexQuoteRequest {
+        from: token.clone(),
+        to: token.clone(),
+        amount: DexAmount::ExactOut(u128::MAX.to_string()),
+        slippage_bps: 100,
+        cctp_recipient_setup: true,
+    };
+    assert_schema(&serde_json::to_value(request).unwrap(), "DexQuoteRequest");
+    let response = client(&server)
+        .get_dex_calldata(DexCalldataRequest {
+            from: token.clone(),
+            to: token,
+            amount: DexAmount::ExactIn("100000".into()),
+            sender: "0x2222222222222222222222222222222222222222".into(),
+            slippage_bps: 100,
+            bridge_recipient: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(response.expected_amount_in, "100000");
+    let requests = server.received_requests().await.unwrap();
+    assert_schema(
+        &serde_json::from_slice(&requests[0].body).unwrap(),
+        "DexCalldataRequest",
+    );
+}

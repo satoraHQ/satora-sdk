@@ -35,6 +35,8 @@ gasless = ["dep:alloy", "dep:alloy-provider"]
 bip39 = "2"
 bitcoin = { version = "0.32", default-features = false, features = ["std"] }
 hex = "0.4"
+num-bigint = "0.4"
+num-traits = "0.2"
 reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls", "query"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

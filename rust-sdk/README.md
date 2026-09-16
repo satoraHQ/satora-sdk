@@ -38,7 +38,7 @@ strings on the wire, while Bitcoin amounts must be positive and fit in `i64`.
 | Operation | Rust support |
 | --- | --- |
 | Discovery | Health/status (including unhealthy HTTP 503), tokens, pairs, chain config, network fees, referral fee, MTP, support agents |
-| Quotes | `/quote` and destination-specific `/quote/lightning-send`; referral defaults and extra fees |
+| Quotes | `/quote`, `/quote/lightning-send`, typed DEX quotes/calldata, and local BTC↔EVM/Solana composition |
 | Create | All nine directions via `SwapCreation` and `create_swap_request`; generic EVM assets with explicit chain IDs |
 | Inspect | All nine API swap directions through `get_swap_details`; compact `get_swap`; bulk status |
 | Recovery | One-page `recover_swaps` and paginated `recover_all_swaps` |
@@ -57,8 +57,7 @@ into payment instructions; its `receive_address` is empty for an EVM→Bitcoin
 swap whose server response has no target address.
 
 This is not full TypeScript SDK parity. Rust still lacks EVM/on-chain claims and
-refunds; collaborative refunds; bridge orchestration; local DEX quote
-composition; WebSocket tracking and contract managers. Reading/recovering those
+refunds; collaborative refunds; bridge orchestration; WebSocket tracking and contract managers. Reading/recovering those
 swap records does not implement their execution flows. The TypeScript reference
 is `../ts-sdk/packages/swap` and its underlying `../ts-pure-sdk` client.
 
@@ -75,6 +74,15 @@ Malformed destinations, mismatched token chains, and invalid amounts are rejecte
 before allocating an index. Explicit reused-preimage errors retry at most ten
 times, skipping ten additional indices per collision, matching TypeScript.
 Invoice-owned locks never retry.
+
+`compose_quote(request, slippage_bps)` combines pair rates, network fees, pivot
+configuration, referral fees and a live DEX quote. Its amount arithmetic uses
+arbitrary-precision integers, including bridge-fee and peg-rate rounding.
+`compose_quote_with_data` accepts pre-fetched discovery data. Unsupported paths
+can use `get_quote`; automatic fallback is left to the caller. Pair/config/referral
+data caches for 60 seconds; `clear_quote_cache` invalidates it immediately.
+DEX and network-fee requests always use fresh data. `get_dex_calldata` returns
+unsigned calls for caller review and execution.
 
 ## Persistence and recovery
 

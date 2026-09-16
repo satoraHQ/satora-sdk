@@ -41,6 +41,7 @@ use url::Url;
 mod api;
 mod creation;
 mod lightning;
+mod quotes;
 mod storage;
 
 /// Production Lendaswap API endpoint. Used by [`ClientBuilder`] when no
@@ -63,6 +64,7 @@ fn is_preimage_collision(err: &Error) -> bool {
 
 #[derive(Clone)]
 pub struct Client {
+    quote_cache: Arc<tokio::sync::Mutex<quotes::QuoteCache>>,
     pub(crate) http: reqwest::Client,
     pub(crate) base_url: Url,
     /// Optional: only required by [`Self::create_swap`]. Constructors that
@@ -114,6 +116,7 @@ impl Client {
             referral_code: None,
             arkade_config: None,
             arkade_wallet: Arc::new(tokio::sync::OnceCell::new()),
+            quote_cache: Arc::default(),
         })
     }
 
@@ -834,6 +837,7 @@ impl ClientBuilder {
             referral_code: self.referral_code,
             arkade_config: self.arkade_config,
             arkade_wallet: Arc::new(tokio::sync::OnceCell::new()),
+            quote_cache: Arc::default(),
         })
     }
 }

@@ -35,7 +35,7 @@ state the actual change and validation, without tool attribution.
    amount encoding, retries, and destination validation to TypeScript. Validate
    request bodies and response handling for every direction against OpenAPI.
 
-3. [ ] **Add DEX quoting and local quote composition.** Typed DEX quote/calldata
+3. [x] **Add DEX quoting and local quote composition.** Typed DEX quote/calldata
    requests and responses, token discovery, explicit quote amount variants,
    fee/referral composition, source/target amount rounding, peg conversions,
    bridge fees and cache expiry. Reuse TypeScript test vectors and cover large

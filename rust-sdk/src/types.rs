@@ -77,3 +77,15 @@ pub use creation::BridgeRoute;
 pub use creation::EvmAsset;
 pub use creation::SwapCreation;
 pub use creation::SwapOptions;
+
+mod dex;
+pub use dex::BridgeRate;
+pub use dex::DexAmount;
+pub use dex::DexCall;
+pub use dex::DexCalldataRequest;
+pub use dex::DexCalldataResponse;
+pub use dex::DexCallsPayload;
+pub use dex::DexQuoteRequest;
+pub use dex::DexQuoteResponse;
+pub use dex::DexToken;
+pub use dex::TokenAmount;
