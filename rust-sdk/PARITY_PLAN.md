@@ -179,8 +179,8 @@ chains; no production payments are part of this work.
   strict all-target/all-feature Clippy passed.
 - Setup now supports alto host networking and refreshes the daemon's liquidity
   cache after CLI settlement. ShellCheck and shell syntax checks pass.
-- Full-stack Lightning and bridge scenarios remain untested. No production
-  funds were used.
+- At this checkpoint Lightning and bridge scenarios were untested; Lightning
+  coverage was added in the follow-up below. No production funds were used.
 
 ## Arkade 0.11.0 follow-up
 
@@ -203,3 +203,20 @@ chains; no production payments are part of this work.
   boarding. Arkade→EVM refund modes still require separate E2E coverage.
 - Driver formatting, strict Clippy, process-restart tests, the new scenario's
   Biome checks, and workflow actionlint pass.
+
+## Lightning ↔ EVM E2E follow-up
+
+- Added Rust-backed EVM→Lightning and Lightning→EVM scenarios using the existing
+  two-node LND regtest harness and Arbitrum fork/local alto.
+- EVM→Lightning created an invoice payout, funded the EVM HTLC through a Rust
+  UserOperation, paid the full 20,000-sat invoice and completed server redemption.
+  Depositor and server lock-token balance assertions passed.
+- Lightning→EVM held a 20,000-sat invoice until the Rust EVM claim revealed the
+  preimage, then settled the invoice and completed server redemption. Client USDC
+  and server lock-token balance assertions passed.
+- Both submission journals survived new driver processes. Driver directions now
+  come from typed stored responses instead of inferring BTC rails from tokens.
+- Driver formatting, strict all-target Clippy, process-restart tests, TypeScript
+  typechecking, scenario Biome checks and runner ShellCheck passed.
+- These local LND scenarios are opt-in by name. Lightning refund paths, Lightning
+  addresses, hosted Spark and live bridges still need full-stack validation.
