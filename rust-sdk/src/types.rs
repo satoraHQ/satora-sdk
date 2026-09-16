@@ -71,3 +71,9 @@ pub use responses::LightningToEvmSwapResponse;
 mod recovery;
 pub use recovery::RecoveredSwap;
 pub use recovery::RecoveryResponse;
+
+mod creation;
+pub use creation::BridgeRoute;
+pub use creation::EvmAsset;
+pub use creation::SwapCreation;
+pub use creation::SwapOptions;

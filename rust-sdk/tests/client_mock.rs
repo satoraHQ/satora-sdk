@@ -310,7 +310,7 @@ async fn create_evm_to_arkade_swap_posts_high_level_request() {
             "server_evm_address": "0xserver",
             "evm_refund_locktime": 1_000_000,
             "btc_vhtlc_address": "ark1qvhtlc",
-            "target_arkade_address": "ark1qtarget",
+            "target_arkade_address": "tark1qqellv77udfmr20tun8dvju5vgudpf9vxe8jwhthrkn26fz96pawqfdy8nk05rsmrf8h94j26905e7n6sng8y059z8ykn2j5xcuw4xt846qj6x",
             "sender_pk": "02sender",
             "receiver_pk": "02receiver",
             "arkade_server_pk": "02arkade",
@@ -336,7 +336,7 @@ async fn create_evm_to_arkade_swap_posts_high_level_request() {
         .create_evm_to_arkade_swap(
             TokenId::Usdt0Arbitrum,
             QuoteAmount::Source(100_000_000),
-            Address::Arkade("ark1qtarget".to_string()),
+            Address::Arkade("tark1qqellv77udfmr20tun8dvju5vgudpf9vxe8jwhthrkn26fz96pawqfdy8nk05rsmrf8h94j26905e7n6sng8y059z8ykn2j5xcuw4xt846qj6x".to_string()),
             true,
             None,
         )
@@ -347,7 +347,10 @@ async fn create_evm_to_arkade_swap_posts_high_level_request() {
     assert_eq!(swap.status, SwapStatus::Pending);
     assert_eq!(swap.deposit_token, TokenId::Usdt0Arbitrum);
     assert_eq!(swap.receive_token, TokenId::Btc);
-    assert_eq!(swap.receive_address, "ark1qtarget");
+    assert_eq!(
+        swap.receive_address,
+        "tark1qqellv77udfmr20tun8dvju5vgudpf9vxe8jwhthrkn26fz96pawqfdy8nk05rsmrf8h94j26905e7n6sng8y059z8ykn2j5xcuw4xt846qj6x"
+    );
     // gasless=true → Gasless variant with the SDK-derived EVM address
     // (echoed back as client_evm_address by the backend).
     match swap.funding {
@@ -362,7 +365,10 @@ async fn create_evm_to_arkade_swap_posts_high_level_request() {
     let received = server.received_requests().await.expect("requests recorded");
     let req = received.last().expect("at least one request");
     let body: serde_json::Value = serde_json::from_slice(&req.body).expect("body is valid JSON");
-    assert_eq!(body["target_address"], "ark1qtarget");
+    assert_eq!(
+        body["target_address"],
+        "tark1qqellv77udfmr20tun8dvju5vgudpf9vxe8jwhthrkn26fz96pawqfdy8nk05rsmrf8h94j26905e7n6sng8y059z8ykn2j5xcuw4xt846qj6x"
+    );
     assert_eq!(body["evm_chain_id"], 42161);
     assert_eq!(
         body["token_address"],
@@ -421,7 +427,7 @@ async fn create_swap_dispatcher_routes_to_evm_to_arkade() {
             "server_evm_address": "0xserver",
             "evm_refund_locktime": 1_000_000,
             "btc_vhtlc_address": "ark1qvhtlc",
-            "target_arkade_address": "ark1qtarget",
+            "target_arkade_address": "tark1qqellv77udfmr20tun8dvju5vgudpf9vxe8jwhthrkn26fz96pawqfdy8nk05rsmrf8h94j26905e7n6sng8y059z8ykn2j5xcuw4xt846qj6x",
             "sender_pk": "02sender",
             "receiver_pk": "02receiver",
             "arkade_server_pk": "02arkade",
@@ -448,7 +454,7 @@ async fn create_swap_dispatcher_routes_to_evm_to_arkade() {
             TokenId::UsdcPolygon,
             TokenId::Btc,
             QuoteAmount::Source(100_000_000),
-            Some(Address::Arkade("ark1qtarget".to_string())),
+            Some(Address::Arkade("tark1qqellv77udfmr20tun8dvju5vgudpf9vxe8jwhthrkn26fz96pawqfdy8nk05rsmrf8h94j26905e7n6sng8y059z8ykn2j5xcuw4xt846qj6x".to_string())),
             None,
         )
         .await

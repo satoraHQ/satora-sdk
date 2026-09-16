@@ -28,7 +28,7 @@ state the actual change and validation, without tool attribution.
    for imported/external EVM signers. Test migration, monotonic allocation,
    concurrent writes, reopening, and interrupted recovery.
 
-2. [ ] **Complete swap creation and routing.** BTC→Arkade; Bitcoin/Arkade/Lightning→EVM;
+2. [x] **Complete swap creation and routing.** BTC→Arkade; Bitcoin/Arkade/Lightning→EVM;
    EVM→Bitcoin; generic EVM tokens with explicit chain IDs; bridge options;
    invoice descriptions and fee overrides. Extend the general dispatcher without
    ambiguous BTC rail inference. Match strict script versions, HASH160/SHA256,

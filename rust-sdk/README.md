@@ -39,7 +39,7 @@ strings on the wire, while Bitcoin amounts must be positive and fit in `i64`.
 | --- | --- |
 | Discovery | Health/status (including unhealthy HTTP 503), tokens, pairs, chain config, network fees, referral fee, MTP, support agents |
 | Quotes | `/quote` and destination-specific `/quote/lightning-send`; referral defaults and extra fees |
-| Create | EVM→Arkade, Lightning→Arkade, Arkade→Lightning, EVM→Lightning |
+| Create | All nine directions via `SwapCreation` and `create_swap_request`; generic EVM assets with explicit chain IDs |
 | Inspect | All nine API swap directions through `get_swap_details`; compact `get_swap`; bulk status |
 | Recovery | One-page `recover_swaps` and paginated `recover_all_swaps` |
 | EVM funding | Optional `gasless` feature: deposit probes/polling and ERC-4337 funding |
@@ -56,12 +56,25 @@ invoice description of at most 639 bytes, and a per-swap surcharge.
 into payment instructions; its `receive_address` is empty for an EVM→Bitcoin
 swap whose server response has no target address.
 
-This is not full TypeScript SDK parity. Rust still lacks high-level creation for
-BTC→Arkade, BTC/Arkade/Lightning→EVM, and EVM→Bitcoin; EVM/on-chain claims and
+This is not full TypeScript SDK parity. Rust still lacks EVM/on-chain claims and
 refunds; collaborative refunds; bridge orchestration; local DEX quote
 composition; WebSocket tracking and contract managers. Reading/recovering those
 swap records does not implement their execution flows. The TypeScript reference
 is `../ts-sdk/packages/swap` and its underlying `../ts-pure-sdk` client.
+
+`create_swap_request(SwapCreation, SwapOptions)` provides explicit routes for all
+nine directions. `EvmAsset` accepts a chain ID and either a named token or a
+`TokenId::Other` contract address. Options include gasless execution, an external
+EVM signer address, invoice descriptions, fees, and inbound/outbound bridge
+routing. Bridge recipients and recipient setup are stored for later execution.
+Creating a bridge route does not execute the bridge.
+
+Bitcoin→Arkade requires an exact target amount and uses HASH160; other
+client-owned locks use SHA256. All new Bitcoin/Arkade scripts use version 1.
+Malformed destinations, mismatched token chains, and invalid amounts are rejected
+before allocating an index. Explicit reused-preimage errors retry at most ten
+times, skipping ten additional indices per collision, matching TypeScript.
+Invoice-owned locks never retry.
 
 ## Persistence and recovery
 

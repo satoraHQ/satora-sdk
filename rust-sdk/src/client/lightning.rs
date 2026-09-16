@@ -4,8 +4,6 @@ use super::check_status;
 use super::validate_sats;
 use crate::Error;
 use crate::Result;
-use crate::types::EvmToLightningSwapResponse;
-use crate::types::GetSwapResponse;
 use crate::types::KnownChain;
 use crate::types::LightningDestination;
 use crate::types::LightningSendQuoteResponse;
@@ -16,7 +14,10 @@ use serde_json::json;
 
 /// Shared destination encoding for Lightning sends. Field names differ between
 /// the exact quote and creation endpoints; source-token amounts stay strings.
-fn destination_fields(destination: LightningDestination, source_field: &str) -> Result<Value> {
+pub(super) fn destination_fields(
+    destination: LightningDestination,
+    source_field: &str,
+) -> Result<Value> {
     Ok(match destination {
         LightningDestination::Invoice(invoice) => {
             if invoice.is_empty() {
@@ -116,31 +117,20 @@ impl Client {
             .ok_or_else(|| {
                 Error::InvalidSwap("EVM→Lightning requires a named EVM source token".into())
             })?;
-        let mut body = destination_fields(destination, "amount_in")?;
-        let signer = self
-            .signer
-            .as_ref()
-            .ok_or_else(|| Error::InvalidSigner("swap creation requires a signer".into()))?;
-        let index = self.storage.next_key_index()?;
-        let params = signer.derive_swap_params(index)?;
-        body["evm_chain_id"] = json!(chain);
-        body["token_address"] = json!(source);
-        body["user_address"] = json!(signer.derive_evm_key(index)?.address);
-        body["user_id"] = json!(hex::encode(params.user_id));
-        body["gasless"] = json!(gasless);
-        if let Some(code) = &self.referral_code {
-            body["referral_code"] = json!(code);
-        }
-        if let Some(fees) = extra_fees_bps {
-            body["extra_fees"] = json!(fees);
-        }
-        let response = self
-            .api_request(Method::POST, self.url("swap/evm/lightning")?)
-            .json(&body)
-            .send()
-            .await?;
-        let swap: EvmToLightningSwapResponse = check_status(response).await?.json().await?;
-        self.persist_swap(index, GetSwapResponse::EvmToLightning(swap.clone()))?;
-        Ok(Swap::from_response(GetSwapResponse::EvmToLightning(swap)))
+        self.create_swap_request(
+            crate::types::SwapCreation::EvmToLightning {
+                source: crate::types::EvmAsset {
+                    chain_id: chain,
+                    token: source,
+                },
+                destination,
+            },
+            crate::types::SwapOptions {
+                gasless: Some(gasless),
+                extra_fees_bps,
+                ..Default::default()
+            },
+        )
+        .await
     }
 }

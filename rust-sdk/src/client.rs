@@ -20,7 +20,6 @@ use crate::signer::Signer;
 use crate::storage::InMemorySwapStorage;
 use crate::storage::SwapStorage;
 use crate::types::Address;
-use crate::types::CreateEvmToArkadeSwapRequest;
 use crate::types::ErrorResponse;
 use crate::types::EvmToArkadeSwapResponse;
 use crate::types::GetSwapResponse;
@@ -40,6 +39,7 @@ use std::time::Duration;
 use url::Url;
 
 mod api;
+mod creation;
 mod lightning;
 mod storage;
 
@@ -48,27 +48,17 @@ mod storage;
 /// the URL themselves.
 pub const DEFAULT_BASE_URL: &str = "https://api.satora.io";
 
-/// How many `key_index` values `create_evm_to_arkade_swap` will try
-/// before giving up. A recovering user's worst case is "as many swaps
-/// as I previously created" — 1000 covers every realistic wallet while
-/// staying well under any HTTP / API rate limit a user could hit
-/// during one swap creation.
-const MAX_KEY_INDEX_GRIND_ATTEMPTS: u32 = 1000;
+/// Match the TypeScript client's bounded collision recovery policy.
+const MAX_KEY_INDEX_GRIND_ATTEMPTS: u32 = 10;
 const CLIENT_AGENT_HEADER: &str = "X-Lendaswap-Client";
 const SATORA_SERVER_VERSION_HEADER: &str = "x-satora-server-version";
 const CLIENT_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 const SATORA_SERVER_VERSION: &str = env!("SATORA_SERVER_VERSION");
 
-/// Detect the backend's "this preimage hash already exists" rejection.
-/// Anchored on HTTP 409 + a substring match (case-insensitive) on
-/// "preimage" so unrelated 409s (e.g. some future "duplicate referral")
-/// don't make us grind forever.
+/// Retry only the backend's explicit reused-preimage rejection.
 fn is_preimage_collision(err: &Error) -> bool {
-    matches!(
-        err,
-        Error::Api { status: 409, message }
-            if message.to_ascii_lowercase().contains("preimage")
-    )
+    matches!(err, Error::Api { message, .. }
+        if message.contains("a swap with this preimage hash exists already"))
 }
 
 #[derive(Clone)]
@@ -213,14 +203,8 @@ impl Client {
     /// `TokenId` already carries chain info (`UsdcPolygon`, etc.) the
     /// two must agree; mismatches return [`Error::InvalidSwap`].
     ///
-    /// Supported today:
-    /// - EVM stablecoin (Polygon / Arbitrum / Ethereum) → BTC on Arkade
-    /// - Lightning → BTC on Arkade, with an exact source or target amount and optional surcharge.
-    ///
-    /// Use the dedicated Lightning-send methods for Arkade/EVM → Lightning.
-    ///
-    /// Any other source / target combination returns
-    /// [`Error::InvalidSwap`].
+    /// Supports all nine API directions. Generic EVM targets and invoice payouts
+    /// use [`Self::create_swap_request`] for explicit chains and destinations.
     pub async fn create_swap(
         &self,
         source_chain: KnownChain,
@@ -255,40 +239,133 @@ impl Client {
             }
         };
 
-        let target_is_btc = matches!(target, TokenId::Btc);
-        let target_is_arkade = matches!(&receive_to, Address::Arkade(_));
-        let source_is_evm = source_chain.evm_chain_id().is_some();
-        let source_is_lightning = matches!(source_chain, KnownChain::Lightning);
-
-        if target_is_btc && target_is_arkade {
-            if source_is_evm {
-                // Dispatcher defaults to non-gasless. Callers who need
-                // gasless relay invoke `create_evm_to_arkade_swap`
-                // directly.
-                return self
-                    .create_evm_to_arkade_swap(source, amount, receive_to, false, extra_fees_bps)
-                    .await;
-            }
-            if source_is_lightning {
-                if !matches!(source, TokenId::Btc) {
-                    return Err(Error::InvalidSwap(format!(
-                        "Lightning source must use TokenId::Btc, got {source:?}",
-                    )));
-                }
-                return self
-                    .create_lightning_to_arkade_swap_with_options(
-                        amount,
-                        receive_to,
-                        extra_fees_bps,
-                        None,
-                    )
-                    .await;
-            }
+        use crate::types::EvmAsset;
+        use crate::types::LightningDestination;
+        use crate::types::SwapCreation;
+        use crate::types::SwapOptions;
+        let evm_source = source_chain.evm_chain_id().map(|chain_id| EvmAsset {
+            chain_id,
+            token: source.clone(),
+        });
+        if evm_source.is_none() && source != TokenId::Btc {
+            return Err(Error::InvalidSwap(
+                "Bitcoin rails require TokenId::Btc".into(),
+            ));
         }
-
-        Err(Error::InvalidSwap(format!(
-            "unsupported swap direction: {source_chain:?}/{source:?} -> {target:?} (receive_to={receive_to:?})",
-        )))
+        let request = match (source_chain, target, receive_to) {
+            (KnownChain::Bitcoin, TokenId::Btc, Address::Arkade(target_address)) => {
+                let QuoteAmount::Target(sats) = amount else {
+                    return Err(Error::InvalidSwap(
+                        "Bitcoin→Arkade requires an exact target amount".into(),
+                    ));
+                };
+                validate_sats(sats)?;
+                SwapCreation::BitcoinToArkade {
+                    sats_receive: sats as u64,
+                    target_address,
+                }
+            }
+            (KnownChain::Lightning, TokenId::Btc, Address::Arkade(target_address)) => {
+                SwapCreation::LightningToArkade {
+                    amount,
+                    target_address,
+                }
+            }
+            (_, TokenId::Btc, Address::Arkade(target_address)) if evm_source.is_some() => {
+                SwapCreation::EvmToArkade {
+                    source: evm_source
+                        .ok_or_else(|| Error::InvalidSwap("missing EVM source".into()))?,
+                    amount,
+                    target_address,
+                }
+            }
+            (_, TokenId::Btc, Address::Bitcoin(target_address)) if evm_source.is_some() => {
+                SwapCreation::EvmToBitcoin {
+                    source: evm_source
+                        .ok_or_else(|| Error::InvalidSwap("missing EVM source".into()))?,
+                    amount,
+                    target_address: Some(target_address),
+                }
+            }
+            (rail, target, Address::Evm(target_address)) if evm_source.is_none() => {
+                let chain_id = target.chain().and_then(|chain| chain.evm_chain_id()).ok_or_else(|| Error::InvalidSwap("generic EVM targets require create_swap_request with an explicit chain ID".into()))?;
+                let target = EvmAsset {
+                    chain_id,
+                    token: target,
+                };
+                match rail {
+                    KnownChain::Bitcoin => SwapCreation::BitcoinToEvm {
+                        target,
+                        amount,
+                        target_address,
+                    },
+                    KnownChain::Arkade => SwapCreation::ArkadeToEvm {
+                        target,
+                        amount,
+                        target_address,
+                    },
+                    KnownChain::Lightning => SwapCreation::LightningToEvm {
+                        target,
+                        amount,
+                        target_address,
+                    },
+                    _ => return Err(Error::InvalidSwap("unsupported Bitcoin rail".into())),
+                }
+            }
+            (rail, TokenId::Btc, Address::Lightning(destination))
+                if rail == KnownChain::Arkade || evm_source.is_some() =>
+            {
+                let is_address = destination.contains('@');
+                let is_lnurl = destination.to_ascii_lowercase().starts_with("lnurl");
+                if !is_address && !is_lnurl {
+                    return Err(Error::InvalidSwap("use a LightningDestination::Invoice via create_swap_request for amount-bearing invoices".into()));
+                }
+                let destination = match (amount, is_address) {
+                    (QuoteAmount::Target(sats), true) => {
+                        validate_sats(sats)?;
+                        LightningDestination::Address {
+                            address: destination,
+                            sats: sats as u64,
+                        }
+                    }
+                    (QuoteAmount::Target(sats), false) => {
+                        validate_sats(sats)?;
+                        LightningDestination::Lnurl {
+                            lnurl: destination,
+                            sats: sats as u64,
+                        }
+                    }
+                    (QuoteAmount::Source(amount), true) => LightningDestination::AddressSendMax {
+                        address: destination,
+                        amount,
+                    },
+                    (QuoteAmount::Source(amount), false) => LightningDestination::LnurlSendMax {
+                        lnurl: destination,
+                        amount,
+                    },
+                };
+                match evm_source {
+                    Some(source) => SwapCreation::EvmToLightning {
+                        source,
+                        destination,
+                    },
+                    None => SwapCreation::ArkadeToLightning { destination },
+                }
+            }
+            _ => {
+                return Err(Error::InvalidSwap(
+                    "unsupported swap direction or destination".into(),
+                ));
+            }
+        };
+        self.create_swap_request(
+            request,
+            SwapOptions {
+                extra_fees_bps,
+                ..Default::default()
+            },
+        )
+        .await
     }
 
     /// Create an EVM stablecoin → BTC-on-Arkade swap.
@@ -331,92 +408,35 @@ impl Client {
         gasless: bool,
         extra_fees_bps: Option<u16>,
     ) -> Result<Swap> {
-        if let QuoteAmount::Target(amount) = amount {
-            validate_sats(amount)?;
-        }
-        let source_chain = source.chain().ok_or_else(|| {
-            Error::InvalidSwap(format!(
-                "source token {source:?} has no known chain — pass a named EVM TokenId variant",
-            ))
-        })?;
-        let evm_chain_id = source_chain.evm_chain_id().ok_or_else(|| {
-            Error::InvalidSwap(format!(
-                "source token {source:?} is not on an EVM chain (only Polygon / Ethereum / Arbitrum supported)",
-            ))
-        })?;
-        let arkade_target_address = match &receive_to {
-            Address::Arkade(s) => s.clone(),
-            other => {
-                return Err(Error::InvalidSwap(format!(
-                    "EVM->Arkade swap requires an Arkade receive address, got {other:?}",
-                )));
-            }
+        let chain_id = source
+            .chain()
+            .and_then(|chain| chain.evm_chain_id())
+            .ok_or_else(|| {
+                Error::InvalidSwap(
+                    "generic tokens require create_swap_request with an explicit chain ID".into(),
+                )
+            })?;
+        let Address::Arkade(target_address) = receive_to else {
+            return Err(Error::InvalidSwap(
+                "EVM→Arkade requires an Arkade destination".into(),
+            ));
         };
-
-        let signer = self.signer.as_ref().ok_or_else(|| {
-            Error::InvalidSigner(
-                "Client constructed without a signer — use Client::builder() with .mnemonic / .xprv"
-                    .to_string(),
-            )
-        })?;
-
-        // The SDK derives every per-swap secret deterministically from
-        // `(signer, key_index)`. That means a fresh `Client` built from
-        // a recovered seed will start at `key_index = 0` and hit HTTP
-        // 409 ("preimage hash exists already") for every index the
-        // backend has already seen. Rather than depend on durable
-        // local storage (which a recovering user may not have), grind
-        // through indices until we find one the backend accepts.
-        //
-        // Each iteration also burns a `next_key_index` from storage,
-        // so once a swap eventually succeeds the storage counter is
-        // ahead of the highest known-used index — future swaps from
-        // the same `Client` skip the grind. Durable storage is then a
-        // performance optimisation rather than a correctness one.
-        for attempt in 0..MAX_KEY_INDEX_GRIND_ATTEMPTS {
-            let key_index = self.storage.next_key_index()?;
-            let swap_params = signer.derive_swap_params(key_index)?;
-            let evm_key = signer.derive_evm_key(key_index)?;
-            let hash_lock = format!("0x{}", hex::encode(swap_params.hash_lock));
-            let receiver_pk = hex::encode(swap_params.public_key);
-            let user_id = hex::encode(swap_params.user_id);
-
-            let req = CreateEvmToArkadeSwapRequest::new(
-                arkade_target_address.clone(),
-                evm_chain_id,
-                source.clone(),
-                hash_lock,
-                receiver_pk,
-                evm_key.address,
-                user_id,
-                amount.clone(),
-                gasless,
-                self.referral_code.clone(),
+        self.create_swap_request(
+            crate::types::SwapCreation::EvmToArkade {
+                source: crate::types::EvmAsset {
+                    chain_id,
+                    token: source,
+                },
+                amount,
+                target_address,
+            },
+            crate::types::SwapOptions {
+                gasless: Some(gasless),
                 extra_fees_bps,
-            );
-            match self.send(req).await {
-                Ok(response) => {
-                    // Persist the key_index so claim/refund can re-derive every
-                    // secret from `(signer, key_index)`.
-                    self.persist_swap(key_index, GetSwapResponse::EvmToArkade(response.clone()))?;
-                    return Ok(Swap::from_evm_response(response));
-                }
-                Err(err) if is_preimage_collision(&err) => {
-                    tracing::warn!(
-                        key_index,
-                        attempt = attempt + 1,
-                        "preimage collision — grinding next key_index",
-                    );
-                    continue;
-                }
-                Err(err) => return Err(err),
-            }
-        }
-        Err(Error::InvalidSwap(format!(
-            "exhausted {MAX_KEY_INDEX_GRIND_ATTEMPTS} key_index attempts looking for an unused preimage — \
-             the backend rejected every derived index. If you recently recovered this wallet from a seed, \
-             try again; otherwise this is a bug.",
-        )))
+                ..Default::default()
+            },
+        )
+        .await
     }
 
     /// Create a Lightning → BTC-on-Arkade swap.
@@ -458,76 +478,23 @@ impl Client {
         extra_fees_bps: Option<u16>,
         invoice_description: Option<String>,
     ) -> Result<Swap> {
-        let sats = match amount {
-            QuoteAmount::Source(v) | QuoteAmount::Target(v) => v,
-        };
-        validate_sats(sats)?;
-        if invoice_description.as_ref().is_some_and(|s| s.len() > 639) {
+        let Address::Arkade(target_address) = receive_to else {
             return Err(Error::InvalidSwap(
-                "invoice description exceeds 639 bytes".into(),
+                "Lightning→Arkade requires an Arkade destination".into(),
             ));
-        }
-        let arkade_target_address = match &receive_to {
-            Address::Arkade(s) => s.clone(),
-            other => {
-                return Err(Error::InvalidSwap(format!(
-                    "Lightning->Arkade swap requires an Arkade receive address, got {other:?}",
-                )));
-            }
         };
-
-        let signer = self.signer.as_ref().ok_or_else(|| {
-            Error::InvalidSigner(
-                "Client constructed without a signer — use Client::builder() with .mnemonic / .xprv"
-                    .to_string(),
-            )
-        })?;
-
-        // Same grind loop as the EVM path: a recovered wallet starts at
-        // key_index 0 and the backend rejects every preimage hash it
-        // already knows. We bump through indices until one lands.
-        for attempt in 0..MAX_KEY_INDEX_GRIND_ATTEMPTS {
-            let key_index = self.storage.next_key_index()?;
-            let swap_params = signer.derive_swap_params(key_index)?;
-            let hash_lock = format!("0x{}", hex::encode(swap_params.hash_lock));
-            let claim_pk = hex::encode(swap_params.public_key);
-            let user_id = hex::encode(swap_params.user_id);
-
-            let mut req = crate::types::CreateLightningToArkadeSwapRequest::new(
-                arkade_target_address.clone(),
-                sats as u64,
-                claim_pk,
-                hash_lock,
-                user_id,
-                self.referral_code.clone(),
-            );
-            req.amount = amount.clone();
-            req.extra_fees_bps = extra_fees_bps;
-            req.invoice_description = invoice_description.clone();
-            match self.send(req).await {
-                Ok(response) => {
-                    self.persist_swap(
-                        key_index,
-                        GetSwapResponse::LightningToArkade(response.clone()),
-                    )?;
-                    return Ok(Swap::from_lightning_response(response));
-                }
-                Err(err) if is_preimage_collision(&err) => {
-                    tracing::warn!(
-                        key_index,
-                        attempt = attempt + 1,
-                        "preimage collision — grinding next key_index",
-                    );
-                    continue;
-                }
-                Err(err) => return Err(err),
-            }
-        }
-        Err(Error::InvalidSwap(format!(
-            "exhausted {MAX_KEY_INDEX_GRIND_ATTEMPTS} key_index attempts looking for an unused preimage — \
-             the backend rejected every derived index. If you recently recovered this wallet from a seed, \
-             try again; otherwise this is a bug.",
-        )))
+        self.create_swap_request(
+            crate::types::SwapCreation::LightningToArkade {
+                amount,
+                target_address,
+            },
+            crate::types::SwapOptions {
+                extra_fees_bps,
+                invoice_description,
+                ..Default::default()
+            },
+        )
+        .await
     }
 
     /// Create an Arkade → BTC-on-Lightning swap.
@@ -564,40 +531,14 @@ impl Client {
         destination: crate::types::LightningDestination,
         extra_fees_bps: Option<u16>,
     ) -> Result<Swap> {
-        let signer = self.signer.as_ref().ok_or_else(|| {
-            Error::InvalidSigner(
-                "Client constructed without a signer — use Client::builder() with .mnemonic / .xprv"
-                    .to_string(),
-            )
-        })?;
-
-        match &destination {
-            crate::types::LightningDestination::Address { sats, .. }
-            | crate::types::LightningDestination::Lnurl { sats, .. } => {
-                validate_sats((*sats).into())?
-            }
-            crate::types::LightningDestination::AddressSendMax { amount, .. }
-            | crate::types::LightningDestination::LnurlSendMax { amount, .. } => {
-                validate_sats(*amount)?
-            }
-            crate::types::LightningDestination::Invoice(_) => {}
-        }
-        let key_index = self.storage.next_key_index()?;
-        let params = signer.derive_swap_params(key_index)?;
-        let mut req = crate::types::CreateArkadeToLightningSwapRequest::new(
-            destination,
-            hex::encode(params.public_key),
-            hex::encode(params.user_id),
-            self.referral_code.clone(),
-        );
-        req.extra_fees_bps = extra_fees_bps;
-        // The invoice owns the hash: deriving another key cannot fix a duplicate invoice.
-        let response = self.send(req).await?;
-        self.persist_swap(
-            key_index,
-            GetSwapResponse::ArkadeToLightning(response.clone()),
-        )?;
-        Ok(Swap::from_arkade_to_lightning_response(response))
+        self.create_swap_request(
+            crate::types::SwapCreation::ArkadeToLightning { destination },
+            crate::types::SwapOptions {
+                extra_fees_bps,
+                ..Default::default()
+            },
+        )
+        .await
     }
 
     /// `GET /swap/{id}` — fetch the current state of a swap by id.

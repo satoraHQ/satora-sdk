@@ -48,6 +48,15 @@ impl Client {
     }
 
     pub(super) fn persist_swap(&self, index: u32, response: GetSwapResponse) -> Result<()> {
+        self.persist_swap_with_metadata(index, response, SwapMetadata::default())
+    }
+
+    pub(super) fn persist_swap_with_metadata(
+        &self,
+        index: u32,
+        response: GetSwapResponse,
+        mut metadata: SwapMetadata,
+    ) -> Result<()> {
         let address = match &response {
             GetSwapResponse::EvmToBitcoin(r) => Some(&r.client_evm_address),
             GetSwapResponse::EvmToArkade(r) => Some(&r.client_evm_address),
@@ -87,13 +96,8 @@ impl Client {
                 }
             })
             .transpose()?;
-        self.storage.store_swap(StoredSwap::new(
-            index,
-            response,
-            SwapMetadata {
-                evm_key_source,
-                ..Default::default()
-            },
-        )?)
+        metadata.evm_key_source = evm_key_source;
+        self.storage
+            .store_swap(StoredSwap::new(index, response, metadata)?)
     }
 }

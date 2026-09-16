@@ -83,7 +83,7 @@ async fn lightning_receive_uses_current_amount_fields_script_version_and_fees() 
         let swap = client(&server)
             .create_lightning_to_arkade_swap_with_options(
                 amount.clone(),
-                Address::Arkade("ark1fixture".into()),
+                Address::Arkade("tark1qqellv77udfmr20tun8dvju5vgudpf9vxe8jwhthrkn26fz96pawqfdy8nk05rsmrf8h94j26905e7n6sng8y059z8ykn2j5xcuw4xt846qj6x".into()),
                 Some(25),
                 Some("Invoice #42".into()),
             )
@@ -372,7 +372,7 @@ async fn persistent_client_reopens_the_same_wallet_namespace() {
             .build()
             .unwrap();
         client
-            .create_lightning_to_arkade_swap(100_000, Address::Arkade("ark1fixture".into()))
+            .create_lightning_to_arkade_swap(100_000, Address::Arkade("tark1qqellv77udfmr20tun8dvju5vgudpf9vxe8jwhthrkn26fz96pawqfdy8nk05rsmrf8h94j26905e7n6sng8y059z8ykn2j5xcuw4xt846qj6x".into()))
             .await
             .unwrap();
     }
@@ -412,7 +412,7 @@ async fn oversized_btc_amounts_return_errors_without_panicking() {
             .create_evm_to_arkade_swap(
                 TokenId::UsdcPolygon,
                 QuoteAmount::Target(u128::MAX),
-                Address::Arkade("ark1fixture".into()),
+                Address::Arkade("tark1qqellv77udfmr20tun8dvju5vgudpf9vxe8jwhthrkn26fz96pawqfdy8nk05rsmrf8h94j26905e7n6sng8y059z8ykn2j5xcuw4xt846qj6x".into()),
                 true,
                 None
             )
@@ -647,7 +647,7 @@ async fn dispatcher_forwards_lightning_source_amount_and_surcharge() {
             TokenId::Btc,
             TokenId::Btc,
             QuoteAmount::Source(100_000),
-            Some(Address::Arkade("ark1fixture".into())),
+            Some(Address::Arkade("tark1qqellv77udfmr20tun8dvju5vgudpf9vxe8jwhthrkn26fz96pawqfdy8nk05rsmrf8h94j26905e7n6sng8y059z8ykn2j5xcuw4xt846qj6x".into())),
             Some(15),
         )
         .await
@@ -761,4 +761,312 @@ async fn recovery_uses_hash160_for_bitcoin_to_arkade_swaps() {
             .len(),
         1
     );
+}
+
+fn creation_cases(
+    amount: QuoteAmount,
+) -> Vec<(
+    &'static str,
+    &'static str,
+    &'static str,
+    lendaswap_sdk::types::SwapCreation,
+)> {
+    use lendaswap_sdk::types::EvmAsset;
+    use lendaswap_sdk::types::SwapCreation::*;
+    let asset = EvmAsset {
+        chain_id: 137,
+        token: TokenId::Other("0x1111111111111111111111111111111111111111".into()),
+    };
+    let arkade = "tark1qqellv77udfmr20tun8dvju5vgudpf9vxe8jwhthrkn26fz96pawqfdy8nk05rsmrf8h94j26905e7n6sng8y059z8ykn2j5xcuw4xt846qj6x".to_owned();
+    let target_address = "0x1111111111111111111111111111111111111111".to_owned();
+    let destination = match &amount {
+        QuoteAmount::Source(v) => LightningDestination::AddressSendMax {
+            address: "merchant@example.com".into(),
+            amount: *v,
+        },
+        QuoteAmount::Target(v) => LightningDestination::Address {
+            address: "merchant@example.com".into(),
+            sats: u64::try_from(*v).unwrap(),
+        },
+    };
+    vec![
+        (
+            "bitcoin/arkade",
+            "btc_to_arkade",
+            "BitcoinToArkadeSwapRequest",
+            BitcoinToArkade {
+                sats_receive: 100_000,
+                target_address: arkade.clone(),
+            },
+        ),
+        (
+            "lightning/arkade",
+            "lightning_to_arkade",
+            "LightningToArkadeSwapRequest",
+            LightningToArkade {
+                amount: amount.clone(),
+                target_address: arkade.clone(),
+            },
+        ),
+        (
+            "arkade/lightning",
+            "arkade_to_lightning",
+            "ArkadeToLightningSwapRequest",
+            ArkadeToLightning {
+                destination: destination.clone(),
+            },
+        ),
+        (
+            "bitcoin/evm",
+            "bitcoin_to_evm",
+            "BitcoinToEvmSwapRequest",
+            BitcoinToEvm {
+                target: asset.clone(),
+                amount: amount.clone(),
+                target_address: target_address.clone(),
+            },
+        ),
+        (
+            "arkade/evm",
+            "arkade_to_evm",
+            "ArkadeToEvmSwapRequest",
+            ArkadeToEvm {
+                target: asset.clone(),
+                amount: amount.clone(),
+                target_address: target_address.clone(),
+            },
+        ),
+        (
+            "lightning/evm",
+            "lightning_to_evm",
+            "LightningToEvmSwapRequest",
+            LightningToEvm {
+                target: asset.clone(),
+                amount: amount.clone(),
+                target_address,
+            },
+        ),
+        (
+            "evm/bitcoin",
+            "evm_to_bitcoin",
+            "EvmToBitcoinSwapRequest",
+            EvmToBitcoin {
+                source: asset.clone(),
+                amount: amount.clone(),
+                target_address: Some("1BoatSLRHtKNngkdXEeobR76b53LETtpyT".into()),
+            },
+        ),
+        (
+            "evm/arkade",
+            "evm_to_arkade",
+            "EvmToArkadeGenericSwapRequest",
+            EvmToArkade {
+                source: asset.clone(),
+                amount: amount.clone(),
+                target_address: arkade,
+            },
+        ),
+        (
+            "evm/lightning",
+            "evm_to_lightning",
+            "EvmToLightningSwapRequest",
+            EvmToLightning {
+                source: asset,
+                destination,
+            },
+        ),
+    ]
+}
+
+#[tokio::test]
+async fn creates_all_nine_directions_with_current_schemas_and_persists_snapshots() {
+    use bitcoin::hashes::Hash;
+    use bitcoin::hashes::hash160;
+    use lendaswap_sdk::types::SwapOptions;
+    for amount in [QuoteAmount::Source(100_000), QuoteAmount::Target(100_000)] {
+        for (route, direction, schema, request) in creation_cases(amount) {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path(format!("/swap/{route}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(fixture(direction)))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let client = client(&server);
+            let swap = client
+                .create_swap_request(
+                    request,
+                    SwapOptions {
+                        extra_fees_bps: Some(25),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            let requests = server.received_requests().await.unwrap();
+            let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+            assert_schema(&body, schema);
+            assert_eq!(body["extra_fees"], 25);
+            let stored = client.get_stored_swap(&swap.id).unwrap().unwrap();
+            assert_eq!(stored.response.id(), swap.id);
+            let params = Signer::from_mnemonic(MNEMONIC)
+                .unwrap()
+                .derive_swap_params(0)
+                .unwrap();
+            if route == "bitcoin/arkade" {
+                assert_eq!(
+                    body["hash_lock"],
+                    hash160::Hash::hash(&params.preimage).to_string()
+                );
+                assert_eq!(body["claim_pk"], body["refund_pk"]);
+            } else if !route.ends_with("/lightning") {
+                assert_eq!(
+                    body["hash_lock"],
+                    format!("0x{}", hex::encode(params.hash_lock))
+                );
+            } else {
+                assert!(body.get("hash_lock").is_none());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn creation_preserves_large_evm_amounts_and_bridge_execution_metadata() {
+    use lendaswap_sdk::types::BridgeRoute;
+    use lendaswap_sdk::types::EvmAsset;
+    use lendaswap_sdk::types::SwapCreation;
+    use lendaswap_sdk::types::SwapOptions;
+    let server = MockServer::start().await;
+    Mock::given(path("/swap/lightning/evm"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(fixture("lightning_to_evm")))
+        .mount(&server)
+        .await;
+    let client = client(&server);
+    let request = SwapCreation::LightningToEvm {
+        target: EvmAsset {
+            chain_id: 137,
+            token: TokenId::Other("0x1111111111111111111111111111111111111111".into()),
+        },
+        amount: QuoteAmount::Target(u128::MAX),
+        target_address: "0x2222222222222222222222222222222222222222".into(),
+    };
+    let swap = client
+        .create_swap_request(
+            request,
+            SwapOptions {
+                invoice_description: Some("Invoice #42".into()),
+                bridge: Some(BridgeRoute {
+                    chain: "Ethereum".into(),
+                    token_address: "0x3333333333333333333333333333333333333333".into(),
+                    recipient: Some("recipient".into()),
+                    recipient_wallet: None,
+                    recipient_setup: false,
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["amount_out"], u128::MAX.to_string());
+    assert_eq!(body["bridge_target_chain"], "Ethereum");
+    assert_eq!(body["invoice_description"], "Invoice #42");
+    assert_eq!(body["gasless"], true);
+    assert_eq!(
+        client
+            .get_stored_swap(&swap.id)
+            .unwrap()
+            .unwrap()
+            .metadata
+            .bridge_recipient
+            .as_deref(),
+        Some("recipient")
+    );
+}
+
+#[tokio::test]
+async fn retries_only_explicit_hash_collisions_with_typescript_index_spacing() {
+    use lendaswap_sdk::types::SwapOptions;
+    let server = MockServer::start().await;
+    Mock::given(path("/swap/bitcoin/arkade"))
+        .respond_with({
+            let calls = std::sync::atomic::AtomicU32::new(0);
+            move |_: &wiremock::Request| {
+                if calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
+                    ResponseTemplate::new(409).set_body_json(
+                        json!({"error":"a swap with this preimage hash exists already"}),
+                    )
+                } else {
+                    ResponseTemplate::new(200).set_body_json(fixture("btc_to_arkade"))
+                }
+            }
+        })
+        .expect(2)
+        .mount(&server)
+        .await;
+    let client = client(&server);
+    let (_, _, _, request) = creation_cases(QuoteAmount::Target(100_000)).remove(0);
+    let swap = client
+        .create_swap_request(request, SwapOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        client.get_stored_swap(&swap.id).unwrap().unwrap().key_index,
+        11
+    );
+    let requests = server.received_requests().await.unwrap();
+    let first: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    let second: Value = serde_json::from_slice(&requests[1].body).unwrap();
+    assert_ne!(first["hash_lock"], second["hash_lock"]);
+}
+
+#[tokio::test]
+async fn invalid_creation_does_not_allocate_keys_or_send_requests() {
+    use lendaswap_sdk::types::EvmAsset;
+    use lendaswap_sdk::types::SwapCreation;
+    use lendaswap_sdk::types::SwapOptions;
+    let server = MockServer::start().await;
+    let storage = Arc::new(InMemorySwapStorage::new());
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(storage.clone())
+        .build()
+        .unwrap();
+    let asset = EvmAsset {
+        chain_id: 1,
+        token: TokenId::UsdcPolygon,
+    };
+    for request in [
+        SwapCreation::EvmToBitcoin {
+            source: asset,
+            amount: QuoteAmount::Target(100_000),
+            target_address: None,
+        },
+        SwapCreation::BitcoinToArkade {
+            sats_receive: 100_000,
+            target_address: "ark1invalid".into(),
+        },
+        SwapCreation::ArkadeToLightning {
+            destination: LightningDestination::AddressSendMax {
+                address: "test@example.com".into(),
+                amount: u128::MAX,
+            },
+        },
+        SwapCreation::LightningToArkade {
+            amount: QuoteAmount::Source(0),
+            target_address: "invalid".into(),
+        },
+    ] {
+        assert!(
+            client
+                .create_swap_request(request, SwapOptions::default())
+                .await
+                .is_err()
+        );
+    }
+    assert!(server.received_requests().await.unwrap().is_empty());
+    assert_eq!(storage.next_key_index().unwrap(), 0);
 }
