@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   broadcastTransaction,
   broadcastTransactionWithRetry,
+  fetchFeeRateEstimate,
   fetchTransactionOutputs,
   findOutputByAddress,
 } from "../src/esplora.js";
@@ -215,6 +216,48 @@ describe("fetchTransactionOutputs", () => {
     const result = await fetchTransactionOutputs(URLS, "bb".repeat(32));
 
     expect(result).toBeNull();
+  });
+});
+
+describe("fetchFeeRateEstimate", () => {
+  it("returns the estimate for the confirmation target", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ "1": 21.3, "2": 18.7, "6": 9.1, "144": 1.2 }),
+    );
+
+    expect(await fetchFeeRateEstimate(URLS, 2)).toBe(18.7);
+  });
+
+  it("falls back to the next URL", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("unavailable", { status: 503 }))
+      .mockResolvedValueOnce(jsonResponse({ "2": 4.5 }));
+
+    expect(await fetchFeeRateEstimate(URLS, 2)).toBe(4.5);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("asks the next URL when one has no estimate for the target", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse({}))
+      .mockResolvedValueOnce(jsonResponse({ "2": 4.5 }));
+
+    expect(await fetchFeeRateEstimate(URLS, 2)).toBe(4.5);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns undefined when the explorer has no estimate", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({}));
+
+    expect(await fetchFeeRateEstimate(URLS, 2)).toBeUndefined();
+  });
+
+  it("returns undefined instead of throwing when every URL fails", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("fetch failed"));
+
+    expect(await fetchFeeRateEstimate(URLS, 2)).toBeUndefined();
   });
 });
 

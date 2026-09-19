@@ -462,6 +462,77 @@ describe("swapToTracked", () => {
     expect(tracked?.serverRefundLocktime).toBe(0);
   });
 
+  it("maps bitcoin_to_lightning: client funds the BTC HTLC, no server leg", () => {
+    const tracked = swapToTracked(
+      stored({
+        id: "swap-b2l",
+        direction: "bitcoin_to_lightning",
+        hash_lock: `0x${hashLock}`,
+        btc_htlc_address: "bcrt1qbtcln",
+        btc_refund_locktime: 900_000,
+        source_amount: "2500",
+        target_amount: "2400",
+      } as never),
+    );
+
+    expect(tracked?.serverHtlc).toBeUndefined();
+    expect(tracked?.clientHtlc).toEqual({
+      ledger: "bitcoin",
+      address: "bcrt1qbtcln",
+      preimageHash: hashLock, // the invoice's payment hash, 0x stripped
+      expectedSats: 2500, // source_amount
+      minConfirmations: 1, // the client funded it; the server waits for a block
+    });
+    expect(tracked?.clientRefundLocktime).toBe(900_000_000);
+    expect(tracked?.serverRefundLocktime).toBe(0);
+  });
+
+  it("maps lightning_to_bitcoin: client claims the BTC HTLC, no client leg", () => {
+    const tracked = swapToTracked(
+      stored({
+        id: "swap-l2b",
+        direction: "lightning_to_bitcoin",
+        hash_lock: `0x${hashLock}`,
+        btc_htlc_address: "bcrt1qlnbtc",
+        btc_refund_locktime: 900_000,
+        source_amount: "2500",
+        target_amount: "2400",
+      } as never),
+    );
+
+    expect(tracked?.clientHtlc).toBeUndefined();
+    expect(tracked?.serverHtlc).toEqual({
+      ledger: "bitcoin",
+      address: "bcrt1qlnbtc",
+      preimageHash: hashLock, // sha256 hash, 0x stripped
+      expectedSats: 2400, // target_amount (the server funds the BTC leg)
+      minConfirmations: undefined, // server-funded: the reader applies the configured depth
+    });
+    expect(tracked?.clientRefundLocktime).toBe(0);
+    expect(tracked?.serverRefundLocktime).toBe(900_000_000);
+  });
+
+  it("stops claiming a server-funded BTC HTLC 30 minutes before its mainnet locktime", () => {
+    const onMainnet = (direction: string) =>
+      swapToTracked(
+        stored({
+          ...bitcoinEvmFields,
+          hash_lock: `0x${hashLock}`,
+          direction,
+          network: "bitcoin",
+        } as never),
+      );
+
+    // A claim still unconfirmed when the locktime passes can be replaced by
+    // the server's refund, which then has the preimage.
+    expect(onMainnet("lightning_to_bitcoin")?.serverRefundLocktime).toBe(
+      (1_000_000 - 1_800) * 1000,
+    );
+    expect(onMainnet("evm_to_bitcoin")?.serverRefundLocktime).toBe(
+      (1_000_000 - 1_800) * 1000,
+    );
+  });
+
   it("returns undefined for directions not yet mapped", () => {
     expect(
       swapToTracked(stored({ direction: "future_direction" } as never)),

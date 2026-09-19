@@ -9,10 +9,12 @@ import type {
   LightningToEvmSwapResponse as ApiLightningToEvmSwapResponse,
   ArkadeToEvmSwapResponse,
   ArkadeToLightningSwapResponse,
+  BitcoinToLightningSwapResponse,
   BtcToArkadeSwapResponse,
   EvmToArkadeSwapResponse,
   EvmToLightningSwapResponse,
   LightningToArkadeSwapResponse,
+  LightningToBitcoinSwapResponse,
   TokenId,
   TokenInfo,
 } from "../api/client.js";
@@ -399,6 +401,13 @@ export type LightningToArkadeSwapOptions = {
     }
 );
 
+/**
+ * Options for creating a Lightning to Bitcoin (on-chain) swap: the same
+ * amount rules as Lightning → Arkade, with `targetAddress` the Bitcoin
+ * address the HTLC claim pays out to.
+ */
+export type LightningToBitcoinSwapOptions = LightningToArkadeSwapOptions;
+
 /** Exactly one of source (Arkade lock) or target (Lightning payout) pins the amount. */
 type ArkadeToLightningAmount =
   | {
@@ -443,6 +452,13 @@ export type ArkadeToLightningSwapOptions = {
       lightningAddress?: undefined;
     } & ArkadeToLightningAmount)
 );
+
+/**
+ * Options for creating a Bitcoin (on-chain) to Lightning swap: the same
+ * destination and amount rules as Arkade → Lightning, with the on-chain
+ * HTLC as the source leg (`sourceAmountSats` is the total to lock).
+ */
+export type BitcoinToLightningSwapOptions = ArkadeToLightningSwapOptions;
 
 /** Exactly one of source (token units to lock) or target (Lightning payout) pins the amount. */
 type EvmToLightningAmount =
@@ -516,6 +532,22 @@ export interface ArkadeToLightningSwapResult {
   swapParams: SwapParams;
 }
 
+/** Result of creating a Bitcoin-to-Lightning swap */
+export interface BitcoinToLightningSwapResult {
+  /** The swap response from the API */
+  response: BitcoinToLightningSwapResponse;
+  /** The swap parameters used (for storage/recovery) */
+  swapParams: SwapParams;
+}
+
+/** Result of creating a Lightning-to-Bitcoin swap */
+export interface LightningToBitcoinSwapResult {
+  /** The swap response from the API */
+  response: LightningToBitcoinSwapResponse;
+  /** The swap parameters used (for storage/recovery) */
+  swapParams: SwapParams;
+}
+
 /** Result of creating a Lightning-to-Arkade swap */
 export interface LightningToArkadeSwapResult {
   /** The swap response from the API */
@@ -529,8 +561,10 @@ export type CreateSwapResult =
   | ArkadeToEvmSwapResult
   | ArkadeToLightningSwapResult
   | BitcoinToEvmSwapResult
+  | BitcoinToLightningSwapResult
   | BitcoinToArkadeSwapResult
   | LightningToArkadeSwapResult
+  | LightningToBitcoinSwapResult
   | LightningToEvmSwapResult
   | EvmToArkadeSwapGenericResult
   | EvmToBitcoinSwapResult

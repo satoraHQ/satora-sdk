@@ -557,6 +557,24 @@ export class Client {
   }
 
   /** Delegated to the legacy client (migration checkpoint). */
+  createLightningToBitcoinSwap(
+    ...args: Parameters<LegacyClient["createLightningToBitcoinSwap"]>
+  ): ReturnType<LegacyClient["createLightningToBitcoinSwap"]> {
+    return this.#trackAfterCreate(
+      this.#legacy.createLightningToBitcoinSwap(...args),
+    );
+  }
+
+  /** Delegated to the legacy client (migration checkpoint). */
+  createBitcoinToLightningSwap(
+    ...args: Parameters<LegacyClient["createBitcoinToLightningSwap"]>
+  ): ReturnType<LegacyClient["createBitcoinToLightningSwap"]> {
+    return this.#trackAfterCreate(
+      this.#legacy.createBitcoinToLightningSwap(...args),
+    );
+  }
+
+  /** Delegated to the legacy client (migration checkpoint). */
   createEvmToLightningSwap(
     ...args: Parameters<LegacyClient["createEvmToLightningSwap"]>
   ): ReturnType<LegacyClient["createEvmToLightningSwap"]> {

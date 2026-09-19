@@ -354,10 +354,11 @@ export interface paths {
          * Exact quote for a swap paying out over Lightning
          * @description Resolves the destination (invoice, lightning address or LNURL) and
          *     prices the swap with the provider's actual Lightning send fee for that
-         *     payment — unlike `/quote`, whose network fee for Lightning-target
-         *     routes is an estimate. `source_chain` defaults to "Arkade"; EVM
-         *     sources also take `source_token`. Informational: the create endpoint
-         *     re-quotes the fee, which may move between the two calls.
+         *     payment, unlike `/quote`, whose network fee for Lightning-target routes
+         *     is an estimate. `source_chain` defaults to "Arkade", "Bitcoin" selects
+         *     the on-chain route, and EVM sources also take `source_token`.
+         *     Informational: the create endpoint re-quotes the fee, which may move
+         *     between the two calls.
          */
         get: operations["get_lightning_send_quote"];
         put?: never;
@@ -528,6 +529,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/swap/bitcoin/lightning": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a new Bitcoin on-chain to Lightning swap
+         * @description The user locks BTC in an on-chain Taproot HTLC and receives BTC on their
+         *     Lightning invoice. Flow:
+         *     1. User funds the returned HTLC address (locked to the invoice's payment hash)
+         *     2. Once the funding has a confirmation the server pays the invoice, revealing the preimage
+         *     3. Server claims the HTLC with the preimage
+         *
+         *     The invoice has to stay payable long enough for the funding to confirm
+         *     (an hour on mainnet). If the payment fails the swap becomes
+         *     `ServerWontFund` and the user reclaims the HTLC after its refund locktime.
+         */
+        post: operations["bitcoin_to_lightning_swap"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/swap/bulk-status": {
         parameters: {
             query?: never;
@@ -631,6 +660,33 @@ export interface paths {
          *     4. Server settles the held Lightning payment with the revealed secret
          */
         post: operations["lightning_to_arkade_swap"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/swap/lightning/bitcoin": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a new Lightning to Bitcoin on-chain swap
+         * @description The user pays a BOLT11 hold invoice and receives BTC on-chain. Flow:
+         *     1. User pays the returned hold invoice (the payment is held, not settled)
+         *     2. Server funds an on-chain Taproot HTLC locked to the same hash
+         *     3. User claims the HTLC with their secret, revealing it on-chain
+         *     4. Server settles the held Lightning payment with the revealed secret
+         *
+         *     If the server does not fund, the swap becomes `ServerWontFund` and the
+         *     held payment is returned to the payer when the hold expires.
+         */
+        post: operations["lightning_to_bitcoin_swap"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1511,6 +1567,58 @@ export interface components {
             target_token: components["schemas"]["TokenInfo"];
             /** @description WBTC token contract address on the target EVM chain (the token locked in the HTLC) */
             wbtc_address: string;
+        };
+        BitcoinToLightningSwapRequest: {
+            /**
+             * Format: int64
+             * @description Bitcoin HTLC script version. New swaps must use version 1.
+             */
+            btc_htlc_script_version: number;
+            /**
+             * Format: int32
+             * @description Optional per-swap fee surcharge in basis points
+             *     (0..=max_extra_fee_bps configured on the matching developer key).
+             */
+            extra_fees?: number | null;
+            /**
+             * @description Lightning address (`user@domain`) to resolve into an invoice over
+             *     the payout amount. Mutually exclusive with the other destination
+             *     fields.
+             */
+            lightning_address?: string | null;
+            /**
+             * @description BOLT11 invoice the user wants paid. Must carry an amount (which
+             *     pins the payout; `source_amount_sats` cannot be combined with it).
+             *     Mutually exclusive with `lightning_address` and `lnurl`.
+             */
+            lightning_invoice?: string | null;
+            /**
+             * @description LNURL-pay string to resolve into an invoice over the payout amount.
+             *     Mutually exclusive with the other destination fields.
+             */
+            lnurl?: string | null;
+            /** @description Optional referral code for fee exemption */
+            referral_code?: string | null;
+            /** @description User's refund public key for the on-chain HTLC. */
+            refund_pk: string;
+            /**
+             * Format: int64
+             * @description Total amount the user wants to lock on-chain in satoshis (fees are
+             *     deducted from the Lightning payout; use this for send-max flows).
+             *     Only valid with `lightning_address`/`lnurl`; mutually exclusive
+             *     with `target_amount_sats`.
+             */
+            source_amount_sats?: number | null;
+            /**
+             * Format: int64
+             * @description Amount the recipient should receive over Lightning in satoshis
+             *     (fees are added on top). Required with `lightning_address`/`lnurl`
+             *     unless `source_amount_sats` is given; optional with
+             *     `lightning_invoice`, where it must match the invoice amount.
+             */
+            target_amount_sats?: number | null;
+            /** @description User ID derived from wallet for recovery purposes */
+            user_id: string;
         };
         /** @description Bitcoin on-chain → Lightning swap response. */
         BitcoinToLightningSwapResponse: {
@@ -2808,7 +2916,7 @@ export interface components {
             /**
              * @description Source tokens (human-readable units) per 1 BTC locked, as `/quote`
              *     reports it: `source_amount` over the BTC-pegged lock. "1" for Arkade
-             *     sources, where the source is already sats.
+             *     and Bitcoin sources, where the source is already sats.
              */
             exchange_rate: string;
             /**
@@ -2839,8 +2947,8 @@ export interface components {
             protocol_fee_sats: number;
             /**
              * @description Total the user locks on the source chain (payout + fees), in the
-             *     source token's smallest unit: satoshis for Arkade, token units for
-             *     EVM sources.
+             *     source token's smallest unit: satoshis for Arkade and Bitcoin, token
+             *     units for EVM sources.
              */
             source_amount: string;
             /**
@@ -2967,6 +3075,39 @@ export interface components {
              * @description VHTLC refund locktime (unix timestamp)
              */
             vhtlc_refund_locktime: number;
+        };
+        LightningToBitcoinSwapRequest: {
+            /** Format: int64 */
+            btc_htlc_script_version: number;
+            /** @description The client's claim key for the on-chain HTLC. */
+            claim_pk: string;
+            /** Format: int32 */
+            extra_fees?: number | null;
+            /**
+             * @description sha256 of the client's secret, 0x-prefixed hex: the hold invoice's
+             *     payment hash.
+             */
+            hash_lock: string;
+            /** @description Shown in the payer's wallet; the server default applies when omitted. */
+            invoice_description?: string | null;
+            referral_code?: string | null;
+            /**
+             * Format: int64
+             * @description Sats to pay on the hold invoice; fees are deducted from the on-chain
+             *     payout. Exactly one of `source_amount_sats` / `target_amount_sats`.
+             */
+            source_amount_sats?: number | null;
+            /**
+             * @description Bitcoin address the claimed sats go to. Recorded for the client's
+             *     claim; the HTLC itself is keyed to `claim_pk`.
+             */
+            target_address: string;
+            /**
+             * Format: int64
+             * @description Sats to receive on-chain; fees are added on top of the invoice.
+             */
+            target_amount_sats?: number | null;
+            user_id: string;
         };
         /** @description Lightning → Bitcoin on-chain swap response. */
         LightningToBitcoinSwapResponse: {
@@ -4368,8 +4509,9 @@ export interface operations {
         parameters: {
             query?: {
                 /**
-                 * @description Source chain of the swap. Defaults to "Arkade". EVM chains
-                 *     ("Polygon", "Ethereum", "Arbitrum") require `source_token`.
+                 * @description Source chain of the swap: "Arkade" (default), "Bitcoin" (on-chain)
+                 *     or an EVM chain ("Polygon", "Ethereum", "Arbitrum"), which
+                 *     requires `source_token`.
                  */
                 source_chain?: null | components["schemas"]["Chain"];
                 /**
@@ -4379,7 +4521,7 @@ export interface operations {
                 source_token?: string | null;
                 /**
                  * @description Total to lock on the source chain, in the source token's smallest
-                 *     unit (satoshis for Arkade, token units for EVM); fees are deducted
+                 *     unit (satoshis for Arkade and Bitcoin, token units for EVM); fees are deducted
                  *     from the Lightning payout (send-max). Only valid with
                  *     `lightning_address`/`lnurl`; mutually exclusive with
                  *     `target_amount_sats`.
@@ -4778,6 +4920,66 @@ export interface operations {
             };
         };
     };
+    bitcoin_to_lightning_swap: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BitcoinToLightningSwapRequest"];
+            };
+        };
+        responses: {
+            /** @description Swap created successfully */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BitcoinToLightningSwapResponse"];
+                };
+            };
+            /** @description Bad request - invalid parameters */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict - a swap with this payment hash exists already */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Lightning is not available on this deployment */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     get_bulk_status: {
         parameters: {
             query?: never;
@@ -5002,6 +5204,66 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LightningToArkadeSwapResponse"];
+                };
+            };
+            /** @description Bad request - invalid parameters */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict - a swap with this preimage hash exists already */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Lightning is not available on this deployment */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    lightning_to_bitcoin_swap: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LightningToBitcoinSwapRequest"];
+            };
+        };
+        responses: {
+            /** @description Swap created successfully */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LightningToBitcoinSwapResponse"];
                 };
             };
             /** @description Bad request - invalid parameters */
