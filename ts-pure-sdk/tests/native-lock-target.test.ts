@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   getBridgeTargetChain,
   isBridgeOnlyChain,
+  isBtcPegged,
   isNativeLockTarget,
 } from "../src/tokens.js";
 import { USDT0_ADDRESSES } from "../src/usdt0-bridge/index.js";
@@ -34,5 +35,10 @@ describe("isNativeLockTarget", () => {
         token_id: ZERO,
       } as Parameters<typeof getBridgeTargetChain>[0]),
     ).toBeUndefined();
+  });
+
+  it("displays RBTC like the other BTC-pegged EVM assets", () => {
+    expect(isBtcPegged({ chain: "30", symbol: "RBTC" })).toBe(true);
+    expect(isBtcPegged({ chain: "30", symbol: "USDT" })).toBe(false);
   });
 });

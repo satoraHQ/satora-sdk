@@ -189,13 +189,16 @@ export function isBtc(token: { chain: string }): boolean {
 }
 
 /**
- * Returns true if the token is a BTC-pegged EVM token (WBTC or tBTC).
- * These tokens should be displayed like BTC (sats/BTC, 8 decimal precision)
- * even though tBTC has 18 on-chain decimals.
+ * Returns true if the token is a BTC-pegged EVM asset (WBTC, tBTC, or RBTC,
+ * Rootstock's coin). These should be displayed like BTC (sats/BTC, 8 decimal
+ * precision) even though tBTC and RBTC have 18 on-chain decimals.
  */
 export function isBtcPegged(token: { chain: string; symbol: string }): boolean {
   const sym = token.symbol.toLowerCase();
-  return (sym === "wbtc" || sym === "tbtc") && isEvmToken(token.chain);
+  return (
+    (sym === "wbtc" || sym === "tbtc" || sym === "rbtc") &&
+    isEvmToken(token.chain)
+  );
 }
 
 /** Returns true if the chain is any EVM chain (source or bridge destination). */
