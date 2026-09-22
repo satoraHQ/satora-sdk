@@ -39,6 +39,13 @@ export type TrackedSwap = {
 
 export type ActionSubscriber = (swapId: string, actions: SwapActions) => void;
 
+/** Server statuses that mean the client's claim was submitted or landed. */
+const CLAIM_SUBMITTED: ReadonlySet<SwapStatus> = new Set<SwapStatus>([
+  "clientredeeming",
+  "clientredeemed",
+  "serverredeemed",
+]);
+
 export type SwapTrackerOptions = {
   /**
    * The local tick interval (ms). Each tick recomputes every tracked swap from
@@ -72,6 +79,8 @@ export class SwapTracker {
   readonly #unregistered = new Map<string, TrackedSwap>();
   /** Last actions emitted per swap — for dedupe and the subscribe-time snapshot. */
   readonly #lastActions = new Map<string, SwapActions>();
+  /** The latest server status hint per swap, for {@link #withClaimHint}. */
+  readonly #hintStatuses = new Map<string, SwapStatus>();
   readonly #subscribers = new Set<ActionSubscriber>();
   readonly #refreshIntervalMs: number;
   readonly #atRiskReconcileIntervalMs: () => number;
@@ -331,9 +340,13 @@ export class SwapTracker {
    * chain stays the source of truth, so a premature hint that the chain doesn't
    * yet reflect changes nothing. A no-op for an untracked swap.
    */
-  async applyHint(swapId: string, opts?: { force?: boolean }): Promise<void> {
+  async applyHint(
+    swapId: string,
+    opts?: { force?: boolean; status?: SwapStatus },
+  ): Promise<void> {
     const swap = this.#swaps.get(swapId);
     if (!swap) return;
+    if (opts?.status !== undefined) this.#hintStatuses.set(swapId, opts.status);
     // Settled, not all: a hint is the fast path, and rejecting here would throw
     // it away for BOTH legs because one was unreadable — dropping the swap onto
     // the at-risk poller, which re-reads on a cadence measured in minutes. A leg
@@ -395,6 +408,21 @@ export class SwapTracker {
     for (const swap of this.#swaps.values()) this.#recompute(swap);
   }
 
+  /**
+   * A server hint that the claim was submitted overrides a chain view that
+   * still says "claim now". The claim is relayed by the server, so once it
+   * reports the redeem in flight, another claim can only be refused; and a
+   * chain that cannot be read (no `eth_getLogs` on the public Rootstock RPCs)
+   * keeps its stale pre-claim observation for good. The chain still wins once
+   * it moves: a fresh `spent_claim` derives past the hint on its own, and a
+   * refund observed on chain is not overridden.
+   */
+  #withClaimHint(swapId: string, derived: SwapStatus): SwapStatus {
+    const hint = this.#hintStatuses.get(swapId);
+    if (hint === undefined || !CLAIM_SUBMITTED.has(hint)) return derived;
+    return derived === "serverfunded" ? hint : derived;
+  }
+
   #recompute(swap: TrackedSwap, force = false): void {
     // A Lightning swap has one on-chain leg; the absent leg stays `undefined` (its
     // status is derived from the leg that exists). Gate only on present legs — a
@@ -419,8 +447,9 @@ export class SwapTracker {
       serverChainNow = now;
     }
 
-    const status = deriveSwapStatus({ clientHtlc, serverHtlc });
-    if (status === undefined) return; // contradictory observations
+    const derived = deriveSwapStatus({ clientHtlc, serverHtlc });
+    if (derived === undefined) return; // contradictory observations
+    const status = this.#withClaimHint(swap.swapId, derived);
 
     const actions = {
       ...deriveSwapActions({

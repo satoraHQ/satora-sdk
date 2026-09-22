@@ -125,6 +125,8 @@ export type EvmLogClient = {
         // Hex quantity, not "earliest": strict RPCs (e.g. arb1.arbitrum.io)
         // reject the tag on eth_getLogs.
         fromBlock: `0x${string}`;
+        /** Set only when the read is chunked (see `maxBlockRange`). */
+        toBlock?: `0x${string}`;
       },
     ];
   }): Promise<RawLog[]>;
@@ -136,27 +138,76 @@ export type EvmLogClient = {
   getBlock(): Promise<Pick<Block, "timestamp" | "number">>;
 };
 
+export type EvmReaderOptions = {
+  /**
+   * Largest block span one `eth_getLogs` may cover. Some providers cap it
+   * (rpc.rootstock.io: 2000 blocks); a read past the cap is split into
+   * consecutive chunks up to the latest block. Unset means one unbounded call.
+   */
+  maxBlockRange?: bigint;
+};
+
 /** Build an {@link EvmChainReader} over an existing viem-like client. */
-export function evmReaderFromClient(client: EvmLogClient): EvmChainReader {
+export function evmReaderFromClient(
+  client: EvmLogClient,
+  options: EvmReaderOptions = {},
+): EvmChainReader {
+  const { maxBlockRange } = options;
+
+  async function getLogs(
+    filter: {
+      address: `0x${string}`[];
+      topics: (`0x${string}`[] | null)[];
+    },
+    fromBlock: bigint,
+  ): Promise<RawLog[]> {
+    if (maxBlockRange === undefined) {
+      return client.request({
+        method: "eth_getLogs",
+        params: [{ ...filter, fromBlock: numberToHex(fromBlock) }],
+      });
+    }
+    const latest = (await client.getBlock()).number;
+    if (latest === null) {
+      // Only a pending block has no number; `getBlock()` reads the latest.
+      throw new Error("latest block has no number");
+    }
+    const logs: RawLog[] = [];
+    for (let from = fromBlock; from <= latest; from += maxBlockRange) {
+      const to =
+        from + maxBlockRange - 1n < latest ? from + maxBlockRange - 1n : latest;
+      logs.push(
+        ...(await client.request({
+          method: "eth_getLogs",
+          params: [
+            {
+              ...filter,
+              fromBlock: numberToHex(from),
+              toBlock: numberToHex(to),
+            },
+          ],
+        })),
+      );
+    }
+    return logs;
+  }
+
   return {
     async getHtlcEventsBatch(queries, fromBlock = 0n) {
       const results = new Map<string, EvmHtlcEvent[]>();
       if (queries.length === 0) return results;
       for (const q of queries) results.set(htlcQueryKey(q), []);
 
-      const logs = await client.request({
-        method: "eth_getLogs",
-        params: [
-          {
-            address: unique(queries.map((q) => q.htlc)),
-            topics: [
-              HTLC_EVENT_TOPICS,
-              unique(queries.map((q) => q.preimageHash)),
-            ],
-            fromBlock: numberToHex(fromBlock),
-          },
-        ],
-      });
+      const logs = await getLogs(
+        {
+          address: unique(queries.map((q) => q.htlc)),
+          topics: [
+            HTLC_EVENT_TOPICS,
+            unique(queries.map((q) => q.preimageHash)),
+          ],
+        },
+        fromBlock,
+      );
 
       // A log can only be grouped by what it carries on its own — contract and
       // hash — and several HTLCs can share that. So group, then let every query
@@ -353,13 +404,25 @@ function unique<T>(values: T[]): T[] {
  * public RPCs rate-limiting us (publicnode 403s) — and it contradicts this
  * package's near-zero-RPC design.
  */
-export function createEvmRpcReader(rpcUrls: string | string[]): EvmChainReader {
+export function createEvmRpcReader(
+  rpcUrls: string | string[],
+  options: EvmReaderOptions = {},
+): EvmChainReader {
   const urls = Array.isArray(rpcUrls) ? rpcUrls : [rpcUrls];
   const transport =
     urls.length > 1 ? fallback(urls.map((url) => http(url))) : http(urls[0]);
   const client = createPublicClient({ transport });
-  return evmReaderFromClient(client as unknown as EvmLogClient);
+  return evmReaderFromClient(client as unknown as EvmLogClient, options);
 }
+
+/**
+ * Per-chain `eth_getLogs` span caps of the providers a chain is read through.
+ * Rootstock: the public nodes serve no `eth_getLogs` at all, and the keyed
+ * rpc.rootstock.io endpoint an operator supplies caps a query at 2000 blocks.
+ */
+export const EVM_LOG_RANGE_LIMITS: Record<number, bigint> = {
+  30: 2000n,
+};
 
 /**
  * Resolve the per-chain readers used for tracking: the tested {@link
@@ -378,7 +441,13 @@ export function defaultEvmReaders(
     const override = overrides?.[chainId];
     const defaults = DEFAULT_EVM_RPCS[chainId] ?? [];
     const urls = override ? [override, ...defaults] : defaults;
-    if (urls.length > 0) readers.set(chainId, createEvmRpcReader(urls));
+    if (urls.length > 0)
+      readers.set(
+        chainId,
+        createEvmRpcReader(urls, {
+          maxBlockRange: EVM_LOG_RANGE_LIMITS[chainId],
+        }),
+      );
   }
   return readers;
 }

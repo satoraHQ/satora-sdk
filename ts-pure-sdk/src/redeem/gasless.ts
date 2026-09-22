@@ -168,6 +168,18 @@ function nativeHtlcKind(swap: GaslessSwapResponse): boolean {
   return (swap as { evm_htlc_kind?: string }).evm_htlc_kind === "native";
 }
 
+/**
+ * The post-claim state named by the server's "wrong state" rejection, or
+ * `undefined` when the rejection is about something else.
+ */
+export function alreadyClaimedStatus(errorText: string): string | undefined {
+  const match =
+    /cannot claim a swap in (client_redeeming|client_redeemed|server_redeemed)/.exec(
+      errorText,
+    );
+  return match?.[1];
+}
+
 async function postClaim(
   baseUrl: string,
   swapId: string,
@@ -185,6 +197,18 @@ async function postClaim(
 
   if (!response.ok) {
     const errorText = await response.text();
+    // The server already relayed a claim for this swap (this call, or the
+    // auto-claim worker's, or an earlier attempt): the swap is done from the
+    // client's side, not failed. Retrying would only be refused again.
+    const claimed = alreadyClaimedStatus(errorText);
+    if (response.status === 400 && claimed) {
+      return {
+        id: swapId,
+        status: claimed,
+        txHash: "",
+        message: `Swap already claimed (${claimed})`,
+      };
+    }
     throw new Error(`Gasless claim failed (${response.status}): ${errorText}`);
   }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { HtlcObservation } from "../actions/types.js";
+import type { HtlcObservation, SwapActions } from "../actions/types.js";
 import {
   type ContractManager,
   type HtlcRef,
@@ -568,6 +568,58 @@ describe("SwapTracker", () => {
         tracker.stop();
         vi.useRealTimers();
       }
+    });
+  });
+
+  describe("claim hints", () => {
+    const payOnLightning: TrackedSwap = {
+      swapId: "ln1",
+      serverHtlc,
+      clientRefundLocktime: 20_000,
+      serverRefundLocktime: 10_000,
+    };
+
+    /** The latest action the tracker published for a swap. */
+    function latest(tracker: SwapTracker) {
+      const seen = new Map<string, SwapActions>();
+      tracker.subscribeToActions((swapId, actions) =>
+        seen.set(swapId, actions),
+      );
+      return (swapId: string) => seen.get(swapId);
+    }
+
+    it("adopts a submitted-claim hint over a stale 'claim now' chain view", async () => {
+      const { evm, tracker } = setup();
+      const actionsOf = latest(tracker);
+      await tracker.startTracking([payOnLightning]);
+      evm.emit(serverHtlc, "confirmed");
+      expect(actionsOf("ln1")?.recommended).toBe("claim");
+
+      // The chain cannot be re-read (no logs on the public RPC): the
+      // reconcile leaves the observation as it was.
+      await tracker.applyHint("ln1", { status: "clientredeeming" });
+      const actions = actionsOf("ln1");
+      expect(actions?.recommended).toBe("wait");
+      expect(actions?.actions[0]).toMatchObject({
+        id: "wait",
+        waitingOn: "claim_confirmation",
+      });
+
+      // The chain moving past the hint still wins.
+      evm.emit(serverHtlc, "spent_claim");
+      expect(actionsOf("ln1")?.recommended).toBe("none");
+    });
+
+    it("does not override a refund observed on chain", async () => {
+      const { evm, tracker } = setup();
+      const actionsOf = latest(tracker);
+      await tracker.startTracking([payOnLightning]);
+      evm.emit(serverHtlc, "spent_refund");
+      await tracker.applyHint("ln1", { status: "clientredeeming" });
+      expect(actionsOf("ln1")?.actions[0]).toMatchObject({
+        id: "none",
+        outcome: "refunded",
+      });
     });
   });
 });
