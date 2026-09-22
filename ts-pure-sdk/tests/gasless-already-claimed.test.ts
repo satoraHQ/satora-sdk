@@ -61,6 +61,22 @@ describe("claimViaGasless after the server already relayed the claim", () => {
     });
   });
 
+  it("treats a relay already in flight as the claim being on its way", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json(
+          { error: `Swap ${swap.id} gasless claim already in progress` },
+          { status: 400 },
+        ),
+      ),
+    );
+    await expect(claim()).resolves.toMatchObject({
+      id: swap.id,
+      status: "client_redeeming",
+    });
+  });
+
   it("still throws on any other rejection", async () => {
     vi.stubGlobal(
       "fetch",
