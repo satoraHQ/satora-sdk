@@ -416,11 +416,23 @@ export class SwapTracker {
    * keeps its stale pre-claim observation for good. The chain still wins once
    * it moves: a fresh `spent_claim` derives past the hint on its own, and a
    * refund observed on chain is not overridden.
+   *
+   * The override lasts only while the server's claim window is open. Once the
+   * server can refund its leg, the chain view is what protects the client: the
+   * `serverfunded` rules never claim then and lead to the client's own refund
+   * at its timelock. A claim that really landed shows up on chain long before
+   * that; a hint that never did must not hide the refund.
    */
-  #withClaimHint(swapId: string, derived: SwapStatus): SwapStatus {
-    const hint = this.#hintStatuses.get(swapId);
+  #withClaimHint(
+    swap: TrackedSwap,
+    derived: SwapStatus,
+    serverChainNow: number,
+  ): SwapStatus {
+    const hint = this.#hintStatuses.get(swap.swapId);
     if (hint === undefined || !CLAIM_SUBMITTED.has(hint)) return derived;
-    return derived === "serverfunded" ? hint : derived;
+    if (derived !== "serverfunded") return derived;
+    const claimWindowOpen = serverChainNow < swap.serverRefundLocktime;
+    return claimWindowOpen ? hint : derived;
   }
 
   #recompute(swap: TrackedSwap, force = false): void {
@@ -449,7 +461,7 @@ export class SwapTracker {
 
     const derived = deriveSwapStatus({ clientHtlc, serverHtlc });
     if (derived === undefined) return; // contradictory observations
-    const status = this.#withClaimHint(swap.swapId, derived);
+    const status = this.#withClaimHint(swap, derived, serverChainNow);
 
     const actions = {
       ...deriveSwapActions({

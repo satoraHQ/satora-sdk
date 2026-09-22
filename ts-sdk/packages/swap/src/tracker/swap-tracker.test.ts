@@ -610,6 +610,26 @@ describe("SwapTracker", () => {
       expect(actionsOf("ln1")?.recommended).toBe("none");
     });
 
+    it("stops overriding once the server's claim window closes, so the refund surfaces", async () => {
+      // A two-leg swap (Arkade -> EVM): the client's own deposit is at stake.
+      const { arkade, evm, tracker } = setup();
+      const actionsOf = latest(tracker);
+      await tracker.startTracking([swap]);
+      arkade.emit(clientHtlc, "confirmed");
+      evm.emit(serverHtlc, "confirmed");
+      expect(actionsOf("s1")?.recommended).toBe("claim");
+
+      await tracker.applyHint("s1", { status: "clientredeeming" });
+      expect(actionsOf("s1")?.recommended).toBe("wait");
+
+      // The relayed claim never landed: both legs still funded past the
+      // server's refund window and the client's own timelock.
+      evm.setNow(swap.serverRefundLocktime);
+      arkade.setNow(swap.clientRefundLocktime);
+      arkade.emit(clientHtlc, "confirmed"); // same state, clocks moved
+      expect(actionsOf("s1")?.recommended).toBe("refund_unilateral");
+    });
+
     it("does not override a refund observed on chain", async () => {
       const { evm, tracker } = setup();
       const actionsOf = latest(tracker);
