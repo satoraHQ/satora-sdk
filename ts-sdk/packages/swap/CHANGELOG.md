@@ -1,5 +1,44 @@
 # @satora/swap
 
+## 1.5.0
+
+### Minor Changes
+
+- 4a99ca0: Let the Bitcoin confirmation depth change after the client is built.
+
+  `setBitcoinMinConfirmations` updates the depth a server-funded Bitcoin HTLC
+  needs before it reads as claimable, so callers that cache a single client can
+  change it without rebuilding and orphaning tracking already in flight. It
+  applies to every swap the client tracks, including ones already in flight,
+  and at a depth above 1 the at-risk chain re-read runs every 15s instead of 60s
+  so the claim follows the satisfying block promptly.
+
+  Only the chain monitors read a depth, so it needs `withChainVerifiedTracking`;
+  setting one without it now warns rather than silently doing nothing. A depth
+  that is not a whole block count is rejected instead of stalling every read.
+
+- d84290b: Lightning → RBTC on Rootstock.
+
+  Follows `@lendasat/lendaswap-sdk-pure`: chain `"30"`, the native-lock claim,
+  and RBTC kept on Rootstock instead of the Arbitrum hub. Chain-verified
+  tracking knows Rootstock's block time (~30s) and its public HTTP RPC
+  (`https://public-node.rsk.co`); override it with `withEvmRpcUrls` as for the
+  other chains.
+
+### Patch Changes
+
+- 1519eac: Target backend 0.3.15 in the x-satora-server-version header.
+- d299719: Chain-verified tracking stops recommending a claim the server already relayed.
+
+  A server status hint of `clientredeeming`, `clientredeemed` or `serverredeemed`
+  now overrides a chain view that still says "claim now". The chain still wins
+  once it moves, and a refund observed on chain is never overridden. Without
+  this, a chain the tracker cannot read (the public Rootstock RPCs serve no
+  `eth_getLogs`) kept the frontend re-submitting claims.
+
+  EVM log reads are chunked on chains whose providers cap the block span of
+  `eth_getLogs` (Rootstock: 2000 blocks on rpc.rootstock.io).
+
 ## 1.4.0
 
 ### Minor Changes

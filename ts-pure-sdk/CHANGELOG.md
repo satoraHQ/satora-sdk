@@ -1,5 +1,75 @@
 # @lendasat/lendaswap-sdk-pure
 
+## 2.4.0
+
+### Minor Changes
+
+- 2e75f65: Refund EVM-sourced swaps without the server.
+
+  `refundSwap` accepts an EVM signer and builds the refund from the funding
+  transaction's `SwapCreated` log instead of asking the server for calldata, on
+  the EVM → Arkade, Bitcoin and Lightning directions. The log's sender decides
+  the shape, the coordinator's `refundTo` or a direct `HTLCErc20.refund` for an
+  HTLC the wallet created itself, and the HTLC is checked to be active on-chain
+  first. The funding tx is taken from the client's own record, then the server's
+  copy; the server is asked for another txid only when none of those yields a
+  receipt, and for calldata once the chain path has failed. When both fail the
+  result is `success: false` with both reasons, and a transport error on the
+  calldata request is reported the same way instead of thrown. `refundSwap`
+  throws when the signer is on another chain than the swap.
+
+  `fundSwap` (on the direct Permit2 path; CCTP-inbound funding is not covered)
+  and `fundSwapGasless` record the funding transaction and the coordinator on the
+  stored swap as `StoredSwap.evmFundTxid` and `evmCoordinatorAddress`, which
+  survive server refreshes and swap recovery; the SQLite storage gains two
+  columns for them. `fundSwap` returns the mined hash when the wallet replaced
+  the transaction and rejects a replacement that did not create the HTLC.
+  `TxReceipt` gains an optional `logs` field that signer implementations must
+  fill for this path (`fundSwap` logs a warning when it is missing), and
+  `getTransaction` must reject for a hash the node does not know.
+
+  Before building through the coordinator, the client reads its `deposits(key)`
+  and requires the depositor to be the wallet, one of the SDK's gasless keys or
+  the depositor the server recorded; anything else fails the chain path.
+  `evmRefundData.recipient` names where the refund pays out, and the message
+  points at `recoverGaslessFunds` when that is an SDK key. `fundSwap` records a
+  replacement only if its receipt carries this swap's `SwapCreated` from the
+  coordinator on the HTLC or, for a signer without logs, if the mined
+  transaction is the same call repriced; a mined funding is never reported as
+  failed.
+
+- d84290b: Lightning → RBTC on Rootstock.
+
+  `Chain` and `WireChain` gain `"30"` (Rootstock). RBTC is the chain's own coin,
+  locked in `HTLCNative` rather than an ERC-20 HTLC, and is addressed by the zero
+  token address. The generated types carry `evm_htlc_kind` (`"erc20"` or
+  `"native"`) on the responses of the directions that can lock it.
+
+  `claim` on a swap whose lock is native signs `HTLCNative`'s `Redeem` instead of
+  `HTLCErc20`'s: `buildNativeRedeemDigest` (exported) builds the token-less
+  digest under the `HTLCNative` domain, and the relayed claim sweeps the coin to
+  the destination with the full locked amount as the floor and no calls. There
+  is no DEX leg on this route, so the target amount equals the lock.
+
+  Rootstock is also a USDT0 bridge destination, so the chain alone does not say
+  whether a target is bridged: `isNativeLockTarget(chain, token)` (exported) is
+  true for RBTC on chain 30, and `getQuote` / `createSwap` keep that target on
+  Rootstock instead of remapping it to the Arbitrum hub. USDT0 on Rootstock
+  still bridges. `NATIVE_TOKEN_ADDRESS` is exported.
+
+### Patch Changes
+
+- 1519eac: Target backend 0.3.15 in the x-satora-server-version header.
+- d299719: A gasless claim the server has already relayed succeeds instead of throwing.
+
+  The server rejects a second claim for a swap in `client_redeeming`,
+  `client_redeemed` or `server_redeemed` with "wrong state". `claim` now returns
+  `success: true` with that state, since the claim is done from the client's
+  side; any other rejection still throws.
+
+- 900781f: `isBtcPegged` includes RBTC (Rootstock's coin, 18 decimals), so it displays at
+  bitcoin precision like WBTC and tBTC.
+
 ## 2.3.0
 
 ### Minor Changes
