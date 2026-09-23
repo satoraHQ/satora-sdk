@@ -299,15 +299,6 @@ impl Endpoint for CreateArkadeToLightningSwapRequest {
     const PAYLOAD: PayloadKind = PayloadKind::JsonBody;
 }
 
-/// Response from `POST /swap/evm/arkade`. Maps to the
-/// `EvmToArkadeSwapResponse` component schema.
-///
-/// `created_at` is left as the raw RFC3339 string from the wire — keeping
-/// it a `String` means we avoid pulling in `chrono` / `time` just for one
-/// field, and FFI consumers can parse it themselves. Large monetary
-/// quantities (`source_amount`, `target_amount`, `evm_expected_sats`) come
-/// back as decimal strings to side-step JavaScript number precision.
-
 /// Which HTLC family an EVM lock lives on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -317,6 +308,15 @@ pub enum EvmHtlcKind {
     /// `HTLCNative` + `HTLCNativeCoordinator` (the chain's own coin).
     Native,
 }
+
+/// Response from `POST /swap/evm/arkade`. Maps to the
+/// `EvmToArkadeSwapResponse` component schema.
+///
+/// `created_at` is left as the raw RFC3339 string from the wire — keeping
+/// it a `String` means we avoid pulling in `chrono` / `time` just for one
+/// field, and FFI consumers can parse it themselves. Large monetary
+/// quantities (`source_amount`, `target_amount`, `evm_expected_sats`) come
+/// back as decimal strings to side-step JavaScript number precision.
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct EvmToArkadeSwapResponse {
@@ -377,6 +377,9 @@ pub struct EvmToArkadeSwapResponse {
 /// variants the SDK can fully model today. Other directions on the
 /// wire will fail to deserialize here with a clear serde error — fine
 /// for now, since the SDK can't do anything useful with them either.
+// The per-direction responses are what the wire sends; a Box would only
+// move the size difference behind a pointer for callers that never see it.
+#[allow(clippy::large_enum_variant)]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(tag = "direction", rename_all = "snake_case")]
 pub enum GetSwapResponse {

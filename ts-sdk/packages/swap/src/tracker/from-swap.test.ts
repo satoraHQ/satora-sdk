@@ -149,6 +149,7 @@ describe("swapToTracked", () => {
     evm_expected_sats: "2450",
     client_evm_address: "0xclient",
     server_evm_address: "0xserver",
+    evm_coordinator_address: "0xcoordinator",
     wbtc_address: "0xwbtc",
     source_amount: "2500",
     target_amount: "2400",
@@ -166,7 +167,7 @@ describe("swapToTracked", () => {
       claimAddress: "0xserver", // the server claims the client's EVM HTLC
       expectedAmount: 2450n, // evm_expected_sats
       expectedToken: "0xwbtc",
-      sender: "0xclient", // the client funded it
+      sender: "0xcoordinator", // the coordinator created it for the client
       timelockSec: 900_000,
     });
     expect(tracked?.serverHtlc).toEqual({
