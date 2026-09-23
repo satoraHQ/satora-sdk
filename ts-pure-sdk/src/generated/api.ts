@@ -2284,6 +2284,13 @@ export interface components {
             evm_claim_txid?: string | null;
             evm_expected_sats: string;
             evm_fund_txid?: string | null;
+            /**
+             * Format: int64
+             * @description Blocks the deposit must be buried under before the server acts on it
+             *     (funding finality on this chain). With the funding receipt's block
+             *     and the chain head a client can show the confirmation progress.
+             */
+            evm_funding_confirmations: number;
             evm_htlc_address: string;
             /**
              * Format: int64
@@ -2421,6 +2428,13 @@ export interface components {
             /** @description Expected WBTC amount (in sats) on EVM */
             evm_expected_sats: string;
             evm_fund_txid?: string | null;
+            /**
+             * Format: int64
+             * @description Blocks the deposit must be buried under before the server acts on it
+             *     (funding finality on this chain). With the funding receipt's block
+             *     and the chain head a client can show the confirmation progress.
+             */
+            evm_funding_confirmations: number;
             /** @description EVM hash lock (SHA-256, 0x-prefixed 32-byte hex) */
             evm_hash_lock: string;
             /** @description EVM HTLC contract address (user creates, server claims) */
@@ -2548,6 +2562,13 @@ export interface components {
             /** @description WBTC/tBTC the coordinator locks in the HTLC, in token smallest units */
             evm_expected_sats: string;
             evm_fund_txid?: string | null;
+            /**
+             * Format: int64
+             * @description Blocks the deposit must be buried under before the server acts on it
+             *     (funding finality on this chain). With the funding receipt's block
+             *     and the chain head a client can show the confirmation progress.
+             */
+            evm_funding_confirmations: number;
             evm_htlc_address: string;
             /**
              * @description HTLC family of the lock: `erc20` (`HTLCErc20` + `HTLCCoordinator`) or
@@ -2578,6 +2599,12 @@ export interface components {
              * @description Unix timestamp after which the invoice can no longer be paid
              */
             invoice_expires_at: number;
+            /**
+             * @description Whether the invoice has settled. `serverfunded` only says the payment
+             *     was initiated; the preimage the recipient revealed is what proves it
+             *     landed, and the server claims the HTLC with it next.
+             */
+            lightning_payment_settled: boolean;
             network: string;
             /**
              * Format: int64

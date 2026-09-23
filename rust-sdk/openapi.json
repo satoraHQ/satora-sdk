@@ -4522,6 +4522,7 @@
           "client_evm_address",
           "server_evm_address",
           "evm_refund_locktime",
+          "evm_funding_confirmations",
           "btc_vhtlc_address",
           "target_arkade_address",
           "sender_pk",
@@ -4600,6 +4601,12 @@
               "string",
               "null"
             ]
+          },
+          "evm_funding_confirmations": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Blocks the deposit must be buried under before the server acts on it\n(funding finality on this chain). With the funding receipt's block\nand the chain head a client can show the confirmation progress.",
+            "minimum": 0
           },
           "evm_htlc_address": {
             "type": "string"
@@ -4800,6 +4807,7 @@
           "client_evm_address",
           "server_evm_address",
           "evm_refund_locktime",
+          "evm_funding_confirmations",
           "btc_htlc_address",
           "btc_user_claim_pk",
           "btc_server_refund_pk",
@@ -4900,6 +4908,12 @@
               "string",
               "null"
             ]
+          },
+          "evm_funding_confirmations": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Blocks the deposit must be buried under before the server acts on it\n(funding finality on this chain). With the funding receipt's block\nand the chain head a client can show the confirmation progress.",
+            "minimum": 0
           },
           "evm_hash_lock": {
             "type": "string",
@@ -5078,6 +5092,7 @@
           "hash_lock",
           "client_lightning_invoice",
           "invoice_expires_at",
+          "lightning_payment_settled",
           "source_token",
           "target_token",
           "created_at",
@@ -5094,6 +5109,7 @@
           "client_evm_address",
           "server_evm_address",
           "evm_refund_locktime",
+          "evm_funding_confirmations",
           "network",
           "gasless"
         ],
@@ -5150,6 +5166,12 @@
               "null"
             ]
           },
+          "evm_funding_confirmations": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Blocks the deposit must be buried under before the server acts on it\n(funding finality on this chain). With the funding receipt's block\nand the chain head a client can show the confirmation progress.",
+            "minimum": 0
+          },
           "evm_htlc_address": {
             "type": "string"
           },
@@ -5186,6 +5208,10 @@
             "type": "integer",
             "format": "int64",
             "description": "Unix timestamp after which the invoice can no longer be paid"
+          },
+          "lightning_payment_settled": {
+            "type": "boolean",
+            "description": "Whether the invoice has settled. `serverfunded` only says the payment\nwas initiated; the preimage the recipient revealed is what proves it\nlanded, and the server claims the HTLC with it next."
           },
           "network": {
             "type": "string"
