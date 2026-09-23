@@ -240,7 +240,9 @@ export function swapToTracked(stored: StoredSwap): TrackedSwap | undefined {
           claimAddress: r.server_evm_address, // the server claims the client's EVM HTLC
           expectedSats: r.evm_expected_sats,
           token: r.wbtc_address,
-          sender: r.client_evm_address, // the client funded it
+          // The coordinator created the HTLC on the client's behalf, so it
+          // is the lock's sender (refund address).
+          sender: r.evm_coordinator_address,
           timelockSec: r.evm_refund_locktime,
           createdAt: r.created_at,
         }),

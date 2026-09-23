@@ -164,7 +164,6 @@ import {
   isLightning,
   isNativeLockTarget,
   isSolanaToken,
-  isSourceEvmChain,
   toChainName,
 } from "./tokens.js";
 import {
@@ -5513,7 +5512,10 @@ export class Client {
     }
 
     // EVM → Bitcoin (on-chain)
-    if (isSourceEvmChain(sourceChain) && isBtcOnchain(targetAsset)) {
+    if (
+      isEvmSwapSource(sourceChain, sourceTokenId) &&
+      isBtcOnchain(targetAsset)
+    ) {
       if (!options.userAddress && !options.gasless) {
         throw new Error(
           "userAddress is required for EVM → Bitcoin swaps (unless gasless)",
@@ -6209,7 +6211,8 @@ export class Client {
         (await this.getSwap(swapId, { updateStorage: true }));
       if (
         (response.direction === "evm_to_lightning" ||
-          response.direction === "evm_to_arkade") &&
+          response.direction === "evm_to_arkade" ||
+          response.direction === "evm_to_bitcoin") &&
         response.evm_htlc_kind === "native"
       ) {
         const txHash = await this.#fundNativeLock(
@@ -6419,7 +6422,10 @@ export class Client {
    */
   async #fundNativeLock(
     swapId: string,
-    swap: EvmToLightningSwapResponse | EvmToArkadeSwapResponse,
+    swap:
+      | EvmToLightningSwapResponse
+      | EvmToArkadeSwapResponse
+      | EvmToBitcoinSwapResponse,
     signer: EvmSigner,
     onQuote?: (quote: {
       sourceAmount: bigint;
@@ -6432,6 +6438,10 @@ export class Client {
       );
     }
     const amount = BigInt(swap.evm_expected_sats);
+    // The Bitcoin direction names the EVM hash lock separately from the
+    // Bitcoin HTLC's; the other two carry a single hash_lock.
+    const hashLock =
+      "evm_hash_lock" in swap ? swap.evm_hash_lock : swap.hash_lock;
     onQuote?.({
       sourceAmount: amount,
       sourceTokenAddress: NATIVE_TOKEN_ADDRESS,
@@ -6439,7 +6449,7 @@ export class Client {
 
     const encoded = encodeNativeExecuteAndCreate(swap.evm_coordinator_address, {
       calls: [],
-      preimageHash: swap.hash_lock,
+      preimageHash: hashLock,
       amount,
       claimAddress: swap.server_evm_address,
       timelock: swap.evm_refund_locktime,
@@ -6467,7 +6477,7 @@ export class Client {
     });
     return this.#awaitFunding(swapId, signer, txHash, encoded, {
       htlcAddress: swap.evm_htlc_address,
-      preimageHash: swap.hash_lock,
+      preimageHash: hashLock,
       claimAddress: swap.server_evm_address,
       coordinatorAddress: swap.evm_coordinator_address,
       token: NATIVE_TOKEN_ADDRESS,
