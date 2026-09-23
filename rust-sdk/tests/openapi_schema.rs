@@ -240,6 +240,7 @@ fn evm_to_arkade_swap_response_matches_spec() {
         client_evm_address: "0xclient".to_string(),
         server_evm_address: "0xserver".to_string(),
         evm_refund_locktime: 1_000_000,
+        evm_funding_confirmations: 64,
         btc_vhtlc_address: "ark1qvhtlc".to_string(),
         target_arkade_address: "ark1qtarget".to_string(),
         sender_pk: "02sender".to_string(),

@@ -328,6 +328,8 @@ pub struct EvmToArkadeSwapResponse {
     pub client_evm_address: String,
     pub server_evm_address: String,
     pub evm_refund_locktime: u64,
+    /// Blocks the deposit must be buried under before the server acts on it.
+    pub evm_funding_confirmations: u64,
     pub btc_vhtlc_address: String,
     pub target_arkade_address: String,
     pub sender_pk: String,
