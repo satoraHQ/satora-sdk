@@ -354,6 +354,40 @@ export function encodeHtlcErc20RefundCallData(
   };
 }
 
+/** Parameters for `HTLCNative.refund` (no token: the lock is the native coin). */
+export interface HtlcNativeRefundParams {
+  preimageHash: string;
+  amount: bigint | number;
+  claimAddress: string;
+  timelock: number;
+}
+
+// HTLCNative.refund(bytes32,uint256,address,uint256)
+const HTLC_NATIVE_REFUND_SELECTOR = "0x35cd4ccb";
+
+/**
+ * Encodes `HTLCNative.refund(preimageHash, amount, claimAddress, timelock)`
+ * for a lock created directly on the HTLC (sender == depositor). Locks made
+ * through the native coordinator are refunded with `encodeNativeRefundTo`.
+ */
+export function encodeHtlcNativeRefundCallData(
+  htlcAddress: string,
+  params: HtlcNativeRefundParams,
+): HtlcErc20RefundCallData {
+  const data = [
+    HTLC_NATIVE_REFUND_SELECTOR,
+    normalizeBytes32(params.preimageHash),
+    encodeUint256(BigInt(params.amount)),
+    normalizeAddress(params.claimAddress),
+    encodeUint256(BigInt(params.timelock)),
+  ].join("");
+  return {
+    to: htlcAddress,
+    data,
+    functionSignature: "refund(bytes32,uint256,address,uint256)",
+  };
+}
+
 export interface HtlcErc20IsActiveParams {
   preimageHash: string;
   amount: bigint;

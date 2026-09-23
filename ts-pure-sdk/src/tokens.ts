@@ -235,6 +235,16 @@ export function isNativeLockTarget(chain: string, token: string): boolean {
 }
 
 /**
+ * Returns true when `token` on `chain` can be the source of an EVM-sourced
+ * swap: any asset on a chain with the ERC20 HTLC contracts, or the native
+ * coin of a native-lock chain (RBTC on Rootstock). Rootstock is not a source
+ * chain in general, since its USDT0 bridge deposits are targets only.
+ */
+export function isEvmSwapSource(chain: string, token: string): boolean {
+  return isSourceEvmChain(chain) || isNativeLockTarget(chain, token);
+}
+
+/**
  * Returns true if the chain is Solana. Solana is a CCTP-only destination —
  * funds reach it via Circle's Forwarding Service after an Arbitrum-side
  * burn, never as a swap source/target chain in its own right.

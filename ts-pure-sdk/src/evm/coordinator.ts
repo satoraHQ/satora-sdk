@@ -523,6 +523,116 @@ export function encodeRefundAndExecute(
   };
 }
 
+// ── HTLCNativeCoordinator ────────────────────────────────────────────────────
+// The native coordinator locks the chain's own coin, so its functions carry
+// no `token` parameter; everything else mirrors HTLCCoordinator.
+
+// keccak256("executeAndCreate((address,uint256,bytes)[],bytes32,uint256,address,uint256)")
+const NATIVE_EXECUTE_AND_CREATE_SELECTOR = keccak256(
+  stringToUtf8Bytes(
+    "executeAndCreate((address,uint256,bytes)[],bytes32,uint256,address,uint256)",
+  ),
+).slice(0, 10);
+
+// keccak256("refundTo(bytes32,uint256,address,uint256)")
+const NATIVE_REFUND_TO_SELECTOR = keccak256(
+  stringToUtf8Bytes("refundTo(bytes32,uint256,address,uint256)"),
+).slice(0, 10);
+
+/** Parameters for `HTLCNativeCoordinator.executeAndCreate`. */
+export interface NativeExecuteAndCreateParams {
+  /** Calls to run before the lock; a plain native lock sends none. */
+  calls: CoordinatorCall[];
+  /** SHA256 hash of the preimage (32-byte hex with 0x prefix) */
+  preimageHash: string;
+  /** Exact amount to lock, in wei. The transaction value must cover it. */
+  amount: bigint;
+  /** Claim address (server's EVM address) */
+  claimAddress: string;
+  /** HTLC timelock (unix timestamp) */
+  timelock: number;
+}
+
+/** Call data for a native lock: the transaction must carry `value`. */
+export interface NativeExecuteAndCreateCallData
+  extends ExecuteAndCreateCallData {
+  /** Native coin to attach, in wei (the lock amount for a plain lock). */
+  value: bigint;
+}
+
+/**
+ * Encodes `HTLCNativeCoordinator.executeAndCreate(calls, preimageHash, amount, claimAddress, timelock)`.
+ *
+ * The coordinator locks exactly `amount` of the value it received (after the
+ * calls ran) and returns any excess, so a plain lock sends `value == amount`
+ * and no calls.
+ */
+export function encodeNativeExecuteAndCreate(
+  coordinatorAddress: string,
+  params: NativeExecuteAndCreateParams,
+): NativeExecuteAndCreateCallData {
+  // Head: calls_offset, preimageHash, amount, claimAddress, timelock (5 slots)
+  const callsOffset = encodeUint256(5n * 32n);
+  const preimageHash = normalizeBytes32(params.preimageHash);
+  const amount = encodeUint256(params.amount);
+  const claimAddress = normalizeAddress(params.claimAddress);
+  const timelock = encodeUint256(BigInt(params.timelock));
+  const callsEncoded = encodeCalls(params.calls);
+
+  const data = [
+    NATIVE_EXECUTE_AND_CREATE_SELECTOR,
+    callsOffset,
+    preimageHash,
+    amount,
+    claimAddress,
+    timelock,
+    callsEncoded,
+  ].join("");
+
+  return {
+    to: coordinatorAddress,
+    data,
+    value: params.calls.reduce((sum, call) => sum + call.value, params.amount),
+    functionSignature:
+      "executeAndCreate((address,uint256,bytes)[],bytes32,uint256,address,uint256)",
+  };
+}
+
+/** Parameters for `HTLCNativeCoordinator.refundTo`. */
+export interface NativeRefundToParams {
+  /** SHA256 hash of the preimage (32-byte hex with 0x prefix) */
+  preimageHash: string;
+  /** Amount locked in the HTLC, in wei */
+  amount: bigint;
+  /** Claim address (server's EVM address) */
+  claimAddress: string;
+  /** HTLC timelock (unix timestamp) */
+  timelock: number;
+}
+
+/**
+ * Encodes `HTLCNativeCoordinator.refundTo(preimageHash, amount, claimAddress, timelock)`:
+ * the permissionless refund of an expired native lock to its depositor.
+ */
+export function encodeNativeRefundTo(
+  coordinatorAddress: string,
+  params: NativeRefundToParams,
+): ExecuteAndCreateCallData {
+  const data = [
+    NATIVE_REFUND_TO_SELECTOR,
+    normalizeBytes32(params.preimageHash),
+    encodeUint256(params.amount),
+    normalizeAddress(params.claimAddress),
+    encodeUint256(BigInt(params.timelock)),
+  ].join("");
+
+  return {
+    to: coordinatorAddress,
+    data,
+    functionSignature: "refundTo(bytes32,uint256,address,uint256)",
+  };
+}
+
 /**
  * Encodes the call data for `coordinator.refundTo(...)`.
  *

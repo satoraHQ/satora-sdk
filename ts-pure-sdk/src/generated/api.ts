@@ -831,6 +831,20 @@ export interface paths {
          *
          *     4. **POST** the request to this endpoint with the secret, destination, signature, and optionally
          *        the `dex_calldata` from step 2.
+         *
+         *     # Idempotency
+         *
+         *     Repeating the request is safe. A swap whose claim has already been relayed
+         *     or observed (`client_redeeming`, `client_redeemed`, `server_redeemed`)
+         *     answers `200` with that status and the claim transaction hash, and a
+         *     request that arrives while the relay is being broadcast answers `200` with
+         *     `client_redeeming` and no hash yet. Nothing is relayed twice.
+         *
+         *     On a native-coin target (Rootstock) the response is sent as soon as the
+         *     node has accepted the claim transaction: the swap is `client_redeeming`
+         *     with the hash recorded, and the server keeps following the transaction
+         *     until it is mined. A relay that reverts or is dropped by the node returns
+         *     the swap to `server_funded`, so a later request claims again.
          */
         post: operations["claim_via_gasless"];
         delete?: never;
@@ -893,9 +907,10 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Returns calldata to refund an expired EVM-to-Arkade HTLC via the coordinator.
-         * @description Calls `refundTo` — refunds the BTC-pegged HTLC token (tBTC/WBTC) directly to
-         *     the caller. Permissionless after the timelock expires.
+         * Returns calldata to refund an expired EVM-sourced HTLC via its coordinator.
+         * @description Calls `refundTo` — refunds the lock asset (tBTC/WBTC, or the native coin on
+         *     a native-lock chain) to the depositor. Permissionless after the timelock
+         *     expires.
          */
         get: operations["get_refund_calldata"];
         put?: never;
@@ -1769,7 +1784,11 @@ export interface components {
             message: string;
             /** @description Current swap status */
             status: string;
-            /** @description Transaction hash */
+            /**
+             * @description Hash of the claim transaction. Empty while the relay is still being
+             *     broadcast (a concurrent request beat this one by seconds) or when the
+             *     swap was claimed by a transaction the server did not relay.
+             */
             tx_hash: string;
         };
         /** @description Request for collaborative refund of recoverable VTXOs (delegate batch flow). */
@@ -2524,15 +2543,21 @@ export interface components {
             /** Format: int64 */
             evm_chain_id: number;
             evm_claim_txid?: string | null;
-            /** @description The HTLCCoordinator this swap is pinned to (the HTLC `refundAddress`). */
+            /** @description The coordinator this swap is pinned to (the HTLC `refundAddress`). */
             evm_coordinator_address: string;
             /** @description WBTC/tBTC the coordinator locks in the HTLC, in token smallest units */
             evm_expected_sats: string;
             evm_fund_txid?: string | null;
             evm_htlc_address: string;
             /**
+             * @description HTLC family of the lock: `erc20` (`HTLCErc20` + `HTLCCoordinator`) or
+             *     `native` (`HTLCNative` + `HTLCNativeCoordinator`). Selects how the
+             *     client funds (Permit2 vs a payable lock) and refunds the swap.
+             */
+            evm_htlc_kind: components["schemas"]["EvmHtlcKind"];
+            /**
              * Format: int64
-             * @description HTLCErc20 contract VERSION of the deployment this swap lives on —
+             * @description HTLC contract VERSION of the deployment this swap lives on —
              *     the EIP-712 domain version string for redeem/refund signatures.
              */
             evm_htlc_version: number;
@@ -4972,7 +4997,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Swap claimed successfully via gasless execution */
+            /** @description Claim relayed, or already relayed / observed (idempotent): the status and the claim transaction hash */
             200: {
                 headers: {
                     [name: string]: unknown;

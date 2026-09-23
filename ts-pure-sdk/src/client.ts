@@ -93,8 +93,12 @@ import {
   encodeExecuteAndCreateWithPermit2,
   encodeHtlcErc20IsActiveCallData,
   encodeHtlcErc20RefundCallData,
+  encodeHtlcNativeRefundCallData,
+  encodeNativeExecuteAndCreate,
+  encodeNativeRefundTo,
   encodeRefundTo,
   findSwapCreated,
+  NATIVE_TOKEN_ADDRESS,
   normalizeBytes32,
   PERMIT2_ADDRESS,
   type Permit2SignedFundingCallData,
@@ -110,6 +114,7 @@ import {
   getRevertReason,
   parseSignature,
   simulateTransaction,
+  txTypeFor,
 } from "./evm/wallet.js";
 import {
   createSdkLogger,
@@ -154,6 +159,7 @@ import {
   isArkade,
   isBridgeOnlyChain,
   isBtcOnchain,
+  isEvmSwapSource,
   isEvmToken,
   isLightning,
   isNativeLockTarget,
@@ -421,6 +427,13 @@ class FundingTxUnavailableError extends Error {}
 // A funding still in the mempool has nothing to refund yet, and a mined one
 // answers in one round trip, so a pending hash must not hold the refund.
 const FUNDING_RECEIPT_WAIT_MS = 30_000;
+
+/**
+ * Gas limit for a plain native lock (`HTLCNativeCoordinator.executeAndCreate`
+ * with no calls): the HTLC create plus the coordinator's bookkeeping, with
+ * headroom; the unused part is not charged.
+ */
+const NATIVE_LOCK_GAS = 250_000n;
 
 function withDeadline<T>(
   promise: Promise<T>,
@@ -733,7 +746,7 @@ export interface GetQuoteParams {
 }
 
 /** Source chains `/quote/lightning-send` can price. */
-export type LightningSendSourceChain = "Arkade" | "1" | "137" | "42161";
+export type LightningSendSourceChain = "Arkade" | "1" | "137" | "42161" | "30";
 
 /**
  * Parameters for {@link Client.getLightningSendQuote}. Exactly one of the
@@ -1873,7 +1886,8 @@ export class Client {
     if (
       params.lightningDestination &&
       params.targetChain === "Lightning" &&
-      (params.sourceChain === "Arkade" || isSourceEvmChain(params.sourceChain))
+      (params.sourceChain === "Arkade" ||
+        isEvmSwapSource(params.sourceChain, params.sourceToken))
     ) {
       try {
         return await this.#lightningSendQuoteAsQuote(
@@ -1976,7 +1990,10 @@ export class Client {
       throw new Error("No lightning send quote data returned");
     }
 
-    const evmSource = isSourceEvmChain(params.sourceChain ?? "Arkade");
+    const evmSource = isEvmSwapSource(
+      params.sourceChain ?? "Arkade",
+      params.sourceToken ?? "",
+    );
     return {
       sourceAmount: data.source_amount,
       sourceAmountSats: evmSource ? undefined : Number(data.source_amount),
@@ -2004,7 +2021,7 @@ export class Client {
     if (!kind) {
       throw new Error(`unrecognized lightning destination: ${destination}`);
     }
-    const evmSource = isSourceEvmChain(params.sourceChain);
+    const evmSource = isEvmSwapSource(params.sourceChain, params.sourceToken);
     // The invoice pins the payout itself; only address/LNURL flows take a
     // pinned amount (in the source token's smallest unit: sats for Arkade,
     // token units for EVM).
@@ -4860,9 +4877,16 @@ export class Client {
       }
       recipient = depositor;
     }
+    // A zero asset word is a native lock (`HTLCNative`), whose refund and
+    // coordinator `refundTo` take no token parameter.
+    const native = created.token === NATIVE_TOKEN_ADDRESS.toLowerCase();
     const { to, data } = ownHtlc
-      ? encodeHtlcErc20RefundCallData(leg.htlcAddress, created)
-      : encodeRefundTo(created.refundAddress, created);
+      ? native
+        ? encodeHtlcNativeRefundCallData(leg.htlcAddress, created)
+        : encodeHtlcErc20RefundCallData(leg.htlcAddress, created)
+      : native
+        ? encodeNativeRefundTo(created.refundAddress, created)
+        : encodeRefundTo(created.refundAddress, created);
     return {
       to,
       data,
@@ -5402,7 +5426,10 @@ export class Client {
     // EVM → Lightning. `targetAddress` carries the Lightning destination:
     // a BOLT11 invoice ("ln..."), an LNURL ("lnurl1..."), or a lightning
     // address ("user@domain").
-    if (isSourceEvmChain(sourceChain) && isLightning(targetAsset)) {
+    if (
+      isEvmSwapSource(sourceChain, sourceTokenId) &&
+      isLightning(targetAsset)
+    ) {
       if (!options.userAddress && !options.gasless) {
         throw new Error(
           "userAddress is required for EVM → Lightning swaps (unless gasless)",
@@ -6137,10 +6164,11 @@ export class Client {
    *   address: walletClient.account.address,
    *   chainId: walletClient.chain.id,
    *   signTypedData: (td) => walletClient.signTypedData({ ...td, account: walletClient.account }),
-   *   sendTransaction: (tx) => walletClient.sendTransaction({ to: tx.to, data: tx.data, chain, gas: tx.gas }),
+   *   sendTransaction: (tx) => walletClient.sendTransaction({ to: tx.to, data: tx.data, value: tx.value, type: tx.type, chain, gas: tx.gas }),
    *   waitForReceipt: (hash) => publicClient.waitForReceipt({ hash }),
    *   getTransaction: (hash) => publicClient.getTransaction({ hash }),
    *   call: (tx) => publicClient.call(tx),
+   *   getBalance: (address) => publicClient.getBalance({ address }),
    * };
    *
    * const { txHash } = await client.fundSwap(swapId, signer);
@@ -6171,6 +6199,28 @@ export class Client {
       }) => void;
     },
   ): Promise<{ txHash: string; cctp?: CctpFundSwapResult }> {
+    // A native lock (RBTC on Rootstock) is one payable transaction to the
+    // native coordinator: no token approval, no Permit2, no server calldata.
+    // The lock family is pinned on the swap at creation.
+    {
+      const stored = await this.#swapStorage?.get(swapId);
+      const response =
+        stored?.response ??
+        (await this.getSwap(swapId, { updateStorage: true }));
+      if (
+        response.direction === "evm_to_lightning" &&
+        response.evm_htlc_kind === "native"
+      ) {
+        const txHash = await this.#fundNativeLock(
+          swapId,
+          response,
+          signer,
+          options?.onQuote,
+        );
+        return { txHash };
+      }
+    }
+
     // Dispatch the CCTP-inbound path only for chains the backend does
     // NOT accept as a direct swap source (Optimism, Base, Linea, …).
     // Ethereum / Polygon / Arbitrum fund via Permit2 on the source
@@ -6344,20 +6394,109 @@ export class Client {
     // 7. Simulate before sending to catch reverts without burning gas
     await simulateTransaction(signer, encoded, "Funding transaction");
 
-    // 8. Send the funding transaction
+    // 8. Send the funding transaction, then see it through
     const txHash = await signer.sendTransaction({
       to: encoded.to,
       data: encoded.data,
       gas: 500_000n,
     });
+    const mined = await this.#awaitFunding(swapId, signer, txHash, encoded, {
+      htlcAddress: freshFunding.htlcAddress,
+      preimageHash: freshFunding.preimageHash,
+      claimAddress: freshFunding.claimAddress,
+      coordinatorAddress: freshFunding.coordinatorAddress,
+      token: freshFunding.lockTokenAddress,
+    });
+    return { txHash: mined };
+  }
+
+  /**
+   * Fund a native lock: `HTLCNativeCoordinator.executeAndCreate` with no
+   * calls and the quoted amount as the transaction value. The amount is
+   * pinned on the swap (`evm_expected_sats`, in wei): there is no DEX leg,
+   * so nothing is re-quoted at funding time.
+   */
+  async #fundNativeLock(
+    swapId: string,
+    swap: EvmToLightningSwapResponse,
+    signer: EvmSigner,
+    onQuote?: (quote: {
+      sourceAmount: bigint;
+      sourceTokenAddress: string;
+    }) => void,
+  ): Promise<string> {
+    if (signer.chainId !== swap.evm_chain_id) {
+      throw new Error(
+        `fundSwap signer is on chain ${signer.chainId} but the swap locks on chain ${swap.evm_chain_id}`,
+      );
+    }
+    const amount = BigInt(swap.evm_expected_sats);
+    onQuote?.({
+      sourceAmount: amount,
+      sourceTokenAddress: NATIVE_TOKEN_ADDRESS,
+    });
+
+    const encoded = encodeNativeExecuteAndCreate(swap.evm_coordinator_address, {
+      calls: [],
+      preimageHash: swap.hash_lock,
+      amount,
+      claimAddress: swap.server_evm_address,
+      timelock: swap.evm_refund_locktime,
+    });
+
+    // Fail before the wallet prompts when the coin is not there; gas comes
+    // out of the same balance, so this is a floor, not the exact need.
+    if (signer.getBalance) {
+      const balance = await signer.getBalance(signer.address);
+      if (balance < encoded.value) {
+        throw new Error(
+          `Insufficient native balance: have ${balance} wei, need ${encoded.value} wei plus gas`,
+        );
+      }
+    }
+
+    await simulateTransaction(signer, encoded, "Funding transaction");
+
+    const txHash = await signer.sendTransaction({
+      to: encoded.to,
+      data: encoded.data,
+      value: encoded.value,
+      type: txTypeFor(signer.chainId),
+      gas: NATIVE_LOCK_GAS,
+    });
+    return this.#awaitFunding(swapId, signer, txHash, encoded, {
+      htlcAddress: swap.evm_htlc_address,
+      preimageHash: swap.hash_lock,
+      claimAddress: swap.server_evm_address,
+      coordinatorAddress: swap.evm_coordinator_address,
+      token: NATIVE_TOKEN_ADDRESS,
+    });
+  }
+
+  /**
+   * Record a sent funding tx, wait for it, and settle which tx funded the
+   * swap. Returns the mined hash.
+   */
+  async #awaitFunding(
+    swapId: string,
+    signer: EvmSigner,
+    txHash: string,
+    sent: { to: string; data: string },
+    expected: {
+      htlcAddress: string;
+      preimageHash: string;
+      claimAddress: string;
+      coordinatorAddress: string;
+      token: string;
+    },
+  ): Promise<string> {
     // Recorded before the wait, so an RPC failure on a tx that did mine
     // cannot lose it; corrected below if the wallet replaced the tx.
     await this.#recordEvmFunding(swapId, {
       txid: txHash,
-      coordinatorAddress: freshFunding.coordinatorAddress,
+      coordinatorAddress: expected.coordinatorAddress,
     });
 
-    // 9. Wait for receipt
     const receipt = await signer.waitForReceipt(txHash);
     if (receipt.status !== "success") {
       const reason = await getRevertReason(signer, txHash, receipt.blockNumber);
@@ -6377,15 +6516,15 @@ export class Client {
           "this signer's waitForReceipt returns no logs, so the swap can only be refunded through the server",
         swapId,
       });
-      created = !replaced || (await isSameCall(signer, mined, encoded));
+      created = !replaced || (await isSameCall(signer, mined, sent));
     } else {
       created =
         findSwapCreated(receipt.logs, {
-          htlcAddress: freshFunding.htlcAddress,
-          hashLock: freshFunding.preimageHash,
-          claimAddress: freshFunding.claimAddress,
-          senders: [freshFunding.coordinatorAddress],
-          token: freshFunding.lockTokenAddress,
+          htlcAddress: expected.htlcAddress,
+          hashLock: expected.preimageHash,
+          claimAddress: expected.claimAddress,
+          senders: [expected.coordinatorAddress],
+          token: expected.token,
         }).length > 0;
     }
     if (!created && replaced) {
@@ -6408,15 +6547,15 @@ export class Client {
     if (replaced) {
       await this.#recordEvmFunding(swapId, {
         txid: mined,
-        coordinatorAddress: freshFunding.coordinatorAddress,
+        coordinatorAddress: expected.coordinatorAddress,
       });
     }
 
-    // 10. The server may have re-quoted the source amount for this funding;
-    //     bring the stored copy up to date. Best effort — the funding is done.
+    // The server may have re-quoted the source amount for this funding;
+    // bring the stored copy up to date. Best effort — the funding is done.
     await this.getSwap(swapId, { updateStorage: true }).catch(() => undefined);
 
-    return { txHash: mined };
+    return mined;
   }
 
   /**
@@ -6464,6 +6603,7 @@ export class Client {
     const txHash = await signer.sendTransaction({
       to: result.evmRefundData.to,
       data: result.evmRefundData.data,
+      type: txTypeFor(signer.chainId),
       gas: 500_000n,
     });
 

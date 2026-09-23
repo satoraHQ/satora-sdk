@@ -329,6 +329,7 @@ export {
   isBtcPegged,
   isCctpUsdc,
   isEthereumToken,
+  isEvmSwapSource,
   isEvmToken,
   isLightning,
   isLineaToken,
