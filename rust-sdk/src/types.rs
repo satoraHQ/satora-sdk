@@ -23,6 +23,7 @@ pub use swap::ArkadeToLightningSwapResponse;
 pub use swap::CreateArkadeToLightningSwapRequest;
 pub use swap::CreateEvmToArkadeSwapRequest;
 pub use swap::CreateLightningToArkadeSwapRequest;
+pub use swap::EvmHtlcKind;
 pub use swap::EvmToArkadeSwapResponse;
 pub use swap::GetSwapResponse;
 pub use swap::LightningDestination;

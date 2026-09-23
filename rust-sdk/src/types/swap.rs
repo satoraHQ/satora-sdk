@@ -307,6 +307,17 @@ impl Endpoint for CreateArkadeToLightningSwapRequest {
 /// field, and FFI consumers can parse it themselves. Large monetary
 /// quantities (`source_amount`, `target_amount`, `evm_expected_sats`) come
 /// back as decimal strings to side-step JavaScript number precision.
+
+/// Which HTLC family an EVM lock lives on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EvmHtlcKind {
+    /// `HTLCErc20` + `HTLCCoordinator`.
+    Erc20,
+    /// `HTLCNative` + `HTLCNativeCoordinator` (the chain's own coin).
+    Native,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct EvmToArkadeSwapResponse {
     pub id: String,
@@ -330,6 +341,11 @@ pub struct EvmToArkadeSwapResponse {
     pub evm_refund_locktime: u64,
     /// Blocks the deposit must be buried under before the server acts on it.
     pub evm_funding_confirmations: u64,
+    /// HTLC family of the lock: `erc20` (`HTLCErc20` + `HTLCCoordinator`) or
+    /// `native` (`HTLCNative` + `HTLCNativeCoordinator`).
+    pub evm_htlc_kind: EvmHtlcKind,
+    /// The coordinator this swap is pinned to (the HTLC `refundAddress`).
+    pub evm_coordinator_address: String,
     pub btc_vhtlc_address: String,
     pub target_arkade_address: String,
     pub sender_pk: String,

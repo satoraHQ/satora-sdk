@@ -2539,6 +2539,7 @@
           "btc_vhtlc_address",
           "evm_htlc_address",
           "evm_htlc_version",
+          "evm_htlc_kind",
           "evm_coordinator_address",
           "wbtc_address",
           "client_evm_address",
@@ -2626,6 +2627,10 @@
           },
           "evm_htlc_address": {
             "type": "string"
+          },
+          "evm_htlc_kind": {
+            "$ref": "#/components/schemas/EvmHtlcKind",
+            "description": "HTLC family of the lock: `erc20` (`HTLCErc20` + `HTLCCoordinator`) or\n`native` (`HTLCNative` + `HTLCNativeCoordinator`)."
           },
           "evm_htlc_version": {
             "type": "integer",
@@ -4519,6 +4524,8 @@
           "evm_expected_sats",
           "evm_htlc_address",
           "evm_htlc_version",
+          "evm_htlc_kind",
+          "evm_coordinator_address",
           "client_evm_address",
           "server_evm_address",
           "evm_refund_locktime",
@@ -4593,6 +4600,10 @@
               "null"
             ]
           },
+          "evm_coordinator_address": {
+            "type": "string",
+            "description": "The coordinator this swap is pinned to (the HTLC `refundAddress`)."
+          },
           "evm_expected_sats": {
             "type": "string"
           },
@@ -4610,6 +4621,10 @@
           },
           "evm_htlc_address": {
             "type": "string"
+          },
+          "evm_htlc_kind": {
+            "$ref": "#/components/schemas/EvmHtlcKind",
+            "description": "HTLC family of the lock: `erc20` (`HTLCErc20` + `HTLCCoordinator`) or\n`native` (`HTLCNative` + `HTLCNativeCoordinator`)."
           },
           "evm_htlc_version": {
             "type": "integer",

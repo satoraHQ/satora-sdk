@@ -7,6 +7,7 @@
 use lendaswap_sdk::arkade::ARKADE_HTLC_SCRIPT_VERSION_STRICT;
 use lendaswap_sdk::types::Chain;
 use lendaswap_sdk::types::ErrorResponse;
+use lendaswap_sdk::types::EvmHtlcKind;
 use lendaswap_sdk::types::EvmToArkadeSwapResponse;
 use lendaswap_sdk::types::KnownChain;
 use lendaswap_sdk::types::QuoteResponse;
@@ -241,6 +242,8 @@ fn evm_to_arkade_swap_response_matches_spec() {
         server_evm_address: "0xserver".to_string(),
         evm_refund_locktime: 1_000_000,
         evm_funding_confirmations: 64,
+        evm_htlc_kind: EvmHtlcKind::Erc20,
+        evm_coordinator_address: "0xcoordinator".into(),
         btc_vhtlc_address: "ark1qvhtlc".to_string(),
         target_arkade_address: "ark1qtarget".to_string(),
         sender_pk: "02sender".to_string(),
