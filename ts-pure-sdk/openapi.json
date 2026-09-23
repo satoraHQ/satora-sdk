@@ -2033,8 +2033,8 @@
     "/swap/{id}/refund-and-swap-calldata": {
       "get": {
         "tags": ["refund-and-swap-calldata"],
-        "summary": "Returns calldata to refund an expired EVM-to-Arkade HTLC via the coordinator.",
-        "description": "Calls `refundTo` — refunds the BTC-pegged HTLC token (tBTC/WBTC) directly to\nthe caller. Permissionless after the timelock expires.",
+        "summary": "Returns calldata to refund an expired EVM-sourced HTLC via its coordinator.",
+        "description": "Calls `refundTo` — refunds the lock asset (tBTC/WBTC, or the native coin on\na native-lock chain) to the depositor. Permissionless after the timelock\nexpires.",
         "operationId": "get_refund_calldata",
         "parameters": [
           {
@@ -4569,6 +4569,7 @@
           "evm_expected_sats",
           "evm_htlc_address",
           "evm_htlc_version",
+          "evm_htlc_kind",
           "evm_coordinator_address",
           "wbtc_address",
           "client_evm_address",
@@ -4609,7 +4610,7 @@
           },
           "evm_coordinator_address": {
             "type": "string",
-            "description": "The HTLCCoordinator this swap is pinned to (the HTLC `refundAddress`)."
+            "description": "The coordinator this swap is pinned to (the HTLC `refundAddress`)."
           },
           "evm_expected_sats": {
             "type": "string",
@@ -4621,10 +4622,14 @@
           "evm_htlc_address": {
             "type": "string"
           },
+          "evm_htlc_kind": {
+            "$ref": "#/components/schemas/EvmHtlcKind",
+            "description": "HTLC family of the lock: `erc20` (`HTLCErc20` + `HTLCCoordinator`) or\n`native` (`HTLCNative` + `HTLCNativeCoordinator`). Selects how the\nclient funds (Permit2 vs a payable lock) and refunds the swap."
+          },
           "evm_htlc_version": {
             "type": "integer",
             "format": "int64",
-            "description": "HTLCErc20 contract VERSION of the deployment this swap lives on —\nthe EIP-712 domain version string for redeem/refund signatures."
+            "description": "HTLC contract VERSION of the deployment this swap lives on —\nthe EIP-712 domain version string for redeem/refund signatures."
           },
           "evm_refund_locktime": {
             "type": "integer",
