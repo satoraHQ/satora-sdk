@@ -5487,7 +5487,7 @@ export class Client {
     }
 
     // EVM → Arkade
-    if (isSourceEvmChain(sourceChain) && isArkade(targetAsset)) {
+    if (isEvmSwapSource(sourceChain, sourceTokenId) && isArkade(targetAsset)) {
       if (!options.userAddress && !options.gasless) {
         throw new Error(
           "userAddress is required for EVM → Arkade swaps (unless gasless)",
@@ -6208,7 +6208,8 @@ export class Client {
         stored?.response ??
         (await this.getSwap(swapId, { updateStorage: true }));
       if (
-        response.direction === "evm_to_lightning" &&
+        (response.direction === "evm_to_lightning" ||
+          response.direction === "evm_to_arkade") &&
         response.evm_htlc_kind === "native"
       ) {
         const txHash = await this.#fundNativeLock(
@@ -6418,7 +6419,7 @@ export class Client {
    */
   async #fundNativeLock(
     swapId: string,
-    swap: EvmToLightningSwapResponse,
+    swap: EvmToLightningSwapResponse | EvmToArkadeSwapResponse,
     signer: EvmSigner,
     onQuote?: (quote: {
       sourceAmount: bigint;

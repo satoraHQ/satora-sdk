@@ -1133,6 +1133,11 @@ export interface components {
             evm_fund_txid?: string | null;
             evm_htlc_address: string;
             /**
+             * @description HTLC family of the lock: `erc20` (`HTLCErc20` + `HTLCCoordinator`) or
+             *     `native` (`HTLCNative` + `HTLCNativeCoordinator`).
+             */
+            evm_htlc_kind: components["schemas"]["EvmHtlcKind"];
+            /**
              * Format: int64
              * @description HTLCErc20 contract VERSION of the deployment this swap lives on —
              *     the EIP-712 domain version string for redeem/refund signatures.
@@ -2282,6 +2287,8 @@ export interface components {
             /** Format: int64 */
             evm_chain_id: number;
             evm_claim_txid?: string | null;
+            /** @description The coordinator this swap is pinned to (the HTLC `refundAddress`). */
+            evm_coordinator_address: string;
             evm_expected_sats: string;
             evm_fund_txid?: string | null;
             /**
@@ -2292,6 +2299,11 @@ export interface components {
              */
             evm_funding_confirmations: number;
             evm_htlc_address: string;
+            /**
+             * @description HTLC family of the lock: `erc20` (`HTLCErc20` + `HTLCCoordinator`) or
+             *     `native` (`HTLCNative` + `HTLCNativeCoordinator`).
+             */
+            evm_htlc_kind: components["schemas"]["EvmHtlcKind"];
             /**
              * Format: int64
              * @description HTLCErc20 contract VERSION of the deployment this swap lives on —

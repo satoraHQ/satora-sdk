@@ -211,6 +211,7 @@ export {
   signEscrowDelegate,
 } from "./escrow/index.js";
 // EVM HTLC utilities
+/** The zero address: the asset word of a native lock (RBTC on Rootstock). */
 export {
   type ApproveCallData,
   buildEvmHtlcCallData,
@@ -228,6 +229,7 @@ export {
   type HtlcErc20CreateCallData,
   type HtlcErc20CreateParams,
   isUserRejection,
+  NATIVE_TOKEN_ADDRESS,
   PERMIT2_ADDRESS,
   type Permit2TypedData,
   type ReceiptLog,

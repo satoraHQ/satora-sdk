@@ -10,7 +10,10 @@
  * mapped; others return `undefined` until their ledger managers exist, rather than
  * producing a half-watchable swap.
  */
-import type { StoredSwap } from "@lendasat/lendaswap-sdk-pure";
+import {
+  NATIVE_TOKEN_ADDRESS,
+  type StoredSwap,
+} from "@lendasat/lendaswap-sdk-pure";
 import { buildArkadeVhtlcRef } from "../contracts/arkade-vhtlc.js";
 import type { HtlcRef } from "../contracts/types.js";
 import type { TrackedSwap } from "./swap-tracker.js";
@@ -185,10 +188,16 @@ export function swapToTracked(stored: StoredSwap): TrackedSwap | undefined {
           hashLock: r.hash_lock,
           claimAddress: r.server_evm_address, // the server claims the client's EVM HTLC
           expectedSats: r.evm_expected_sats,
-          // evm_to_arkade doesn't expose the locked token — fall back to the
-          // per-chain mainnet constant so the isActive tuple is complete.
-          token: lockedTokenFallback(r.evm_chain_id, r.network),
-          sender: r.client_evm_address, // the client funded it
+          // A native lock's asset word is zero; an ERC20 lock's token is not
+          // on this response yet, so fall back to the per-chain mainnet
+          // constant to complete the isActive tuple.
+          token:
+            r.evm_htlc_kind === "native"
+              ? NATIVE_TOKEN_ADDRESS
+              : lockedTokenFallback(r.evm_chain_id, r.network),
+          // The coordinator created the HTLC on the client's behalf, so it
+          // is the lock's sender (refund address), as on evm_to_lightning.
+          sender: r.evm_coordinator_address,
           timelockSec: r.evm_refund_locktime,
           createdAt: r.created_at,
         }),
