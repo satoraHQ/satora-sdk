@@ -99,6 +99,7 @@ import {
   encodeRefundTo,
   findSwapCreated,
   isKernelDelegation,
+  KERNEL_DELEGATION_TARGET,
   kernelErc1271Digest,
   NATIVE_TOKEN_ADDRESS,
   normalizeBytes32,
@@ -1543,16 +1544,36 @@ export class Client {
   }
 
   /**
-   * True if `address` carries an EIP-7702 delegation to Kernel V3.3 on
+   * Whether the depositor must sign in Kernel's ERC-1271 envelope on
    * `chainId`.
    *
-   * The only RPC this SDK holds is the AA one, and both it and the
-   * sponsored claim that installs the delegation are Arbitrum-only. A
-   * 7702 delegation is per chain, so on any other chain the depositor is
-   * a plain EOA as far as this SDK can tell, and asking the Arbitrum RPC
-   * would report Arbitrum's code for a different chain.
+   * `serverHint` is the calldata endpoint's `depositor_delegation`: the
+   * EIP-7702 target the depositor's code points at on the source chain,
+   * `null` for a plain EOA. A delegation is per chain and this SDK holds
+   * no RPC for most chains, so the server's view is authoritative. Only
+   * when an older server omits the field do we fall back to probing the
+   * AA RPC, which is Arbitrum-only.
+   *
+   * A delegation to anything other than Kernel V3.3 cannot be signed for
+   * by this SDK (Permit2 would hand the signature to unknown code), so it
+   * throws rather than let the relayer dry-run explain it.
    */
-  async #isKernelDelegated(address: string, chainId: number): Promise<boolean> {
+  async #isKernelDelegated(
+    address: string,
+    chainId: number,
+    serverHint: string | null | undefined,
+  ): Promise<boolean> {
+    if (serverHint !== undefined) {
+      if (serverHint === null) return false;
+      if (serverHint.toLowerCase() === KERNEL_DELEGATION_TARGET.toLowerCase()) {
+        return true;
+      }
+      throw new Error(
+        `Depositor ${address} is EIP-7702-delegated to ${serverHint} on chain ${chainId}, ` +
+          `which this SDK cannot sign for. Expected Kernel V3.3 (${KERNEL_DELEGATION_TARGET}) ` +
+          `or a plain EOA. Revoke the delegation or use a separate key for gasless deposits.`,
+      );
+    }
     if (chainId !== AA_CHAIN_ID) return false;
     const rpcUrl = this.#config.aa?.rpcUrl ?? this.#config.aa?.bundlerUrl;
     if (!rpcUrl) return false;
@@ -5984,6 +6005,7 @@ export class Client {
       timelock: number;
       calls: Array<{ target: string; value: string; call_data: string }>;
       calls_hash: string;
+      depositor_delegation?: string | null;
     };
 
     // 3. Generate random Permit2 nonce and deadline
@@ -6020,7 +6042,11 @@ export class Client {
     // compact r || s || v signature.
     const evmKey = this.#getEvmSigningKey();
     const depositorAddress = deriveEvmAddress(evmKey);
-    const delegated = await this.#isKernelDelegated(depositorAddress, chainId);
+    const delegated = await this.#isKernelDelegated(
+      depositorAddress,
+      chainId,
+      serverData.depositor_delegation,
+    );
     const compactSignature = this.#signDepositorDigest(
       evmKey,
       depositorAddress,
@@ -7057,6 +7083,7 @@ export class Client {
         domain_separator: string;
       };
       relay_fee?: string;
+      depositor_delegation?: string | null;
     };
 
     // 3. Generate random Permit2 nonce and deadline
@@ -7091,7 +7118,11 @@ export class Client {
     // Permit2 verifies via ERC-1271 and needs Kernel's envelope.
     const evmKey = this.#getEvmSigningKey();
     const depositorAddress = deriveEvmAddress(evmKey);
-    const delegated = await this.#isKernelDelegated(depositorAddress, chainId);
+    const delegated = await this.#isKernelDelegated(
+      depositorAddress,
+      chainId,
+      serverData.depositor_delegation,
+    );
     const compactSignature = this.#signDepositorDigest(
       evmKey,
       depositorAddress,
