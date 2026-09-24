@@ -1616,6 +1616,30 @@ export class Client {
   }
 
   /**
+   * Select the SDK-controlled EVM key that signs and publishes the claim of
+   * an inbound (BTC / Arkade / Lightning → EVM) swap.
+   *
+   * New swaps are created with the per-swap key as `claiming_address`, so
+   * the sponsored claim's EIP-7702 delegation never lands on the wallet-level
+   * deposit address. Swaps created before that still carry the wallet-level
+   * address and keep claiming with it.
+   */
+  #getClaimEvmSigningKey(storedSwap: StoredSwap): string {
+    const swapKey = storedSwap.secretKey;
+    const clientAddress = (
+      storedSwap.response as { client_evm_address?: string }
+    ).client_evm_address?.toLowerCase();
+    if (
+      swapKey &&
+      clientAddress &&
+      clientAddress === deriveEvmAddress(swapKey).toLowerCase()
+    ) {
+      return swapKey;
+    }
+    return this.#getEvmSigningKey();
+  }
+
+  /**
    * Select the SDK-controlled EVM key that matches the swap's recorded depositor.
    *
    * Current gasless EVM-sourced swaps use the deterministic wallet-level EVM key;
@@ -3025,7 +3049,7 @@ export class Client {
     );
     const result = await claimViaSigner({
       preimage: stored.preimage,
-      secretKey: hexToBytes(this.#getEvmSigningKey()),
+      secretKey: hexToBytes(this.#getClaimEvmSigningKey(stored)),
       swap,
       destination,
       calls,
@@ -3106,7 +3130,7 @@ export class Client {
       try {
         return await claimViaUserOp({
           preimage: stored.preimage,
-          secretKey: hexToBytes(this.#getEvmSigningKey()),
+          secretKey: hexToBytes(this.#getClaimEvmSigningKey(stored)),
           swap,
           destination,
           calls,
@@ -3175,7 +3199,7 @@ export class Client {
     return gaslessClaim({
       baseUrl: this.#config.baseUrl,
       preimage: stored.preimage,
-      secretKey: hexToBytes(this.#getEvmSigningKey()),
+      secretKey: hexToBytes(this.#getClaimEvmSigningKey(stored)),
       swap,
       destination,
       dexCalldata,
