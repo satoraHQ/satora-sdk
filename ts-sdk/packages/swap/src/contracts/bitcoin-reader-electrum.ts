@@ -97,10 +97,11 @@ export function electrumReader(
   const network = opts?.network ?? "mainnet";
   const fallback = opts?.fallback;
 
-  const scriptFor = (address: string): Uint8Array =>
-    btc.OutScript.encode(
-      btc.Address(toBtcSignerNetwork(network)).decode(address),
-    );
+  const scriptFor = (address: string): Uint8Array => {
+    const decoded = btc.Address(toBtcSignerNetwork(network)).decode(address);
+    if (!decoded) throw new Error(`Unrecognised Bitcoin address: ${address}`);
+    return btc.OutScript.encode(decoded);
+  };
 
   async function getHtlcFactsElectrum(
     address: string,

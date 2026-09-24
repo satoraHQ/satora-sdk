@@ -86,7 +86,9 @@ export function addressToScriptHash(
   network: ElectrumNetwork,
 ): string {
   const net = toBtcSignerNetwork(network);
-  const script = btc.OutScript.encode(btc.Address(net).decode(address));
+  const decoded = btc.Address(net).decode(address);
+  if (!decoded) throw new Error(`Unrecognised Bitcoin address: ${address}`);
+  const script = btc.OutScript.encode(decoded);
   return bytesToHex(sha256(script).reverse());
 }
 

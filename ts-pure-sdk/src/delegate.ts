@@ -329,6 +329,11 @@ async function settleDelegate(
   // Decode forfeit address (bech32) to pkScript
   const btcNetwork = networks[networkName];
   const forfeitDecoded = Address(btcNetwork).decode(serverInfo.forfeitAddress);
+  if (!forfeitDecoded) {
+    throw new Error(
+      `Unrecognised forfeit address: ${serverInfo.forfeitAddress}`,
+    );
+  }
   const forfeitPkScript = OutScript.encode(forfeitDecoded);
 
   // Fetch VTXOs — include all (not just spendable)
