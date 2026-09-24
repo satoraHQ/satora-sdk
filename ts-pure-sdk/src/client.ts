@@ -749,7 +749,13 @@ export interface GetQuoteParams {
 }
 
 /** Source chains `/quote/lightning-send` can price. */
-export type LightningSendSourceChain = "Arkade" | "1" | "137" | "42161" | "30";
+export type LightningSendSourceChain =
+  | "Arkade"
+  | "1"
+  | "137"
+  | "42161"
+  | "30"
+  | "31";
 
 /**
  * Parameters for {@link Client.getLightningSendQuote}. Exactly one of the

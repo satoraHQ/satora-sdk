@@ -153,6 +153,7 @@ const AVG_BLOCK_MS: Record<number, number> = {
   137: 2_100,
   42161: 250,
   30: 30_000,
+  31: 30_000, // Rootstock testnet: same merge-mined cadence
 };
 
 /** Extra blocks to over-scan past the estimate (reorgs + estimate slack). */

@@ -205,7 +205,8 @@ export function isBtcPegged(token: { chain: string; symbol: string }): boolean {
 export function isEvmToken(chain: string): boolean {
   return (
     SOURCE_EVM_CHAINS.includes(chain as (typeof SOURCE_EVM_CHAINS)[number]) ||
-    Object.values(ALL_EVM_CHAIN_IDS).includes(chain)
+    Object.values(ALL_EVM_CHAIN_IDS).includes(chain) ||
+    isNativeLockChain(chain)
   );
 }
 
@@ -223,15 +224,24 @@ export function isBridgeOnlyChain(chain: string): boolean {
 }
 
 /**
+ * Returns true for a chain that locks its own coin in its own HTLC: Rootstock,
+ * under its mainnet id ("30"), its testnet id ("31" — what a testnet daemon
+ * reports it as) or by name.
+ */
+export function isNativeLockChain(chain: string): boolean {
+  const c = chain.toLowerCase();
+  return c === "30" || c === "31" || c === "rootstock";
+}
+
+/**
  * Returns true for the native coin of a chain that locks it in its own HTLC
  * (RBTC on Rootstock, token id = the zero address). Rootstock is also a USDT0
  * bridge destination, so the chain alone does not say whether a target is
- * bridged; its coin is a first-class target settled on chain 30, never
+ * bridged; its coin is a first-class target settled on Rootstock itself, never
  * remapped to the Arbitrum hub.
  */
 export function isNativeLockTarget(chain: string, token: string): boolean {
-  const c = chain.toLowerCase();
-  return (c === "30" || c === "rootstock") && /^0x0{40}$/i.test(token);
+  return isNativeLockChain(chain) && /^0x0{40}$/i.test(token);
 }
 
 /**
@@ -317,6 +327,9 @@ export function toChain(str: string): Chain {
   if (c === "polygon" || c === "137") return "137";
   if (c === "arbitrum" || c === "42161") return "42161";
   if (c === "rootstock" || c === "30") return "30";
+  // Rootstock testnet keeps its own id: a testnet daemon's chain "31" must
+  // not collapse into mainnet's "30".
+  if (c === "31") return "31";
   if (c === "lightning") return "Lightning";
   if (c === "arkade") return "Arkade";
   if (c === "bitcoin") return "Bitcoin";

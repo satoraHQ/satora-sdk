@@ -3,7 +3,9 @@ import {
   getBridgeTargetChain,
   isBridgeOnlyChain,
   isBtcPegged,
+  isEvmToken,
   isNativeLockTarget,
+  toChain,
 } from "../src/tokens.js";
 import { USDT0_ADDRESSES } from "../src/usdt0-bridge/index.js";
 
@@ -19,6 +21,16 @@ describe("isNativeLockTarget", () => {
     expect(isNativeLockTarget("rootstock", ZERO)).toBe(true);
     expect(isNativeLockTarget("30", USDT0_ADDRESSES.Rootstock)).toBe(false);
     expect(isNativeLockTarget("42161", ZERO)).toBe(false);
+  });
+
+  it("is RBTC on chain 31 as well — a testnet daemon's Rootstock", () => {
+    expect(isNativeLockTarget("31", ZERO)).toBe(true);
+    expect(isNativeLockTarget("31", USDT0_ADDRESSES.Rootstock)).toBe(false);
+    // The two ids stay distinct: a testnet chain must not collapse into mainnet.
+    expect(toChain("31")).toBe("31");
+    expect(toChain("30")).toBe("30");
+    expect(isEvmToken("31")).toBe(true);
+    expect(isBtcPegged({ chain: "31", symbol: "RBTC" })).toBe(true);
   });
 
   it("keeps Rootstock a bridge-only chain for its other tokens", () => {

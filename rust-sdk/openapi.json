@@ -3733,7 +3733,7 @@
       },
       "Chain": {
         "type": "string",
-        "description": "Supported blockchain networks.\nEVM chains serialize to their chain ID as a string (e.g. \"137\" for Polygon).",
+        "description": "Supported blockchain networks. EVM chains serialize to their chain ID as a string (e.g. \"137\" for Polygon). Rootstock is \"30\" on a mainnet daemon and \"31\" on a testnet daemon.",
         "enum": [
           "Arkade",
           "Lightning",
@@ -3741,7 +3741,8 @@
           "137",
           "1",
           "42161",
-          "30"
+          "30",
+          "31"
         ]
       },
       "ChainConfigEntry": {

@@ -23,6 +23,7 @@ export type Chain =
   | "137" // Polygon
   | "42161" // Arbitrum
   | "30" // Rootstock (native RBTC lock, no DEX leg)
+  | "31" // Rootstock testnet — what a testnet daemon calls Rootstock
   // CCTP bridge chains (mirrors `CCTP_DOMAINS`): valid quote targets, and
   // valid USDC sources via CCTP-inbound (`bridge_source_chain`).
   | "10" // Optimism
@@ -52,4 +53,5 @@ export type WireChain =
   | "1" // Ethereum
   | "137" // Polygon
   | "42161" // Arbitrum
-  | "30"; // Rootstock
+  | "30" // Rootstock
+  | "31"; // Rootstock testnet (a daemon serves exactly one of the two)

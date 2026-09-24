@@ -59,6 +59,7 @@ export const DEFAULT_EVM_RPCS: Record<number, string[]> = {
   ],
   // Rootstock: the public node, HTTP only (no WebSocket endpoint exists).
   30: ["https://public-node.rsk.co"],
+  31: ["https://public-node.testnet.rsk.co"],
 };
 
 // The three `HTLCErc20` lifecycle events, each indexed by `preimageHash` and each
@@ -422,6 +423,7 @@ export function createEvmRpcReader(
  */
 export const EVM_LOG_RANGE_LIMITS: Record<number, bigint> = {
   30: 2000n,
+  31: 2000n,
 };
 
 /**

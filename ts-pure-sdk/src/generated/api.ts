@@ -1739,11 +1739,10 @@ export interface components {
             value: string;
         };
         /**
-         * @description Supported blockchain networks.
-         *     EVM chains serialize to their chain ID as a string (e.g. "137" for Polygon).
+         * @description Supported blockchain networks. EVM chains serialize to their chain ID as a string (e.g. "137" for Polygon). Rootstock is "30" on a mainnet daemon and "31" on a testnet daemon.
          * @enum {string}
          */
-        Chain: "Arkade" | "Lightning" | "Bitcoin" | "137" | "1" | "42161" | "30";
+        Chain: "Arkade" | "Lightning" | "Bitcoin" | "137" | "1" | "42161" | "30" | "31";
         /**
          * @description Per-chain configuration. EVM chains only — Bitcoin / Lightning /
          *     Arkade don't have a meaningful chain-config shape.
