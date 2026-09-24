@@ -1558,6 +1558,23 @@ export class Client {
    * by this SDK (Permit2 would hand the signature to unknown code), so it
    * throws rather than let the relayer dry-run explain it.
    */
+  /**
+   * The calldata endpoint's `depositor_delegation` describes the swap's
+   * recorded `client_evm_address`. For gasless swaps that is the SDK's own
+   * key; for non-gasless swaps it is the user's wallet, which may differ
+   * from the key this SDK signs Permit2 with. Only hand the hint on when
+   * it was looked up for the address we actually sign for; otherwise the
+   * caller falls back to probing.
+   */
+  #delegationHintFor(
+    swap: { client_evm_address?: string | null },
+    depositor: string,
+    hint: string | null | undefined,
+  ): string | null | undefined {
+    const hinted = swap.client_evm_address?.toLowerCase();
+    return hinted && hinted === depositor.toLowerCase() ? hint : undefined;
+  }
+
   async #isKernelDelegated(
     address: string,
     chainId: number,
@@ -6045,7 +6062,11 @@ export class Client {
     const delegated = await this.#isKernelDelegated(
       depositorAddress,
       chainId,
-      serverData.depositor_delegation,
+      this.#delegationHintFor(
+        swap as { client_evm_address?: string | null },
+        depositorAddress,
+        serverData.depositor_delegation,
+      ),
     );
     const compactSignature = this.#signDepositorDigest(
       evmKey,
@@ -7121,7 +7142,11 @@ export class Client {
     const delegated = await this.#isKernelDelegated(
       depositorAddress,
       chainId,
-      serverData.depositor_delegation,
+      this.#delegationHintFor(
+        swap as { client_evm_address?: string | null },
+        depositorAddress,
+        serverData.depositor_delegation,
+      ),
     );
     const compactSignature = this.#signDepositorDigest(
       evmKey,

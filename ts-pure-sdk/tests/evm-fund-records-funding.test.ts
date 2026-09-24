@@ -246,3 +246,83 @@ describe("fundSwapGasless records the funding on the stored swap", () => {
     });
   });
 });
+
+describe("the server's delegation hint is bound to the address it describes", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const FOREIGN_DELEGATION = `0x${"ab".repeat(20)}`;
+  const relay = {
+    id: SWAP_ID,
+    status: "clientfunded",
+    tx_hash: `0x${"cd".repeat(32)}`,
+    message: "",
+  };
+
+  async function permit2SignatureSent(fetchMock: ReturnType<typeof vi.fn>) {
+    const call = fetchMock.mock.calls.find(([input]) =>
+      (input instanceof Request ? input.url : String(input)).includes(
+        "fund-gasless",
+      ),
+    );
+    if (!call) throw new Error("relay was not called");
+    const [input, init] = call as [RequestInfo | URL, RequestInit | undefined];
+    const raw =
+      typeof init?.body === "string"
+        ? init.body
+        : await (input as Request).text();
+    return (JSON.parse(raw) as { permit2_signature: string }).permit2_signature;
+  }
+
+  it("ignores a hint for a different address and signs as a plain EOA", async () => {
+    // A non-gasless-style swap: client_evm_address is the user's wallet,
+    // not the key this SDK signs Permit2 with. The server probed THAT
+    // address and found a foreign delegation.
+    const fetchMock = serverAnswering({
+      swap: swapResponse({ clientEvmAddress: SIGNER_ADDRESS }),
+      permit2: { ...permit2Params, depositor_delegation: FOREIGN_DELEGATION },
+      gasless: relay,
+    });
+    const storage = new InMemorySwapStorage();
+    await storage.store(
+      storedSwap({ evmFundTxid: undefined, evmCoordinatorAddress: undefined }),
+    );
+    const client = await Client.builder()
+      .withSwapStorage(storage)
+      .withMnemonic(MNEMONIC)
+      .build();
+    expect(client.getEvmAddress().toLowerCase()).not.toBe(
+      SIGNER_ADDRESS.toLowerCase(),
+    );
+
+    await expect(client.fundSwapGasless(SWAP_ID)).resolves.toMatchObject({
+      txHash: relay.tx_hash,
+    });
+    // 65 bytes: r || s || v, no Kernel envelope
+    expect((await permit2SignatureSent(fetchMock)).length).toBe(2 + 130);
+  });
+
+  it("refuses a foreign delegation on the address it actually signs for", async () => {
+    // The API client captures `fetch` at build time, so derive the SDK's
+    // address from a throwaway client, stub, then build the one under test.
+    const sdkAddress = (
+      await Client.builder().withMnemonic(MNEMONIC).build()
+    ).getEvmAddress();
+    serverAnswering({
+      swap: swapResponse({ clientEvmAddress: sdkAddress }),
+      permit2: { ...permit2Params, depositor_delegation: FOREIGN_DELEGATION },
+      gasless: relay,
+    });
+    const storage = new InMemorySwapStorage();
+    await storage.store(
+      storedSwap({ evmFundTxid: undefined, evmCoordinatorAddress: undefined }),
+    );
+    const client = await Client.builder()
+      .withSwapStorage(storage)
+      .withMnemonic(MNEMONIC)
+      .build();
+
+    await expect(client.fundSwapGasless(SWAP_ID)).rejects.toThrow(
+      /delegated to 0xabab.*cannot sign for/,
+    );
+  });
+});
