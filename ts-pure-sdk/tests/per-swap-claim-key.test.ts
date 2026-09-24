@@ -48,7 +48,7 @@ describe("inbound swaps claim with a per-swap key", () => {
     );
 
     expect(post).toHaveBeenCalledTimes(1);
-    const body = post.mock.calls[0]![1].body;
+    const body = post.mock.calls[0][1].body;
     expect(body.claiming_address).toBe(perSwapAddress);
     expect(body.target_address).toBe(
       "0x000000000000000000000000000000000000dEaD",
