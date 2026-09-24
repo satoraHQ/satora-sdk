@@ -1512,6 +1512,66 @@ export interface components {
             /** @description WBTC token contract address on the target EVM chain (the token locked in the HTLC) */
             wbtc_address: string;
         };
+        /** @description Bitcoin on-chain → Lightning swap response. */
+        BitcoinToLightningSwapResponse: {
+            /** @description Claim transaction ID (server claim) */
+            btc_claim_txid?: string | null;
+            /** @description Funding transaction ID (user funding) */
+            btc_fund_txid?: string | null;
+            /** @description HASH160 the HTLC script locks on (hex): ripemd160 of the payment hash */
+            btc_hash_lock: string;
+            /** @description On-chain HTLC address the user must fund */
+            btc_htlc_address: string;
+            /** Format: int64 */
+            btc_htlc_script_version: number;
+            /**
+             * Format: int64
+             * @description Absolute refund locktime of the HTLC (unix timestamp)
+             */
+            btc_refund_locktime: number;
+            /** @description Server's claim public key in the HTLC (x-only hex) */
+            btc_server_pk: string;
+            /** @description BOLT11 invoice the server pays once the HTLC funding has a confirmation */
+            client_lightning_invoice: string;
+            /**
+             * Format: date-time
+             * @description Timestamp of when the swap was created
+             */
+            created_at: string;
+            /**
+             * Format: int64
+             * @description Protocol fee in satoshis
+             */
+            fee_sats: number;
+            /** @description Hash lock (0x-prefixed 32-byte hex; the invoice's payment hash) */
+            hash_lock: string;
+            /** @description Unique swap identifier */
+            id: string;
+            /**
+             * Format: int64
+             * @description Unix timestamp after which the invoice can no longer be paid
+             */
+            invoice_expires_at: number;
+            /** @description Bitcoin network */
+            network: string;
+            /**
+             * Format: int64
+             * @description Network fee in satoshis: the provider's quoted Lightning send fee
+             *     plus the mining fee of the server's HTLC claim. The actual send fee
+             *     is paid out of `fee_sats + network_fee_sats`, never on top.
+             */
+            network_fee_sats: number;
+            /** @description Amount the user must lock in the on-chain HTLC in satoshis */
+            source_amount: string;
+            /** @description Source token info */
+            source_token: components["schemas"]["TokenInfo"];
+            /** @description Current status of the swap */
+            status: components["schemas"]["SwapStatus"];
+            /** @description Amount paid out on the user's Lightning invoice in satoshis */
+            target_amount: string;
+            /** @description Target token info */
+            target_token: components["schemas"]["TokenInfo"];
+        };
         /**
          * @description Fee model for the cross-chain bridge leg of a quote, tagged by protocol
          *     (`router`). Present only when `from`/`to` straddle a bridge; each protocol
@@ -2186,14 +2246,26 @@ export interface components {
              */
             router: string;
         };
-        /** @description EIP-2612 permit signature for gasless token->Permit2 approval. */
+        /**
+         * @description EIP-2612 permit signature for gasless token->Permit2 approval.
+         *
+         *     Either `v`/`r`/`s` (plain EOA depositor) or `signature` (depositor whose
+         *     address carries code, e.g. EIP-7702-delegated to Kernel after a
+         *     sponsored claim; the token verifies it via ERC-1271). Exactly one form.
+         */
         Eip2612Permit: {
             /** Format: int64 */
             deadline: number;
-            r: string;
-            s: string;
+            r?: string | null;
+            s?: string | null;
+            /**
+             * @description Opaque ERC-1271 signature (hex). For a Kernel V3.3 depositor:
+             *     `0x00 || r || s || v` over Kernel's `Kernel(bytes32 hash)` wrapper of
+             *     the permit digest.
+             */
+            signature?: string | null;
             /** Format: int32 */
-            v: number;
+            v?: number | null;
             value: string;
         };
         ErrorResponse: {
@@ -2711,6 +2783,9 @@ export interface components {
         }) | (components["schemas"]["EvmToLightningSwapResponse"] & {
             /** @enum {string} */
             direction: "evm_to_lightning";
+        }) | (components["schemas"]["BitcoinToLightningSwapResponse"] & {
+            /** @enum {string} */
+            direction: "bitcoin_to_lightning";
         });
         LightningSendQuoteResponse: {
             /**

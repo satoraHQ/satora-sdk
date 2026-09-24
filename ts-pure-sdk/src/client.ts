@@ -98,12 +98,15 @@ import {
   encodeNativeRefundTo,
   encodeRefundTo,
   findSwapCreated,
+  isKernelDelegation,
+  kernelErc1271Digest,
   NATIVE_TOKEN_ADDRESS,
   normalizeBytes32,
   PERMIT2_ADDRESS,
   type Permit2SignedFundingCallData,
   signEvmDigest,
   type UnsignedPermit2FundingData,
+  wrapKernelErc1271Signature,
 } from "./evm/index.js";
 import {
   decodeUint256,
@@ -1255,6 +1258,12 @@ export class ClientBuilder {
  * const params = await client.deriveSwapParams();
  * ```
  */
+/**
+ * Chain the AA config (bundler, paymaster, 7702 Kernel delegation) applies
+ * to. Must match `createSwapSmartAccountClient` in `cctp-inbound/smartAccount.ts`.
+ */
+const AA_CHAIN_ID = 42161;
+
 export class Client {
   readonly #apiClient: ApiClient;
   readonly #config: ClientConfig;
@@ -1501,6 +1510,71 @@ export class Client {
    */
   #getEvmSigningKey(): string {
     return bytesToHex(this.#signer.deriveEvmKey().secretKey);
+  }
+
+  /**
+   * Sign an EIP-712 digest (Permit2 witness or EIP-2612 permit) with the
+   * SDK-controlled EVM key in the format the verifying contract will
+   * accept for `depositor`.
+   *
+   * A sponsored UserOp claim delegates the SDK's EVM address to Kernel V3.3
+   * via EIP-7702. From then on the address has code, so Permit2 verifies
+   * through Kernel's `isValidSignature` instead of `ecrecover`. In that case
+   * this returns Kernel's ERC-1271 envelope (66 bytes: `0x00 || sig` over
+   * the `Kernel(bytes32 hash)` wrapper). Otherwise a plain 65-byte
+   * `r || s || v` signature. `delegated` comes from
+   * {@link Client.#isKernelDelegated}.
+   */
+  #signDepositorDigest(
+    evmKey: string,
+    depositor: string,
+    chainId: number,
+    digest: string,
+    delegated: boolean,
+  ): string {
+    const toSign = delegated
+      ? kernelErc1271Digest(digest, depositor, chainId)
+      : digest;
+    const sig = signEvmDigest(evmKey, toSign);
+    const compact = `0x${sig.r.replace(/^0x/, "")}${sig.s.replace(/^0x/, "")}${sig.v
+      .toString(16)
+      .padStart(2, "0")}`;
+    return delegated ? wrapKernelErc1271Signature(compact) : compact;
+  }
+
+  /**
+   * True if `address` carries an EIP-7702 delegation to Kernel V3.3 on
+   * `chainId`.
+   *
+   * The only RPC this SDK holds is the AA one, and both it and the
+   * sponsored claim that installs the delegation are Arbitrum-only. A
+   * 7702 delegation is per chain, so on any other chain the depositor is
+   * a plain EOA as far as this SDK can tell, and asking the Arbitrum RPC
+   * would report Arbitrum's code for a different chain.
+   */
+  async #isKernelDelegated(address: string, chainId: number): Promise<boolean> {
+    if (chainId !== AA_CHAIN_ID) return false;
+    const rpcUrl = this.#config.aa?.rpcUrl ?? this.#config.aa?.bundlerUrl;
+    if (!rpcUrl) return false;
+    const { createPublicClient, http } = await import("viem");
+    const publicClient = createPublicClient({ transport: http(rpcUrl) });
+    try {
+      const code = await publicClient.getCode({
+        address: address as `0x${string}`,
+      });
+      return isKernelDelegation(code);
+    } catch (e) {
+      // Fall back to the plain signature; if the address is in fact
+      // delegated the server's pre-broadcast dry-run rejects it with a
+      // clear reason instead of burning gas.
+      this.#logger.warn({
+        event: "client.isKernelDelegated.codeLookupFailed",
+        message:
+          "could not read code to detect Kernel delegation; assuming plain EOA",
+        data: { address, error: e instanceof Error ? e.message : String(e) },
+      });
+      return false;
+    }
   }
 
   /**
@@ -5941,14 +6015,19 @@ export class Client {
       deadline,
     });
 
-    // 5. Sign with the EVM key (deterministic for new swaps, per-swap for legacy)
+    // 5. Sign with the EVM key (deterministic for new swaps, per-swap for legacy).
+    // Kernel-delegated depositors get the ERC-1271 envelope, plain EOAs a
+    // compact r || s || v signature.
     const evmKey = this.#getEvmSigningKey();
-    const sig = signEvmDigest(evmKey, digest);
-    // Compact signature: r (32 bytes) || s (32 bytes) || v (1 byte)
-    const rClean = sig.r.replace(/^0x/, "");
-    const sClean = sig.s.replace(/^0x/, "");
-    const vHex = sig.v.toString(16).padStart(2, "0");
-    const compactSignature = `0x${rClean}${sClean}${vHex}`;
+    const depositorAddress = deriveEvmAddress(evmKey);
+    const delegated = await this.#isKernelDelegated(depositorAddress, chainId);
+    const compactSignature = this.#signDepositorDigest(
+      evmKey,
+      depositorAddress,
+      chainId,
+      digest,
+      delegated,
+    );
 
     // 6. Build calls array for the coordinator
     const calls = serverData.calls.map((c) => ({
@@ -5956,9 +6035,6 @@ export class Client {
       value: BigInt(c.value),
       data: c.call_data,
     }));
-
-    // Derive depositor address from the EVM signing key
-    const depositorAddress = deriveEvmAddress(evmKey);
 
     // 7. Encode executeAndCreateWithPermit2 calldata
     const encoded = encodeExecuteAndCreateWithPermit2(
@@ -7010,23 +7086,29 @@ export class Client {
       nonce,
       deadline,
     });
-    // 4b. Use the EVM key (deterministic for new swaps, per-swap for legacy)
+    // 4b. Use the EVM key (deterministic for new swaps, per-swap for legacy).
+    // If the depositor has been delegated to Kernel by a sponsored claim,
+    // Permit2 verifies via ERC-1271 and needs Kernel's envelope.
     const evmKey = this.#getEvmSigningKey();
-    const permit2Sig = signEvmDigest(evmKey, digest);
-    const rClean = permit2Sig.r.replace(/^0x/, "");
-    const sClean = permit2Sig.s.replace(/^0x/, "");
-    const vHex = permit2Sig.v.toString(16).padStart(2, "0");
-    const compactSignature = `0x${rClean}${sClean}${vHex}`;
-
-    // 5. Derive depositor address from EVM key
     const depositorAddress = deriveEvmAddress(evmKey);
+    const delegated = await this.#isKernelDelegated(depositorAddress, chainId);
+    const compactSignature = this.#signDepositorDigest(
+      evmKey,
+      depositorAddress,
+      chainId,
+      digest,
+      delegated,
+    );
 
-    // 6. If EIP-2612 needed (token supports it and not yet approved to Permit2)
+    // 6. If EIP-2612 needed (token supports it and not yet approved to Permit2).
+    // A Kernel-delegated depositor has code, so the token verifies the permit
+    // via ERC-1271: send Kernel's envelope as `signature` instead of v/r/s.
     let eip2612Permit:
       | {
-          v: number;
-          r: string;
-          s: string;
+          v?: number;
+          r?: string;
+          s?: string;
+          signature?: string;
           value: string;
           deadline: number;
           nonce: number;
@@ -7045,15 +7127,30 @@ export class Client {
         nonce: serverData.eip2612.nonce,
         deadline,
       });
-      const sig = signEvmDigest(evmKey, eip2612Digest);
-      eip2612Permit = {
-        v: sig.v,
-        r: sig.r.replace(/^0x/, ""),
-        s: sig.s.replace(/^0x/, ""),
-        value: maxUint256.toString(),
-        deadline: Number(deadline),
-        nonce: serverData.eip2612.nonce,
-      };
+      if (delegated) {
+        eip2612Permit = {
+          signature: this.#signDepositorDigest(
+            evmKey,
+            depositorAddress,
+            chainId,
+            eip2612Digest,
+            delegated,
+          ),
+          value: maxUint256.toString(),
+          deadline: Number(deadline),
+          nonce: serverData.eip2612.nonce,
+        };
+      } else {
+        const sig = signEvmDigest(evmKey, eip2612Digest);
+        eip2612Permit = {
+          v: sig.v,
+          r: sig.r.replace(/^0x/, ""),
+          s: sig.s.replace(/^0x/, ""),
+          value: maxUint256.toString(),
+          deadline: Number(deadline),
+          nonce: serverData.eip2612.nonce,
+        };
+      }
     }
 
     // 7. POST to fund-gasless relay endpoint

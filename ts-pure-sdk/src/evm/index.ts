@@ -69,6 +69,13 @@ export {
   type SwapCreatedLog,
   uuidToBytes32,
 } from "./htlc.js";
+export {
+  isKernelDelegation,
+  KERNEL_DELEGATION_TARGET,
+  kernelErc1271Digest,
+  parseEip7702Delegation,
+  wrapKernelErc1271Signature,
+} from "./kernel.js";
 export { deriveEvmAddress, signEvmDigest } from "./signing.js";
 export {
   type EIP712TypedData,

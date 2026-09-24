@@ -3032,6 +3032,117 @@
           }
         }
       },
+      "BitcoinToLightningSwapResponse": {
+        "type": "object",
+        "description": "Bitcoin on-chain → Lightning swap response.",
+        "required": [
+          "id",
+          "status",
+          "client_lightning_invoice",
+          "invoice_expires_at",
+          "fee_sats",
+          "network_fee_sats",
+          "hash_lock",
+          "btc_htlc_address",
+          "btc_hash_lock",
+          "btc_server_pk",
+          "btc_refund_locktime",
+          "btc_htlc_script_version",
+          "network",
+          "created_at",
+          "source_token",
+          "target_token",
+          "source_amount",
+          "target_amount"
+        ],
+        "properties": {
+          "btc_claim_txid": {
+            "type": ["string", "null"],
+            "description": "Claim transaction ID (server claim)"
+          },
+          "btc_fund_txid": {
+            "type": ["string", "null"],
+            "description": "Funding transaction ID (user funding)"
+          },
+          "btc_hash_lock": {
+            "type": "string",
+            "description": "HASH160 the HTLC script locks on (hex): ripemd160 of the payment hash"
+          },
+          "btc_htlc_address": {
+            "type": "string",
+            "description": "On-chain HTLC address the user must fund"
+          },
+          "btc_htlc_script_version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "btc_refund_locktime": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Absolute refund locktime of the HTLC (unix timestamp)"
+          },
+          "btc_server_pk": {
+            "type": "string",
+            "description": "Server's claim public key in the HTLC (x-only hex)"
+          },
+          "client_lightning_invoice": {
+            "type": "string",
+            "description": "BOLT11 invoice the server pays once the HTLC funding has a confirmation"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Timestamp of when the swap was created"
+          },
+          "fee_sats": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Protocol fee in satoshis"
+          },
+          "hash_lock": {
+            "type": "string",
+            "description": "Hash lock (0x-prefixed 32-byte hex; the invoice's payment hash)"
+          },
+          "id": {
+            "type": "string",
+            "description": "Unique swap identifier"
+          },
+          "invoice_expires_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix timestamp after which the invoice can no longer be paid"
+          },
+          "network": {
+            "type": "string",
+            "description": "Bitcoin network"
+          },
+          "network_fee_sats": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Network fee in satoshis: the provider's quoted Lightning send fee\nplus the mining fee of the server's HTLC claim. The actual send fee\nis paid out of `fee_sats + network_fee_sats`, never on top."
+          },
+          "source_amount": {
+            "type": "string",
+            "description": "Amount the user must lock in the on-chain HTLC in satoshis"
+          },
+          "source_token": {
+            "$ref": "#/components/schemas/TokenInfo",
+            "description": "Source token info"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SwapStatus",
+            "description": "Current status of the swap"
+          },
+          "target_amount": {
+            "type": "string",
+            "description": "Amount paid out on the user's Lightning invoice in satoshis"
+          },
+          "target_token": {
+            "$ref": "#/components/schemas/TokenInfo",
+            "description": "Target token info"
+          }
+        }
+      },
       "BridgeRate": {
         "oneOf": [
           {
@@ -3935,8 +4046,8 @@
       },
       "Eip2612Permit": {
         "type": "object",
-        "description": "EIP-2612 permit signature for gasless token->Permit2 approval.",
-        "required": ["v", "r", "s", "value", "deadline"],
+        "description": "EIP-2612 permit signature for gasless token->Permit2 approval.\n\nEither `v`/`r`/`s` (plain EOA depositor) or `signature` (depositor whose\naddress carries code, e.g. EIP-7702-delegated to Kernel after a\nsponsored claim; the token verifies it via ERC-1271). Exactly one form.",
+        "required": ["value", "deadline"],
         "properties": {
           "deadline": {
             "type": "integer",
@@ -3944,13 +4055,17 @@
             "minimum": 0
           },
           "r": {
-            "type": "string"
+            "type": ["string", "null"]
           },
           "s": {
-            "type": "string"
+            "type": ["string", "null"]
+          },
+          "signature": {
+            "type": ["string", "null"],
+            "description": "Opaque ERC-1271 signature (hex). For a Kernel V3.3 depositor:\n`0x00 || r || s || v` over Kernel's `Kernel(bytes32 hash)` wrapper of\nthe permit digest."
           },
           "v": {
-            "type": "integer",
+            "type": ["integer", "null"],
             "format": "int32",
             "minimum": 0
           },
@@ -4998,6 +5113,23 @@
                   "direction": {
                     "type": "string",
                     "enum": ["evm_to_lightning"]
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/BitcoinToLightningSwapResponse"
+              },
+              {
+                "type": "object",
+                "required": ["direction"],
+                "properties": {
+                  "direction": {
+                    "type": "string",
+                    "enum": ["bitcoin_to_lightning"]
                   }
                 }
               }
