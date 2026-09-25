@@ -1,5 +1,51 @@
 # @lendasat/lendaswap-sdk-pure
 
+## 2.5.0
+
+### Minor Changes
+
+- 033243b: Send one protocol compatibility epoch header per protocol component (`bitcoin-htlc`, `arkade-vhtlc`, `lightning`, `evm-erc20-htlc`, `evm-native-htlc`) on every request instead of the legacy server-version header. Exports `PROTOCOL_HEADERS`, `PROTOCOL_VERSIONS`, `ProtocolComponent` and `ProtocolEpoch`.
+- f0b81a7: Inbound swaps (Bitcoin / Arkade / Lightning → EVM) are now created with the swap's own key as `claiming_address` instead of the wallet-level EVM address. A sponsored UserOp claim installs an EIP-7702 Kernel delegation on the claiming address; keeping that off the wallet-level address means gasless deposits (`fundSwapGasless`) keep signing Permit2 and EIP-2612 as a plain EOA, and the one-address / single-approval deposit UX is unchanged. Swaps created before this release still carry the wallet-level claim address and keep claiming with it; recovery re-derives per-swap keys by index as before.
+- 208a6a9: Arkade ↔ RBTC on Rootstock. `createSwap` routes RBTC (chain `"30"`, the
+  zero-address token) → Arkade to the EVM → Arkade path, and `fundSwap` funds
+  that swap's native lock with one payable transaction, keyed on the
+  `evm_htlc_kind` the EVM → Arkade response now carries alongside its
+  `evm_coordinator_address`. The Arkade → EVM response carries `evm_htlc_kind`
+  too, so the gasless claim signs the `HTLCNative` domain for an RBTC target.
+  `NATIVE_TOKEN_ADDRESS` is exported.
+- 101ebea: On-chain Bitcoin ↔ RBTC on Rootstock. `createSwap` routes RBTC (chain
+  `"30"`, the zero-address token) → Bitcoin to the EVM → Bitcoin path, and
+  `fundSwap` funds that swap's native lock with one payable transaction, keyed
+  on the `evm_htlc_kind` the EVM → Bitcoin response now carries alongside its
+  `evm_coordinator_address`. The Bitcoin → EVM response carries `evm_htlc_kind`
+  too, so the gasless claim signs the `HTLCNative` domain for an RBTC target.
+- c8b3c05: RBTC → Lightning: `fundSwap` funds a native lock (an EVM → Lightning swap whose
+  `evm_htlc_kind` is `native`) with one payable `executeAndCreate` on the native
+  coordinator, carrying the quoted amount as the transaction value; no token
+  approval, Permit2 signature or server calldata. `EvmSigner.sendTransaction` and
+  `call` take an optional `value`, and an optional `getBalance` lets the SDK
+  refuse an underfunded wallet before it signs. Refunds built from the funding
+  log pick the native `refundTo` / `refund` when the lock's asset word is zero.
+  `createSwap` and the Lightning-send quote accept RBTC on Rootstock (chain
+  `"30"`, the zero-address token) as a source (`isEvmSwapSource`).
+- d3d6781: Add `client.claimEvmWithSigner(swapId, signer)`: claim an Arbitrum-hub BTC → EVM swap from the user's own wallet, which pays the gas. It publishes the same signed `redeemAndExecute` calldata as the sponsored UserOp path, so it works without AA / paymaster config and serves as the manual fallback when the automatic claim fails. `buildRedeemAndExecuteTx` and `claimViaSigner` are exported for custom integrations.
+
+### Patch Changes
+
+- 28e51fb: Target backend 0.3.16 in the x-satora-server-version header.
+- fad103c: `claimViaGasless` no longer throws when the server has already relayed, or is
+  already relaying, a claim for the same swap: the result carries the swap's
+  post-claim status (and the claim transaction hash when the server has it), so
+  the auto-claim worker and the frontend stop retrying while the relay confirms.
+  Covers both the current server's idempotent `200` and the `400` older servers
+  answer with.
+- b16242b: Gasless funding (`fundSwapGasless`, `getCoordinatorFundingCallDataPermit2`) now works after the same SDK key has claimed a swap via the sponsored UserOp path. The claim delegates the SDK's EVM address to Kernel V3.3 through EIP-7702, after which Permit2 verifies signatures via Kernel's `isValidSignature`. The SDK now detects the delegation from the server's new `depositor_delegation` hint on the calldata endpoint (authoritative for the swap's chain; against older servers it falls back to probing the AA RPC on Arbitrum) and signs both the Permit2 message and the EIP-2612 permit in Kernel's ERC-1271 envelope instead of as a plain EOA (the permit is sent as an opaque `signature` and submitted through the token's bytes-signature `permit` variant). Helpers `kernelErc1271Digest`, `wrapKernelErc1271Signature`, `isKernelDelegation` and `parseEip7702Delegation` are exported.
+- f79264e: Rootstock testnet (chain `"31"`). A testnet daemon reports Rootstock under
+  its own id, and the SDK now keeps it as `"31"` instead of collapsing it into
+  mainnet's `"30"`. It is typed on `Chain` and the Lightning send source
+  chains, and `isNativeLockChain` recognises it, so RBTC swaps route and fund
+  the same way on testnet.
+
 ## 2.4.0
 
 ### Minor Changes

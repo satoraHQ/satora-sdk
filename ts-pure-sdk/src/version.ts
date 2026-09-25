@@ -3,7 +3,7 @@
 // SDK_COMMIT_HASH is injected from the GIT_COMMIT_HASH env var at build time.
 // DEFAULT_AA_* are injected from AA_BUNDLER_URL / AA_POLICY_ID at publish time.
 export const SDK_NAME = "lendaswap-sdk-pure";
-export const SDK_VERSION = "2.4.0";
+export const SDK_VERSION = "2.5.0";
 export const SDK_COMMIT_HASH = "unknown";
 /** @deprecated Retained for source compatibility; requests no longer send it. */
 export const SATORA_SERVER_VERSION = "0.3.16";
