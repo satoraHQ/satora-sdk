@@ -47,17 +47,22 @@ function lockedTokenFallback(
 }
 
 /**
- * TRUST_SERVER_AMOUNTS — `evm_to_bitcoin` / `evm_to_arkade` check neither leg's
- * amount against the quote.
+ * SHORT_LOCK_RULE — `evm_to_bitcoin` / `evm_to_arkade` are checked against the
+ * worst case the server's rule allows, not the quote.
  *
  * The coordinator swaps the user's token on a DEX and locks whatever comes out,
  * so the client's lock can land short of `evm_expected_sats`. The server accepts
  * that and lowers the payout by the shortfall (`target_amount` changes after
  * funding), but the tracker maps legs once from the stored response. Checking
- * against the quote marks a swap the server accepted and paid out as `invalid`,
- * and the client never claims. Whether a short lock is acceptable, and what it
- * pays, is the server's call; the client claims what the server funded. The
- * legs stay pinned by hash lock, claim address, token and script.
+ * against the quote marked a swap the server accepted and paid out as
+ * `invalid`, and the client never claimed.
+ *
+ * - Client leg: no amount floor. It is the client's own lock; whether a short
+ *   one is acceptable is the server's call.
+ * - Server leg: the DEX min-out is the quoted payout, and a short lock lowers
+ *   the payout 1:1 while fees stay whole, so the server never pays less than
+ *   `payout - fees` ({@link minServerPayout}). The floor stays so a
+ *   short-funded server leg is never claimed.
  */
 const ensure0x = (value: string): `0x${string}` =>
   (value.startsWith("0x") ? value : `0x${value}`) as `0x${string}`;
@@ -157,6 +162,24 @@ function evmLeg(args: {
  */
 const CLIENT_FUNDING_MIN_CONFIRMATIONS = 1;
 
+/**
+ * Sats the server's own fees can differ from `fee_sats` by: the server rounds
+ * the protocol fee on its own and converts token units to sats.
+ */
+const FEE_ROUNDING_SLACK_SATS = 2;
+
+/**
+ * The least a server-funded payout may be ({@link SHORT_LOCK_RULE}):
+ * `target_amount - fee_sats`, less a rounding slack. Holds whether the stored
+ * `target_amount` is the quoted payout or one the server already lowered.
+ */
+function minServerPayout(r: { target_amount: string; fee_sats: number }) {
+  return Math.max(
+    0,
+    Number(r.target_amount) - r.fee_sats - FEE_ROUNDING_SLACK_SATS,
+  );
+}
+
 function bitcoinLeg(
   address: string,
   hashLock: string,
@@ -204,7 +227,7 @@ export function swapToTracked(stored: StoredSwap): TrackedSwap | undefined {
           hashLock: r.hash_lock,
           claimAddress: r.server_evm_address, // the server claims the client's EVM HTLC
           expectedSats: r.evm_expected_sats,
-          minAmount: 0n, // see TRUST_SERVER_AMOUNTS
+          minAmount: 0n, // see SHORT_LOCK_RULE
           // A native lock's asset word is zero; an ERC20 lock's token is not
           // on this response yet, so fall back to the per-chain mainnet
           // constant to complete the isActive tuple.
@@ -218,8 +241,7 @@ export function swapToTracked(stored: StoredSwap): TrackedSwap | undefined {
           timelockSec: r.evm_refund_locktime,
           createdAt: r.created_at,
         }),
-        // No amount floor: see TRUST_SERVER_AMOUNTS.
-        serverHtlc: arkadeLeg(r, r.btc_vhtlc_address, 0),
+        serverHtlc: arkadeLeg(r, r.btc_vhtlc_address, minServerPayout(r)),
         clientRefundLocktime: ms(r.evm_refund_locktime),
         serverRefundLocktime: ms(r.vhtlc_refund_locktime),
       };
@@ -257,7 +279,7 @@ export function swapToTracked(stored: StoredSwap): TrackedSwap | undefined {
           hashLock: r.evm_hash_lock,
           claimAddress: r.server_evm_address, // the server claims the client's EVM HTLC
           expectedSats: r.evm_expected_sats,
-          minAmount: 0n, // see TRUST_SERVER_AMOUNTS
+          minAmount: 0n, // see SHORT_LOCK_RULE
           token: r.wbtc_address,
           // The coordinator created the HTLC on the client's behalf, so it
           // is the lock's sender (refund address).
@@ -265,8 +287,11 @@ export function swapToTracked(stored: StoredSwap): TrackedSwap | undefined {
           timelockSec: r.evm_refund_locktime,
           createdAt: r.created_at,
         }),
-        // No amount floor: see TRUST_SERVER_AMOUNTS.
-        serverHtlc: bitcoinLeg(r.btc_htlc_address, r.evm_hash_lock, 0),
+        serverHtlc: bitcoinLeg(
+          r.btc_htlc_address,
+          r.evm_hash_lock,
+          minServerPayout(r),
+        ),
         clientRefundLocktime: ms(r.evm_refund_locktime),
         serverRefundLocktime: ms(r.btc_refund_locktime),
       };

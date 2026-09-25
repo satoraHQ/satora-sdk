@@ -6,6 +6,7 @@ import { hex } from "@scure/base";
 import { describe, expect, it } from "vitest";
 import { deriveSwapActions } from "../actions/derive.js";
 import { deriveSwapStatus } from "../actions/status.js";
+import type { SwapActions } from "../actions/types.js";
 import { bitcoinObservation } from "../contracts/bitcoin.js";
 import { evmObservation } from "../contracts/evm.js";
 import { swapToTracked } from "./from-swap.js";
@@ -85,6 +86,7 @@ const arkadeEvmFields = {
   wbtc_address: "0xwbtc",
   source_amount: "1500",
   target_amount: "1400",
+  fee_sats: 50,
   ...DELAYS,
 };
 
@@ -128,10 +130,9 @@ describe("swapToTracked", () => {
       expectedAmount: 1450n, // evm_expected_sats (the isActive tuple)
       minAmount: 0n, // the server judges a short DEX lock, not the client
     });
-    // No floor: the server may lower the payout after funding.
     expect(tracked?.serverHtlc).toMatchObject({
       ledger: "arkade",
-      expectedSats: 0,
+      expectedSats: 1348, // target_amount - fee_sats - rounding slack
     });
     expect(tracked?.clientRefundLocktime).toBe(900_000_000); // EVM leg
     expect(tracked?.serverRefundLocktime).toBe(1_000_000_000); // Arkade leg
@@ -165,6 +166,7 @@ describe("swapToTracked", () => {
     wbtc_address: "0xwbtc",
     source_amount: "2500",
     target_amount: "2400",
+    fee_sats: 50,
   };
 
   it("maps evm_to_bitcoin: client funds EVM, claims the BTC HTLC", () => {
@@ -187,7 +189,7 @@ describe("swapToTracked", () => {
       ledger: "bitcoin",
       address: "bcrt1qhtlc",
       preimageHash: hashLock, // sha256 hash, no 0x — the classifier verifies against it
-      expectedSats: 0, // no floor: the server may lower the payout after funding
+      expectedSats: 2348, // target_amount - fee_sats - rounding slack
       minConfirmations: undefined, // server-funded: the reader applies the configured depth
     });
     expect(tracked?.clientRefundLocktime).toBe(900_000_000); // EVM leg
@@ -195,49 +197,73 @@ describe("swapToTracked", () => {
   });
 
   // Swap 4231f867 (2026-09-25): the DEX locked 514 sats short of the quote; the
-  // server accepted it, lowered the payout by the shortfall and funded the BTC
-  // HTLC. The client must claim, not wait for a refund.
-  it("evm_to_bitcoin: a short DEX lock the server paid out on is claimable", () => {
-    const tracked = swapToTracked(
-      stored({
-        ...bitcoinEvmFields,
-        direction: "evm_to_bitcoin",
-        evm_expected_sats: "6571397960363182", // 657,139 sats of tBTC (18 dec)
-        target_amount: "651640", // the quoted payout, stale once funded
-      }),
-    );
+  // server accepted it, lowered the payout by the shortfall to 651,126 and
+  // funded the BTC HTLC. The client must claim, not wait for a refund.
+  const incident = {
+    ...bitcoinEvmFields,
+    direction: "evm_to_bitcoin",
+    evm_expected_sats: "6571397960363182", // 657,139 sats of tBTC (18 dec)
+    target_amount: "651640", // the quoted payout
+    fee_sats: 5499,
+  } as const;
+  const incidentLock = 6566256851536097n; // 656,625 sats
+
+  /** The recommended action once the server leg is funded with `fundedSats`. */
+  function actionFor(
+    response: Partial<GetSwapResponse>,
+    fundedSats: number,
+  ): SwapActions["recommended"] {
+    const tracked = swapToTracked(stored(response));
     const clientLeg = tracked?.clientHtlc;
     const serverLeg = tracked?.serverHtlc;
-    if (clientLeg?.ledger !== "evm" || serverLeg?.ledger !== "bitcoin")
+    if (
+      !tracked ||
+      clientLeg?.ledger !== "evm" ||
+      serverLeg?.ledger !== "bitcoin"
+    )
       throw new Error("expected an EVM client leg and a Bitcoin server leg");
 
     const clientHtlc = evmObservation(
-      [{ kind: "created", amount: 6566256851536097n, token: "0xwbtc" }],
+      [{ kind: "created", amount: incidentLock, token: "0xwbtc" }],
       {
         amount: clientLeg.minAmount ?? clientLeg.expectedAmount,
-        token: "0xwbtc",
+        token: clientLeg.expectedToken,
       },
     ).observation;
     const serverHtlc = bitcoinObservation(
-      { funding: "confirmed", fundedSats: 651126 },
+      { funding: "confirmed", fundedSats },
       hex.decode(hashLock),
       serverLeg.expectedSats,
     ).observation;
-    expect(clientHtlc).toBe("confirmed");
-    expect(serverHtlc).toBe("confirmed");
-
     const status = deriveSwapStatus({ clientHtlc, serverHtlc });
-    expect(status).toBe("serverfunded");
-    if (!tracked || !status) throw new Error("expected a derived status");
-    expect(
-      deriveSwapActions({
-        status,
-        clientChainNow: 0,
-        serverChainNow: 0,
-        clientRefundLocktime: tracked.clientRefundLocktime,
-        serverRefundLocktime: tracked.serverRefundLocktime,
-      }).recommended,
-    ).toBe("claim");
+    if (!status) throw new Error("expected a derived status");
+    return deriveSwapActions({
+      status,
+      clientChainNow: 0,
+      serverChainNow: 0,
+      clientRefundLocktime: tracked.clientRefundLocktime,
+      serverRefundLocktime: tracked.serverRefundLocktime,
+    }).recommended;
+  }
+
+  it("evm_to_bitcoin: a short DEX lock the server paid out on is claimable", () => {
+    expect(actionFor(incident, 651126)).toBe("claim");
+  });
+
+  it("evm_to_bitcoin: claimable when the stored payout is already lowered", () => {
+    expect(actionFor({ ...incident, target_amount: "651126" }, 651126)).toBe(
+      "claim",
+    );
+  });
+
+  it("evm_to_bitcoin: dust in the BTC HTLC is never claimed", () => {
+    expect(actionFor(incident, 546)).not.toBe("claim");
+  });
+
+  it("evm_to_bitcoin: a payout below payout - fees is not claimed", () => {
+    // Floor: 651,640 - 5,499 - 2 = 646,139.
+    expect(actionFor(incident, 646139)).toBe("claim");
+    expect(actionFor(incident, 646138)).not.toBe("claim");
   });
 
   it("evm_to_bitcoin: a lock in another token is still invalid", () => {
