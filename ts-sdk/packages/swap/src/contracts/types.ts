@@ -85,6 +85,13 @@ export type HtlcRef =
        * → `invalid`, so the client never claims a short-funded leg.
        */
       expectedAmount: bigint;
+      /**
+       * Overrides {@link expectedAmount} as the `invalid` threshold, leaving the
+       * `isActive` tuple on the expected amount. For the client's own
+       * coordinator-locked leg, whose amount is DEX output: the server decides
+       * whether a short lock is acceptable, so the client doesn't second-guess it.
+       */
+      minAmount?: bigint;
       /** Expected token address; the funding is `invalid` if it locks another token. */
       expectedToken?: `0x${string}`;
       /**

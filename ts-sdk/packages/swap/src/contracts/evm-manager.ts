@@ -390,7 +390,10 @@ export class EvmContractManager implements ContractManager {
     for (const ref of refs) {
       const { observation, preimage } = evmObservation(
         events.get(refQueryKey(ref)) ?? [],
-        { amount: ref.expectedAmount, token: ref.expectedToken },
+        {
+          amount: ref.minAmount ?? ref.expectedAmount,
+          token: ref.expectedToken,
+        },
       );
       const key = htlcKey(ref);
       if (preimage) this.#preimages.set(key, preimage);
