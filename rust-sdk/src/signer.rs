@@ -37,6 +37,7 @@
 use crate::error::Error;
 use crate::error::Result;
 use bitcoin::Network;
+use bitcoin::NetworkKind;
 use bitcoin::bip32::DerivationPath;
 use bitcoin::bip32::Xpriv;
 use bitcoin::bip32::Xpub;
@@ -98,13 +99,14 @@ impl Signer {
         })
     }
 
-    /// Build from a base58check-encoded BIP-32 extended private key. The
-    /// network byte (mainnet `xprv…` vs testnet `tprv…`) is ignored — only
-    /// the key material is used.
+    /// Build from a base58check-encoded BIP-32 extended private key. A testnet
+    /// `tprv` is treated as mainnet so the storage wallet id and the recovery
+    /// xpub match the same seed imported by mnemonic.
     pub fn from_xprv(xprv: impl Into<String>) -> Result<Self> {
         let trimmed = xprv.into().trim().to_string();
-        let master = Xpriv::from_str(&trimmed)
+        let mut master = Xpriv::from_str(&trimmed)
             .map_err(|e| Error::InvalidSigner(format!("invalid xprv: {e}")))?;
+        master.network = NetworkKind::Main;
         Ok(Self {
             master,
             mnemonic: None,
@@ -400,6 +402,22 @@ mod tests {
         assert_eq!(
             signer_mnemonic.derive_evm_key(0).unwrap(),
             signer_xprv.derive_evm_key(0).unwrap(),
+        );
+    }
+
+    #[test]
+    fn tprv_import_shares_wallet_id_with_mnemonic() {
+        let signer_mnemonic = Signer::from_mnemonic(TEST_MNEMONIC).unwrap();
+        let mut tprv = signer_mnemonic.master;
+        tprv.network = NetworkKind::Test;
+        let tprv = tprv.to_string();
+        assert!(tprv.starts_with("tprv"));
+        let signer_tprv = Signer::from_xprv(tprv).unwrap();
+        let expected = signer_mnemonic.derive_user_id_xpub().unwrap().to_string();
+        assert!(expected.starts_with("xpub"));
+        assert_eq!(
+            signer_tprv.derive_user_id_xpub().unwrap().to_string(),
+            expected
         );
     }
 
