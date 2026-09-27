@@ -57,6 +57,10 @@ pub struct TrackingRecord {
     pub contracts: SwapContracts,
     pub options: TrackingOptions,
     pub attempt: Option<Attempt>,
+    /// Wall time a terminal outcome was first seen. Any reconcile that does not
+    /// derive a terminal outcome clears it, including one whose read failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_ms: Option<u64>,
 }
 #[derive(Clone, Debug)]
 pub struct TrackerOptions {
@@ -69,6 +73,9 @@ pub struct TrackerOptions {
     pub retry_delay: Duration,
     pub max_attempts: u32,
     pub policy: ActionPolicy,
+    /// How long a terminal outcome must hold before the swap is untracked. It
+    /// stands in for reorg depth; zero retires on the first terminal reconcile.
+    pub retire_after: Duration,
 }
 impl Default for TrackerOptions {
     fn default() -> Self {
@@ -82,6 +89,7 @@ impl Default for TrackerOptions {
             retry_delay: Duration::from_secs(30),
             max_attempts: 3,
             policy: ActionPolicy::default(),
+            retire_after: Duration::from_secs(86_400),
         }
     }
 }
@@ -244,6 +252,7 @@ impl SwapTracker {
                 contracts,
                 options,
                 attempt: None,
+                completed_ms: None,
             },
         )
         .await
@@ -342,9 +351,29 @@ impl SwapTracker {
     }
     /// Disable tracking while retaining the execution journal for later recovery.
     pub async fn untrack(&self, id: &str) -> Result<()> {
+        self.disable(id, false).await
+    }
+    fn settled(&self, record: &TrackingRecord) -> Result<bool> {
+        let now = now_ms()?;
+        let after = u64::try_from(self.0.options.retire_after.as_millis()).unwrap_or(u64::MAX);
+        Ok(record.enabled
+            && record
+                .completed_ms
+                .is_some_and(|since| now >= since.saturating_add(after)))
+    }
+    async fn disable(&self, id: &str, only_if_settled: bool) -> Result<()> {
         let _guard = self.0.registration.lock().await;
-        let entry = self.entry(id)?;
+        let entry = match self.entry(id) {
+            Ok(entry) => entry,
+            Err(_) if only_if_settled => return Ok(()),
+            Err(error) => return Err(error),
+        };
         let mut record = entry.record.lock().await;
+        // A later reconcile that cleared completed_ms (a reorg or a failed read), or an
+        // untrack in between, cancels retirement.
+        if only_if_settled && !self.settled(&record)? {
+            return Ok(());
+        }
         let mut next = record.clone();
         next.enabled = false;
         self.save(id, &next)?;
@@ -404,6 +433,8 @@ impl SwapTracker {
         let mut record: TrackingRecord =
             serde_json::from_value(value).map_err(|e| Error::Decode(e.to_string()))?;
         record.enabled = true;
+        // Otherwise a retired swap would retire again on its next reconcile.
+        record.completed_ms = None;
         self.install(id, record).await
     }
     pub async fn update_options(&self, id: &str, options: TrackingOptions) -> Result<()> {
@@ -683,14 +714,41 @@ impl SwapTracker {
                 }
             }
         }
-        let mut previous = entry
-            .actions
-            .lock()
-            .map_err(|_| invalid("tracker state poisoned"))?;
-        if previous.as_ref() != Some(&actions) {
-            self.emit(id, Some(actions.clone()), None);
+        let terminal = match actions.recommended().map(|a| &a.kind) {
+            // The burned USDC of an expired CCTP-funded swap still needs a manual mint.
+            Some(ActionKind::Complete {
+                outcome: Outcome::Expired,
+            }) => !matches!(record.options.bridge, BridgeState::CctpBurn { .. }),
+            Some(ActionKind::Complete { .. }) => true,
+            _ => false,
+        };
+        let completed_ms = if terminal {
+            Some(record.completed_ms.map_or_else(now_ms, Ok)?)
+        } else {
+            None
+        };
+        if completed_ms != record.completed_ms {
+            let mut next = record.clone();
+            next.completed_ms = completed_ms;
+            self.save(id, &next)?;
+            *record = next;
         }
-        *previous = Some(actions.clone());
+        let retire = self.settled(&record)?;
+        {
+            let mut previous = entry
+                .actions
+                .lock()
+                .map_err(|_| invalid("tracker state poisoned"))?;
+            if previous.as_ref() != Some(&actions) {
+                self.emit(id, Some(actions.clone()), None);
+            }
+            *previous = Some(actions.clone());
+        }
+        // disable takes the registration lock first, so the record lock must go.
+        drop(record);
+        if retire {
+            self.disable(id, true).await?;
+        }
         Ok(actions)
     }
     async fn refresh_ids(&self, ids: Vec<String>) -> Result<()> {

@@ -36,15 +36,21 @@ pub async fn track_stored(
 ) -> Result<(SwapTracker, TrackerWorker)> {
     let contracts = client.contract_references(id, &references)?;
     let manager = ContractManager::new(reader, ManagerOptions::default())?;
+    // A retired swap keeps its journal; `resume` it rather than tracking it again.
+    let journaled = client
+        .get_stored_swap(id)?
+        .is_some_and(|swap| swap.metadata.tracking.is_some());
     let tracker = SwapTracker::new(client, manager, TrackerOptions::default(), None)?;
     let failures = tracker.restore().await?;
     if !failures.is_empty() {
         return Err(Error::Storage(format!("restore failures: {failures:?}")));
     }
-    if tracker.record(id).await.is_err() {
+    if !journaled {
         tracker
             .track(id, contracts, TrackingOptions::default())
             .await?;
+    } else if tracker.record(id).await.is_err() {
+        tracker.resume(id).await?;
     }
     let worker = tracker.start()?;
     Ok((tracker, worker))

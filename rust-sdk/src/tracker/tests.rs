@@ -173,6 +173,7 @@ async fn lifecycle_restores_without_duplicate_claim_and_follows_reorgs() {
             outcome: Outcome::Completed
         }
     );
+    assert!(restarted.record(&id).await.unwrap().completed_ms.is_some());
     *reader.0.lock().unwrap() = (HtlcState::Confirmed, HtlcState::Confirmed, 50);
     assert_eq!(
         restarted
@@ -186,6 +187,7 @@ async fn lifecycle_restores_without_duplicate_claim_and_follows_reorgs() {
             on: WaitingOn::ClaimConfirmation
         }
     );
+    assert!(restarted.record(&id).await.unwrap().completed_ms.is_none());
     restarted.untrack(&id).await.unwrap();
     assert!(
         !restarted
@@ -233,6 +235,77 @@ async fn refund_path_never_automates_even_with_executor_enabled() {
         }
     );
     assert_eq!(executor.calls.load(Ordering::SeqCst), 0);
+}
+#[tokio::test]
+async fn terminal_swaps_retire_and_free_capacity() {
+    let options = || TrackerOptions {
+        max_swaps: 1,
+        retire_after: Duration::ZERO,
+        ..Default::default()
+    };
+    let (tracker, reader, _, id) = setup(0, options());
+    track(&tracker, &id).await;
+    *reader.0.lock().unwrap() = (HtlcState::SpentRefund, HtlcState::SpentRefund, 201);
+    assert_eq!(
+        tracker
+            .reconcile(&id)
+            .await
+            .unwrap()
+            .recommended()
+            .unwrap()
+            .kind,
+        ActionKind::Complete {
+            outcome: Outcome::Refunded
+        }
+    );
+    assert!(tracker.record(&id).await.is_err());
+    assert!(tracker.actions(&id).is_err());
+    let journal: TrackingRecord =
+        serde_json::from_value(stored_metadata(&tracker, &id).tracking.unwrap()).unwrap();
+    assert!(!journal.enabled);
+    let fixtures: serde_json::Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/swap-responses.json")).unwrap();
+    let mut response = fixtures["btc_to_arkade"].clone();
+    response["id"] = "00000000-0000-0000-0000-000000000002".into();
+    let stored = StoredSwap::new(
+        1,
+        serde_json::from_value(response).unwrap(),
+        SwapMetadata::default(),
+    )
+    .unwrap();
+    let second = stored.response.id().to_string();
+    tracker.0.client.storage.store_swap(stored).unwrap();
+    track(&tracker, &second).await;
+    let restarted = SwapTracker::new(
+        tracker.0.client.clone(),
+        ContractManager::new(reader.clone(), ManagerOptions::default()).unwrap(),
+        options(),
+        None,
+    )
+    .unwrap();
+    assert!(restarted.restore().await.unwrap().is_empty());
+    assert!(restarted.record(&id).await.is_err());
+    assert!(restarted.record(&second).await.unwrap().enabled);
+}
+#[tokio::test]
+async fn resumed_swap_gets_a_fresh_retention_window() {
+    let (tracker, reader, _, id) = setup(
+        0,
+        TrackerOptions {
+            retire_after: Duration::from_millis(300),
+            ..Default::default()
+        },
+    );
+    track(&tracker, &id).await;
+    *reader.0.lock().unwrap() = (HtlcState::SpentRefund, HtlcState::SpentRefund, 201);
+    tracker.reconcile(&id).await.unwrap();
+    assert!(tracker.record(&id).await.unwrap().enabled);
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    tracker.reconcile(&id).await.unwrap();
+    assert!(tracker.record(&id).await.is_err());
+    tracker.resume(&id).await.unwrap();
+    tracker.reconcile(&id).await.unwrap();
+    assert!(tracker.record(&id).await.unwrap().completed_ms.is_some());
 }
 #[tokio::test]
 async fn ambiguous_errors_require_explicit_reconciliation_and_retries_are_bounded() {

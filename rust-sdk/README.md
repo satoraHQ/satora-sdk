@@ -379,12 +379,18 @@ use lendaswap_sdk::tracker::{SwapTracker, TrackerOptions, TrackingOptions};
 # async fn track(client: Client, reader: Arc<dyn ContractReader>, id: &str, references: ReferenceOptions) -> Result<()> {
 let contracts = client.contract_references(id, &references)?;
 let manager = ContractManager::new(reader, ManagerOptions::default())?;
+// A retired swap keeps its journal; `resume` it rather than tracking it again.
+let journaled = client
+    .get_stored_swap(id)?
+    .is_some_and(|swap| swap.metadata.tracking.is_some());
 let tracker = SwapTracker::new(client, manager, TrackerOptions::default(), None)?;
 let failures = tracker.restore().await?;
 // Surface unsupported/corrupt records; they remain in storage for recovery.
 assert!(failures.is_empty(), "tracking restore failures: {failures:?}");
-if tracker.record(id).await.is_err() {
+if !journaled {
     tracker.track(id, contracts, TrackingOptions::default()).await?;
+} else if tracker.record(id).await.is_err() {
+    tracker.resume(id).await?;
 }
 let mut events = tracker.events();
 let worker = tracker.start()?;
@@ -402,7 +408,15 @@ trigger chain reads. `hint` coalesces IDs, `refresh(true)` reconciles at-risk
 swaps, and periodic full refreshes also revisit apparently completed swaps after
 reorgs. `actions` returns the last published snapshot; use `reconcile` for a fresh
 read before acting. `untrack` disables a record without deleting its journal;
-`resume` re-enables it. Dropping the worker cancels local work.
+`resume` re-enables it. A swap whose terminal outcome has held for
+`TrackerOptions::retire_after` (default 24 hours) is disabled as if by `untrack`,
+which frees its `max_swaps` slot; afterwards `record` and `actions` report that it
+is not tracked, and `resume` re-enables it with a fresh window. An expired swap
+whose bridge is still `CctpBurn` needs a manual mint, so it stays tracked until
+`update_options` records the bridge as delivered. A retired swap is
+no longer watched, so a reorg deeper than the window, or a deposit made after an
+unfunded swap expired, goes unnoticed until it is resumed. Dropping the worker
+cancels local work.
 
 Automatic execution needs both an `ActionExecutor` adapter and per-swap
 `auto_claim` or `auto_cctp` opt-in. Adapters should call the SDK's durable execution
