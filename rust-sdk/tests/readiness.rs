@@ -453,7 +453,7 @@ async fn recovery_rejects_a_wrong_wallet_before_mutating_storage() {
     swap["hash_lock"] = json!("00".repeat(32));
     Mock::given(path("/swap/recover"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "swaps":[swap],"highest_index":3,"next_index":4,"scanned_until":10,"complete":true
+            "swaps":[recovered(2), swap],"highest_index":3,"next_index":4,"scanned_until":10,"complete":true
         })))
         .mount(&server)
         .await;
@@ -464,10 +464,15 @@ async fn recovery_rejects_a_wrong_wallet_before_mutating_storage() {
         .storage(storage.clone())
         .build()
         .unwrap();
-    assert!(matches!(
-        client.recover_swaps(None).await,
-        Err(Error::InvalidSwap(_))
-    ));
+    match client.recover_swaps(None).await {
+        Err(Error::InvalidSwap(message)) => assert!(
+            message.contains("swap-3 does not match this wallet"),
+            "{message}"
+        ),
+        other => panic!("expected a wallet mismatch, got {other:?}"),
+    }
+    // The valid swap on the same page is not persisted either.
+    assert_eq!(storage.get_swap_key_index("swap-2").unwrap(), None);
     assert_eq!(storage.get_swap_key_index("swap-3").unwrap(), None);
     assert_eq!(storage.next_key_index().unwrap(), 0);
 }

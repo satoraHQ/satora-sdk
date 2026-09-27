@@ -96,9 +96,10 @@ pub struct ArkadeConfig {
     /// passed to `create_evm_to_arkade_swap` — otherwise the receiver
     /// keypair in the VHTLC won't match the claim signer.
     pub identity_mnemonic: String,
-    /// Network the VHTLC was created on. The SDK pins this to
-    /// [`Network::Regtest`] for the e2e harness today; production
-    /// wiring will switch on the swap's `network` field.
+    /// Bitcoin network of the Arkade server and Esplora endpoint, set by the
+    /// caller. It selects the identity wallet and chain backend network; claims
+    /// and refunds reject a swap whose `network` differs from the server's or
+    /// the chain backend's.
     pub network: Network,
     /// SQLite DB path for ark-rs contract-manager state. If omitted,
     /// ark-rs uses its default `contracts.db` path relative to the

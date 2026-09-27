@@ -229,7 +229,9 @@ eligible VTXOs after checking the expected funding amount. `refund_arkade` check
 maturity against Bitcoin chain data; `collab_refund_arkade` obtains and verifies
 the receiver's signatures for Arkade→EVM refunds. `arkade_htlc`, `vhtlc_balance`,
 and `spend_arkade` expose reconstruction, spend observations, and an injectable
-`ArkadeBackend` for external integrations.
+`ArkadeBackend` for external integrations. `ClientBuilder::arkade_config` has no
+default endpoints; the TypeScript SDK defaults to `https://arkade.computer` on
+mainnet and `https://mutinynet.arkade.sh` on signet (Mutinynet).
 
 Offchain progress retains exact PSBTs with condition witnesses removed. Resume
 with the same operation and destination: the SDK re-derives the preimage, queries
