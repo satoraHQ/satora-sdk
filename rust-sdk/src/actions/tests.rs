@@ -306,6 +306,81 @@ fn submitted_claims_bridges_and_lightning_are_not_assumed_complete() {
     );
 }
 
+#[test]
+fn cctp_recovery_follows_expiry_grace_and_verification() {
+    use HtlcState::*;
+    let contracts = SwapContracts {
+        client: Some(reference(200)),
+        server: Some(reference(100)),
+    };
+    let attested = BridgeState::CctpBurn {
+        source_transaction: "burn".into(),
+        attestation_available: true,
+    };
+    let unattested = BridgeState::CctpBurn {
+        source_transaction: "burn".into(),
+        attestation_available: false,
+    };
+    let recommend = |client: Observation, server: Observation, bridge: &BridgeState, submitted| {
+        let mut data = input(&contracts, &client, &server);
+        data.bridge = bridge;
+        data.funding_submitted = submitted;
+        derive_actions(data, &ActionPolicy::default())
+            .recommended()
+            .unwrap()
+            .kind
+            .clone()
+    };
+    let server = || observation(Absent, 50);
+    assert_eq!(
+        recommend(observation(Absent, 50), server(), &attested, false),
+        ActionKind::RecoverCctp {
+            source_transaction: "burn".into()
+        }
+    );
+    assert_eq!(
+        recommend(observation(Absent, 200), server(), &attested, false),
+        ActionKind::Wait {
+            on: WaitingOn::Verification
+        }
+    );
+    assert_eq!(
+        recommend(observation(Absent, 206), server(), &attested, false),
+        ActionKind::Complete {
+            outcome: Outcome::Expired
+        }
+    );
+    assert_eq!(
+        recommend(observation(Absent, 206), server(), &unattested, false),
+        ActionKind::Complete {
+            outcome: Outcome::Expired
+        }
+    );
+    assert_eq!(
+        recommend(observation(Absent, 50), server(), &unattested, false),
+        ActionKind::Wait {
+            on: WaitingOn::BridgeAttestation
+        }
+    );
+    assert_eq!(
+        recommend(
+            observation(Absent, 50),
+            observation(Unknown, 50),
+            &attested,
+            false
+        ),
+        ActionKind::Wait {
+            on: WaitingOn::Verification
+        }
+    );
+    assert_eq!(
+        recommend(observation(Absent, 206), server(), &attested, true),
+        ActionKind::Wait {
+            on: WaitingOn::FundingConfirmation
+        }
+    );
+}
+
 #[cfg(feature = "gasless")]
 #[test]
 fn evm_refunds_ignore_legacy_cooperative_capability_and_wait_for_maturity() {

@@ -60,6 +60,7 @@ impl Client {
                     }
                     if stored.metadata.evm_fund_started == Some(true) {return Err(invalid(crate::evm::funding::UNRESOLVED_FUNDING));}
                     crate::evm::verify_derived_hash_lock(self,&stored,&context)?;
+                    if wallet.block_timestamp().await? >= context.timelock {return Err(invalid("swap timelock has expired on chain"));}
                     let used=word(&wallet.call(&transaction(wallet,destination.transmitter,super::cctp::usedNoncesCall {nonce:decoded.nonce}.abi_encode())).await?)?;
                     if used>U256::ONE {return Err(invalid("invalid CCTP nonce state"));}
                     let funding=self.get_permit2_funding_data(id).await?;

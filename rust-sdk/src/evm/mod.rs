@@ -107,7 +107,8 @@ pub trait EvmWallet: Send + Sync {
     fn call<'a>(&'a self, transaction: &'a EvmTransaction) -> WalletFuture<'a, Bytes>;
     fn send_transaction<'a>(&'a self, transaction: &'a EvmTransaction) -> WalletFuture<'a, B256>;
     fn wait_for_receipt(&self, hash: B256) -> WalletFuture<'_, EvmReceipt>;
-    /// Chain time is required for unilateral refunds. Funding-only adapters may omit it.
+    /// Chain time is required for claims, unilateral refunds, permit signing and CCTP
+    /// funding. Adapters used only for other funding paths may omit it.
     fn block_timestamp(&self) -> WalletFuture<'_, u64> {
         Box::pin(async { Err(invalid("wallet adapter does not expose chain time")) })
     }

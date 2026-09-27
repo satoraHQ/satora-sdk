@@ -15,6 +15,7 @@ use serde_json::json;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
 struct Wallet {
@@ -26,6 +27,7 @@ struct Wallet {
     lose_submission: AtomicBool,
     allowance: U256,
     used_nonce: bool,
+    now: AtomicU64,
 }
 impl EvmWallet for Wallet {
     fn address(&self) -> Address {
@@ -81,6 +83,9 @@ impl EvmWallet for Wallet {
             Ok(self.receipt.clone())
         })
     }
+    fn block_timestamp(&self) -> WalletFuture<'_, u64> {
+        Box::pin(async move { Ok(self.now.load(Ordering::Relaxed)) })
+    }
 }
 fn log(address: Address, event: impl SolEvent) -> EvmLog {
     let data = event.encode_log_data();
@@ -105,6 +110,7 @@ fn wallet(chain_id: u64, address: Address, logs: Vec<EvmLog>) -> Wallet {
         lose_submission: AtomicBool::new(false),
         allowance: U256::MAX,
         used_nonce: false,
+        now: AtomicU64::new(1_900_000_000),
     }
 }
 fn client() -> (Client, String, Arc<InMemorySwapStorage>) {
@@ -571,9 +577,27 @@ async fn sponsored_cctp_mint_and_funding_share_one_batch_and_resume_after_restar
             .unwrap(),
         )
         .unwrap();
+    wallet.now.store(htlc.timelock, Ordering::Relaxed);
+    let expired = sdk
+        .fund_swap_from_cctp(&id, &wallet, request.clone(), &PollOptions::default())
+        .await
+        .unwrap_err();
+    assert!(expired.to_string().contains("timelock has expired"));
+    assert!(
+        storage
+            .get_swap(&id)
+            .unwrap()
+            .unwrap()
+            .metadata
+            .bridge_operations
+            .is_none_or(|operations| !operations.contains_key("cctp_fund"))
+    );
+    wallet.now.store(htlc.timelock - 1, Ordering::Relaxed);
     sdk.fund_swap_from_cctp(&id, &wallet, request.clone(), &PollOptions::default())
         .await
         .unwrap();
+    // A batch that already landed must still resume once the timelock has passed.
+    wallet.now.store(htlc.timelock + 1, Ordering::Relaxed);
     sdk.fund_swap_from_cctp(&id, &wallet, request, &PollOptions::default())
         .await
         .unwrap();

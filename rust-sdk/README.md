@@ -301,7 +301,8 @@ not been exercised against live bridges in this change.
 `fund_swap_from_cctp` atomically combines a validated attestation's mint with
 bounded Permit2 funding in a sponsored Kernel batch. It checks the destination
 account, USDC token, net mint amount, coordinator, HTLC, approved DEX targets, and
-funding receipt. It also supports a nonce already consumed by the forwarder,
+funding receipt, and refuses a fresh submission once chain time reaches the swap
+timelock. It also supports a nonce already consumed by the forwarder,
 provided the account still holds the required USDC. An interrupted `cctp_fund`
 operation blocks other funding paths until its original receipt is reconciled.
 

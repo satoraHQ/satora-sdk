@@ -298,6 +298,43 @@ async fn terminal_swaps_retire_and_free_capacity() {
     assert!(restarted.record(&second).await.unwrap().enabled);
 }
 #[tokio::test]
+async fn an_expired_swap_with_an_unminted_cctp_burn_is_not_retired() {
+    let (tracker, reader, _, id) = setup(
+        0,
+        TrackerOptions {
+            retire_after: Duration::ZERO,
+            ..Default::default()
+        },
+    );
+    track(&tracker, &id).await;
+    tracker
+        .update_options(
+            &id,
+            TrackingOptions {
+                bridge: BridgeState::CctpBurn {
+                    source_transaction: "burn".into(),
+                    attestation_available: true,
+                },
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    *reader.0.lock().unwrap() = (HtlcState::Absent, HtlcState::Absent, 206);
+    let actions = tracker.reconcile(&id).await.unwrap();
+    assert_eq!(
+        actions.recommended().unwrap().kind,
+        ActionKind::Complete {
+            outcome: Outcome::Expired
+        }
+    );
+    assert!(tracker.record(&id).await.unwrap().enabled);
+    // A completed swap was funded, so its burn was minted and it retires.
+    *reader.0.lock().unwrap() = (HtlcState::Confirmed, HtlcState::SpentClaim, 206);
+    tracker.reconcile(&id).await.unwrap();
+    assert!(tracker.record(&id).await.is_err());
+}
+#[tokio::test]
 async fn resumed_swap_gets_a_fresh_retention_window() {
     let (tracker, reader, _, id) = setup(
         0,

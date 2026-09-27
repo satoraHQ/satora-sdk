@@ -280,26 +280,6 @@ pub fn derive_actions(input: ActionInput<'_>, policy: &ActionPolicy) -> SwapActi
         if input.submission_uncertain {
             return wait(WaitingOn::SubmissionRecovery);
         }
-        if let BridgeState::CctpBurn {
-            source_transaction,
-            attestation_available,
-        } = input.bridge
-            && matches!(client, Some(HtlcState::Absent))
-        {
-            if input.funding_submitted {
-                return wait(WaitingOn::FundingConfirmation);
-            }
-            return if *attestation_available {
-                vec![action(
-                    ActionKind::RecoverCctp {
-                        source_transaction: source_transaction.clone(),
-                    },
-                    Automation::Automatic,
-                )]
-            } else {
-                wait(WaitingOn::BridgeAttestation)
-            };
-        }
         match status {
             None => wait(WaitingOn::Verification),
             Some(Pending) => {
@@ -313,7 +293,27 @@ pub fn derive_actions(input: ActionInput<'_>, policy: &ActionPolicy) -> SwapActi
                     return wait(WaitingOn::FundingConfirmation);
                 }
                 match expired(input.contracts.client.as_ref(), input.client) {
-                    Some(false) => vec![action(ActionKind::Fund, Automation::Manual)],
+                    Some(false) => match input.bridge {
+                        BridgeState::CctpBurn {
+                            source_transaction,
+                            attestation_available: true,
+                        } => vec![action(
+                            ActionKind::RecoverCctp {
+                                source_transaction: source_transaction.clone(),
+                            },
+                            Automation::Automatic,
+                        )],
+                        BridgeState::CctpBurn {
+                            attestation_available: false,
+                            ..
+                        } => wait(WaitingOn::BridgeAttestation),
+                        BridgeState::None
+                        | BridgeState::OutboundPending
+                        | BridgeState::OutboundFailed
+                        | BridgeState::Delivered => {
+                            vec![action(ActionKind::Fund, Automation::Manual)]
+                        }
+                    },
                     Some(true) => {
                         let reference = input.contracts.client.as_ref().unwrap();
                         let point = input.client.and_then(|o| o.point.as_ref()).unwrap();
