@@ -247,7 +247,7 @@ impl Client {
                 return Err(invalid("swap is not safely refunded; refresh its status"));
             }
             let htlc = self
-                .read_funded_evm_htlc(id, wallet, options, false)
+                .read_funded_evm_htlc(id, wallet, options, false, false)
                 .await?;
             if htlc.token.is_zero() {
                 return Err(invalid(

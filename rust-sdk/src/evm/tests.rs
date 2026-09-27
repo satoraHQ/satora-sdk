@@ -384,6 +384,102 @@ async fn refunds_use_chain_time_and_coordinator_deposit_ownership() {
     );
 }
 
+/// A wallet other than the swap owner, reporting `depositor` from the coordinator.
+struct Submitter<'a> {
+    wallet: &'a Wallet,
+    depositor: Address,
+}
+impl EvmWallet for Submitter<'_> {
+    fn address(&self) -> Address {
+        Address::repeat_byte(7)
+    }
+    fn chain_id(&self) -> u64 {
+        self.wallet.chain_id()
+    }
+    fn sign_typed_data<'a>(&'a self, data: &'a EvmTypedData) -> WalletFuture<'a, Signature> {
+        self.wallet.sign_typed_data(data)
+    }
+    fn call<'a>(&'a self, tx: &'a EvmTransaction) -> WalletFuture<'a, Bytes> {
+        if tx.data.starts_with(&Coordinator::depositsCall::SELECTOR) {
+            let word = U256::from_be_slice(self.depositor.as_slice()).to_be_bytes::<32>();
+            return Box::pin(async move { Ok(word.to_vec().into()) });
+        }
+        self.wallet.call(tx)
+    }
+    fn send_transaction<'a>(&'a self, tx: &'a EvmTransaction) -> WalletFuture<'a, B256> {
+        self.wallet.send_transaction(tx)
+    }
+    fn wait_for_receipt(&self, hash: B256) -> WalletFuture<'_, EvmReceipt> {
+        self.wallet.wait_for_receipt(hash)
+    }
+    fn block_timestamp(&self) -> WalletFuture<'_, u64> {
+        self.wallet.block_timestamp()
+    }
+}
+
+#[tokio::test]
+async fn coordinator_refunds_accept_any_submitter_for_the_recorded_depositor_only() {
+    let (client, wallet, store) = setup(false);
+    wallet.now.store(wallet.htlc.timelock, Ordering::Relaxed);
+    let options = RefundOptions {
+        htlc: wallet.htlc.address,
+        lock_token: wallet.htlc.token,
+        coordinator: Some(wallet.coordinator),
+        timeout: Duration::from_secs(10),
+    };
+    let foreign = Submitter {
+        wallet: &wallet,
+        depositor: Address::repeat_byte(8),
+    };
+    let error = client
+        .refund_evm_with_wallet("test", &foreign, options.clone())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("depositor"), "{error}");
+    let submitter = Submitter {
+        wallet: &wallet,
+        depositor: wallet.owner,
+    };
+    let direct = RefundOptions {
+        coordinator: None,
+        ..options.clone()
+    };
+    let error = client
+        .refund_evm_with_wallet("test", &submitter, direct)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("does not match swap"), "{error}");
+    let error = client
+        .get_funded_evm_htlc("test", &submitter, &options)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("does not match swap"), "{error}");
+    assert!(wallet.sent.lock().unwrap().is_empty());
+    let receipt = client
+        .refund_evm_with_wallet("test", &submitter, options)
+        .await
+        .unwrap();
+    let sent = wallet.sent.lock().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        (sent[0].from, sent[0].to),
+        (submitter.address(), wallet.coordinator)
+    );
+    assert!(
+        sent[0]
+            .data
+            .starts_with(&Coordinator::refundToCall::SELECTOR)
+    );
+    assert_eq!(
+        store
+            .get_swap("test")
+            .unwrap()
+            .unwrap()
+            .metadata
+            .evm_refund_txid,
+        Some(receipt.transaction_hash.to_string())
+    );
+}
 #[tokio::test]
 async fn receipts_with_wrong_contract_key_or_preimage_are_rejected() {
     let (_, wallet, _) = setup(true);

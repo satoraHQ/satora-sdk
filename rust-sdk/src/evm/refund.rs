@@ -47,7 +47,8 @@ impl Client {
         wallet: &dyn EvmWallet,
         options: &RefundOptions,
     ) -> Result<EvmHtlc> {
-        self.read_funded_evm_htlc(id, wallet, options, true).await
+        self.read_funded_evm_htlc(id, wallet, options, true, false)
+            .await
     }
 
     pub(super) async fn read_funded_evm_htlc(
@@ -56,12 +57,21 @@ impl Client {
         wallet: &dyn EvmWallet,
         options: &RefundOptions,
         require_depositor: bool,
+        any_submitter: bool,
     ) -> Result<EvmHtlc> {
         let stored = self
             .get_stored_swap(id)?
             .ok_or_else(|| invalid("swap record missing"))?;
         let context = EvmContext::from_response(&stored.response)?;
-        context.validate_wallet(wallet)?;
+        // Coordinator refundTo pays deposits[key] whoever calls it, so any funded
+        // wallet may submit; HTLC refund pays msg.sender and stays owner-only.
+        if any_submitter && options.coordinator.is_some() {
+            if wallet.chain_id() != context.chain_id {
+                return Err(invalid("wallet chain does not match swap"));
+            }
+        } else {
+            context.validate_wallet(wallet)?;
+        }
         if !context.is_source || context.htlc != options.htlc {
             return Err(invalid("refund requires the configured EVM-source HTLC"));
         }
@@ -112,7 +122,7 @@ impl Client {
             let bytes = word(&depositor)?.to_be_bytes::<32>();
             if bytes[..12] != [0u8; 12] || Address::from_slice(&bytes[12..]) != context.owner {
                 return Err(invalid(
-                    "coordinator deposit does not belong to this wallet",
+                    "coordinator depositor does not match this swap",
                 ));
             }
         }
@@ -132,7 +142,13 @@ impl Client {
                 .ok_or_else(|| invalid("swap record missing"))?
                 .metadata;
             let htlc = self
-                .read_funded_evm_htlc(id, wallet, &options, metadata.evm_refund_txid.is_none())
+                .read_funded_evm_htlc(
+                    id,
+                    wallet,
+                    &options,
+                    metadata.evm_refund_txid.is_none(),
+                    true,
+                )
                 .await?;
             if let Some(hash) = metadata.evm_refund_txid {
                 let hash = parse::<B256>(&hash)?;

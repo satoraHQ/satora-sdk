@@ -170,8 +170,10 @@ coordinate exclusive ownership of a swap before executing it.
 contract version and remaining claim window before signing. Wallet-submitted
 claims/refunds verify the exact terminal event in the mined receipt.
 `refund_evm_with_wallet` derives the locked amount from the funding receipt and
-checks chain time. EVM cooperative refunds are intentionally unsupported by HTLC
-v6 and are not exposed by the Rust SDK. Arkade cooperative refunds remain supported.
+checks chain time. A coordinator refund can be sent from any funded wallet and
+pays the recorded depositor; a direct HTLC refund must come from the owner. EVM
+cooperative refunds are intentionally unsupported by HTLC v6 and are not exposed
+by the Rust SDK. Arkade cooperative refunds remain supported.
 These operations require complete stored records and the relevant contract
 addresses and output limits supplied by the caller.
 
