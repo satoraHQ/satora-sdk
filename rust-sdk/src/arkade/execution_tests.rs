@@ -947,3 +947,24 @@ async fn cooperative_delegate_rejects_forfeit_signed_without_anyonecanpay() {
             .is_none()
     );
 }
+#[tokio::test]
+async fn unspent_surplus_next_to_a_spent_vtxo_keeps_the_spent_verdict() {
+    use crate::observation::ArkadeReader;
+    use crate::observation::ContractReader;
+    use crate::observation::ContractRef;
+    use crate::observation::HtlcState;
+
+    let (client, mut backend, _, _) = setup("btc_to_arkade");
+    let htlc = client.arkade_htlc("arkade").unwrap();
+    let reference = ContractRef::Arkade {
+        options: htlc.options,
+        network: htlc.network,
+        expected_sats: htlc.expected_amount.to_sat(),
+    };
+    backend.vtxos[0].is_spent = true;
+    let reader = ArkadeReader::new(Arc::new(backend), Arc::new(Chain(100)));
+    let observation = reader.observe(&reference).await.unwrap();
+    assert_eq!(observation.state, HtlcState::SpentUnknown);
+    assert_eq!(observation.remaining_amount, "50000");
+    assert_eq!(observation.funded_amount, "100000");
+}

@@ -97,7 +97,7 @@ impl ContractReader for ArkadeReader {
             }
             let state = if total == 0 {
                 HtlcState::Absent
-            } else if remaining > 0 {
+            } else if claims + refunds + unknown == 0 {
                 if total < *expected_sats {
                     HtlcState::Invalid
                 } else {

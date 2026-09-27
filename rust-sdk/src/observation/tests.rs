@@ -163,6 +163,71 @@ fn bitcoin_confirmations_preimages_spend_paths_and_reorgs() {
     );
 }
 #[test]
+fn bitcoin_surplus_after_a_spend_keeps_the_spent_verdict() {
+    let h = htlc();
+    let mut history = funding(&h);
+    let scripts = h.scripts().unwrap();
+    let control = scripts
+        .spend_info
+        .control_block(&(scripts.claim.clone(), LeafVersion::TapScript))
+        .unwrap();
+    let outpoint = history.observation.utxos[0].outpoint;
+    let spend = Transaction {
+        version: transaction::Version::TWO,
+        lock_time: absolute::LockTime::ZERO,
+        input: vec![TxIn {
+            previous_output: outpoint,
+            script_sig: ScriptBuf::new(),
+            sequence: Sequence::MAX,
+            witness: Witness::from_slice(&[
+                vec![1; 64],
+                vec![42; 32],
+                scripts.claim.as_bytes().to_vec(),
+                control.serialize(),
+            ]),
+        }],
+        output: vec![],
+    };
+    history.observation.utxos.clear();
+    history.transactions.push(BitcoinHistoryTransaction {
+        transaction: spend,
+        confirmed_height: Some(100),
+    });
+    let surplus = Transaction {
+        version: transaction::Version::TWO,
+        lock_time: absolute::LockTime::ZERO,
+        input: vec![],
+        output: vec![TxOut {
+            value: Amount::from_sat(330),
+            script_pubkey: h.address().unwrap().script_pubkey(),
+        }],
+    };
+    history.observation.utxos.push(BitcoinUtxo {
+        outpoint: OutPoint {
+            txid: surplus.compute_txid(),
+            vout: 0,
+        },
+        output: surplus.output[0].clone(),
+        confirmed_height: Some(100),
+    });
+    history.transactions.push(BitcoinHistoryTransaction {
+        transaction: surplus,
+        confirmed_height: Some(100),
+    });
+    let observation = bitcoin_reader::classify(&h, 10000, 1, &history).unwrap();
+    assert_eq!(observation.state, HtlcState::SpentClaim);
+    assert_eq!(observation.preimage.unwrap().expose(), &[42; 32]);
+    assert_eq!(observation.remaining_amount, "330");
+    assert_eq!(observation.funded_amount, "10330");
+    history.transactions[1].confirmed_height = None;
+    assert_eq!(
+        bitcoin_reader::classify(&h, 10000, 1, &history)
+            .unwrap()
+            .state,
+        HtlcState::SpentUnknown
+    );
+}
+#[test]
 fn arkade_classification_binds_the_spending_input_and_executed_leaf() {
     let options = crate::arkade::StrictVhtlcOptions {
         sender: key(1),

@@ -173,7 +173,9 @@ pub(super) fn classify(
     }
     let state = if total == 0 {
         HtlcState::Absent
-    } else if remaining == 0 {
+    } else if claims + refunds + unknown > 0 {
+        // Anyone can pay the address but only the swap parties can spend it, so
+        // outputs left after a spend are surplus and must not revive the leg.
         if pending || unknown > 0 || (claims > 0 && refunds > 0) {
             HtlcState::SpentUnknown
         } else if claims > 0 {
