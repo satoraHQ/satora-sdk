@@ -16,112 +16,112 @@ state the actual change and validation, without tool attribution.
 ## Completed baseline
 
 - [x] `3c530f5f`: current Lightning API shapes; all nine response directions;
-  EVM→Lightning creation/quotes; discovery; SQLite indices; recovery; bounded
-  polling; redacted diagnostics. Includes HASH160 recovery for BTC→Arkade.
+      EVM→Lightning creation/quotes; discovery; SQLite indices; recovery; bounded
+      polling; redacted diagnostics. Includes HASH160 recovery for BTC→Arkade.
 
 ## Remaining steps
 
 1. [x] **Persist complete swap records and execution metadata.** Extend memory and
-   SQLite stores with list/get/update/delete/clear, preserving allocation counters.
-   Retain original key indices, bridge recipients, deposit transaction data, and
-   response snapshots across restarts. Add explicit key ownership/derivation data
-   for imported/external EVM signers. Test migration, monotonic allocation,
-   concurrent writes, reopening, and interrupted recovery.
+       SQLite stores with list/get/update/delete/clear, preserving allocation counters.
+       Retain original key indices, bridge recipients, deposit transaction data, and
+       response snapshots across restarts. Add explicit key ownership/derivation data
+       for imported/external EVM signers. Test migration, monotonic allocation,
+       concurrent writes, reopening, and interrupted recovery.
 
 2. [x] **Complete swap creation and routing.** BTC→Arkade; Bitcoin/Arkade/Lightning→EVM;
-   EVM→Bitcoin; generic EVM tokens with explicit chain IDs; bridge options;
-   invoice descriptions and fee overrides. Extend the general dispatcher without
-   ambiguous BTC rail inference. Match strict script versions, HASH160/SHA256,
-   amount encoding, retries, and destination validation to TypeScript. Validate
-   request bodies and response handling for every direction against OpenAPI.
+       EVM→Bitcoin; generic EVM tokens with explicit chain IDs; bridge options;
+       invoice descriptions and fee overrides. Extend the general dispatcher without
+       ambiguous BTC rail inference. Match strict script versions, HASH160/SHA256,
+       amount encoding, retries, and destination validation to TypeScript. Validate
+       request bodies and response handling for every direction against OpenAPI.
 
 3. [x] **Add DEX quoting and local quote composition.** Typed DEX quote/calldata
-   requests and responses, token discovery, explicit quote amount variants,
-   fee/referral composition, source/target amount rounding, peg conversions,
-   bridge fees and cache expiry. Reuse TypeScript test vectors and cover large
-   ERC-20 amounts without floating-point amount loss.
+       requests and responses, token discovery, explicit quote amount variants,
+       fee/referral composition, source/target amount rounding, peg conversions,
+       bridge fees and cache expiry. Reuse TypeScript test vectors and cover large
+       ERC-20 amounts without floating-point amount loss.
 
 4. [x] **Complete EVM execution.** Typed calldata retrieval; external wallet
-   signer interface; Permit2 funding and approvals; EIP-712 claims; gasless claim;
-   timeout refunds; refunded-swap continuation; stranded deposit
-   recovery. Validate chain IDs, recipients, HTLC versions, hash locks, nonces,
-   typed-data domains, and submitted transactions before releasing a preimage or
-   signing. Compare signatures/calldata against TypeScript/contract vectors.
-   Funding checkpoint: external-wallet interface, bounded Permit2 approvals,
-   fresh-quote validation, receipt checks, transaction/UserOperation persistence,
-   and recovered-key selection implemented.
-   Settlement checkpoint: RPC wallet, chain-verified EVM claims, server gasless
-   claims and receipt-derived timeout refunds implemented. EVM cooperative
-   refunds are intentionally unsupported and excluded from the SDK.
-   Recovery checkpoint: receipt-verified refunded-token continuation, persisted
-   replacement IDs, stranded ERC-20 recovery, and pending funding UserOperation
-   resumption implemented. Sponsored claims now share the validated UserOperation
-   publisher with funding, with operation persistence and receipt verification.
+       signer interface; Permit2 funding and approvals; EIP-712 claims; gasless claim;
+       timeout refunds; refunded-swap continuation; stranded deposit
+       recovery. Validate chain IDs, recipients, HTLC versions, hash locks, nonces,
+       typed-data domains, and submitted transactions before releasing a preimage or
+       signing. Compare signatures/calldata against TypeScript/contract vectors.
+       Funding checkpoint: external-wallet interface, bounded Permit2 approvals,
+       fresh-quote validation, receipt checks, transaction/UserOperation persistence,
+       and recovered-key selection implemented.
+       Settlement checkpoint: RPC wallet, chain-verified EVM claims, server gasless
+       claims and receipt-derived timeout refunds implemented. EVM cooperative
+       refunds are intentionally unsupported and excluded from the SDK.
+       Recovery checkpoint: receipt-verified refunded-token continuation, persisted
+       replacement IDs, stranded ERC-20 recovery, and pending funding UserOperation
+       resumption implemented. Sponsored claims now share the validated UserOperation
+       publisher with funding, with operation persistence and receipt verification.
 
 5. [x] **Implement on-chain Bitcoin claims and refunds.** Strict HTLC
-   reconstruction (version 1, matching current TypeScript/server; reject older versions), UTXO observation through Esplora/Electrum, minimum confirmations,
-   network/address checks, timelocks, fee estimation, transaction construction,
-   signing, broadcast, and recovery. Test golden scripts/transactions, invalid
-   script parameters, insufficient funding, fees/dust, and premature refunds.
+       reconstruction (version 1, matching current TypeScript/server; reject older versions), UTXO observation through Esplora/Electrum, minimum confirmations,
+       network/address checks, timelocks, fee estimation, transaction construction,
+       signing, broadcast, and recovery. Test golden scripts/transactions, invalid
+       script parameters, insufficient funding, fees/dust, and premature refunds.
 
 6. [x] **Complete Arkade claims and refunds.** BTC→Arkade claim support, VHTLC
-   balances and receipt detection, cooperative and timeout refunds without the receiver,
-   delegate/cosigner flows, and continuation after interrupted claims. Reuse
-   strict VHTLC vectors and validate expected keys, script/address, network,
-   amounts, spend state, and preimages before signing or submission.
-   Offchain checkpoint: all five Arkade directions, multi-VTXO claims, balances,
-   timelocked/cooperative refunds, verified cosigner PSBTs, and persisted
-   submit/finalize resumption implemented. Delegated claims, timeout/cooperative
-   refunds, mixed/recoverable routing, cosigner verification, and interrupted batch
-   reconciliation implemented. Full unilateral wallet exit orchestration is not
-   exposed by the reference swap SDK; all six strict script paths remain available.
+       balances and receipt detection, cooperative and timeout refunds without the receiver,
+       delegate/cosigner flows, and continuation after interrupted claims. Reuse
+       strict VHTLC vectors and validate expected keys, script/address, network,
+       amounts, spend state, and preimages before signing or submission.
+       Offchain checkpoint: all five Arkade directions, multi-VTXO claims, balances,
+       timelocked/cooperative refunds, verified cosigner PSBTs, and persisted
+       submit/finalize resumption implemented. Delegated claims, timeout/cooperative
+       refunds, mixed/recoverable routing, cosigner verification, and interrupted batch
+       reconciliation implemented. Full unilateral wallet exit orchestration is not
+       exposed by the reference swap SDK; all six strict script paths remain available.
 
 7. [x] **Implement bridge orchestration.** CCTP domains/tokens and fee estimates,
-   burn/approval/permit/user-operation construction, attestation polling,
-   inbound funding and recovery, outbound forwarding and recipient persistence;
-   USDT0/LayerZero routing, fees, message tracking and recovery. Test fixtures for
-   each supported route, pending/failed/complete states, retries, and restart
-   resumption. Registry, exact fee arithmetic, burn/OFT call encoding, validated
-   attestation and delivery polling, forwarding and explicit reattestation implemented;
-   durable wallet/sponsored burn, mint, OFT send, and bounded balance recovery
-   implemented with receipt validation and lost-response reconciliation. Atomic
-   inbound mint/funding and outbound claim/bridge integration implemented and
-   covered by mocked end-to-end/restart tests. EIP-2612 domain/nonce validation,
-   typed signing and relay calldata helpers implemented. Sponsored accounts use
-   the existing Rust EIP-7702 owner model; external wallets can submit transactions. External providers must remain injectable in offline tests.
+       burn/approval/permit/user-operation construction, attestation polling,
+       inbound funding and recovery, outbound forwarding and recipient persistence;
+       USDT0/LayerZero routing, fees, message tracking and recovery. Test fixtures for
+       each supported route, pending/failed/complete states, retries, and restart
+       resumption. Registry, exact fee arithmetic, burn/OFT call encoding, validated
+       attestation and delivery polling, forwarding and explicit reattestation implemented;
+       durable wallet/sponsored burn, mint, OFT send, and bounded balance recovery
+       implemented with receipt validation and lost-response reconciliation. Atomic
+       inbound mint/funding and outbound claim/bridge integration implemented and
+       covered by mocked end-to-end/restart tests. EIP-2612 domain/nonce validation,
+       typed signing and relay calldata helpers implemented. Sponsored accounts use
+       the existing Rust EIP-7702 owner model; external wallets can submit transactions. External providers must remain injectable in offline tests.
 
 8. [x] **Add status subscriptions.** WebSocket connect/subscribe/unsubscribe,
-   event decoding, reconnect/resubscribe, bounded queues, explicit shutdown,
-   cancellation, and HTTP reconciliation. Test a local WebSocket server with
-   disconnects, duplicate/out-of-order updates, malformed payloads, and shutdown.
+       event decoding, reconnect/resubscribe, bounded queues, explicit shutdown,
+       cancellation, and HTTP reconciliation. Test a local WebSocket server with
+       disconnects, duplicate/out-of-order updates, malformed payloads, and shutdown.
 
 9. [x] **Implement contract observations and managers.** Typed HTLC references,
-   consistent keys, Bitcoin/Arkade/EVM readers, preimage extraction/validation,
-   chain-verified funding/spend/expiry observations, reorg/confirmation behavior,
-   and cancellation-safe manager lifecycles. Port TypeScript observation vectors.
+       consistent keys, Bitcoin/Arkade/EVM readers, preimage extraction/validation,
+       chain-verified funding/spend/expiry observations, reorg/confirmation behavior,
+       and cancellation-safe manager lifecycles. Port TypeScript observation vectors.
 
 10. [x] **Implement action tracking and optional automation.** Derive funding,
-    claim, cooperative/unilateral refund, bridge recovery, wait, and terminal
-    actions from observations; persist/resume tracked swaps; expose action
-    subscriptions; reconcile at-risk swaps; optional auto-claim with bounded
-    concurrency and failure recovery. Port action-state tests and exercise full
-    mocked funding→claim/refund→terminal lifecycles alongside the existing
-    creation tests. Executors are application adapters; automation is opt-in,
-    reserves attempts durably, and never retries ambiguous submissions. Bridge
-    inputs must come from verified bridge execution/tracking results.
+        claim, cooperative/unilateral refund, bridge recovery, wait, and terminal
+        actions from observations; persist/resume tracked swaps; expose action
+        subscriptions; reconcile at-risk swaps; optional auto-claim with bounded
+        concurrency and failure recovery. Port action-state tests and exercise full
+        mocked funding→claim/refund→terminal lifecycles alongside the existing
+        creation tests. Executors are application adapters; automation is opt-in,
+        reserves attempts durably, and never retries ambiguous submissions. Bridge
+        inputs must come from verified bridge execution/tracking results.
 
 11. [x] **Finish public API/documentation and integration verification.** Export
-    supported entry points; provide examples for each route and recovery path;
-    update the coverage table and migration notes; check package contents,
-    default and optional feature builds, documentation, and the full test suite.
-    Keep a precise list of live network/chain validations that were not executed.
-    Added compiled route/tracking/recovery examples, default/all-feature rustdoc
-    checks, independent transport-feature checks, and matching CI gates. Package
-    contents include examples and this plan. The Arkade 0.11.0 follow-up replaces
-    Git pins with published crates; deployment validation remains a follow-up.
-    Final review also added pre-submission reservations for EVM funding, refunds,
-    and deposit recovery; original-hash reconciliation; refund receipt resumption
-    after coordinator deposit deletion; and stricter funding event identity checks.
+        supported entry points; provide examples for each route and recovery path;
+        update the coverage table and migration notes; check package contents,
+        default and optional feature builds, documentation, and the full test suite.
+        Keep a precise list of live network/chain validations that were not executed.
+        Added compiled route/tracking/recovery examples, default/all-feature rustdoc
+        checks, independent transport-feature checks, and matching CI gates. Package
+        contents include examples and this plan. The Arkade 0.11.0 follow-up replaces
+        Git pins with published crates; deployment validation remains a follow-up.
+        Final review also added pre-submission reservations for EVM funding, refunds,
+        and deposit recovery; original-hash reconciliation; refund receipt resumption
+        after coordinator deposit deletion; and stricter funding event identity checks.
 
 ## Validation gates
 
@@ -275,8 +275,7 @@ chains; no production payments are part of this work.
   HTLC expiry, an SDK cancellation API and hosted providers are outside coverage.
 - Clock advancement preserves the canonical Bitcoin chain. The harness waits for
   Mempool to index mined blocks before refund snapshots and for wall time to
-  catch up between scenarios. This fixes a real `Bitcoin tip changed during
-  observation` test race without relaxing the SDK's consistency checks.
+  catch up between scenarios. This fixes a real `Bitcoin tip changed during observation` test race without relaxing the SDK's consistency checks.
 - HTLC v6 intentionally does not support cooperative EVM refunds. Removed the
   Rust parameter/signing/submission API, its tests and driver mode. Action
   discovery ignores cooperative capability flags for EVM client legs and keeps

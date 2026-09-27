@@ -5,7 +5,6 @@
 name = "satora-rust-sdk"
 version = "0.0.1"
 edition = "2024"
-rust-version = "1.94"
 include = [
   "/build.rs",
   "/Cargo.lock",
@@ -19,6 +18,7 @@ include = [
 ]
 license = "MIT"
 repository = "https://github.com/satoraHQ/swap"
+rust-version = "1.94"
 description = "Lendaswap Client SDK (Rust). FFI-friendly public API; the schema is verified against the upstream OpenAPI spec."
 
 [lib]
@@ -36,14 +36,12 @@ electrum = ["dep:electrum-client"]
 websocket = ["dep:tokio-tungstenite", "dep:futures-util", "dep:uuid", "tokio/net"]
 
 [dependencies]
-tokio-tungstenite = { version = "0.28", optional = true, features = ["native-tls"] }
-futures-util = { version = "0.3", optional = true, features = ["sink"] }
-uuid = { version = "1", optional = true }
-electrum-client = { version = "0.24.1", optional = true }
 # Crypto: HD wallet derivation, secp256k1, hashes.
 # `bitcoin` re-exports `secp256k1`; no need to pull it in directly.
 bip39 = "2"
 bitcoin = { version = "0.32", default-features = false, features = ["std", "serde"] }
+electrum-client = { version = "0.24.1", optional = true }
+futures-util = { version = "0.3", optional = true, features = ["sink"] }
 hex = "0.4"
 num-bigint = "0.4"
 num-traits = "0.2"
@@ -53,8 +51,10 @@ serde_json = "1"
 sha2 = "0.10"
 thiserror = "1"
 tiny-keccak = { version = "2", features = ["keccak"] }
+tokio-tungstenite = { version = "0.28", optional = true, features = ["native-tls"] }
 tracing = "0.1"
 url = "2"
+uuid = { version = "1", optional = true }
 
 # Account-abstraction (`gasless` feature only). `sol-types` for the `sol!`
 # ABI blocks, `rpc-types` for the ERC-4337 `PackedUserOperation` wire type,
@@ -99,7 +99,7 @@ serde_json = "1"
 
 [dev-dependencies]
 jsonschema = { version = "0.46.4", default-features = false }
+tempfile = "3"
 tokio = { version = "1", features = ["rt", "macros", "rt-multi-thread"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 wiremock = "0.6"
-tempfile = "3"

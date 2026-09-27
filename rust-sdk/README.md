@@ -36,33 +36,33 @@ strings on the wire, while Bitcoin amounts must be positive and fit in `i64`.
 
 ## Current coverage
 
-| Operation | Rust support |
-| --- | --- |
-| Discovery and quotes | Health, tokens, pairs, chain/AA configuration, fees, MTP, referral/support data, typed DEX calls, exact local quote composition |
-| Creation and recovery | All nine swap directions, paginated recovery, SQLite snapshots and execution journals |
+| Operation                 | Rust support                                                                                                                                    |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Discovery and quotes      | Health, tokens, pairs, chain/AA configuration, fees, MTP, referral/support data, typed DEX calls, exact local quote composition                 |
+| Creation and recovery     | All nine swap directions, paginated recovery, SQLite snapshots and execution journals                                                           |
 | EVM execution (`gasless`) | External/local wallets, Permit2 and EIP-2612, ERC-4337 funding/claims, server claims, timeout refunds, deposit recovery and refund continuation |
-| Bitcoin execution | Strict version 1 Taproot claims/refunds, multiple outputs, Esplora and optional Electrum |
-| Arkade execution | All supported directions, offchain claims/refunds, cooperative refunds, delegated settlement, interrupted-batch recovery |
-| Bridges (`gasless`) | CCTP v2 and USDT0 fees/messages, wallet/sponsored transfers, atomic inbound funding, outbound claims, delivery tracking and recovery |
-| Status feed (`websocket`) | Reconnect/resubscribe, bounded queues, HTTP reconciliation, cancellation |
-| Observations | Bitcoin/Arkade/EVM HTLC readers, confirmation policy, verified preimages, reorg-aware bounded managers |
-| Actions and automation | Chain-derived actions, persisted tracking, bounded workers, opt-in automatic claims/CCTP recovery, conservative retry journals |
+| Bitcoin execution         | Strict version 1 Taproot claims/refunds, multiple outputs, Esplora and optional Electrum                                                        |
+| Arkade execution          | All supported directions, offchain claims/refunds, cooperative refunds, delegated settlement, interrupted-batch recovery                        |
+| Bridges (`gasless`)       | CCTP v2 and USDT0 fees/messages, wallet/sponsored transfers, atomic inbound funding, outbound claims, delivery tracking and recovery            |
+| Status feed (`websocket`) | Reconnect/resubscribe, bounded queues, HTTP reconciliation, cancellation                                                                        |
+| Observations              | Bitcoin/Arkade/EVM HTLC readers, confirmation policy, verified preimages, reorg-aware bounded managers                                          |
+| Actions and automation    | Chain-derived actions, persisted tracking, bounded workers, opt-in automatic claims/CCTP recovery, conservative retry journals                  |
 
 The reference implementations are `../ts-sdk/packages/swap` and
 `../ts-pure-sdk`. The completed implementation checkpoints and scope decisions
 are in [PARITY_PLAN.md](PARITY_PLAN.md). .NET bindings are outside this change.
 
-| Creation route | Client funding | Client settlement or recovery |
-| --- | --- | --- |
-| Bitcoin→Arkade | Send BTC to the HTLC | Claim Arkade; refund Bitcoin on failure |
-| Bitcoin→EVM | Send BTC to the HTLC | Claim EVM; refund Bitcoin on failure |
-| Arkade→EVM | Send VTXOs to the VHTLC | Claim EVM; refund Arkade on failure |
-| Arkade→Lightning | Send VTXOs to the VHTLC | Server pays the invoice; refund Arkade on failure |
-| Lightning→Arkade | Pay the returned invoice | Claim Arkade |
-| Lightning→EVM | Pay the returned invoice | Claim EVM |
-| EVM→Bitcoin | Wallet or sponsored HTLC funding | Claim Bitcoin; refund EVM on failure |
-| EVM→Arkade | Wallet or sponsored HTLC funding | Claim Arkade; refund EVM on failure |
-| EVM→Lightning | Wallet or sponsored HTLC funding | Server pays the invoice; refund EVM on failure |
+| Creation route   | Client funding                   | Client settlement or recovery                     |
+| ---------------- | -------------------------------- | ------------------------------------------------- |
+| Bitcoin→Arkade   | Send BTC to the HTLC             | Claim Arkade; refund Bitcoin on failure           |
+| Bitcoin→EVM      | Send BTC to the HTLC             | Claim EVM; refund Bitcoin on failure              |
+| Arkade→EVM       | Send VTXOs to the VHTLC          | Claim EVM; refund Arkade on failure               |
+| Arkade→Lightning | Send VTXOs to the VHTLC          | Server pays the invoice; refund Arkade on failure |
+| Lightning→Arkade | Pay the returned invoice         | Claim Arkade                                      |
+| Lightning→EVM    | Pay the returned invoice         | Claim EVM                                         |
+| EVM→Bitcoin      | Wallet or sponsored HTLC funding | Claim Bitcoin; refund EVM on failure              |
+| EVM→Arkade       | Wallet or sponsored HTLC funding | Claim Arkade; refund EVM on failure               |
+| EVM→Lightning    | Wallet or sponsored HTLC funding | Server pays the invoice; refund EVM on failure    |
 
 Examples are compiled templates: [routes.rs](examples/routes.rs) constructs every
 route, [tracking.rs](examples/tracking.rs) wires observations and automation,
@@ -104,8 +104,7 @@ unsigned calls for caller review and execution.
 
 ## Persistence and recovery
 
-Use `storage_path` for a local SQLite database or provide an `Arc<dyn
-SwapStorage>` with `storage`. The options are mutually exclusive. SQLite
+Use `storage_path` for a local SQLite database or provide an `Arc<dyn SwapStorage>` with `storage`. The options are mutually exclusive. SQLite
 partitions counters and swap key indices by the signing wallet's recovery xpub.
 Independent connections/processes allocate indices transactionally. The parent
 directory must exist and the filesystem must support SQLite locking.
