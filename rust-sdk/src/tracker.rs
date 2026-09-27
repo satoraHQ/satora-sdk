@@ -103,10 +103,18 @@ pub trait ActionExecutor: Send + Sync {
     fn execute<'a>(&'a self, swap_id: &'a str, action: &'a ActionKind) -> ExecutionFuture<'a>;
 }
 /// Application evidence obtained by inspecting receipts, account nonces, and the
-/// underlying execution journal. Clearing this journal does not clear rail journals.
+/// underlying execution journal.
 pub enum AttemptResolution {
+    /// Proof clears the tracker attempt and releases only that action's unsent
+    /// reservations: the EVM claim flag for Claim; for RecoverCctp, hashless
+    /// cctp_fund/cctp_mint operations and a hashless funding flag, which a
+    /// wallet-mode executor sets through `fund_swap_with_wallet`. Refund and
+    /// recovery reservations are never released here. The proof must also cover
+    /// any funding sent outside the tracker since the attempt started.
     ProvenNotSubmitted,
-    Submitted { reference: String },
+    Submitted {
+        reference: String,
+    },
 }
 struct Entry {
     record: tokio::sync::Mutex<TrackingRecord>,
@@ -414,7 +422,43 @@ impl SwapTracker {
         let mut record = entry.record.lock().await;
         let mut next = record.clone();
         match resolution {
-            AttemptResolution::ProvenNotSubmitted => next.attempt = None,
+            AttemptResolution::ProvenNotSubmitted => {
+                let attempt = next
+                    .attempt
+                    .take()
+                    .ok_or_else(|| invalid("no attempt to reconcile"))?;
+                #[cfg(feature = "gasless")]
+                let _execution = self.0.client.evm_execution.lock().await;
+                let metadata = self
+                    .0
+                    .client
+                    .get_stored_swap(id)?
+                    .ok_or_else(|| invalid("swap record missing"))?
+                    .metadata;
+                let mut update = SwapMetadata::default();
+                if attempt.action == ActionKind::Claim {
+                    update.evm_claim_started = (metadata.evm_claim_started == Some(true)
+                        && metadata.evm_claim_txid.is_none()
+                        && metadata.evm_claim_userop_hash.is_none())
+                    .then_some(false);
+                } else if matches!(attempt.action, ActionKind::RecoverCctp { .. }) {
+                    let mut operations = metadata.bridge_operations.unwrap_or_default();
+                    let before = operations.len();
+                    operations.retain(|key, operation| {
+                        !(matches!(key.as_str(), "cctp_fund" | "cctp_mint")
+                            && !operation.complete
+                            && operation.transaction_hash.is_none()
+                            && operation.user_operation_hash.is_none())
+                    });
+                    update.evm_fund_started = (metadata.evm_fund_started == Some(true)
+                        && metadata.evm_fund_txid.is_none()
+                        && metadata.evm_fund_userop_hash.is_none()
+                        && !operations.contains_key("cctp_fund"))
+                    .then_some(false);
+                    update.bridge_operations = (operations.len() != before).then_some(operations);
+                }
+                self.0.client.update_swap_metadata(id, update)?;
+            }
             AttemptResolution::Submitted { reference } => {
                 if reference.is_empty() {
                     return Err(invalid("empty submission reference"));

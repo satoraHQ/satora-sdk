@@ -195,12 +195,16 @@ impl Client {
     /// Internally:
     /// 1. `GET /swap/{id}` to learn the source chain.
     /// 2. `GET /aa/config?chain={id}` for bundler/paymaster details.
-    /// 3. Existing bundler + paymaster + 7702 flow via [`crate::aa::orchestrate::fund_swap`].
+    /// 3. Existing bundler + paymaster + 7702 flow via `fund_swap_observed`, which persists the
+    ///    reservation and the operation hash.
     ///
     /// Errors:
     /// - [`Error::InvalidSigner`] if the client wasn't built with a signer.
-    /// - [`Error::InvalidSwap`] if `swap_id` isn't in storage (no `key_index`), or if the swap's
-    ///   `deposit_token` doesn't map to a known EVM chain.
+    /// - [`Error::InvalidSwap`] if `swap_id` isn't in storage (no `key_index`), if a funding was
+    ///   already submitted or is unresolved, if the swap's `deposit_token` doesn't map to a known
+    ///   EVM chain, if it locks native currency or a hash lock not derived from the seed, if the
+    ///   backend names an unpinned EntryPoint, delegation target or Permit2, or if its coordinator
+    ///   differs from the one persisted for the swap.
     /// - [`Error::Transport`] / [`Error::Api`] for backend, bundler, paymaster, or node RPC
     ///   failures.
     pub async fn fund_swap_gasless(
@@ -217,8 +221,7 @@ impl Client {
         let stored = self
             .get_stored_swap(swap_id)?
             .ok_or_else(|| Error::InvalidSwap("recover the swap before funding".into()))?;
-        if stored.metadata.evm_fund_started == Some(true)
-            || stored.metadata.evm_fund_txid.is_some()
+        if stored.metadata.evm_fund_txid.is_some()
             || stored.metadata.evm_fund_userop_hash.is_some()
             || stored
                 .metadata
@@ -228,6 +231,11 @@ impl Client {
         {
             return Err(Error::InvalidSwap(
                 "funding already submitted; inspect its receipt before another attempt".into(),
+            ));
+        }
+        if stored.metadata.evm_fund_started == Some(true) {
+            return Err(Error::InvalidSwap(
+                crate::evm::funding::UNRESOLVED_FUNDING.into(),
             ));
         }
         let response = self.get_swap_details(swap_id).await?;
@@ -381,20 +389,22 @@ impl Client {
                 .map(|pm| pm.context.clone())
                 .unwrap_or(Value::Null),
         });
-        self.update_swap_metadata(
-            swap_id,
-            crate::SwapMetadata {
-                evm_fund_started: Some(true),
-                evm_coordinator_address: Some(coordinator.clone()),
-                ..Default::default()
-            },
-        )?;
         let receipt = fund_swap_observed(
             inputs,
             FundSwapClients {
                 bundler: &bundler,
                 node: &node,
                 paymaster: paymaster_ref,
+            },
+            &|| {
+                self.update_swap_metadata(
+                    swap_id,
+                    crate::SwapMetadata {
+                        evm_fund_started: Some(true),
+                        evm_coordinator_address: Some(coordinator.clone()),
+                        ..Default::default()
+                    },
+                )
             },
             &|hash| {
                 self.update_swap_metadata(

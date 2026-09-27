@@ -381,7 +381,7 @@ impl Client {
             } else {
                 if stored.metadata.evm_recovery_started == Some(true) {
                     return Err(invalid(
-                        "recovery submission unresolved; reconcile its transaction before retrying",
+                        "recovery submission unresolved; attach its transaction, or release evm_recovery_started once nothing was sent",
                     ));
                 }
                 if balance(wallet, options.token).await? < options.amount {

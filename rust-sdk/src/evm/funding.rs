@@ -20,6 +20,9 @@ use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+/// A funding reserved with no recorded hash: sent or not, only the caller can tell.
+pub(crate) const UNRESOLVED_FUNDING: &str = "funding may already be submitted; attach its transaction, or release evm_fund_started once nothing was sent";
+
 sol! {
     interface TokenAllowance {
         function allowance(address owner, address spender) external view returns (uint256);
@@ -219,8 +222,7 @@ impl Client {
         let stored = self
             .get_stored_swap(id)?
             .ok_or_else(|| invalid("recover or create the swap before funding"))?;
-        if stored.metadata.evm_fund_started == Some(true)
-            || stored.metadata.evm_fund_txid.is_some()
+        if stored.metadata.evm_fund_txid.is_some()
             || stored.metadata.evm_fund_userop_hash.is_some()
             || stored
                 .metadata
@@ -231,6 +233,9 @@ impl Client {
             return Err(invalid(
                 "funding already submitted; inspect its receipt before another attempt",
             ));
+        }
+        if stored.metadata.evm_fund_started == Some(true) {
+            return Err(invalid(UNRESOLVED_FUNDING));
         }
         let context = EvmContext::from_response(&stored.response)?;
         context.validate_wallet(wallet)?;

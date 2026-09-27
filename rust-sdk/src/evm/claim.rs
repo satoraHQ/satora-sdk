@@ -451,13 +451,6 @@ impl Client {
                 .prepare_evm_claim(id, wallet, &options, calls, max_native_fee)
                 .await?;
             wallet.call(&tx).await?;
-            self.update_swap_metadata(
-                id,
-                SwapMetadata {
-                    evm_claim_started: Some(true),
-                    ..Default::default()
-                },
-            )?;
             let receipt = crate::aa::orchestrate::publish_with_config(
                 key.secret_key,
                 context.owner,
@@ -468,6 +461,15 @@ impl Client {
                     callData: tx.data,
                 }],
                 config,
+                &|| {
+                    self.update_swap_metadata(
+                        id,
+                        SwapMetadata {
+                            evm_claim_started: Some(true),
+                            ..Default::default()
+                        },
+                    )
+                },
                 &|hash| {
                     self.update_swap_metadata(
                         id,

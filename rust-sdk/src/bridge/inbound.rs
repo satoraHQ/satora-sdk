@@ -55,9 +55,10 @@ impl Client {
             let receipt=match self.bridge_receipt(id,"cctp_fund",&intent,wallet,&mode).await? {
                 Some(receipt)=>receipt,
                 None=>{
-                    if stored.metadata.evm_fund_started == Some(true) || stored.metadata.evm_fund_txid.is_some() || stored.metadata.evm_fund_userop_hash.is_some() {
+                    if stored.metadata.evm_fund_txid.is_some() || stored.metadata.evm_fund_userop_hash.is_some() {
                         return Err(invalid("swap funding already submitted"));
                     }
+                    if stored.metadata.evm_fund_started == Some(true) {return Err(invalid(crate::evm::funding::UNRESOLVED_FUNDING));}
                     crate::evm::verify_derived_hash_lock(self,&stored,&context)?;
                     let used=word(&wallet.call(&transaction(wallet,destination.transmitter,super::cctp::usedNoncesCall {nonce:decoded.nonce}.abi_encode())).await?)?;
                     if used>U256::ONE {return Err(invalid("invalid CCTP nonce state"));}

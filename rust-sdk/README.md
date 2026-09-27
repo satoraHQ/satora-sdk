@@ -148,7 +148,11 @@ Funding, refunds and stranded-token recovery reserve submission before sending,
 including before a bundler or server can receive it. A lost response leaves an
 unresolved reservation. Reconcile the original transaction with
 `attach_evm_funding_transaction`, `attach_evm_refund_transaction`, or
-`attach_evm_recovery_transaction`, then verify its receipt. Retrying a known
+`attach_evm_recovery_transaction`, then verify its receipt. If the application
+proves nothing was sent, release the reservation by merging `Some(false)` into
+`evm_fund_started`, `evm_refund_started` or `evm_recovery_started` with
+`update_swap_metadata`. The tracker never releases these on its own;
+`resolve_attempt` covers only the cases listed under automation. Retrying a known
 refund verifies the receipt even after the coordinator deletes its deposit entry.
 Execution calls through cloned clients are serialized. Separate processes must
 coordinate exclusive ownership of a swap before executing it.
@@ -297,8 +301,10 @@ Outbound adapters currently use the repository's Arbitrum deployments.
 
 A claim is reserved before its submission can leave the process, including
 server-submitted and sponsored claims. A lost response prevents another claim
-submission. Reconcile the original transaction with `attach_evm_claim_transaction`;
-bridge resumption verifies both the HTLC redemption and bridge receipt. Stored
+submission. Reconcile the original transaction with `attach_evm_claim_transaction`.
+A server claim can be accepted before its relay names a transaction; if the server
+later abandons it and the swap is server-funded again, release `evm_claim_started`
+with `update_swap_metadata`. Bridge resumption verifies both the HTLC redemption and bridge receipt. Stored
 bridge intent preserves recipient bytes without changing the original API-facing
 EVM address or Solana base58 recipient.
 
@@ -393,7 +399,10 @@ return `Retryable` only if nothing was submitted; retries have backoff and a cap
 Errors, timeouts, cancellation and lost responses remain unresolved until the
 application reconciles the rail journal/chain and calls `resolve_attempt`.
 `Submitted` waits for observed settlement; it never declares success by itself.
-Resolving a tracker attempt does not erase underlying transaction journals.
+`ProvenNotSubmitted` releases only the attempted action's unsent reservations
+(the claim flag; for CCTP recovery, hashless `cctp_fund`/`cctp_mint` entries and a
+hashless funding flag). Recorded transactions are always kept. The proof must also
+cover any funding sent outside the tracker since the attempt started.
 Use one tracker and exclusive execution ownership per store across processes.
 
 ## Compatibility and validation limits

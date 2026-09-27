@@ -145,7 +145,7 @@ impl Client {
             }
             if metadata.evm_refund_started == Some(true) {
                 return Err(invalid(
-                    "refund submission unresolved; reconcile its transaction before retrying",
+                    "refund submission unresolved; attach its transaction, or release evm_refund_started once nothing was sent",
                 ));
             }
             if !htlc.is_active(wallet).await? {

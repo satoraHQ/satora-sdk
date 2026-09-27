@@ -204,13 +204,15 @@ pub async fn fund_swap(
     inputs: FundSwapInputs,
     clients: FundSwapClients<'_>,
 ) -> Result<FundSwapReceipt> {
-    fund_swap_observed(inputs, clients, &|_| Ok(())).await
+    fund_swap_observed(inputs, clients, &|| Ok(()), &|_| Ok(())).await
 }
 
-/// Persist the operation hash immediately after submission, before receipt polling.
+/// Persist the reservation right before submission and the operation hash
+/// immediately after it, before receipt polling.
 pub(crate) async fn fund_swap_observed(
     inputs: FundSwapInputs,
     clients: FundSwapClients<'_>,
+    reserve: &(dyn Fn() -> Result<()> + Send + Sync),
     submitted: &(dyn Fn(B256) -> Result<()> + Send + Sync),
 ) -> Result<FundSwapReceipt> {
     info!(
@@ -235,6 +237,7 @@ pub(crate) async fn fund_swap_observed(
             gas_overrides: inputs.gas_overrides,
         },
         clients,
+        reserve,
         submitted,
     )
     .await
@@ -296,11 +299,14 @@ impl std::fmt::Debug for PublishInputs {
     }
 }
 
-/// Publish a reviewed Kernel call batch with optional sponsorship. The callback
-/// must persist the operation hash before the function starts receipt polling.
+/// Publish a reviewed Kernel call batch with optional sponsorship. `reserve` runs
+/// right before the operation leaves this process, so a failure in the nonce,
+/// paymaster or estimation calls leaves no reservation behind; `submitted` must
+/// persist the operation hash before the function starts receipt polling.
 pub async fn publish_batch_observed(
     inputs: PublishInputs,
     clients: FundSwapClients<'_>,
+    reserve: &(dyn Fn() -> Result<()> + Send + Sync),
     submitted: &(dyn Fn(B256) -> Result<()> + Send + Sync),
 ) -> Result<FundSwapReceipt> {
     if clients
@@ -468,6 +474,7 @@ pub async fn publish_batch_observed(
     userop.signature = kernel::wrap_user_op_signature(&sig_to_array(&sig_raw));
 
     // 11. Submit.
+    reserve()?;
     info!("fund_swap: submitting (eth_sendUserOperation)");
     let user_op_hash_out = clients
         .bundler
@@ -659,6 +666,7 @@ pub async fn publish_with_config(
     chain_id: u64,
     calls: &[Call],
     config: &UserOpConfig,
+    reserve: &(dyn Fn() -> Result<()> + Send + Sync),
     submitted: &(dyn Fn(B256) -> Result<()> + Send + Sync),
 ) -> Result<FundSwapReceipt> {
     let bundler = BundlerClient::new(config.aa.bundler_url.clone(), config.aa.bundler_casing)?;
@@ -692,6 +700,7 @@ pub async fn publish_with_config(
                     .unwrap_or(Value::Null),
             }),
         },
+        reserve,
         submitted,
     )
     .await

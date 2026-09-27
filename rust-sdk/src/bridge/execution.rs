@@ -290,13 +290,13 @@ impl Client {
                     .as_ref()
                     .ok_or_else(|| invalid("signer missing"))?
                     .evm_key_for_address(stored.key_index, &wallet.address().to_string())?;
-                self.save_bridge_operation(id, key, state.clone())?;
                 let receipt = crate::aa::orchestrate::publish_with_config(
                     account_key.secret_key,
                     wallet.address(),
                     wallet.chain_id(),
                     &calls,
                     config,
+                    &|| self.save_bridge_operation(id, key, state.clone()),
                     &|hash| {
                         let mut submitted = state.clone();
                         submitted.user_operation_hash = Some(hash.to_string());

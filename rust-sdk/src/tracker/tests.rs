@@ -428,3 +428,156 @@ async fn sqlite_reopen_retains_timed_out_attempt_and_opt_in_options() {
     restarted.reconcile(&id).await.unwrap();
     assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
 }
+
+fn unsent_operation() -> crate::storage::BridgeOperation {
+    crate::storage::BridgeOperation {
+        intent: serde_json::json!({}),
+        transaction_hash: None,
+        user_operation_hash: None,
+        complete: false,
+    }
+}
+
+fn stored_metadata(tracker: &SwapTracker, id: &str) -> SwapMetadata {
+    tracker
+        .0
+        .client
+        .get_stored_swap(id)
+        .unwrap()
+        .unwrap()
+        .metadata
+}
+
+#[tokio::test]
+async fn proven_not_submitted_releases_only_the_attempted_claim_rail() {
+    let (tracker, reader, _, id) = setup(1, TrackerOptions::default());
+    track(&tracker, &id).await;
+    *reader.0.lock().unwrap() = (HtlcState::Confirmed, HtlcState::Confirmed, 50);
+    tracker.reconcile(&id).await.unwrap();
+    assert!(matches!(
+        tracker.record(&id).await.unwrap().attempt.unwrap(),
+        Attempt {
+            action: ActionKind::Claim,
+            state: AttemptState::Uncertain,
+            ..
+        }
+    ));
+    tracker
+        .0
+        .client
+        .update_swap_metadata(
+            &id,
+            SwapMetadata {
+                evm_claim_started: Some(true),
+                evm_fund_started: Some(true),
+                evm_recovery_started: Some(true),
+                bridge_operations: Some([("cctp_fund".into(), unsent_operation())].into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    tracker
+        .resolve_attempt(&id, AttemptResolution::ProvenNotSubmitted)
+        .await
+        .unwrap();
+    let metadata = stored_metadata(&tracker, &id);
+    assert_eq!(metadata.evm_claim_started, Some(false));
+    assert_eq!(metadata.evm_fund_started, Some(true));
+    assert_eq!(metadata.evm_recovery_started, Some(true));
+    assert!(
+        metadata
+            .bridge_operations
+            .unwrap()
+            .contains_key("cctp_fund")
+    );
+    assert!(tracker.record(&id).await.unwrap().attempt.is_none());
+    assert!(
+        tracker
+            .resolve_attempt(&id, AttemptResolution::ProvenNotSubmitted)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn proven_not_submitted_recover_cctp_drops_only_hashless_cctp_operations() {
+    for sent in [false, true] {
+        let (tracker, _, _, id) = setup(1, TrackerOptions::default());
+        track(&tracker, &id).await;
+        tracker
+            .update_options(
+                &id,
+                TrackingOptions {
+                    auto_claim: true,
+                    auto_cctp: true,
+                    bridge: BridgeState::CctpBurn {
+                        source_transaction: "burn".into(),
+                        attestation_available: true,
+                    },
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        tracker.reconcile(&id).await.unwrap();
+        assert!(matches!(
+            tracker.record(&id).await.unwrap().attempt.unwrap(),
+            Attempt {
+                action: ActionKind::RecoverCctp { .. },
+                state: AttemptState::Uncertain,
+                ..
+            }
+        ));
+        let burn = crate::storage::BridgeOperation {
+            transaction_hash: Some("0xburn".into()),
+            ..unsent_operation()
+        };
+        let (fund, mint) = if sent {
+            (
+                crate::storage::BridgeOperation {
+                    user_operation_hash: Some("0xfund".into()),
+                    ..unsent_operation()
+                },
+                crate::storage::BridgeOperation {
+                    transaction_hash: Some("0xmint".into()),
+                    ..unsent_operation()
+                },
+            )
+        } else {
+            (unsent_operation(), unsent_operation())
+        };
+        tracker
+            .0
+            .client
+            .update_swap_metadata(
+                &id,
+                SwapMetadata {
+                    evm_claim_started: Some(true),
+                    evm_fund_started: Some(true),
+                    evm_recovery_started: Some(true),
+                    bridge_operations: Some(
+                        [
+                            ("cctp_fund".into(), fund.clone()),
+                            ("cctp_mint".into(), mint.clone()),
+                            ("cctp_burn".into(), burn.clone()),
+                        ]
+                        .into(),
+                    ),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        tracker
+            .resolve_attempt(&id, AttemptResolution::ProvenNotSubmitted)
+            .await
+            .unwrap();
+        let metadata = stored_metadata(&tracker, &id);
+        let operations = metadata.bridge_operations.unwrap();
+        assert_eq!(operations.get("cctp_fund"), sent.then_some(&fund));
+        assert_eq!(operations.get("cctp_mint"), sent.then_some(&mint));
+        assert_eq!(operations.get("cctp_burn"), Some(&burn));
+        assert_eq!(metadata.evm_fund_started, Some(sent));
+        assert_eq!(metadata.evm_claim_started, Some(true));
+        assert_eq!(metadata.evm_recovery_started, Some(true));
+    }
+}
