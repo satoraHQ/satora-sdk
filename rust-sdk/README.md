@@ -241,7 +241,12 @@ Timeout-refund forfeits carry the refund locktime and a non-final sequence.
 
 A delegated request persists its exact intent before submission and records the
 commitment transaction after success. After a lost response, retry reconciles
-settled inputs first. An expired intent with no observable settlement is left
+settled inputs first. A retried claim resubmits even inside
+`minimum_remaining_seconds`, because the lost request may have delivered its
+preimage already, unless the request failed to connect and so provably never left.
+An offchain claim likewise finishes once its submit was attempted, reusing arkd's
+pending entry when it has one and resubmitting otherwise. An intent lives
+for about two minutes, so keep the margin above that. An expired intent with no observable settlement is left
 unresolved for investigation; it is never silently replaced with new authorization.
 The timeout refund path still requires the Arkade server, as in TypeScript.
 `StrictVhtlcOptions` exposes all six script paths for wallet-level exit integrations.

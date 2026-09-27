@@ -563,6 +563,7 @@ impl Client {
             ArkadeSpendOptions {
                 destination: destination.into(),
                 timeout: Duration::from_secs(120),
+                minimum_remaining_seconds: 300,
             },
         )
         .await
@@ -581,6 +582,7 @@ impl Client {
             ArkadeSpendOptions {
                 destination: destination.into(),
                 timeout: Duration::from_secs(120),
+                minimum_remaining_seconds: 0,
             },
         )
         .await
@@ -600,6 +602,7 @@ impl Client {
             ArkadeSpendOptions {
                 destination: destination.into(),
                 timeout: Duration::from_secs(120),
+                minimum_remaining_seconds: 0,
             },
         )
         .await

@@ -1,6 +1,7 @@
 //! Delegated batch settlement for spendable, expired and swept VHTLC outputs.
 use super::execution::archive;
 use super::execution::decode;
+use super::execution::ensure_claim_window;
 use super::execution::invalid;
 use super::execution::merge_cosigned;
 use super::execution::restore;
@@ -27,6 +28,10 @@ pub struct ArkadeDelegateState {
     pub forfeit_psbts: Vec<String>,
     pub cosigner_pk: String,
     pub commitment_txid: Option<String>,
+    /// The last request failed before leaving this process, so the server has not
+    /// seen this intent's preimage.
+    #[serde(default)]
+    pub unsent: bool,
 }
 impl std::fmt::Debug for ArkadeDelegateState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -97,6 +102,9 @@ impl Client {
                 let message:serde_json::Value=serde_json::from_str(&state.intent_message).map_err(decode)?;
                 let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(decode)?.as_secs();
                 if message["expire_at"].as_u64().is_none_or(|expires|expires<=now) { return Err(invalid("delegated intent expired before its outcome was observed; reconcile its inputs before creating another intent")); }
+                // Unless the last request provably never left, the server may already hold
+                // the preimage, and refusing to resubmit would strand the claim.
+                if operation==ArkadeSpend::Claim && state.unsent {ensure_claim_window(&htlc,chain,options.minimum_remaining_seconds).await?;}
                 state
             } else {
                 if operation==ArkadeSpend::Refund {
@@ -106,6 +114,7 @@ impl Client {
                     let lock=htlc.options.refund_locktime;
                     if !(if lock<500_000_000 {clock.height>=lock} else {clock.median_time_past>lock}) {return Err(invalid("Arkade refund timelock has not matured"));}
                 }
+                if operation==ArkadeSpend::Claim {ensure_claim_window(&htlc,chain,options.minimum_remaining_seconds).await?;}
                 let list=VtxoList::new(info.dust,vtxos);
                 let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(decode)?.as_secs();
                 let available:Vec<_>=list.batch_settleable_at(&info,i64::try_from(now).map_err(decode)?,|_|Some(htlc.options.server)).collect();
@@ -124,7 +133,7 @@ impl Client {
                     if let Some(lock)=lock {forfeit.unsigned_tx.lock_time=lock;forfeit.unsigned_tx.input[0].sequence=Sequence::ENABLE_LOCKTIME_NO_RBF;}
                     sign_psbt(forfeit,&pair,preimage)?;
                 }
-                let mut state=ArkadeDelegateState {operation,destination:options.destination.clone(),amount_sats:amount,intent_proof:archive(&delegate.intent.proof),intent_message:delegate.intent.serialize_message().map_err(decode)?,forfeit_psbts:delegate.forfeit_psbts.iter().map(archive).collect(),cosigner_pk:cosigner.to_string(),commitment_txid:None};
+                let mut state=ArkadeDelegateState {operation,destination:options.destination.clone(),amount_sats:amount,intent_proof:archive(&delegate.intent.proof),intent_message:delegate.intent.serialize_message().map_err(decode)?,forfeit_psbts:delegate.forfeit_psbts.iter().map(archive).collect(),cosigner_pk:cosigner.to_string(),commitment_txid:None,unsent:false};
                 if operation==ArkadeSpend::CooperativeRefund {self.cosign_arkade_delegate(id,&mut state,&htlc).await?;}
                 self.save_arkade_delegate(id,state.clone())?;
                 state
@@ -132,12 +141,15 @@ impl Client {
             let proof=restore(&state.intent_proof,preimage)?.to_string();
             let forfeits=state.forfeit_psbts.iter().map(|p|restore(p,preimage).map(|p|p.to_string())).collect::<Result<Vec<_>>>()?;
             let body=serde_json::json!({"intent_proof":proof,"intent_message":state.intent_message,"forfeit_psbts":forfeits,"cosigner_pk":state.cosigner_pk,"swap_id":preimage.map(|_|id),"preimage":preimage.map(hex::encode)});
+            if state.unsent {state.unsent=false;self.save_arkade_delegate(id,state.clone())?;}
             let settle=self.base_url.join("/api/delegate/settle")?;
             // The server holds this open for a whole batch, so the operation deadline
             // bounds it rather than the client-wide timeout.
             let response=match self.api_request(reqwest::Method::POST,settle.clone()).timeout(options.timeout).json(&body).send().await {
                 Ok(response)=>response,
                 Err(error)=>{
+                    // A connect error after a redirect comes from a later hop, after the first one read the body.
+                    if (error.is_connect()||error.is_builder()) && error.url().is_none_or(|url|*url==settle) {state.unsent=true;self.save_arkade_delegate(id,state)?;}
                     return Err(error.into());
                 }
             };

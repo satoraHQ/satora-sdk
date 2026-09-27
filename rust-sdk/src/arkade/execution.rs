@@ -132,6 +132,9 @@ pub enum ArkadeSpend {
 pub struct ArkadeSpendOptions {
     pub destination: String,
     pub timeout: Duration,
+    /// Claims only: how long before the refund locktime a claim may still reveal
+    /// the preimage. Height locks convert this at 600 seconds per block.
+    pub minimum_remaining_seconds: u64,
 }
 
 /// PSBT condition witnesses are removed before storage and re-derived on resume.
@@ -143,6 +146,10 @@ pub struct ArkadePending {
     pub amount_sats: u64,
     pub ark_tx: String,
     pub checkpoints: Vec<String>,
+    /// Set before the first submit leaves this process. For a claim, arkd may hold
+    /// the preimage from then on.
+    #[serde(default)]
+    pub attempted: bool,
     pub submitted: bool,
     pub completed: bool,
 }
@@ -339,7 +346,7 @@ impl Client {
     }
 
     /// Multi-input Arkade spend. Refund maturity is independently checked using
-    /// the supplied Bitcoin reader; claims do not require a chain reader.
+    /// the supplied Bitcoin reader; claims need one only under a height refund lock.
     pub async fn spend_arkade(
         &self,
         id: &str,
@@ -381,7 +388,17 @@ impl Client {
                 &secp256k1::SecretKey::from_slice(&params.secret).map_err(decode)?,
             );
             let preimage = (operation == ArkadeSpend::Claim).then_some(params.preimage);
-            let resuming = stored.metadata.arkade_pending.is_some();
+            // Once a submit was attempted arkd may already hold the preimage, and
+            // refusing to finish would only strand the claim.
+            if operation == ArkadeSpend::Claim
+                && !stored
+                    .metadata
+                    .arkade_pending
+                    .as_ref()
+                    .is_some_and(|p| p.attempted)
+            {
+                ensure_claim_window(&htlc, chain, options.minimum_remaining_seconds).await?;
+            }
             let mut pending = if let Some(pending) = stored.metadata.arkade_pending {
                 if pending.operation != operation || pending.destination != options.destination {
                     return Err(invalid("Arkade pending operation or destination differs"));
@@ -475,6 +492,7 @@ impl Client {
                     amount_sats: amount,
                     ark_tx: archive(&ark_tx),
                     checkpoints: checkpoint_txs.iter().map(archive).collect(),
+                    attempted: false,
                     submitted: false,
                     completed: false,
                 };
@@ -498,7 +516,8 @@ impl Client {
                 .map(|p| restore(p, preimage))
                 .collect::<Result<Vec<_>>>()?;
             if !pending.submitted {
-                let recovered = if resuming {
+                // The pending query's intent proof carries the preimage too.
+                let recovered = if pending.attempted {
                     let intent = pending_intent(&htlc, &checkpoints, &pair, preimage)?;
                     backend
                         .pending(intent)
@@ -513,7 +532,13 @@ impl Client {
                         signed_ark_tx: p.signed_ark_tx,
                         signed_checkpoint_txs: p.signed_checkpoint_txs,
                     },
-                    None => backend.submit(ark.clone(), checkpoints.clone()).await?,
+                    None => {
+                        if !pending.attempted {
+                            pending.attempted = true;
+                            self.save_arkade_pending(id, pending.clone())?;
+                        }
+                        backend.submit(ark.clone(), checkpoints.clone()).await?
+                    }
                 };
                 verify_cosigned(&ark, &response.signed_ark_tx, htlc.options.server)?;
                 if response.signed_checkpoint_txs.len() != checkpoints.len() {
@@ -620,6 +645,40 @@ impl Client {
     }
 }
 
+pub(super) async fn ensure_claim_window(
+    htlc: &ArkadeHtlc,
+    chain: Option<&dyn crate::bitcoin::BitcoinBackend>,
+    margin_secs: u64,
+) -> Result<()> {
+    let lock = u64::from(htlc.options.refund_locktime);
+    let open = if lock < 500_000_000 {
+        let chain = chain.ok_or_else(|| {
+            invalid("Arkade claims under a height refund lock require a Bitcoin chain reader")
+        })?;
+        if chain.network() != htlc.network {
+            return Err(invalid("Arkade claim chain network mismatch"));
+        }
+        let address =
+            Address::from_script(&htlc.script.script_pubkey(), htlc.network).map_err(decode)?;
+        let height = u64::from(chain.observe(&address).await?.height);
+        height.saturating_add(margin_secs.div_ceil(600)) < lock
+    } else {
+        // Wall clock, not MTP: the daemon triggers VHTLC refunds on wall clock,
+        // and it runs ahead of MTP.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(decode)?
+            .as_secs();
+        now.saturating_add(margin_secs) < lock
+    };
+    if open {
+        Ok(())
+    } else {
+        Err(invalid(
+            "insufficient time to claim before the Arkade refund window",
+        ))
+    }
+}
 pub(super) fn validate_info(htlc: &ArkadeHtlc, info: &Info) -> Result<()> {
     if info.network != htlc.network
         || (info.signer_pk.x_only_public_key().0 != htlc.options.server

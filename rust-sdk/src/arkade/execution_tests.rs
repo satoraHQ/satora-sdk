@@ -31,13 +31,17 @@ struct Backend {
     final_checkpoints: Mutex<Vec<Psbt>>,
     pending: Mutex<Vec<ark_rs::core::server::PendingTx>>,
     fail_submit: AtomicBool,
+    pending_queries: AtomicUsize,
 }
 impl ArkadeBackend for Backend {
     fn pending(
         &self,
         _: ark_rs::core::intent::Intent,
     ) -> ArkadeFuture<'_, Vec<ark_rs::core::server::PendingTx>> {
-        Box::pin(async { Ok(self.pending.lock().unwrap().clone()) })
+        Box::pin(async {
+            self.pending_queries.fetch_add(1, Ordering::Relaxed);
+            Ok(self.pending.lock().unwrap().clone())
+        })
     }
     fn info(&self) -> ArkadeFuture<'_, Info> {
         Box::pin(async { Ok(self.info.clone()) })
@@ -95,7 +99,28 @@ impl ArkadeBackend for Backend {
         })
     }
 }
+fn now() -> u32 {
+    u32::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+    .unwrap()
+}
 fn setup(direction: &str) -> (Client, Backend, Arc<InMemorySwapStorage>, String) {
+    let claim = matches!(
+        direction,
+        "btc_to_arkade" | "evm_to_arkade" | "lightning_to_arkade"
+    );
+    // A fixed far-future timestamp: tests compare scripts across setups, so the
+    // lock must not move with the clock.
+    setup_with_lock(direction, if claim { 4_000_000_000 } else { 144 })
+}
+fn setup_with_lock(
+    direction: &str,
+    lock: u32,
+) -> (Client, Backend, Arc<InMemorySwapStorage>, String) {
     let params = Signer::from_mnemonic(MNEMONIC)
         .unwrap()
         .derive_swap_params(0)
@@ -113,7 +138,7 @@ fn setup(direction: &str) -> (Client, Backend, Arc<InMemorySwapStorage>, String)
         receiver: if claim { own } else { counterparty },
         server: server.x_only_public_key().0,
         preimage_hash: ripemd160::Hash::hash(&hash),
-        refund_locktime: 144,
+        refund_locktime: lock,
         unilateral_claim_delay: Sequence::from_height(21),
         unilateral_refund_delay: Sequence::from_height(34),
         unilateral_refund_without_receiver_delay: Sequence::from_height(55),
@@ -133,7 +158,7 @@ fn setup(direction: &str) -> (Client, Backend, Arc<InMemorySwapStorage>, String)
     } else {
         hex::encode(hash)
     });
-    r["vhtlc_refund_locktime"] = json!(144);
+    r["vhtlc_refund_locktime"] = json!(lock);
     r["unilateral_claim_delay"] = json!(21);
     r["unilateral_refund_delay"] = json!(34);
     r["unilateral_refund_without_receiver_delay"] = json!(55);
@@ -223,6 +248,7 @@ fn setup(direction: &str) -> (Client, Backend, Arc<InMemorySwapStorage>, String)
         final_checkpoints: Mutex::new(vec![]),
         pending: Mutex::new(vec![]),
         fail_submit: AtomicBool::new(false),
+        pending_queries: AtomicUsize::new(0),
     };
     let destination = ArkAddress::new(
         Network::Regtest,
@@ -236,6 +262,7 @@ fn spend_options(destination: String) -> ArkadeSpendOptions {
     ArkadeSpendOptions {
         destination,
         timeout: Duration::from_secs(5),
+        minimum_remaining_seconds: 300,
     }
 }
 
@@ -388,6 +415,273 @@ async fn interrupted_submission_queries_pending_before_resubmitting() {
         .await
         .unwrap();
     assert_eq!(backend.submit_count.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn resumed_claims_inside_the_margin_finish_only_what_may_have_been_delivered() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    let risky = |destination: &str| ArkadeSpendOptions {
+        minimum_remaining_seconds: 0,
+        ..spend_options(destination.to_owned())
+    };
+    let lost_submit = || async {
+        let (client, backend, store, destination) = setup_with_lock("btc_to_arkade", now() + 60);
+        backend.fail_submit.store(true, Ordering::Relaxed);
+        assert!(
+            client
+                .spend_arkade(
+                    "arkade",
+                    &backend,
+                    None,
+                    ArkadeSpend::Claim,
+                    risky(&destination)
+                )
+                .await
+                .is_err()
+        );
+        (client, backend, store, destination)
+    };
+    // An attempted submit may have reached arkd, so the claim finishes.
+    let (client, backend, _, destination) = lost_submit().await;
+    client
+        .spend_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            spend_options(destination),
+        )
+        .await
+        .unwrap();
+    assert_eq!(backend.finalize_count.load(Ordering::Relaxed), 1);
+    // With no attempt on record nothing carrying the preimage may leave, not even
+    // arkd's pending query, which carries it too.
+    let (client, backend, store, destination) = lost_submit().await;
+    let mut stored = store.get_swap("arkade").unwrap().unwrap();
+    stored.metadata.arkade_pending.as_mut().unwrap().attempted = false;
+    store.store_swap(stored).unwrap();
+    let error = client
+        .spend_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            spend_options(destination),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("insufficient time"), "{error}");
+    assert_eq!(backend.pending_queries.load(Ordering::Relaxed), 0);
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 1);
+
+    // A request refused at connect never reached the delegate.
+    let (_, backend, store, destination) = setup_with_lock("btc_to_arkade", now() + 60);
+    let unreachable = Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .base_url("http://127.0.0.1:1")
+        .build()
+        .unwrap();
+    let delegate = |options| {
+        unreachable.delegate_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            pair(5).public_key(),
+            options,
+        )
+    };
+    let sent = delegate(risky(&destination)).await.unwrap_err();
+    assert!(matches!(sent, Error::Transport(_)), "{sent}");
+    let state = store.get_swap("arkade").unwrap().unwrap().metadata;
+    assert!(state.arkade_delegate.unwrap().unsent);
+    let error = delegate(spend_options(destination.clone()))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("insufficient time"), "{error}");
+    // Once a request reaches the server, the intent counts as sent again.
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::path("/api/delegate/settle"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let reachable = Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .base_url(server.uri())
+        .build()
+        .unwrap();
+    for options in [risky(&destination), spend_options(destination)] {
+        let error = reachable
+            .delegate_arkade(
+                "arkade",
+                &backend,
+                None,
+                ArkadeSpend::Claim,
+                pair(5).public_key(),
+                options,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Api { .. }), "{error}");
+        let state = store.get_swap("arkade").unwrap().unwrap().metadata;
+        assert!(!state.arkade_delegate.unwrap().unsent);
+    }
+}
+
+#[tokio::test]
+async fn claims_refuse_to_reveal_the_preimage_inside_the_refund_margin() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+
+    let (client, backend, store, destination) = setup_with_lock("btc_to_arkade", now() + 60);
+    let error = client
+        .spend_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            spend_options(destination.clone()),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("insufficient time"), "{error}");
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 0);
+    let metadata = store.get_swap("arkade").unwrap().unwrap().metadata;
+    assert!(metadata.arkade_pending.is_none());
+
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::path("/api/delegate/settle"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"commitment_txid":Txid::from_byte_array([14;32])})),
+        )
+        .expect(0)
+        .mount(&server)
+        .await;
+    let delegating = Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .base_url(server.uri())
+        .build()
+        .unwrap();
+    let error = delegating
+        .delegate_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            pair(5).public_key(),
+            spend_options(destination.clone()),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("insufficient time"), "{error}");
+    assert!(server.received_requests().await.unwrap().is_empty());
+    let metadata = store.get_swap("arkade").unwrap().unwrap().metadata;
+    assert!(metadata.arkade_delegate.is_none());
+
+    // A persisted delegation may already have sent its preimage, so it resubmits.
+    let (_, backend, store, destination) = setup_with_lock("btc_to_arkade", now() + 60);
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::path("/api/delegate/settle"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let delegating = Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .base_url(server.uri())
+        .build()
+        .unwrap();
+    let mut accepting_risk = spend_options(destination.clone());
+    accepting_risk.minimum_remaining_seconds = 0;
+    assert!(
+        delegating
+            .delegate_arkade(
+                "arkade",
+                &backend,
+                None,
+                ArkadeSpend::Claim,
+                pair(5).public_key(),
+                accepting_risk,
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        store
+            .get_swap("arkade")
+            .unwrap()
+            .unwrap()
+            .metadata
+            .arkade_delegate
+            .is_some()
+    );
+    let error = delegating
+        .delegate_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            pair(5).public_key(),
+            spend_options(destination),
+        )
+        .await
+        .unwrap_err();
+    assert!(!error.to_string().contains("insufficient time"), "{error}");
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+
+    let (client, backend, _, destination) = setup_with_lock("btc_to_arkade", now() + 60);
+    let mut accepting_risk = spend_options(destination);
+    accepting_risk.minimum_remaining_seconds = 0;
+    client
+        .spend_arkade("arkade", &backend, None, ArkadeSpend::Claim, accepting_risk)
+        .await
+        .unwrap();
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 1);
+
+    let (client, backend, _, destination) = setup_with_lock("btc_to_arkade", 144);
+    let error = client
+        .spend_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            spend_options(destination.clone()),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("chain reader"), "{error}");
+    // 300 seconds is one block of margin under a height lock.
+    let error = client
+        .spend_arkade(
+            "arkade",
+            &backend,
+            Some(&Chain(143)),
+            ArkadeSpend::Claim,
+            spend_options(destination.clone()),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("insufficient time"), "{error}");
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 0);
+    client
+        .spend_arkade(
+            "arkade",
+            &backend,
+            Some(&Chain(100)),
+            ArkadeSpend::Claim,
+            spend_options(destination),
+        )
+        .await
+        .unwrap();
 }
 
 struct Chain(u32);
@@ -946,6 +1240,45 @@ async fn cooperative_delegate_rejects_forfeit_signed_without_anyonecanpay() {
             .arkade_delegate
             .is_none()
     );
+}
+#[tokio::test]
+async fn underfunded_claim_is_refused_without_consulting_the_server() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+
+    let (_, mut backend, store, destination) = setup("btc_to_arkade");
+    backend.vtxos.truncate(1);
+    // A server that lowered the target to what it funded must not be able to
+    // move the claim floor.
+    let mut lowered =
+        serde_json::to_value(&store.get_swap("arkade").unwrap().unwrap().response).unwrap();
+    lowered["target_amount"] = json!("50000");
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(lowered))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let client = Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(store)
+        .base_url(server.uri())
+        .build()
+        .unwrap();
+    let error = client
+        .spend_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            spend_options(destination),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("underfunded"), "{error}");
+    assert!(server.received_requests().await.unwrap().is_empty());
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 0);
 }
 #[tokio::test]
 async fn unspent_surplus_next_to_a_spent_vtxo_keeps_the_spent_verdict() {
