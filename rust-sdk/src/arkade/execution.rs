@@ -319,8 +319,7 @@ impl Client {
         let htlc = self.arkade_htlc(id)?;
         let info = backend.info().await?;
         validate_info(&htlc, &info)?;
-        let vtxos = backend.vtxos(htlc.address()).await?;
-        validate_vtxos(&htlc, &vtxos)?;
+        let vtxos = validate_vtxos(&htlc, backend.vtxos(htlc.address()).await?)?;
         let list = VtxoList::new(info.dust, vtxos);
         let sum = |items: Vec<&VirtualTxOutPoint>| -> Result<u64> {
             items.iter().try_fold(0u64, |n, u| {
@@ -408,8 +407,7 @@ impl Client {
                         return Err(invalid("Arkade refund timelock has not matured"));
                     }
                 }
-                let vtxos = backend.vtxos(htlc.address()).await?;
-                validate_vtxos(&htlc, &vtxos)?;
+                let vtxos = validate_vtxos(&htlc, backend.vtxos(htlc.address()).await?)?;
                 let list = VtxoList::new(info.dust, vtxos);
                 if list.recoverable().next().is_some() {
                     return Err(invalid(
@@ -634,20 +632,22 @@ pub(super) fn validate_info(htlc: &ArkadeHtlc, info: &Info) -> Result<()> {
     }
     Ok(())
 }
-pub(super) fn validate_vtxos(htlc: &ArkadeHtlc, vtxos: &[VirtualTxOutPoint]) -> Result<()> {
+/// Asset VTXOs are dropped, not rejected: anyone can send one to the VHTLC
+/// address, and spending it without an asset packet would burn the asset.
+pub(super) fn validate_vtxos(
+    htlc: &ArkadeHtlc,
+    vtxos: Vec<VirtualTxOutPoint>,
+) -> Result<Vec<VirtualTxOutPoint>> {
     let mut seen = HashSet::new();
-    for v in vtxos {
+    for v in &vtxos {
         if v.script != htlc.script.script_pubkey()
             || v.amount > Amount::MAX_MONEY
-            || !v.assets.is_empty()
             || !seen.insert(v.outpoint)
         {
-            return Err(invalid(
-                "Arkade VTXO script, amount, assets or identity mismatch",
-            ));
+            return Err(invalid("Arkade VTXO script, amount or identity mismatch"));
         }
     }
-    Ok(())
+    Ok(vtxos.into_iter().filter(|v| v.assets.is_empty()).collect())
 }
 pub(super) fn condition(input: &mut psbt::Input, preimage: Option<[u8; 32]>) {
     let key = psbt::raw::Key {

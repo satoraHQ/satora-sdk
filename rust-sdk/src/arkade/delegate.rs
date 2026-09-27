@@ -77,7 +77,7 @@ impl Client {
             let params=self.signer.as_ref().ok_or_else(||invalid("signer missing"))?.derive_swap_params(stored.key_index)?;
             let pair=Keypair::from_secret_key(&Secp256k1::new(),&secp256k1::SecretKey::from_slice(&params.secret).map_err(decode)?);
             let preimage=(operation==ArkadeSpend::Claim).then_some(params.preimage);
-            let vtxos=backend.vtxos(htlc.address()).await?;validate_vtxos(&htlc,&vtxos)?;
+            let vtxos=validate_vtxos(&htlc,backend.vtxos(htlc.address()).await?)?;
             let mut state=if let Some(state)=stored.metadata.arkade_delegate {
                 if state.operation!=operation || state.destination!=options.destination || state.cosigner_pk!=cosigner.to_string() { return Err(invalid("persisted Arkade delegation differs from this request")); }
                 if let Some(hash)=&state.commitment_txid { return hash.parse().map_err(decode); }

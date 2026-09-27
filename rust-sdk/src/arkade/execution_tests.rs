@@ -968,3 +968,101 @@ async fn unspent_surplus_next_to_a_spent_vtxo_keeps_the_spent_verdict() {
     assert_eq!(observation.remaining_amount, "50000");
     assert_eq!(observation.funded_amount, "100000");
 }
+fn push_asset_vtxos(backend: &mut Backend) {
+    let asset = ark_rs::core::server::Asset {
+        asset_id: ark_rs::core::asset::AssetId {
+            txid: Txid::from_byte_array([8; 32]),
+            group_index: 0,
+        },
+        amount: 1,
+    };
+    for vout in 0..2 {
+        let mut vtxo = backend.vtxos[0].clone();
+        vtxo.outpoint = OutPoint {
+            txid: Txid::from_byte_array([9; 32]),
+            vout,
+        };
+        vtxo.amount = Amount::from_sat(330);
+        vtxo.assets = vec![asset.clone()];
+        if vout == 1 {
+            vtxo.is_spent = true;
+            vtxo.spent_by = Some(Txid::from_byte_array([7; 32]));
+        }
+        backend.vtxos.push(vtxo);
+    }
+}
+#[tokio::test]
+async fn asset_vtxos_at_the_vhtlc_do_not_block_reads_or_spends() {
+    use crate::observation::ArkadeReader;
+    use crate::observation::ContractReader;
+    use crate::observation::ContractRef;
+    use crate::observation::HtlcState;
+
+    let (client, mut backend, _, destination) = setup("btc_to_arkade");
+    push_asset_vtxos(&mut backend);
+    let balance = client.vhtlc_balance("arkade", &backend).await.unwrap();
+    assert_eq!(balance.spendable_sats, 100_000);
+    assert_eq!(balance.spent_sats, 0);
+
+    let (_, mut observed, _, _) = setup("btc_to_arkade");
+    push_asset_vtxos(&mut observed);
+    let htlc = client.arkade_htlc("arkade").unwrap();
+    let reference = ContractRef::Arkade {
+        options: htlc.options,
+        network: htlc.network,
+        expected_sats: 100_000,
+    };
+    let observation = ArkadeReader::new(Arc::new(observed), Arc::new(Chain(144)))
+        .observe(&reference)
+        .await
+        .unwrap();
+    assert_eq!(observation.state, HtlcState::Confirmed);
+    assert_eq!(observation.funded_amount, "100000");
+
+    client
+        .spend_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            spend_options(destination),
+        )
+        .await
+        .unwrap();
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 1);
+    let checkpoints = backend.final_checkpoints.lock().unwrap().clone();
+    assert_eq!(checkpoints.len(), 2);
+    assert!(checkpoints.iter().all(|cp| {
+        cp.unsigned_tx
+            .input
+            .iter()
+            .all(|i| i.previous_output.txid != Txid::from_byte_array([9; 32]))
+    }));
+
+    let (client, mut backend, _, destination) = setup("arkade_to_lightning");
+    push_asset_vtxos(&mut backend);
+    client
+        .spend_arkade(
+            "arkade",
+            &backend,
+            Some(&Chain(144)),
+            ArkadeSpend::Refund,
+            spend_options(destination),
+        )
+        .await
+        .unwrap();
+
+    let (client, mut backend, _, _) = setup("btc_to_arkade");
+    push_asset_vtxos(&mut backend);
+    backend.vtxos[2].outpoint = backend.vtxos[0].outpoint;
+    assert!(client.vhtlc_balance("arkade", &backend).await.is_err());
+    let (_, mut observed, _, _) = setup("btc_to_arkade");
+    push_asset_vtxos(&mut observed);
+    observed.vtxos[2].outpoint = observed.vtxos[0].outpoint;
+    assert!(
+        ArkadeReader::new(Arc::new(observed), Arc::new(Chain(144)))
+            .observe(&reference)
+            .await
+            .is_err()
+    );
+}

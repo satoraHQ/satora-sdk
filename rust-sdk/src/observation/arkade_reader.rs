@@ -59,11 +59,13 @@ impl ContractReader for ArkadeReader {
             let mut seen = HashSet::new();
             for vtxo in &vtxos {
                 if vtxo.script != script.script_pubkey()
-                    || !vtxo.assets.is_empty()
                     || vtxo.amount > Amount::MAX_MONEY
                     || !seen.insert(vtxo.outpoint)
                 {
                     return Err(invalid("Arkade observation contains invalid VTXOs"));
+                }
+                if !vtxo.assets.is_empty() {
+                    continue;
                 }
                 total = total
                     .checked_add(vtxo.amount.to_sat())
