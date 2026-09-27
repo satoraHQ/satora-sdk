@@ -163,6 +163,81 @@ async fn duplicate_invoice_is_not_retried() {
 }
 
 #[tokio::test]
+async fn expected_invoice_amount_reaches_creation_and_quote() {
+    let server = MockServer::start().await;
+    for (route, direction) in [
+        ("/swap/arkade/lightning", "arkade_to_lightning"),
+        ("/swap/evm/lightning", "evm_to_lightning"),
+    ] {
+        Mock::given(method("POST"))
+            .and(path(route))
+            .respond_with(ResponseTemplate::new(200).set_body_json(fixture(direction)))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("GET"))
+        .and(path("/quote/lightning-send"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "exchange_rate":"60000", "source_amount":"1010", "source_amount_sats":1_010,
+            "target_amount_sats":1_000, "protocol_fee_sats":5, "network_fee_sats":5,
+            "protocol_fee_rate":0.001, "min_amount_sats":100, "max_amount_sats":1_000_000
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let destination = || LightningDestination::InvoiceExpecting {
+        invoice: "lnbcrt1fixture".into(),
+        sats: 1_000,
+    };
+    // The two fixtures share a swap id, so each creation needs its own storage.
+    client(&server)
+        .create_arkade_to_lightning_swap(destination())
+        .await
+        .unwrap();
+    client(&server)
+        .create_evm_to_lightning_swap(TokenId::Usdt0Arbitrum, destination(), false, None)
+        .await
+        .unwrap();
+    client(&server)
+        .get_lightning_send_quote(
+            lendaswap_sdk::types::KnownChain::Arkade,
+            TokenId::Btc,
+            destination(),
+            None,
+        )
+        .await
+        .unwrap();
+    let requests = server.received_requests().await.unwrap();
+    for (request, schema) in requests[..2]
+        .iter()
+        .zip(["ArkadeToLightningSwapRequest", "EvmToLightningSwapRequest"])
+    {
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        assert_schema(&body, schema);
+        assert_eq!(body["lightning_invoice"], "lnbcrt1fixture");
+        assert_eq!(body["target_amount_sats"], 1_000);
+        assert!(body.get("source_amount_sats").is_none());
+        assert!(body.get("amount_in").is_none());
+    }
+    let query: std::collections::HashMap<_, _> =
+        requests[2].url.query_pairs().into_owned().collect();
+    assert_eq!(query["lightning_invoice"], "lnbcrt1fixture");
+    assert_eq!(query["target_amount_sats"], "1000");
+    let wire = serde_json::to_value(
+        lendaswap_sdk::types::CreateArkadeToLightningSwapRequest::new(
+            destination(),
+            "02aa",
+            "02bb",
+            None,
+        ),
+    )
+    .unwrap();
+    assert_eq!(wire["lightning_invoice"], "lnbcrt1fixture");
+    assert_eq!(wire["target_amount_sats"], 1_000);
+}
+
+#[tokio::test]
 async fn get_swap_sends_compatibility_headers_for_every_direction() {
     let server = MockServer::start().await;
     let spec: Value = serde_json::from_str(include_str!("../openapi.json")).unwrap();

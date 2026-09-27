@@ -348,7 +348,7 @@ impl Client {
                 let is_address = destination.contains('@');
                 let is_lnurl = destination.to_ascii_lowercase().starts_with("lnurl");
                 if !is_address && !is_lnurl {
-                    return Err(Error::InvalidSwap("use a LightningDestination::Invoice via create_swap_request for amount-bearing invoices".into()));
+                    return Err(Error::InvalidSwap("use LightningDestination::Invoice or InvoiceExpecting via create_swap_request for amount-bearing invoices".into()));
                 }
                 let destination = match (amount, is_address) {
                     (QuoteAmount::Target(sats), true) => {
@@ -532,9 +532,9 @@ impl Client {
     /// — once the user funds the returned [`SwapFunding::ArkadeAddress`],
     /// the server owns the rest of the flow.
     ///
-    /// The destination can be a BOLT11 invoice (amount embedded), or a
-    /// Lightning address (`user@host`) or raw LNURL with a target or send-max
-    /// amount. The server resolves addresses and LNURLs
+    /// The destination can be a BOLT11 invoice (optionally with the payout it
+    /// must carry), or a Lightning address (`user@host`) or raw LNURL with a
+    /// target or send-max amount. The server resolves addresses and LNURLs
     /// using LNURL-pay; no LNURL resolver is bundled.
     ///
     /// Duplicate-invoice errors are not retried: the invoice determines the

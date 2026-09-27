@@ -27,6 +27,15 @@ pub(super) fn destination_fields(
             }
             json!({ "lightning_invoice": invoice })
         }
+        LightningDestination::InvoiceExpecting { invoice, sats } => {
+            if invoice.is_empty() {
+                return Err(Error::InvalidSwap(
+                    "Lightning invoice must not be empty".into(),
+                ));
+            }
+            validate_sats(sats.into())?;
+            json!({ "lightning_invoice": invoice, "target_amount_sats": sats })
+        }
         LightningDestination::Address { address, sats } => {
             validate_sats(sats.into())?;
             json!({ "lightning_address": address, "target_amount_sats": sats })

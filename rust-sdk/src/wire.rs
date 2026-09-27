@@ -177,7 +177,8 @@ impl From<CreateLightningToArkadeSwapRequest> for CreateLightningToArkadeSwapReq
 /// exactly one of `lightning_invoice` / `lightning_address` / `lnurl`;
 /// the `From` impl below flattens the SDK's typed
 /// [`LightningDestination`] into the matching nullable fields.
-/// `amount_sats` is set only for the address/LNURL variants.
+/// `target_amount_sats` is set for the address, LNURL and expected-amount invoice
+/// variants, and `source_amount_sats` for the send-max variants.
 #[derive(Serialize)]
 pub(crate) struct CreateArkadeToLightningSwapRequestWire {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -204,6 +205,9 @@ impl From<CreateArkadeToLightningSwapRequest> for CreateArkadeToLightningSwapReq
         let (lightning_invoice, lightning_address, lnurl, target_amount_sats, source_amount_sats) =
             match r.destination {
                 LightningDestination::Invoice(s) => (Some(s), None, None, None, None),
+                LightningDestination::InvoiceExpecting { invoice, sats } => {
+                    (Some(invoice), None, None, Some(sats), None)
+                }
                 LightningDestination::Address { address, sats } => {
                     (None, Some(address), None, Some(sats), None)
                 }

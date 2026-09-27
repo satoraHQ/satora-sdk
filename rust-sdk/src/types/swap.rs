@@ -253,6 +253,9 @@ impl Endpoint for CreateLightningToArkadeSwapRequest {
 pub enum LightningDestination {
     /// BOLT11 invoice (amount embedded). Server pays this exact invoice.
     Invoice(String),
+    /// BOLT11 invoice plus the payout it must carry. The server rejects the
+    /// swap when the invoice amount differs from `sats`.
+    InvoiceExpecting { invoice: String, sats: u64 },
     /// Lightning address (`user@host`). Server resolves via LUD-16
     /// (`https://host/.well-known/lnurlp/user`) using `sats`.
     Address { address: String, sats: u64 },

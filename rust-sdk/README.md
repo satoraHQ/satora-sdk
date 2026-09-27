@@ -71,9 +71,11 @@ Their `main` functions do not create swaps or send payments.
 
 Lightning sends accept `LightningDestination::Invoice`, `Address`, or `Lnurl`.
 The `AddressSendMax` and `LnurlSendMax` variants specify a source amount instead
-of an exact payout. Invoice-owned hash collisions return HTTP 409 without
-retrying. Lightning→Arkade supports both source and target amounts, a UTF-8
-invoice description of at most 639 bytes, and a per-swap surcharge.
+of an exact payout. `InvoiceExpecting` sends the payout amount alongside a
+BOLT11 invoice, and the server rejects the swap if the invoice amount differs.
+Invoice-owned hash collisions return HTTP 409 without retrying. Lightning→Arkade
+supports both source and target amounts, a UTF-8 invoice description of at most
+639 bytes, and a per-swap surcharge.
 
 `get_swap_details` preserves the server's full response. `get_swap` projects it
 into payment instructions; its `receive_address` is empty for an EVM→Bitcoin
