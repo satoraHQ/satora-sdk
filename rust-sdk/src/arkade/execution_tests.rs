@@ -42,8 +42,16 @@ impl ArkadeBackend for Backend {
     fn info(&self) -> ArkadeFuture<'_, Info> {
         Box::pin(async { Ok(self.info.clone()) })
     }
-    fn vtxos(&self, _: ArkAddress) -> ArkadeFuture<'_, Vec<VirtualTxOutPoint>> {
-        Box::pin(async { Ok(self.vtxos.clone()) })
+    fn vtxos(&self, address: ArkAddress) -> ArkadeFuture<'_, Vec<VirtualTxOutPoint>> {
+        Box::pin(async move {
+            let script = address.to_p2tr_script_pubkey();
+            Ok(self
+                .vtxos
+                .iter()
+                .filter(|v| v.script == script)
+                .cloned()
+                .collect())
+        })
     }
     fn submit(
         &self,
@@ -690,6 +698,34 @@ async fn interrupted_delegate_settlement_reconciles_observed_commitment_without_
         v.is_spent = true;
         v.settled_by = Some(commitment);
     }
+    // Spent inputs alone are not proof: the batch must have paid the destination.
+    // Until the indexer shows that output the error has to invite a retry.
+    let error = client
+        .delegate_arkade(
+            "arkade",
+            &backend,
+            Some(&Chain(144)),
+            ArkadeSpend::Refund,
+            cosigner,
+            spend_options(destination.clone()),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("not visible yet"), "{error}");
+    let mut paid = backend.vtxos[0].clone();
+    paid.outpoint = OutPoint {
+        txid: commitment,
+        vout: 0,
+    };
+    paid.amount = Amount::from_sat(state.amount_sats);
+    paid.script = ArkAddress::decode(&destination)
+        .unwrap()
+        .to_p2tr_script_pubkey();
+    paid.is_spent = false;
+    paid.settled_by = None;
+    paid.commitment_txids = vec![commitment];
+    backend.vtxos.push(paid);
     assert_eq!(
         client
             .delegate_arkade(
@@ -706,6 +742,60 @@ async fn interrupted_delegate_settlement_reconciles_observed_commitment_without_
     );
 }
 
+/// Cosigns like the daemon's collab-refund-delegate handler, through ark-core's
+/// `sign_delegate_psbts`, which signs intent inputs with SIGHASH_DEFAULT whatever
+/// the PSBT asks for. A `forfeit_mode` other than ALL|ANYONECANPAY replaces the
+/// forfeit signatures with ones made in that mode. Returns how many forfeits
+/// were cosigned, counted only once the response is complete.
+async fn mount_cosigner(
+    server: &wiremock::MockServer,
+    forfeit_mode: TapSighashType,
+) -> Arc<AtomicUsize> {
+    let cosigned = Arc::new(AtomicUsize::new(0));
+    let count = cosigned.clone();
+    wiremock::Mock::given(wiremock::matchers::path(
+        "/api/swap/arkade-evm/arkade/collab-refund-delegate",
+    ))
+    .respond_with(move |request: &wiremock::Request| {
+        let body: Value = request.body_json().unwrap();
+        let receiver = pair(2);
+        let mut proof = restore(body["intent_proof"].as_str().unwrap(), None).unwrap();
+        let mut forfeits: Vec<Psbt> = body["forfeit_psbts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| restore(p.as_str().unwrap(), None).unwrap())
+            .collect();
+        ark_rs::core::batch::sign_delegate_psbts(
+            |_, msg| {
+                Ok(vec![(
+                    Secp256k1::new().sign_schnorr_no_aux_rand(&msg, &receiver),
+                    receiver.x_only_public_key().0,
+                )])
+            },
+            &mut proof,
+            &mut forfeits,
+        )
+        .unwrap();
+        if forfeit_mode != TapSighashType::AllPlusAnyoneCanPay {
+            for forfeit in &mut forfeits {
+                let mut resigned = forfeit.clone();
+                resigned.inputs[0].sighash_type = Some(forfeit_mode.into());
+                sign_psbt(&mut resigned, &receiver, None).unwrap();
+                forfeit.inputs[0].tap_script_sigs = resigned.inputs[0].tap_script_sigs.clone();
+            }
+        }
+        count.store(forfeits.len(), Ordering::Relaxed);
+        let forfeits: Vec<_> = forfeits.iter().map(ToString::to_string).collect();
+        wiremock::ResponseTemplate::new(200)
+            .set_body_json(json!({"intent_proof":proof.to_string(),"forfeit_psbts":forfeits}))
+    })
+    .expect(1)
+    .mount(server)
+    .await;
+    cosigned
+}
+
 #[tokio::test]
 async fn cooperative_delegate_verifies_receiver_signatures_including_forfeits() {
     use wiremock::Mock;
@@ -714,35 +804,18 @@ async fn cooperative_delegate_verifies_receiver_signatures_including_forfeits() 
     let (_, mut backend, store, destination) = setup("arkade_to_evm");
     backend.vtxos[0].is_swept = true;
     let server = MockServer::start().await;
-    Mock::given(wiremock::matchers::path(
-        "/api/swap/arkade-evm/arkade/collab-refund-delegate",
-    ))
-    .respond_with(|request: &wiremock::Request| {
-        let body: Value = request.body_json().unwrap();
-        let mut proof = restore(body["intent_proof"].as_str().unwrap(), None).unwrap();
-        sign_psbt(&mut proof, &pair(2), None).unwrap();
-        let forfeits: Vec<_> = body["forfeit_psbts"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|p| {
-                let mut p = restore(p.as_str().unwrap(), None).unwrap();
-                sign_psbt(&mut p, &pair(2), None).unwrap();
-                p.to_string()
-            })
-            .collect();
-        ResponseTemplate::new(200)
-            .set_body_json(json!({"intent_proof":proof.to_string(),"forfeit_psbts":forfeits}))
-    })
-    .expect(1)
-    .mount(&server)
-    .await;
+    let cosigned = mount_cosigner(&server, TapSighashType::AllPlusAnyoneCanPay).await;
     Mock::given(wiremock::matchers::path("/api/delegate/settle"))
         .respond_with(|request: &wiremock::Request| {
             let body: Value = request.body_json().unwrap();
             assert!(body["preimage"].is_null() && body["swap_id"].is_null());
             let proof = restore(body["intent_proof"].as_str().unwrap(), None).unwrap();
             merge_cosigned(&proof, &proof, pair(2).x_only_public_key().0).unwrap();
+            assert!(proof.inputs.iter().any(|i| {
+                i.tap_script_sigs
+                    .values()
+                    .any(|s| s.sighash_type == TapSighashType::Default)
+            }));
             ResponseTemplate::new(200)
                 .set_body_json(json!({"commitment_txid":Txid::from_byte_array([15;32])}))
         })
@@ -770,5 +843,54 @@ async fn cooperative_delegate_verifies_receiver_signatures_including_forfeits() 
         result,
         super::super::ArkadeSettlement::Delegated { .. }
     ));
+    // The unswept VTXO needs a forfeit, so the ALL|ANYONECANPAY path ran too.
+    assert_eq!(cosigned.load(Ordering::Relaxed), 1);
     assert_eq!(backend.submit_count.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn cooperative_delegate_rejects_forfeit_signed_without_anyonecanpay() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    let (_, mut backend, store, destination) = setup("arkade_to_evm");
+    backend.vtxos[0].is_swept = true;
+    let server = MockServer::start().await;
+    let cosigned = mount_cosigner(&server, TapSighashType::All).await;
+    Mock::given(wiremock::matchers::path("/api/delegate/settle"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let client = Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .base_url(server.uri())
+        .build()
+        .unwrap();
+    // The batch appends a connector input to each forfeit, which a plain ALL
+    // signature does not survive.
+    let error = client
+        .settle_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::CooperativeRefund,
+            Some(pair(5).public_key()),
+            spend_options(destination),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("cosigner signature missing"), "{error}");
+    assert_eq!(cosigned.load(Ordering::Relaxed), 1);
+    assert!(
+        store
+            .get_swap("arkade")
+            .unwrap()
+            .unwrap()
+            .metadata
+            .arkade_delegate
+            .is_none()
+    );
 }

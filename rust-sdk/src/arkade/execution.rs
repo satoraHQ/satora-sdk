@@ -772,20 +772,38 @@ pub(super) fn merge_cosigned(
             .transpose()
             .map_err(decode)?
             .unwrap_or(TapSighashType::Default);
-        let hash = SighashCache::new(&original.unsigned_tx)
-            .taproot_script_spend_signature_hash(
-                index,
-                &Prevouts::All(&prevouts),
-                leaf,
-                sighash_type,
-            )
-            .map_err(decode)?;
-        let message = secp256k1::Message::from_digest(hash.to_byte_array());
+        // Each Taproot signature commits to its own hash type. Default and All are
+        // interchangeable on a script spend (arkd's cosigner uses Default where the
+        // intent asks for All), but ANYONECANPAY must be kept: the batch appends a
+        // connector input to forfeits after signing.
+        let accepted = |candidate: TapSighashType| {
+            candidate == sighash_type
+                || matches!(
+                    (sighash_type, candidate),
+                    (
+                        TapSighashType::Default | TapSighashType::All,
+                        TapSighashType::Default | TapSighashType::All
+                    )
+                )
+        };
         let valid = |sig: &bitcoin::taproot::Signature| {
-            sig.sighash_type == sighash_type
-                && Secp256k1::new()
-                    .verify_schnorr(&sig.signature, &message, &cosigner)
-                    .is_ok()
+            accepted(sig.sighash_type)
+                && SighashCache::new(&original.unsigned_tx)
+                    .taproot_script_spend_signature_hash(
+                        index,
+                        &Prevouts::All(&prevouts),
+                        leaf,
+                        sig.sighash_type,
+                    )
+                    .is_ok_and(|hash| {
+                        Secp256k1::new()
+                            .verify_schnorr(
+                                &sig.signature,
+                                &secp256k1::Message::from_digest(hash.to_byte_array()),
+                                &cosigner,
+                            )
+                            .is_ok()
+                    })
         };
         let signature = if let Some(signature) = actual
             .tap_script_sigs

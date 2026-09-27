@@ -85,6 +85,11 @@ impl Client {
                 let inputs:Vec<_>=proof.unsigned_tx.input.iter().skip(1).map(|i|i.previous_output).collect();
                 let spent:Vec<_>=inputs.iter().filter_map(|outpoint|vtxos.iter().find(|v|v.outpoint==*outpoint && v.is_spent).and_then(|v|v.settled_by)).collect();
                 if !inputs.is_empty() && spent.len()==inputs.len() && spent.iter().all(|txid|*txid==spent[0]) {
+                    // Spent inputs alone could be another party's settlement; the batch
+                    // must also have created the intended output. The indexer can lag
+                    // the commitment, so a missing output is retryable, not final.
+                    let paid=backend.vtxos(destination).await?.iter().any(|v|v.amount.to_sat()==state.amount_sats && v.commitment_txids.contains(&spent[0]));
+                    if !paid { return Err(invalid(format!("Arkade inputs were settled by commitment {} but the destination output is not visible yet; retry once the indexer has caught up",spent[0]))); }
                     let mut completed=state;
                     completed.commitment_txid=Some(spent[0].to_string());self.save_arkade_delegate(id,completed)?;
                     return Ok(spent[0]);
