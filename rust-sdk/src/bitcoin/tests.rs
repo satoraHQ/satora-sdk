@@ -56,6 +56,7 @@ fn build(
         dest,
         FeeRate::from_sat_per_vb(2).unwrap(),
         2,
+        0,
         Amount::from_sat(100_000),
         Amount::from_sat(10_000),
     )
@@ -195,6 +196,7 @@ fn dust_and_excessive_fees_are_rejected() {
         &dest,
         FeeRate::from_sat_per_vb(1000).unwrap(),
         1,
+        0,
         Amount::ZERO,
         Amount::from_sat(100),
     );
@@ -209,6 +211,7 @@ fn dust_and_excessive_fees_are_rejected() {
             &dest,
             FeeRate::from_sat_per_vb(1).unwrap(),
             1,
+            0,
             Amount::ZERO,
             Amount::from_sat(1000)
         )
@@ -216,30 +219,133 @@ fn dust_and_excessive_fees_are_rejected() {
     );
 }
 
+/// Reports outputs spent in the mempool as spent, as Esplora does, and evicts a
+/// mempool spend when a later broadcast conflicts with it.
 struct Backend {
     observation: BitcoinObservation,
-    submitted: std::sync::Mutex<Option<Transaction>>,
-    submissions: std::sync::atomic::AtomicUsize,
+    with_history: bool,
+    fundings: std::sync::Mutex<Vec<BitcoinHistoryTransaction>>,
+    mempool: std::sync::Mutex<Vec<BitcoinHistoryTransaction>>,
+    broadcasts: std::sync::Mutex<Vec<Transaction>>,
     interrupt: std::sync::atomic::AtomicBool,
+    reject: std::sync::atomic::AtomicBool,
+}
+impl Backend {
+    fn new(observation: BitcoinObservation, with_history: bool) -> Self {
+        let backend = Self {
+            observation,
+            with_history,
+            fundings: std::sync::Mutex::new(vec![]),
+            mempool: std::sync::Mutex::new(vec![]),
+            broadcasts: std::sync::Mutex::new(vec![]),
+            interrupt: std::sync::atomic::AtomicBool::new(false),
+            reject: std::sync::atomic::AtomicBool::new(false),
+        };
+        backend.fund(100_000, Some(99));
+        backend
+    }
+    fn fund(&self, sats: u64, confirmed_height: Option<u32>) {
+        let mut fundings = self.fundings.lock().unwrap();
+        let transaction = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: LockTime::from_consensus(fundings.len() as u32),
+            input: vec![TxIn::default()],
+            output: vec![TxOut {
+                value: Amount::from_sat(sats),
+                script_pubkey: self.observation.utxos[0].output.script_pubkey.clone(),
+            }],
+        };
+        fundings.push(BitcoinHistoryTransaction {
+            transaction,
+            confirmed_height,
+        });
+    }
+    fn confirm(&self, txid: Txid, height: u32) {
+        for entry in self.mempool.lock().unwrap().iter_mut() {
+            if entry.transaction.compute_txid() == txid {
+                entry.confirmed_height = Some(height);
+            }
+        }
+    }
+    fn submissions(&self) -> usize {
+        self.broadcasts.lock().unwrap().len()
+    }
+    fn current(&self) -> BitcoinHistory {
+        let fundings = self.fundings.lock().unwrap().clone();
+        let mempool = self.mempool.lock().unwrap().clone();
+        let spent: Vec<OutPoint> = mempool
+            .iter()
+            .flat_map(|e| e.transaction.input.iter().map(|i| i.previous_output))
+            .collect();
+        let utxos = fundings
+            .iter()
+            .map(|e| BitcoinUtxo {
+                outpoint: OutPoint {
+                    txid: e.transaction.compute_txid(),
+                    vout: 0,
+                },
+                output: e.transaction.output[0].clone(),
+                confirmed_height: e.confirmed_height,
+            })
+            .filter(|u| !spent.contains(&u.outpoint))
+            .collect();
+        BitcoinHistory {
+            observation: BitcoinObservation {
+                utxos,
+                ..self.observation.clone()
+            },
+            transactions: fundings.into_iter().chain(mempool).collect(),
+        }
+    }
 }
 impl BitcoinBackend for Backend {
     fn network(&self) -> Network {
         Network::Regtest
     }
-    fn observe<'a>(&'a self, _: &'a Address) -> ChainFuture<'a, BitcoinObservation> {
-        Box::pin(async { Ok(self.observation.clone()) })
+    fn history<'a>(&'a self, _: &'a Address) -> ChainFuture<'a, BitcoinHistory> {
+        Box::pin(async {
+            if self.with_history {
+                Ok(self.current())
+            } else {
+                Err(invalid(NO_HISTORY))
+            }
+        })
     }
-    fn transaction(&self, _: Txid) -> ChainFuture<'_, Option<Transaction>> {
-        Box::pin(async { Ok(self.submitted.lock().unwrap().clone()) })
+    fn observe<'a>(&'a self, _: &'a Address) -> ChainFuture<'a, BitcoinObservation> {
+        Box::pin(async { Ok(self.current().observation) })
+    }
+    fn transaction(&self, id: Txid) -> ChainFuture<'_, Option<Transaction>> {
+        Box::pin(async move {
+            Ok(self
+                .broadcasts
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|tx| tx.compute_txid() == id)
+                .cloned())
+        })
     }
     fn fee_rate(&self, _: u16) -> ChainFuture<'_, FeeRate> {
         Box::pin(async { Ok(FeeRate::from_sat_per_vb(2).unwrap()) })
     }
     fn broadcast<'a>(&'a self, tx: &'a Transaction) -> ChainFuture<'a, Txid> {
         Box::pin(async move {
-            self.submissions
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            *self.submitted.lock().unwrap() = Some(tx.clone());
+            if self.reject.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(invalid("rejected by the node"));
+            }
+            self.broadcasts.lock().unwrap().push(tx.clone());
+            let mut mempool = self.mempool.lock().unwrap();
+            mempool.retain(|e| {
+                !e.transaction.input.iter().any(|old| {
+                    tx.input
+                        .iter()
+                        .any(|new| new.previous_output == old.previous_output)
+                })
+            });
+            mempool.push(BitcoinHistoryTransaction {
+                transaction: tx.clone(),
+                confirmed_height: None,
+            });
             if self
                 .interrupt
                 .swap(false, std::sync::atomic::Ordering::Relaxed)
@@ -251,15 +357,23 @@ impl BitcoinBackend for Backend {
     }
 }
 
-#[tokio::test]
-async fn interrupted_client_claim_resumes_the_persisted_transaction_without_another_broadcast() {
+const MNEMONIC: &str =
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+fn claim_setup(
+    with_history: bool,
+) -> (
+    Client,
+    std::sync::Arc<crate::InMemorySwapStorage>,
+    Backend,
+    BitcoinSpendOptions,
+) {
     use crate::InMemorySwapStorage;
     use crate::Signer;
     use crate::StoredSwap;
     use crate::SwapStorage;
     use serde_json::json;
-    let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let params = Signer::from_mnemonic(mnemonic)
+    let params = Signer::from_mnemonic(MNEMONIC)
         .unwrap()
         .derive_swap_params(0)
         .unwrap();
@@ -290,64 +404,244 @@ async fn interrupted_client_claim_resumes_the_persisted_transaction_without_anot
         )
         .unwrap();
     let client = Client::builder()
-        .mnemonic(mnemonic)
+        .mnemonic(MNEMONIC)
         .storage(storage.clone())
         .build()
         .unwrap();
-    let backend = Backend {
-        observation,
-        submitted: std::sync::Mutex::new(None),
-        submissions: std::sync::atomic::AtomicUsize::new(0),
-        interrupt: std::sync::atomic::AtomicBool::new(true),
-    };
     let options = BitcoinSpendOptions {
         destination,
         fee_rate: None,
-        maximum_fee: Amount::from_sat(1000),
+        maximum_fee: Amount::from_sat(5000),
         minimum_confirmations: 2,
+        minimum_remaining_blocks: 0,
         confirmation_target: 6,
         timeout: Duration::from_secs(5),
     };
-    assert!(
-        client
+    (
+        client,
+        storage,
+        Backend::new(observation, with_history),
+        options,
+    )
+}
+
+fn journaled(storage: &crate::InMemorySwapStorage) -> (Option<String>, Option<u64>) {
+    use crate::SwapStorage;
+    let metadata = storage.get_swap("bitcoin").unwrap().unwrap().metadata;
+    (metadata.btc_spend_txid, metadata.btc_spend_fee)
+}
+
+fn point_journal_elsewhere(storage: &crate::InMemorySwapStorage) {
+    use crate::SwapStorage;
+    storage
+        .update_metadata(
+            "bitcoin",
+            SwapMetadata {
+                btc_spend_txid: Some(Txid::all_zeros().to_string()),
+                btc_spend_fee: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+}
+
+#[tokio::test]
+async fn interrupted_client_claim_resumes_the_persisted_transaction_without_another_broadcast() {
+    for with_history in [true, false] {
+        let (client, storage, backend, options) = claim_setup(with_history);
+        backend
+            .interrupt
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            client
+                .claim_bitcoin("bitcoin", &backend, options.clone())
+                .await
+                .is_err()
+        );
+        assert!(journaled(&storage).0.is_some());
+        let restarted = Client::builder()
+            .mnemonic(MNEMONIC)
+            .storage(storage)
+            .build()
+            .unwrap();
+        let receipt = restarted
+            .claim_bitcoin("bitcoin", &backend, options)
+            .await
+            .unwrap();
+        assert_eq!(
+            receipt.transaction.compute_txid(),
+            backend.broadcasts.lock().unwrap()[0].compute_txid()
+        );
+        assert_eq!(backend.submissions(), 1);
+    }
+}
+
+#[tokio::test]
+async fn pending_claim_is_replaced_at_a_higher_explicit_fee_rate() {
+    let (client, storage, mut backend, mut options) = claim_setup(true);
+    options.fee_rate = Some(FeeRate::from_sat_per_vb(2).unwrap());
+    let first = client
+        .claim_bitcoin("bitcoin", &backend, options.clone())
+        .await
+        .unwrap();
+    options.fee_rate = Some(FeeRate::from_sat_per_vb(10).unwrap());
+    // A fresh claim this close to the window is refused; a bump of a public preimage is not.
+    options.minimum_remaining_blocks = 1000;
+    let bumped = client
+        .claim_bitcoin("bitcoin", &backend, options.clone())
+        .await
+        .unwrap();
+    let (t1, t2) = (&first.transaction, &bumped.transaction);
+    assert_ne!(t2.compute_txid(), t1.compute_txid());
+    assert_eq!(
+        t2.input
+            .iter()
+            .map(|i| i.previous_output)
+            .collect::<Vec<_>>(),
+        t1.input
+            .iter()
+            .map(|i| i.previous_output)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(t2.output[0].script_pubkey, t1.output[0].script_pubkey);
+    assert!(bumped.fee.to_sat() >= first.fee.to_sat() + t2.vsize() as u64);
+    assert_eq!(backend.submissions(), 2);
+    assert_eq!(
+        journaled(&storage),
+        (
+            Some(t2.compute_txid().to_string()),
+            Some(bumped.fee.to_sat())
+        )
+    );
+    for rate in [10, 2] {
+        options.fee_rate = Some(FeeRate::from_sat_per_vb(rate).unwrap());
+        let again = client
             .claim_bitcoin("bitcoin", &backend, options.clone())
             .await
-            .is_err()
-    );
-    assert!(
-        storage
-            .get_swap("bitcoin")
-            .unwrap()
-            .unwrap()
-            .metadata
-            .btc_spend_txid
-            .is_some()
-    );
-    let restarted = Client::builder()
-        .mnemonic(mnemonic)
-        .storage(storage)
-        .build()
+            .unwrap();
+        assert_eq!(again.transaction.compute_txid(), t2.compute_txid());
+        assert_eq!(again.fee, bumped.fee);
+    }
+    options.fee_rate = None;
+    let again = client
+        .claim_bitcoin("bitcoin", &backend, options.clone())
+        .await
         .unwrap();
-    let receipt = restarted
+    assert_eq!(again.transaction.compute_txid(), t2.compute_txid());
+    assert_eq!(backend.submissions(), 2);
+    // The fixture's median time sits one second before the locktime.
+    backend.observation.median_time_past += 2;
+    options.fee_rate = Some(FeeRate::from_sat_per_vb(20).unwrap());
+    let late = client
+        .claim_bitcoin("bitcoin", &backend, options.clone())
+        .await
+        .unwrap();
+    assert_ne!(late.transaction.compute_txid(), t2.compute_txid());
+    assert_eq!(backend.submissions(), 3);
+    // A bump over the fee cap cannot be built; the pending claim stands.
+    options.fee_rate = Some(FeeRate::from_sat_per_vb(1000).unwrap());
+    let capped = client
         .claim_bitcoin("bitcoin", &backend, options)
         .await
         .unwrap();
     assert_eq!(
-        receipt.transaction.compute_txid(),
-        backend
-            .submitted
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
+        capped.transaction.compute_txid(),
+        late.transaction.compute_txid()
+    );
+    assert_eq!(backend.submissions(), 3);
+}
+
+#[tokio::test]
+async fn confirmed_own_spend_is_adopted_when_the_journal_points_elsewhere() {
+    let (client, storage, backend, options) = claim_setup(true);
+    let first = client
+        .claim_bitcoin("bitcoin", &backend, options.clone())
+        .await
+        .unwrap();
+    let txid = first.transaction.compute_txid();
+    backend.confirm(txid, 100);
+    // Dust that arrives later cannot be swept and must not hide the confirmed claim.
+    backend.fund(300, Some(99));
+    point_journal_elsewhere(&storage);
+    let adopted = client
+        .claim_bitcoin("bitcoin", &backend, options)
+        .await
+        .unwrap();
+    assert_eq!(adopted.transaction.compute_txid(), txid);
+    assert_eq!(adopted.fee, first.fee);
+    assert_eq!(
+        journaled(&storage),
+        (Some(txid.to_string()), Some(first.fee.to_sat()))
+    );
+    assert_eq!(backend.submissions(), 1);
+}
+
+#[tokio::test]
+async fn journaled_spend_sweeps_outputs_that_arrive_later() {
+    let (client, storage, backend, options) = claim_setup(true);
+    let first = client
+        .claim_bitcoin("bitcoin", &backend, options.clone())
+        .await
+        .unwrap();
+    let t1 = first.transaction.compute_txid();
+    assert_eq!(first.transaction.input.len(), 1);
+    backend.fund(20_000, Some(99));
+    let pending = client
+        .claim_bitcoin("bitcoin", &backend, options.clone())
+        .await
+        .unwrap();
+    assert_eq!(pending.transaction.compute_txid(), t1);
+    assert_eq!(backend.submissions(), 1);
+    backend.confirm(t1, 100);
+    backend
+        .reject
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let rejected = client
+        .claim_bitcoin("bitcoin", &backend, options.clone())
+        .await
+        .unwrap();
+    assert_eq!(rejected.transaction.compute_txid(), t1);
+    assert_eq!(journaled(&storage).0, Some(t1.to_string()));
+    backend
+        .reject
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    let swept = client
+        .claim_bitcoin("bitcoin", &backend, options.clone())
+        .await
+        .unwrap();
+    let t2 = swept.transaction.compute_txid();
+    assert_ne!(t2, t1);
+    assert_eq!(swept.transaction.input.len(), 1);
+    assert_eq!(
+        swept.transaction.input[0].previous_output.txid,
+        backend.fundings.lock().unwrap()[1]
+            .transaction
             .compute_txid()
     );
-    assert_eq!(
-        backend
-            .submissions
-            .load(std::sync::atomic::Ordering::Relaxed),
-        1
+    assert_eq!(backend.submissions(), 2);
+    assert_eq!(journaled(&storage).0, Some(t2.to_string()));
+    let again = client
+        .claim_bitcoin("bitcoin", &backend, options)
+        .await
+        .unwrap();
+    assert_eq!(again.transaction.compute_txid(), t2);
+    assert_eq!(backend.submissions(), 2);
+}
+
+#[tokio::test]
+async fn backend_without_history_refuses_a_different_unresolved_spend() {
+    let (client, storage, backend, options) = claim_setup(false);
+    point_journal_elsewhere(&storage);
+    let error = client
+        .claim_bitcoin("bitcoin", &backend, options)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&error, Error::InvalidSwap(m) if m.contains("unresolved")),
+        "{error}"
     );
+    assert_eq!(backend.submissions(), 0);
+    assert_eq!(journaled(&storage).0, Some(Txid::all_zeros().to_string()));
 }
 
 #[tokio::test]

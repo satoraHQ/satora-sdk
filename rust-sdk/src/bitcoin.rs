@@ -49,6 +49,8 @@ pub use electrum::ElectrumBackend;
 
 pub type ChainFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 
+const NO_HISTORY: &str = "Bitcoin backend does not expose transaction history";
+
 /// Confirmed height is None for mempool outputs. Spent outputs are never included.
 #[derive(Clone, Debug)]
 pub struct BitcoinUtxo {
@@ -79,14 +81,12 @@ pub struct BitcoinHistoryTransaction {
 
 /// Implementations must verify their network, exclude spent outputs, return
 /// actual transaction outputs, and reject an observation spanning a tip change.
+/// `history` must include every transaction spending the address, unconfirmed
+/// ones too: a pending claim or refund it leaves out cannot be resumed or bumped.
 pub trait BitcoinBackend: Send + Sync {
     fn network(&self) -> Network;
     fn history<'a>(&'a self, _address: &'a Address) -> ChainFuture<'a, BitcoinHistory> {
-        Box::pin(async {
-            Err(invalid(
-                "Bitcoin backend does not expose transaction history",
-            ))
-        })
+        Box::pin(async { Err(invalid(NO_HISTORY)) })
     }
     fn observe<'a>(&'a self, address: &'a Address) -> ChainFuture<'a, BitcoinObservation>;
     fn transaction(&self, id: Txid) -> ChainFuture<'_, Option<Transaction>>;
@@ -168,10 +168,17 @@ impl BitcoinHtlc {
         ))
     }
     pub fn expired(&self, observation: &BitcoinObservation) -> bool {
+        self.expires_within(observation, 0)
+    }
+    /// Whether the refund window opens within `blocks` more blocks.
+    pub fn expires_within(&self, observation: &BitcoinObservation, blocks: u32) -> bool {
         if self.refund_locktime < 500_000_000 {
-            observation.height >= self.refund_locktime
+            observation.height.saturating_add(blocks) >= self.refund_locktime
         } else {
-            observation.median_time_past > self.refund_locktime
+            observation
+                .median_time_past
+                .saturating_add(blocks.saturating_mul(600))
+                > self.refund_locktime
         }
     }
 }
@@ -193,10 +200,17 @@ impl std::fmt::Debug for BitcoinSpend {
 #[derive(Clone, Debug)]
 pub struct BitcoinSpendOptions {
     pub destination: String,
-    /// None queries the backend using `confirmation_target`.
+    /// None queries the backend using `confirmation_target`. On a backend with
+    /// history, Some at least 1 sat/vB above the rate of a pending spend of ours
+    /// replaces it over the same outputs; None never does.
     pub fee_rate: Option<FeeRate>,
     pub maximum_fee: Amount,
+    /// Confirmations each funding output needs before it is spent.
     pub minimum_confirmations: u32,
+    /// Refuse to reveal the preimage this close to the server's refund window,
+    /// counted in blocks (ten minutes each for time-based locktimes). Test networks
+    /// with refund windows shorter than a block need 0.
+    pub minimum_remaining_blocks: u32,
     pub confirmation_target: u16,
     pub timeout: Duration,
 }
@@ -218,6 +232,7 @@ impl std::fmt::Debug for BitcoinSpendReceipt {
 
 /// Build a spend of independently observed, unspent HTLC outputs. Verifies key,
 /// preimage, maturity, confirmations, exact script, duplicates, fees and dust.
+/// Claims refuse a window closing within `minimum_remaining_blocks`.
 #[allow(clippy::too_many_arguments)]
 pub fn build_bitcoin_spend(
     htlc: &BitcoinHtlc,
@@ -227,6 +242,36 @@ pub fn build_bitcoin_spend(
     destination: &str,
     fee_rate: FeeRate,
     minimum_confirmations: u32,
+    minimum_remaining_blocks: u32,
+    minimum_amount: Amount,
+    maximum_fee: Amount,
+) -> Result<BitcoinSpendReceipt> {
+    build_spend(
+        htlc,
+        observation,
+        key,
+        spend,
+        destination,
+        fee_rate,
+        minimum_confirmations,
+        Some(minimum_remaining_blocks),
+        minimum_amount,
+        maximum_fee,
+    )
+}
+
+/// `claim_window` None skips the refund-window check. Only a replacement of a
+/// claim whose preimage is already public may pass None.
+#[allow(clippy::too_many_arguments)]
+fn build_spend(
+    htlc: &BitcoinHtlc,
+    observation: &BitcoinObservation,
+    key: &SecretKey,
+    spend: &BitcoinSpend,
+    destination: &str,
+    fee_rate: FeeRate,
+    minimum_confirmations: u32,
+    claim_window: Option<u32>,
     minimum_amount: Amount,
     maximum_fee: Amount,
 ) -> Result<BitcoinSpendReceipt> {
@@ -239,17 +284,19 @@ pub fn build_bitcoin_spend(
     let secp = Secp256k1::new();
     let pair = Keypair::from_secret_key(&secp, key);
     let (public, _) = pair.x_only_public_key();
-    let (script, locktime, sequence) = match spend {
+    let (script, locktime) = match spend {
         BitcoinSpend::Claim { preimage } => {
             if hash160::Hash::hash(preimage).to_byte_array() != htlc.hash_lock
                 || public != htlc.claimer
             {
                 return Err(invalid("Bitcoin claim key or preimage mismatch"));
             }
-            if htlc.expired(observation) {
-                return Err(invalid("Bitcoin claim window has expired"));
+            if claim_window.is_some_and(|blocks| htlc.expires_within(observation, blocks)) {
+                return Err(invalid(
+                    "insufficient time to claim before the Bitcoin refund window",
+                ));
             }
-            (&scripts.claim, LockTime::ZERO, Sequence::MAX)
+            (&scripts.claim, LockTime::ZERO)
         }
         BitcoinSpend::Refund => {
             if public != htlc.refunder || !htlc.expired(observation) {
@@ -260,20 +307,15 @@ pub fn build_bitcoin_spend(
             (
                 &scripts.refund,
                 LockTime::from_consensus(htlc.refund_locktime),
-                Sequence::ENABLE_RBF_NO_LOCKTIME,
             )
         }
     };
+    // Both spends signal replaceability so a stuck submission can be fee-bumped.
+    let sequence = Sequence::ENABLE_RBF_NO_LOCKTIME;
     let mut utxos: Vec<_> = observation
         .utxos
         .iter()
-        .filter(|utxo| {
-            let confirmations = utxo
-                .confirmed_height
-                .and_then(|h| observation.height.checked_sub(h))
-                .map_or(0, |n| n.saturating_add(1));
-            confirmations >= minimum_confirmations
-        })
+        .filter(|utxo| confirmations(observation, utxo) >= minimum_confirmations)
         .collect();
     utxos.sort_by_key(|u| u.outpoint);
     if utxos.is_empty() || utxos.windows(2).any(|w| w[0].outpoint == w[1].outpoint) {
@@ -483,42 +525,13 @@ impl Client {
             if htlc.network != backend.network() {
                 return Err(invalid("Bitcoin backend network mismatch"));
             }
-            if let Some(hash) = &stored.metadata.btc_spend_txid
-                && let Some(tx) = backend
-                    .transaction(Txid::from_str(hash).map_err(decode)?)
-                    .await?
-            {
-                let destination = Address::from_str(&options.destination)
-                    .map_err(decode)?
-                    .require_network(htlc.network)
-                    .map_err(decode)?;
-                if tx.compute_txid().to_string() != *hash
-                    || tx.output.len() != 1
-                    || tx.output[0].script_pubkey != destination.script_pubkey()
-                {
-                    return Err(invalid("persisted Bitcoin spend mismatch"));
-                }
-                return Ok(BitcoinSpendReceipt {
-                    transaction: tx,
-                    fee: Amount::from_sat(
-                        stored
-                            .metadata
-                            .btc_spend_fee
-                            .ok_or_else(|| invalid("persisted Bitcoin fee missing"))?,
-                    ),
-                });
-            }
             let params = self
                 .signer
                 .as_ref()
                 .ok_or_else(|| invalid("signer missing"))?
                 .derive_swap_params(stored.key_index)?;
-            let observation = backend.observe(&htlc.address()?).await?;
-            let rate = match options.fee_rate {
-                Some(rate) => rate,
-                None => backend.fee_rate(options.confirmation_target).await?,
-            };
-            let minimum = if let GetSwapResponse::EvmToBitcoin(r) = &stored.response {
+            let key = SecretKey::from_slice(&params.secret).map_err(decode)?;
+            let target = if let GetSwapResponse::EvmToBitcoin(r) = &stored.response {
                 Amount::from_sat(r.target_amount.parse().map_err(decode)?)
             } else {
                 Amount::ZERO
@@ -530,39 +543,151 @@ impl Client {
             } else {
                 BitcoinSpend::Refund
             };
-            let receipt = build_bitcoin_spend(
-                &htlc,
-                &observation,
-                &SecretKey::from_slice(&params.secret).map_err(decode)?,
-                &spend,
-                &options.destination,
-                rate,
-                options.minimum_confirmations,
-                minimum,
-                options.maximum_fee,
-            )?;
-            let hash = receipt.transaction.compute_txid();
-            if stored
-                .metadata
-                .btc_spend_txid
-                .is_some_and(|old| old != hash.to_string())
-            {
-                return Err(invalid(
-                    "previous Bitcoin submission is unresolved; refusing a different spend",
-                ));
+            let destination = Address::from_str(&options.destination)
+                .map_err(decode)?
+                .require_network(htlc.network)
+                .map_err(decode)?
+                .script_pubkey();
+            let address = htlc.address()?;
+            let build = |observation: &BitcoinObservation,
+                         rate: FeeRate,
+                         claim_window: Option<u32>,
+                         minimum: Amount| {
+                build_spend(
+                    &htlc,
+                    observation,
+                    &key,
+                    &spend,
+                    &options.destination,
+                    rate,
+                    options.minimum_confirmations,
+                    claim_window,
+                    minimum,
+                    options.maximum_fee,
+                )
+            };
+            let history = match backend.history(&address).await {
+                Ok(history) => history,
+                Err(Error::InvalidSwap(message)) if message == NO_HISTORY => {
+                    if let Some(hash) = &stored.metadata.btc_spend_txid
+                        && let Some(tx) = backend
+                            .transaction(Txid::from_str(hash).map_err(decode)?)
+                            .await?
+                    {
+                        if tx.compute_txid().to_string() != *hash
+                            || tx.output.len() != 1
+                            || tx.output[0].script_pubkey != destination
+                        {
+                            return Err(invalid("persisted Bitcoin spend mismatch"));
+                        }
+                        return Ok(BitcoinSpendReceipt {
+                            transaction: tx,
+                            fee: Amount::from_sat(
+                                stored
+                                    .metadata
+                                    .btc_spend_fee
+                                    .ok_or_else(|| invalid("persisted Bitcoin fee missing"))?,
+                            ),
+                        });
+                    }
+                    let observation = backend.observe(&address).await?;
+                    let rate = spend_fee_rate(backend, &options).await?;
+                    let receipt = build(
+                        &observation,
+                        rate,
+                        Some(options.minimum_remaining_blocks),
+                        target,
+                    )?;
+                    let hash = receipt.transaction.compute_txid().to_string();
+                    if stored
+                        .metadata
+                        .btc_spend_txid
+                        .is_some_and(|old| old != hash)
+                    {
+                        return Err(invalid(
+                            "previous Bitcoin submission is unresolved; refusing a different spend",
+                        ));
+                    }
+                    self.journal_bitcoin_spend(id, &receipt)?;
+                    broadcast_bitcoin_spend(backend, &receipt).await?;
+                    return Ok(receipt);
+                }
+                Err(error) => return Err(error),
+            };
+            // With history the journal is a hint for the tracker, not the source of
+            // truth: a spend that never reached the node leaves no trace here.
+            let scripts = htlc.scripts()?;
+            let leaf = if claim {
+                &scripts.claim
+            } else {
+                &scripts.refund
+            };
+            let own = own_spends(&history, &address.script_pubkey(), leaf, &destination)?;
+            let observation = &history.observation;
+            if let Some(pending) = own.iter().find(|s| s.confirmed_height.is_none()) {
+                let Some(rate) = options.fee_rate else {
+                    return Ok(pending.receipt());
+                };
+                let replay = BitcoinObservation {
+                    utxos: pending.prevouts.clone(),
+                    ..observation.clone()
+                };
+                // A pending claim already made the preimage public, so the refund
+                // window no longer protects anything and must not block its bump, even
+                // once it has opened and the server can race a refund. Refunds ignore
+                // the window.
+                let Ok(replacement) = build(&replay, rate, None, Amount::ZERO) else {
+                    return Ok(pending.receipt());
+                };
+                if !pending.replaced_by(&replacement) {
+                    return Ok(pending.receipt());
+                }
+                broadcast_bitcoin_spend(backend, &replacement).await?;
+                self.journal_bitcoin_spend(id, &replacement)?;
+                return Ok(replacement);
             }
-            self.update_swap_metadata(
-                id,
-                SwapMetadata {
-                    btc_spend_txid: Some(hash.to_string()),
-                    btc_spend_fee: Some(receipt.fee.to_sat()),
-                    ..Default::default()
-                },
-            )?;
-            if backend.broadcast(&receipt.transaction).await? != hash {
-                return Err(invalid(
-                    "Bitcoin broadcast returned a different transaction ID",
-                ));
+            let confirmed = own
+                .iter()
+                .filter(|s| s.confirmed_height.is_some())
+                .max_by_key(|s| s.confirmed_height);
+            let Some(confirmed) = confirmed else {
+                let rate = spend_fee_rate(backend, &options).await?;
+                let receipt = build(
+                    observation,
+                    rate,
+                    Some(options.minimum_remaining_blocks),
+                    target,
+                )?;
+                self.journal_bitcoin_spend(id, &receipt)?;
+                broadcast_bitcoin_spend(backend, &receipt).await?;
+                return Ok(receipt);
+            };
+            // Outputs that arrive after our spend are swept with no minimum; one
+            // that is dust, over the fee cap or rejected by the node stays behind
+            // for a later call.
+            let mut journaled = stored.metadata.btc_spend_txid.clone();
+            if observation
+                .utxos
+                .iter()
+                .any(|u| confirmations(observation, u) >= options.minimum_confirmations)
+                && let Ok(rate) = spend_fee_rate(backend, &options).await
+                && let Ok(receipt) = build(
+                    observation,
+                    rate,
+                    Some(options.minimum_remaining_blocks),
+                    Amount::ZERO,
+                )
+            {
+                self.journal_bitcoin_spend(id, &receipt)?;
+                if broadcast_bitcoin_spend(backend, &receipt).await.is_ok() {
+                    return Ok(receipt);
+                }
+                journaled = Some(receipt.transaction.compute_txid().to_string());
+            }
+            let receipt = confirmed.receipt();
+            let hash = receipt.transaction.compute_txid().to_string();
+            if journaled.as_deref() != Some(hash.as_str()) {
+                self.journal_bitcoin_spend(id, &receipt)?;
             }
             Ok(receipt)
         })
@@ -571,6 +696,133 @@ impl Client {
             Error::Timeout("Bitcoin spend timed out; inspect the stored transaction".into())
         })?
     }
+
+    fn journal_bitcoin_spend(&self, id: &str, receipt: &BitcoinSpendReceipt) -> Result<()> {
+        self.update_swap_metadata(
+            id,
+            SwapMetadata {
+                btc_spend_txid: Some(receipt.transaction.compute_txid().to_string()),
+                btc_spend_fee: Some(receipt.fee.to_sat()),
+                ..Default::default()
+            },
+        )
+    }
+}
+
+async fn spend_fee_rate(
+    backend: &dyn BitcoinBackend,
+    options: &BitcoinSpendOptions,
+) -> Result<FeeRate> {
+    match options.fee_rate {
+        Some(rate) => Ok(rate),
+        None => backend.fee_rate(options.confirmation_target).await,
+    }
+}
+
+async fn broadcast_bitcoin_spend(
+    backend: &dyn BitcoinBackend,
+    receipt: &BitcoinSpendReceipt,
+) -> Result<()> {
+    if backend.broadcast(&receipt.transaction).await? != receipt.transaction.compute_txid() {
+        return Err(invalid(
+            "Bitcoin broadcast returned a different transaction ID",
+        ));
+    }
+    Ok(())
+}
+
+fn confirmations(observation: &BitcoinObservation, utxo: &BitcoinUtxo) -> u32 {
+    utxo.confirmed_height
+        .and_then(|h| observation.height.checked_sub(h))
+        .map_or(0, |n| n.saturating_add(1))
+}
+
+/// A history transaction that spends this HTLC through our own leaf.
+struct OwnSpend<'a> {
+    transaction: &'a Transaction,
+    confirmed_height: Option<u32>,
+    prevouts: Vec<BitcoinUtxo>,
+    fee: Amount,
+}
+
+impl OwnSpend<'_> {
+    fn receipt(&self) -> BitcoinSpendReceipt {
+        BitcoinSpendReceipt {
+            transaction: self.transaction.clone(),
+            fee: self.fee,
+        }
+    }
+
+    /// BIP125: the replacement spends the same outputs, pays at least the old fee
+    /// plus 1 sat/vB of its own size, and pays a strictly higher rate.
+    fn replaced_by(&self, replacement: &BitcoinSpendReceipt) -> bool {
+        let tx = &replacement.transaction;
+        let old_weight = u128::from(self.transaction.weight().to_wu());
+        let new_weight = u128::from(tx.weight().to_wu());
+        let (old_fee, new_fee) = (self.fee.to_sat(), replacement.fee.to_sat());
+        tx.input.len() == self.prevouts.len()
+            && new_fee >= old_fee.saturating_add(tx.vsize() as u64)
+            && u128::from(new_fee) * old_weight > u128::from(old_fee) * new_weight
+    }
+}
+
+fn own_spends<'a>(
+    history: &'a BitcoinHistory,
+    htlc_script: &ScriptBuf,
+    leaf: &ScriptBuf,
+    destination: &ScriptBuf,
+) -> Result<Vec<OwnSpend<'a>>> {
+    let mismatch = || invalid("Bitcoin spend in history does not match this HTLC or destination");
+    let txids: Vec<Txid> = history
+        .transactions
+        .iter()
+        .map(|h| h.transaction.compute_txid())
+        .collect();
+    let funding = |outpoint: &OutPoint| {
+        let entry = &history.transactions[txids.iter().position(|t| *t == outpoint.txid)?];
+        let output = entry.transaction.output.get(outpoint.vout as usize)?;
+        (output.script_pubkey == *htlc_script).then(|| BitcoinUtxo {
+            outpoint: *outpoint,
+            output: output.clone(),
+            confirmed_height: entry.confirmed_height,
+        })
+    };
+    let mut spends = vec![];
+    for entry in &history.transactions {
+        let tx = &entry.transaction;
+        if !tx.input.iter().any(|input| {
+            input.witness.taproot_leaf_script().is_some_and(|l| {
+                l.version == LeafVersion::TapScript && l.script == leaf.as_script()
+            }) && funding(&input.previous_output).is_some()
+        }) {
+            continue;
+        }
+        let prevouts = tx
+            .input
+            .iter()
+            .map(|input| funding(&input.previous_output))
+            .collect::<Option<Vec<_>>>();
+        let inputs = prevouts.as_ref().and_then(|p| {
+            p.iter()
+                .try_fold(0u64, |sum, u| sum.checked_add(u.output.value.to_sat()))
+        });
+        let (Some(prevouts), Some(inputs)) = (prevouts, inputs) else {
+            return Err(mismatch());
+        };
+        if tx.output.len() != 1 || tx.output[0].script_pubkey != *destination {
+            return Err(mismatch());
+        }
+        let fee = inputs
+            .checked_sub(tx.output[0].value.to_sat())
+            .ok_or_else(mismatch)?;
+        spends.push(OwnSpend {
+            transaction: tx,
+            confirmed_height: entry.confirmed_height,
+            prevouts,
+            fee: Amount::from_sat(fee),
+        });
+    }
+    Ok(spends)
 }
 
 #[cfg(test)]

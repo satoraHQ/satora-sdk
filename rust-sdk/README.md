@@ -201,10 +201,14 @@ and timeout. Refunds check chain height or median time past, never local wall
 clock. Claims check the full expected amount before revealing the preimage.
 Scripts must match the API address and the locally derived key/hash. The builder
 supports multiple HTLC outputs, checks dust, and uses exact transaction weight.
-Submitted IDs and fees survive restarts; retries inspect the prior transaction
-and reject a different unresolved spend. Only strict script version 1 is supported,
-matching the current server and TypeScript SDK. Backends are trusted chain data
-providers, not independent consensus validators.
+With a store that keeps records, submitted IDs and fees survive restarts. Retries
+resume from the HTLC address history: they return a pending or confirmed spend of
+ours, replace a pending one only when an explicit `fee_rate` at least 1 sat/vB
+above its rate is given, and sweep outputs that arrive after a confirmed spend. Backends without
+`history` keep the journal behaviour and refuse a different unresolved spend. Only
+strict script version 1 is supported, matching the current server and TypeScript
+SDK. Backends are trusted chain data providers, not independent consensus
+validators.
 
 ## Arkade execution
 
