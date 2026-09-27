@@ -11,12 +11,24 @@ use alloy::rpc::types::BlockNumberOrTag;
 use alloy::rpc::types::Filter;
 use alloy::sol_types::SolEvent;
 
-/// Reads canonical, bounded log ranges at a fixed chain point. Re-reading is
-/// intentional: terminal observations are not latched across reorgs.
+/// Blocks below where the last pass stopped that every pass reads again. Older
+/// logs are kept from earlier passes.
+const REORG_MARGIN: u64 = 256;
+
+/// Reads canonical, bounded log ranges at a fixed chain point. A pass reads the
+/// reorg margin plus the blocks mined since the last pass, or since an interrupted
+/// pass got cut short, so a reorg within the margin replaces terminal observations.
+/// A deeper reorg goes unseen while this reader keeps its earlier logs.
 pub struct EvmRpcReader {
     provider: RootProvider,
     chain_id: u64,
     max_blocks: u64,
+    scans: std::sync::Mutex<std::collections::HashMap<String, Scan>>,
+}
+#[derive(Clone, Default)]
+struct Scan {
+    next: u64,
+    logs: Vec<LifecycleLog>,
 }
 impl EvmRpcReader {
     pub async fn connect(url: url::Url, chain_id: u64, max_blocks_per_query: u64) -> Result<Self> {
@@ -31,7 +43,21 @@ impl EvmRpcReader {
             provider,
             chain_id,
             max_blocks: max_blocks_per_query,
+            scans: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
+    }
+    fn scan(&self, key: &str) -> Option<Scan> {
+        self.scans
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(key)
+            .cloned()
+    }
+    fn set_scan(&self, key: &str, scan: Scan) {
+        self.scans
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key.to_string(), scan);
     }
 }
 fn transport(error: impl std::fmt::Display) -> Error {
@@ -65,9 +91,18 @@ impl ContractReader for EvmRpcReader {
                 hash: latest.header.hash.to_string(),
                 timestamp: latest.header.timestamp,
             };
-            let mut logs = Vec::new();
+            let key = reference.key()?;
             let mut block_hashes = std::collections::HashMap::new();
-            let mut from = *from_block;
+            let mut scan = self.scan(&key).unwrap_or_default();
+            // Logs within REORG_MARGIN of where the last pass stopped are read
+            // again so a reorg replaces them.
+            let mut from = scan
+                .next
+                .min(point.height.saturating_add(1))
+                .saturating_sub(REORG_MARGIN)
+                .max(*from_block);
+            scan.logs
+                .retain(|(height, ..)| *height < from && *height >= *from_block);
             while from <= point.height {
                 let to = from.saturating_add(self.max_blocks - 1).min(point.height);
                 let filter = Filter::new()
@@ -100,7 +135,7 @@ impl ContractReader for EvmRpcReader {
                     if log.block_hash != Some(canonical_hash) {
                         return Err(invalid("EVM log belongs to an orphaned block"));
                     }
-                    logs.push((
+                    scan.logs.push((
                         height,
                         log.log_index
                             .ok_or_else(|| invalid("EVM log index missing"))?,
@@ -108,10 +143,9 @@ impl ContractReader for EvmRpcReader {
                         log.data().data.to_vec(),
                     ));
                 }
-                if to == point.height {
-                    break;
-                }
                 from = to + 1;
+                scan.next = from;
+                self.set_scan(&key, scan.clone());
             }
             let canonical = self
                 .provider
@@ -122,7 +156,7 @@ impl ContractReader for EvmRpcReader {
             if canonical.header.hash != latest.header.hash {
                 return Err(invalid("EVM chain changed during observation"));
             }
-            classify(htlc, *confirmations, point, logs)
+            classify(htlc, *confirmations, point, scan.logs)
         })
     }
 }
@@ -134,7 +168,13 @@ pub(super) fn classify(
     mut logs: Vec<LifecycleLog>,
 ) -> Result<Observation> {
     logs.sort_by_key(|(height, index, ..)| (*height, *index));
+    let exact = expected.key();
+    let has_exact = logs.iter().any(|(_, _, topics, data)| {
+        SwapCreated::decode_raw_log_validate(topics.iter().copied(), data)
+            .is_ok_and(|event| event.key == exact)
+    });
     let mut funded = None;
+    let mut funded_meets_terms = false;
     let mut state = HtlcState::Absent;
     let mut preimage = None;
     for (height, _, topics, data) in logs {
@@ -153,16 +193,25 @@ pub(super) fn classify(
             if event.key != actual.key() {
                 return Err(invalid("EVM funding event has an invalid swap key"));
             }
-            if funded
+            let meets_terms = event.token == expected.token
+                && event.amount >= expected.amount
+                && !event.amount.is_zero();
+            // Anyone can lock under this hash naming the expected refund address. The
+            // contract rejects a second lock with the exact expected tuple, so that
+            // lock wins; otherwise the earliest lock meeting the terms counts.
+            if has_exact {
+                if actual.key() != exact {
+                    continue;
+                }
+            } else if funded
                 .as_ref()
                 .is_some_and(|previous: &EvmHtlc| previous.key() != actual.key())
+                && (funded_meets_terms || !meets_terms)
             {
-                return Err(invalid("ambiguous EVM funding tuples"));
+                continue;
             }
-            state = if event.token != expected.token
-                || event.amount < expected.amount
-                || event.amount.is_zero()
-            {
+            funded_meets_terms = meets_terms;
+            state = if !meets_terms {
                 HtlcState::Invalid
             } else if confirmed {
                 HtlcState::Confirmed
@@ -368,5 +417,116 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("orphaned"), "{error}");
+    }
+    #[test]
+    fn exact_lock_wins_over_an_earlier_decoy_meeting_the_terms() {
+        let h = htlc();
+        let mut decoy = h.clone();
+        decoy.amount = h.amount + U256::from(1);
+        let mut decoy_log = created(&decoy);
+        decoy_log.0 = 98;
+        let claim = event(
+            SwapRedeemed {
+                preimageHash: h.hash_lock,
+                key: h.key(),
+                preimage: B256::repeat_byte(42),
+            },
+            100,
+            1,
+        );
+        let observed = classify(&h, 1, point(), vec![decoy_log, created(&h), claim]).unwrap();
+        assert_eq!(observed.state, HtlcState::SpentClaim);
+        assert_eq!(observed.preimage.unwrap().expose(), &[42; 32]);
+    }
+    #[test]
+    fn valid_lock_replaces_a_short_lock_even_after_it_was_refunded() {
+        let h = htlc();
+        let mut short = h.clone();
+        short.amount = U256::from(9999);
+        let mut short_log = created(&short);
+        short_log.0 = 97;
+        let refund = event(
+            SwapRefunded {
+                preimageHash: h.hash_lock,
+                key: short.key(),
+            },
+            98,
+            0,
+        );
+        let mut over = h.clone();
+        over.amount = U256::from(10001);
+        let observed = classify(&h, 1, point(), vec![short_log, refund, created(&over)]).unwrap();
+        assert_eq!(observed.state, HtlcState::Confirmed);
+        assert_eq!(observed.funded_amount, "10001");
+    }
+    #[tokio::test]
+    async fn second_pass_resumes_at_the_reorg_margin() {
+        use std::sync::Arc;
+        use std::sync::Mutex;
+        use std::sync::atomic::AtomicU64;
+        use std::sync::atomic::Ordering;
+        let server = MockServer::start().await;
+        let h = htlc();
+        let contract = h.address;
+        let mut creation = created(&h);
+        creation.0 = 100;
+        let claim = event(
+            SwapRedeemed {
+                preimageHash: h.hash_lock,
+                key: h.key(),
+                preimage: B256::repeat_byte(42),
+            },
+            9745,
+            0,
+        );
+        let chain = [creation, claim];
+        let tip = Arc::new(AtomicU64::new(10000));
+        let requested = Arc::new(Mutex::new(Vec::new()));
+        let (rpc_tip, rpc_requested) = (tip.clone(), requested.clone());
+        let hex_number = |value: &serde_json::Value| {
+            u64::from_str_radix(value.as_str().unwrap().trim_start_matches("0x"), 16).unwrap()
+        };
+        Mock::given(method("POST")).respond_with(move |request:&wiremock::Request| {
+            let body:serde_json::Value=request.body_json().unwrap();
+            let result=match body["method"].as_str().unwrap() {
+                "eth_chainId"=>json!("0xa4b1"),
+                "eth_getBlockByNumber"=>{
+                    let number=if body["params"][0]=="latest" {format!("0x{:x}",rpc_tip.load(Ordering::SeqCst))} else {body["params"][0].as_str().unwrap().to_string()};
+                    json!({"hash":B256::repeat_byte(9),"parentHash":B256::ZERO,"sha3Uncles":B256::ZERO,"miner":Address::ZERO,"stateRoot":B256::ZERO,"transactionsRoot":B256::ZERO,"receiptsRoot":B256::ZERO,"logsBloom":format!("0x{}","00".repeat(256)),"difficulty":"0x0","number":number,"gasLimit":"0x1000000","gasUsed":"0x0","timestamp":"0x713fb300","extraData":"0x","mixHash":B256::ZERO,"nonce":"0x0000000000000000","transactions":[],"uncles":[]})
+                },
+                "eth_getLogs"=>{
+                    let from=hex_number(&body["params"][0]["fromBlock"]);
+                    let to=hex_number(&body["params"][0]["toBlock"]);
+                    rpc_requested.lock().unwrap().push(from);
+                    json!(chain.iter().filter(|log| (from..=to).contains(&log.0)).map(|log| json!({"address":contract,"topics":log.2,"data":format!("0x{}",hex::encode(&log.3)),"blockNumber":format!("0x{:x}",log.0),"blockHash":B256::repeat_byte(9),"transactionHash":B256::repeat_byte(7),"transactionIndex":"0x0","logIndex":format!("0x{:x}",log.1),"removed":false})).collect::<Vec<_>>())
+                },
+                method=>panic!("unexpected {method}"),
+            };
+            ResponseTemplate::new(200).set_body_json(json!({"jsonrpc":"2.0","id":body["id"],"result":result}))
+        }).mount(&server).await;
+        let reader = EvmRpcReader::connect(server.uri().parse().unwrap(), 42161, 1000)
+            .await
+            .unwrap();
+        let reference = ContractRef::Evm {
+            htlc: h,
+            from_block: 0,
+            confirmations: 1,
+        };
+        let first = reader.observe(&reference).await.unwrap();
+        assert_eq!(first.state, HtlcState::SpentClaim);
+        assert_eq!(requested.lock().unwrap().first(), Some(&0));
+        requested.lock().unwrap().clear();
+        tip.store(12000, Ordering::SeqCst);
+        let second = reader.observe(&reference).await.unwrap();
+        assert_eq!(second.state, HtlcState::SpentClaim);
+        assert_eq!(second.funded_amount, "10000");
+        let requested = requested.lock().unwrap().clone();
+        assert!(!requested.is_empty());
+        assert!(
+            requested.iter().all(|from| *from >= 10001 - REORG_MARGIN),
+            "{requested:?}"
+        );
+        let key = reference.key().unwrap();
+        assert_eq!(reader.scan(&key).unwrap().logs.len(), 2);
     }
 }

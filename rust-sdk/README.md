@@ -337,7 +337,9 @@ to one on both legs; accepting zero-confirmation Bitcoin funding is explicit.
 
 Observers verify hash locks, funding amounts, spend inputs/scripts, EVM swap
 keys, canonical log blocks, and revealed preimages. An unclassified spend stays
-`SpentUnknown`. They do not permanently latch terminal states across reorgs.
+`SpentUnknown`. They do not latch terminal states across reorgs, except that a
+running `EvmRpcReader` keeps logs more than 256 blocks below its last pass and so
+misses a deeper reorg.
 Bitcoin uses MTP/height and EVM uses block timestamps for expiry. Arkade funding
 uses the Ark server's signed VTXO model; its refund clock comes from Bitcoin.
 Readers trust the configured node/indexer rather than implementing consensus

@@ -20,6 +20,11 @@ use reqwest::Method;
 use serde::de::DeserializeOwned;
 use serde_json::json;
 
+// The daemon's RECOVERY_MAX_START_INDEX plus RECOVERY_MAX_SCAN (swap/src/api/recovery.rs).
+// No honest page moves the cursor past this, so a larger next_index cannot
+// push the persisted key counter towards exhaustion.
+const RECOVERY_MAX_NEXT_INDEX: u32 = 10_000_000 + 1_000;
+
 impl Client {
     async fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         let response = self
@@ -137,7 +142,9 @@ impl Client {
         let recovery: RecoveryResponse = check_status(response).await?.json().await?;
         if recovery.scanned_until < start
             || recovery.scanned_until >= 1 << 31
-            || recovery.next_index > 1 << 31
+            || recovery.next_index < start
+            || recovery.next_index > recovery.scanned_until + 1
+            || recovery.next_index > RECOVERY_MAX_NEXT_INDEX
         {
             return Err(Error::Decode("invalid recovery cursor".into()));
         }

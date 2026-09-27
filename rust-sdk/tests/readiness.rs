@@ -319,6 +319,59 @@ async fn recovery_pages_restore_keys_and_never_regress_the_counter() {
 }
 
 #[tokio::test]
+async fn recovery_rejects_a_cursor_outside_the_scanned_range() {
+    for (start, scanned_until, next_index) in [
+        (0, 49, 1u32 << 31),
+        (0, (1u32 << 31) - 1, 1 << 31),
+        (0, 49, 51),
+        (10, 59, 5),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(path("/swap/recover"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "swaps":[],"highest_index":0,"next_index":next_index,"scanned_until":scanned_until,"complete":true
+            })))
+            .mount(&server)
+            .await;
+        let storage = Arc::new(InMemorySwapStorage::new());
+        let client = Client::builder()
+            .base_url(server.uri())
+            .mnemonic(MNEMONIC)
+            .storage(storage.clone())
+            .build()
+            .unwrap();
+        assert!(
+            matches!(
+                client.recover_swaps(Some(start)).await,
+                Err(Error::Decode(_))
+            ),
+            "start {start}, scanned_until {scanned_until}, next_index {next_index}"
+        );
+        assert_eq!(storage.next_key_index().unwrap(), 0);
+    }
+}
+
+#[tokio::test]
+async fn recovery_honors_a_cursor_past_skipped_legacy_swaps() {
+    let server = MockServer::start().await;
+    Mock::given(path("/swap/recover"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "swaps":[],"highest_index":0,"next_index":50,"scanned_until":99,"complete":true
+        })))
+        .mount(&server)
+        .await;
+    let storage = Arc::new(InMemorySwapStorage::new());
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(storage.clone())
+        .build()
+        .unwrap();
+    client.recover_swaps(None).await.unwrap();
+    assert_eq!(storage.next_key_index().unwrap(), 50);
+}
+
+#[tokio::test]
 async fn recovery_rejects_a_wrong_wallet_before_mutating_storage() {
     let server = MockServer::start().await;
     let mut swap = recovered(3);
