@@ -42,6 +42,7 @@ impl Client {
     /// Reconstruct references from a stored swap, validating Bitcoin/Arkade
     /// addresses against their scripts and seed. Lightning's remote invoice leg
     /// is deliberately absent: API status cannot prove its settlement.
+    /// Swaps with an EVM leg return an error unless the `gasless` feature is enabled.
     pub fn contract_references(
         &self,
         id: &str,
@@ -166,7 +167,9 @@ impl Client {
         };
         #[cfg(not(feature = "gasless"))]
         let evm = |_: bool| -> Result<ContractRef> {
-            Err(invalid("EVM observations require the gasless feature"))
+            Err(invalid(
+                "tracking a swap with an EVM leg requires the gasless feature",
+            ))
         };
         Ok(match &stored.response {
             BtcToArkade(_) => SwapContracts {

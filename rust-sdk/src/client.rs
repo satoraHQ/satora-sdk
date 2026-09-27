@@ -49,7 +49,10 @@ mod storage;
 /// the URL themselves.
 pub const DEFAULT_BASE_URL: &str = "https://api.satora.io";
 
-/// Match the TypeScript client's bounded collision recovery policy.
+/// Creation attempts before giving up. After each collision the loop also skips ten
+/// further indices, as the TypeScript client does. Only an exact hash_lock match comes
+/// back as a collision, so reuse across the HASH160 and SHA256 formats is not detected
+/// here.
 const MAX_KEY_INDEX_GRIND_ATTEMPTS: u32 = 10;
 /// reqwest defaults to no timeout, and several execution paths hold a lock
 /// across API calls.
@@ -529,18 +532,16 @@ impl Client {
     /// — once the user funds the returned [`SwapFunding::ArkadeAddress`],
     /// the server owns the rest of the flow.
     ///
-    /// The destination can be a BOLT11 invoice (amount embedded), a
-    /// Lightning address (`user@host`), or a raw LNURL — the server
-    /// resolves the latter two using LNURL-pay. The SDK passes the
-    /// caller's choice through verbatim; no LNURL resolver is bundled.
+    /// The destination can be a BOLT11 invoice (amount embedded), or a
+    /// Lightning address (`user@host`) or raw LNURL with a target or send-max
+    /// amount. The server resolves addresses and LNURLs
+    /// using LNURL-pay; no LNURL resolver is bundled.
     ///
     /// Duplicate-invoice errors are not retried: the invoice determines the
     /// hash lock, so allocating a new wallet key cannot resolve a collision.
     ///
-    /// Not reachable through the [`Self::create_swap`] dispatcher: the
-    /// destination shape (3-variant input + sometimes-needed `sats`)
-    /// doesn't fit cleanly into the dispatcher's `Address` +
-    /// `QuoteAmount` arguments.
+    /// [`Self::create_swap`] accepts Lightning addresses and LNURLs; invoices
+    /// need this method or [`Self::create_swap_request`].
     pub async fn create_arkade_to_lightning_swap(
         &self,
         destination: crate::types::LightningDestination,

@@ -349,6 +349,9 @@ reconstructs them from stored swaps; configure the source coordinator and locked
 EVM token when older API responses omit them. Specify an EVM starting block at
 or before creation to bound historical scans. Confirmation requirements default
 to one on both legs; accepting zero-confirmation Bitcoin funding is explicit.
+Swaps with an EVM leg need the `gasless` feature for both the EVM reference and
+`EvmRpcReader`. Without it `contract_references` rejects them instead of
+returning a partial reference, because a missing leg reads as a Lightning leg.
 
 Observers verify hash locks, funding amounts, spend inputs/scripts, EVM swap
 keys, canonical log blocks, and revealed preimages. An unclassified spend stays
@@ -453,7 +456,8 @@ Use one tracker and exclusive execution ownership per store across processes.
   direct transaction execution; their keys are never guessed from the seed.
 - EVM execution and bridges currently share the historical `gasless` feature
   flag, including direct wallet execution. `websocket` and `electrum` are
-  independently optional. Observations/actions/storage compile by default.
+  independently optional. Observations/actions/storage compile by default;
+  tracking swaps with an EVM leg needs `gasless`.
 - Confirmation policy belongs to the application. Configured RPCs, indexers,
   Ark servers and bridge APIs remain data dependencies; this SDK is not a full
   consensus or SPV validator. Ambiguous Arkade batch spends remain unknown.
