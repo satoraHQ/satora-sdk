@@ -40,14 +40,16 @@ sol! {
     }
 
     // ─────────────────────────────────────────────────────────────────
-    // EntryPoint v0.7 — UserOp nonce lookup
+    // EntryPoint v0.7: UserOp nonce lookup and execution event
     // ─────────────────────────────────────────────────────────────────
 
     /// Canonical EntryPoint v0.7. `getNonce` reads the next nonce for a
     /// `(sender, key)` pair; for the Kernel 7702 root validator the
-    /// 192-bit key is all-zero, so callers pass `key = 0`.
+    /// 192-bit key is all-zero, so callers pass `key = 0`. `UserOperationEvent`
+    /// proves an operation ran in a transaction.
     interface IEntryPoint {
         function getNonce(address sender, uint192 key) external view returns (uint256 nonce);
+        event UserOperationEvent(bytes32 indexed userOpHash, address indexed sender, address indexed paymaster, uint256 nonce, bool success, uint256 actualGasCost, uint256 actualGasUsed);
     }
 
     // ─────────────────────────────────────────────────────────────────

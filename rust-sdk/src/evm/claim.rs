@@ -540,7 +540,22 @@ impl Client {
     pub async fn resume_evm_claim_userop(
         &self,
         id: &str,
-        bundler: &crate::aa::bundler::BundlerClient,
+        wallet: &dyn EvmWallet,
+        config: &crate::aa::UserOpConfig,
+    ) -> Result<Option<B256>> {
+        tokio::time::timeout(
+            RESUME_TIMEOUT,
+            self.resume_evm_claim_userop_inner(id, wallet, config),
+        )
+        .await
+        .map_err(|_| Error::Timeout("claim operation lookup timed out".into()))?
+    }
+
+    async fn resume_evm_claim_userop_inner(
+        &self,
+        id: &str,
+        wallet: &dyn EvmWallet,
+        config: &crate::aa::UserOpConfig,
     ) -> Result<Option<B256>> {
         let _execution = self.evm_execution.lock().await;
         let stored = self
@@ -553,13 +568,24 @@ impl Client {
             .metadata
             .evm_claim_userop_hash
             .ok_or_else(|| invalid("no persisted claim operation"))?;
-        let Some(receipt) = bundler.get_user_operation_receipt(parse(&hash)?).await? else {
+        let op = parse(&hash)?;
+        let bundler = crate::aa::bundler::BundlerClient::new(
+            config.aa.bundler_url.clone(),
+            config.aa.bundler_casing,
+        )?;
+        let Some(receipt) = bundler.get_user_operation_receipt(op).await? else {
             return Ok(None);
         };
         if !receipt.success {
             return Err(invalid("claim UserOperation reverted"));
         }
         let hash = receipt.receipt.transaction_hash;
+        crate::aa::orchestrate::verify_user_operation_receipt(
+            &wallet.wait_for_receipt(hash).await?,
+            config.entry_point,
+            op,
+            hash,
+        )?;
         self.update_swap_metadata(
             id,
             SwapMetadata {

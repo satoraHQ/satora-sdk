@@ -177,16 +177,18 @@ impl Client {
                 "bridge intent differs from its persisted operation",
             ));
         }
+        let mut verified = None;
         if operation.transaction_hash.is_none()
             && let (Some(hash), BridgeSubmission::UserOperation(config)) =
                 (&operation.user_operation_hash, mode)
         {
+            let op = crate::evm::parse(hash)?;
             let bundler = crate::aa::bundler::BundlerClient::new(
                 config.aa.bundler_url.clone(),
                 config.aa.bundler_casing,
             )?;
             let receipt = bundler
-                .get_user_operation_receipt(crate::evm::parse(hash)?)
+                .get_user_operation_receipt(op)
                 .await?
                 .ok_or_else(|| invalid("bridge UserOperation is still pending"))?;
             if !receipt.success {
@@ -194,13 +196,25 @@ impl Client {
                     "bridge UserOperation reverted; inspect before recovery",
                 ));
             }
-            operation.transaction_hash = Some(receipt.receipt.transaction_hash.to_string());
+            let tx = receipt.receipt.transaction_hash;
+            let mined = wallet.wait_for_receipt(tx).await?;
+            crate::aa::orchestrate::verify_user_operation_receipt(
+                &mined,
+                config.entry_point,
+                op,
+                tx,
+            )?;
+            operation.transaction_hash = Some(tx.to_string());
             self.save_bridge_operation(id, key, operation.clone())?;
+            verified = Some(mined);
         }
         let hash = crate::evm::parse(operation.transaction_hash.as_deref().ok_or_else(|| {
             invalid("bridge submission outcome unknown; reconcile its hash before retrying")
         })?)?;
-        let receipt = wallet.wait_for_receipt(hash).await?;
+        let receipt = match verified {
+            Some(receipt) => receipt,
+            None => wallet.wait_for_receipt(hash).await?,
+        };
         check_receipt(&receipt, hash)?;
         Ok(Some(receipt))
     }

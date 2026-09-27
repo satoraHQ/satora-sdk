@@ -5,6 +5,7 @@ use alloy::providers::DynProvider;
 use alloy::providers::Provider;
 use alloy::providers::ProviderBuilder;
 use alloy::rpc::types::BlockNumberOrTag;
+use alloy::rpc::types::TransactionReceipt;
 use alloy::rpc::types::TransactionRequest;
 use alloy::signers::SignerSync;
 use alloy::signers::local::PrivateKeySigner;
@@ -56,6 +57,24 @@ impl RpcWallet {
             .input(tx.data.clone().into())
             .with_chain_id(self.chain_id))
     }
+}
+pub(crate) fn evm_receipt(receipt: &TransactionReceipt) -> Result<EvmReceipt> {
+    Ok(EvmReceipt {
+        transaction_hash: receipt.transaction_hash,
+        success: receipt.status(),
+        block_number: receipt
+            .block_number
+            .ok_or_else(|| invalid("receipt has no mined block"))?,
+        logs: receipt
+            .logs()
+            .iter()
+            .map(|log| EvmLog {
+                address: log.address(),
+                topics: log.topics().to_vec(),
+                data: log.data().data.clone(),
+            })
+            .collect(),
+    })
 }
 fn transport(error: impl std::fmt::Display) -> Error {
     Error::Transport(error.to_string())
@@ -110,22 +129,7 @@ impl EvmWallet for RpcWallet {
                         .await
                         .map_err(transport)?
                     {
-                        return Ok(EvmReceipt {
-                            transaction_hash: receipt.transaction_hash,
-                            success: receipt.status(),
-                            block_number: receipt
-                                .block_number
-                                .ok_or_else(|| invalid("receipt has no mined block"))?,
-                            logs: receipt
-                                .logs()
-                                .iter()
-                                .map(|log| EvmLog {
-                                    address: log.address(),
-                                    topics: log.topics().to_vec(),
-                                    data: log.data().data.clone(),
-                                })
-                                .collect(),
-                        });
+                        return evm_receipt(&receipt);
                     }
                     tokio::time::sleep(Duration::from_secs(2)).await;
                 }

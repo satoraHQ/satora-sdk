@@ -280,8 +280,7 @@ impl Client {
             let mut hash=stored.metadata.evm_claim_txid.map(|value|crate::evm::parse::<B256>(&value)).transpose()?;
             if hash.is_none() && stored.metadata.evm_claim_userop_hash.is_some() {
                 let BridgeSubmission::UserOperation(config)=&mode else {return Err(invalid("resume the sponsored claim with its bundler configuration"));};
-                let bundler=crate::aa::bundler::BundlerClient::new(config.aa.bundler_url.clone(),config.aa.bundler_casing)?;
-                hash=self.resume_evm_claim_userop(id,&bundler).await?;
+                hash=self.resume_evm_claim_userop(id,wallet,config).await?;
                 if hash.is_none() {return Err(invalid("outbound claim UserOperation is still pending"));}
             }
             let receipt=if let Some(hash)=hash {

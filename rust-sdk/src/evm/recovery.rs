@@ -159,6 +159,21 @@ impl Client {
         &self,
         id: &str,
         bundler: &BundlerClient,
+        wallet: &dyn EvmWallet,
+    ) -> Result<Option<B256>> {
+        tokio::time::timeout(
+            RESUME_TIMEOUT,
+            self.resume_gasless_funding_inner(id, bundler, wallet),
+        )
+        .await
+        .map_err(|_| Error::Timeout("funding operation lookup timed out".into()))?
+    }
+
+    async fn resume_gasless_funding_inner(
+        &self,
+        id: &str,
+        bundler: &BundlerClient,
+        wallet: &dyn EvmWallet,
     ) -> Result<Option<B256>> {
         let _execution = self.evm_execution.lock().await;
         let stored = self
@@ -171,13 +186,21 @@ impl Client {
             .metadata
             .evm_fund_userop_hash
             .ok_or_else(|| invalid("no submitted funding operation"))?;
-        let Some(receipt) = bundler.get_user_operation_receipt(parse(&hash)?).await? else {
+        let op = parse(&hash)?;
+        let Some(receipt) = bundler.get_user_operation_receipt(op).await? else {
             return Ok(None);
         };
         if !receipt.success {
             return Err(invalid("funding UserOperation reverted"));
         }
         let hash = receipt.receipt.transaction_hash;
+        // fund_swap_gasless refuses any EntryPoint other than the pinned one.
+        crate::aa::orchestrate::verify_user_operation_receipt(
+            &wallet.wait_for_receipt(hash).await?,
+            crate::aa::userop::ENTRY_POINT_V07,
+            op,
+            hash,
+        )?;
         self.update_swap_metadata(
             id,
             SwapMetadata {

@@ -481,7 +481,8 @@ async fn sponsored_cctp_mint_and_funding_share_one_batch_and_resume_after_restar
         .expect(1)
         .mount(&server)
         .await;
-    let operation = B256::repeat_byte(19);
+    let operation = Arc::new(Mutex::new(None));
+    let submitted = operation.clone();
     let txid = wallet.receipt.transaction_hash;
     let persisted = storage.clone();
     let swap_id = id.clone();
@@ -502,11 +503,18 @@ async fn sponsored_cctp_mint_and_funding_share_one_batch_and_resume_after_restar
                 assert_eq!(funding.depositor,owner);assert_eq!(funding.permit.permitted.amount,approval.amount);
                 assert!(!funding.signature.is_empty());
                 assert!(persisted.get_swap(&swap_id).unwrap().unwrap().metadata.bridge_operations.unwrap().contains_key("cctp_fund"));
+                let operation=crate::aa::orchestrate::test_support::submitted_user_op_hash(&body,42161);
+                *submitted.lock().unwrap()=Some(operation);
                 json!(operation)
             },
             "eth_getUserOperationReceipt"=>{
+                let operation=submitted.lock().unwrap().unwrap();
                 assert_eq!(persisted.get_swap(&swap_id).unwrap().unwrap().metadata.bridge_operations.unwrap()["cctp_fund"].user_operation_hash,Some(operation.to_string()));
                 json!({"success":true,"receipt":{"transactionHash":txid}})
+            },
+            "eth_getTransactionReceipt"=>{
+                let operation=submitted.lock().unwrap().unwrap();
+                crate::aa::orchestrate::test_support::node_receipt(txid,&[crate::aa::orchestrate::test_support::user_operation_log(Address::repeat_byte(12),operation,true)])
             },other=>panic!("unexpected RPC {other}"),
         };
         ResponseTemplate::new(200).set_body_json(json!({"jsonrpc":"2.0","id":body["id"],"result":result}))
@@ -577,5 +585,83 @@ async fn sponsored_cctp_mint_and_funding_share_one_batch_and_resume_after_restar
             .metadata
             .evm_fund_txid,
         Some(txid.to_string())
+    );
+}
+#[tokio::test]
+async fn bridge_resume_records_only_a_transaction_the_node_shows_executing_the_operation() {
+    use crate::aa::orchestrate::test_support::user_operation_log;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    let (client, id, _) = client();
+    let server = MockServer::start().await;
+    let reported = B256::repeat_byte(8);
+    Mock::given(method("POST"))
+        .respond_with(move |request: &wiremock::Request| {
+            let body: serde_json::Value = request.body_json().unwrap();
+            ResponseTemplate::new(200).set_body_json(json!({"jsonrpc":"2.0","id":body["id"],"result":{"success":true,"receipt":{"transactionHash":reported}}}))
+        })
+        .mount(&server)
+        .await;
+    let config = crate::aa::UserOpConfig {
+        entry_point: Address::repeat_byte(12),
+        delegation_target: Address::repeat_byte(13),
+        aa: crate::aa::AaConfig {
+            node_rpc_url: server.uri().parse().unwrap(),
+            bundler_url: server.uri().parse().unwrap(),
+            paymaster: None,
+            bundler_casing: Default::default(),
+            gas_overrides: None,
+        },
+    };
+    let operation = B256::repeat_byte(19);
+    let intent = json!({"bridge":"usdt0"});
+    client
+        .save_bridge_operation(
+            &id,
+            "usdt0_send",
+            crate::storage::BridgeOperation {
+                intent: intent.clone(),
+                transaction_hash: None,
+                user_operation_hash: Some(operation.to_string()),
+                complete: false,
+            },
+        )
+        .unwrap();
+    let mode = BridgeSubmission::UserOperation(&config);
+    let foreign = wallet(42161, Address::repeat_byte(1), vec![]);
+    assert!(
+        client
+            .bridge_receipt(&id, "usdt0_send", &intent, &foreign, &mode)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        client
+            .bridge_operation(&id, "usdt0_send")
+            .unwrap()
+            .unwrap()
+            .transaction_hash,
+        None
+    );
+    let ours = wallet(
+        42161,
+        Address::repeat_byte(1),
+        vec![user_operation_log(config.entry_point, operation, true)],
+    );
+    let receipt = client
+        .bridge_receipt(&id, "usdt0_send", &intent, &ours, &mode)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.transaction_hash, reported);
+    assert_eq!(
+        client
+            .bridge_operation(&id, "usdt0_send")
+            .unwrap()
+            .unwrap()
+            .transaction_hash,
+        Some(reported.to_string())
     );
 }

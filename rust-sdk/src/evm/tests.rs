@@ -705,7 +705,14 @@ async fn funding_resume_distinguishes_pending_failed_and_successful_operations()
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
     use wiremock::matchers::method;
-    let (client, _, store) = setup(false);
+    let (client, mut wallet, store) = setup(false);
+    wallet
+        .extra_logs
+        .push(crate::aa::orchestrate::test_support::user_operation_log(
+            crate::aa::userop::ENTRY_POINT_V07,
+            B256::repeat_byte(8),
+            true,
+        ));
     let mut stored = store.get_swap("test").unwrap().unwrap();
     store.delete_swap("test").unwrap();
     stored.metadata.evm_fund_txid = None;
@@ -730,7 +737,9 @@ async fn funding_resume_distinguishes_pending_failed_and_successful_operations()
             })
             .mount(&server)
             .await;
-        let resumed = client.resume_gasless_funding("test", &bundler).await;
+        let resumed = client
+            .resume_gasless_funding("test", &bundler, &wallet)
+            .await;
         if expected.is_null() {
             assert_eq!(resumed.unwrap(), None);
         } else if expected["success"] == false {
@@ -751,6 +760,107 @@ async fn funding_resume_distinguishes_pending_failed_and_successful_operations()
 }
 
 #[tokio::test]
+async fn funding_resume_rejects_foreign_bundler_transaction() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    let (client, wallet, store) = setup(false);
+    let operation = B256::repeat_byte(8).to_string();
+    let mut stored = store.get_swap("test").unwrap().unwrap();
+    store.delete_swap("test").unwrap();
+    stored.metadata.evm_fund_txid = None;
+    stored.metadata.evm_fund_userop_hash = Some(operation.clone());
+    store.store_swap(stored).unwrap();
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: Value = request.body_json().unwrap();
+            ResponseTemplate::new(200).set_body_json(json!({"jsonrpc":"2.0","id":body["id"],"result":{"success":true,"receipt":{"transactionHash":B256::repeat_byte(9)}}}))
+        })
+        .mount(&server)
+        .await;
+    let bundler =
+        crate::aa::bundler::BundlerClient::new(server.uri().parse().unwrap(), Default::default())
+            .unwrap();
+    assert!(
+        client
+            .resume_gasless_funding("test", &bundler, &wallet)
+            .await
+            .is_err()
+    );
+    let metadata = store.get_swap("test").unwrap().unwrap().metadata;
+    assert_eq!(metadata.evm_fund_txid, None);
+    assert_eq!(metadata.evm_fund_userop_hash, Some(operation));
+}
+
+#[tokio::test]
+async fn claim_resume_records_only_a_transaction_the_node_shows_executing_the_operation() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    let (client, mut wallet, store) = setup(true);
+    let operation = B256::repeat_byte(8);
+    let mut stored = store.get_swap("test").unwrap().unwrap();
+    store.delete_swap("test").unwrap();
+    stored.metadata.evm_claim_started = Some(true);
+    stored.metadata.evm_claim_userop_hash = Some(operation.to_string());
+    store.store_swap(stored).unwrap();
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: Value = request.body_json().unwrap();
+            ResponseTemplate::new(200).set_body_json(json!({"jsonrpc":"2.0","id":body["id"],"result":{"success":true,"receipt":{"transactionHash":B256::repeat_byte(9)}}}))
+        })
+        .mount(&server)
+        .await;
+    let config = crate::aa::UserOpConfig {
+        entry_point: Address::repeat_byte(12),
+        delegation_target: Address::repeat_byte(13),
+        aa: crate::aa::AaConfig {
+            node_rpc_url: server.uri().parse().unwrap(),
+            bundler_url: server.uri().parse().unwrap(),
+            paymaster: None,
+            bundler_casing: Default::default(),
+            gas_overrides: None,
+        },
+    };
+    assert!(
+        client
+            .resume_evm_claim_userop("test", &wallet, &config)
+            .await
+            .is_err()
+    );
+    let metadata = store.get_swap("test").unwrap().unwrap().metadata;
+    assert_eq!(metadata.evm_claim_txid, None);
+    assert_eq!(metadata.evm_claim_userop_hash, Some(operation.to_string()));
+    wallet
+        .extra_logs
+        .push(crate::aa::orchestrate::test_support::user_operation_log(
+            config.entry_point,
+            operation,
+            true,
+        ));
+    assert_eq!(
+        client
+            .resume_evm_claim_userop("test", &wallet, &config)
+            .await
+            .unwrap(),
+        Some(B256::repeat_byte(9))
+    );
+    assert_eq!(
+        store
+            .get_swap("test")
+            .unwrap()
+            .unwrap()
+            .metadata
+            .evm_claim_txid,
+        Some(B256::repeat_byte(9).to_string())
+    );
+}
+
+#[tokio::test]
 async fn sponsored_claim_signs_a_kernel_batch_and_persists_before_receipt_polling() {
     use alloy::sol_types::SolValue;
     use wiremock::Mock;
@@ -761,9 +871,8 @@ async fn sponsored_claim_signs_a_kernel_batch_and_persists_before_receipt_pollin
     let owner = wallet.owner;
     let coordinator = wallet.coordinator;
     let persisted = store.clone();
-    let operation = B256::repeat_byte(8);
     let transaction_hash = B256::repeat_byte(99);
-    let sent = Arc::new(Mutex::new(false));
+    let sent = Arc::new(Mutex::new(None));
     let submitted = sent.clone();
     Mock::given(wiremock::matchers::method("POST")).respond_with(move |request:&wiremock::Request| {
         let body:Value=request.body_json().unwrap();
@@ -784,13 +893,18 @@ async fn sponsored_claim_signs_a_kernel_batch_and_persists_before_receipt_pollin
                 let calls=Vec::<crate::aa::abi::Call>::abi_decode(&execution.executionCalldata).unwrap();
                 assert_eq!(calls.len(),1);assert_eq!(calls[0].target,coordinator);
                 assert!(calls[0].callData.starts_with(&super::claim::ClaimCoordinator::redeemAndExecuteCall::SELECTOR));
-                *submitted.lock().unwrap()=true;
+                let operation=crate::aa::orchestrate::test_support::submitted_user_op_hash(&body,137);
+                *submitted.lock().unwrap()=Some(operation);
                 json!(operation)
             },
             "eth_getUserOperationReceipt"=>{
-                assert!(*submitted.lock().unwrap());
+                let operation=submitted.lock().unwrap().unwrap();
                 assert_eq!(persisted.get_swap("test").unwrap().unwrap().metadata.evm_claim_userop_hash,Some(operation.to_string()));
                 json!({"success":true,"receipt":{"transactionHash":transaction_hash}})
+            },
+            "eth_getTransactionReceipt"=>{
+                let operation=submitted.lock().unwrap().unwrap();
+                crate::aa::orchestrate::test_support::node_receipt(transaction_hash,&[crate::aa::orchestrate::test_support::user_operation_log(Address::repeat_byte(12),operation,true)])
             },
             method=>panic!("unexpected RPC method {method}"),
         };

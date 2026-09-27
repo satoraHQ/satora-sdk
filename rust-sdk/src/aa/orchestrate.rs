@@ -25,8 +25,10 @@
 //!    fills the real paymaster fields.
 //! 10. Compute `userOpHash` and sign it with EIP-191 (Kernel's 7702 validator does
 //!     `ECDSA.recover(toEthSignedMessageHash(…), sig)`).
-//! 11. `eth_sendUserOperation` (with auth) → returns userOpHash.
-//! 12. Poll `eth_getUserOperationReceipt` until mined (bounded).
+//! 11. `eth_sendUserOperation` (with auth). The returned userOpHash must equal the one signed in
+//!     step 10.
+//! 12. Poll `eth_getUserOperationReceipt` until mined (bounded), then confirm on the node that the
+//!     reported transaction emitted the operation's `UserOperationEvent`.
 //!
 //! All RPC calls inherit the [`crate::aa::bundler::BundlerCasing`] chosen on the clients —
 //! the orchestration is bundler-agnostic.
@@ -49,6 +51,7 @@ use crate::aa::signing;
 use crate::aa::userop::user_op_hash;
 use crate::error::Error;
 use crate::error::Result;
+use crate::evm::EvmReceipt;
 use alloy::eips::eip7702::Authorization;
 use alloy::primitives::Address;
 use alloy::primitives::B256;
@@ -60,6 +63,7 @@ use alloy::providers::RootProvider;
 use alloy::rpc::types::TransactionRequest;
 use alloy::rpc::types::erc4337::PackedUserOperation;
 use alloy::sol_types::SolCall;
+use alloy::sol_types::SolEvent;
 use alloy::sol_types::SolValue;
 use rand::RngCore;
 use rand::rngs::OsRng;
@@ -167,9 +171,10 @@ impl std::fmt::Debug for FundSwapInputs {
 /// reference so a single set can drive multiple swaps.
 pub struct FundSwapClients<'a> {
     pub bundler: &'a BundlerClient,
-    /// Node RPC for `eth_getTransactionCount`, `EntryPoint.getNonce`,
-    /// and `eth_gasPrice`. Often the same URL as `bundler` (Alchemy
-    /// co-locates them) but logically distinct.
+    /// Node RPC for `eth_chainId`, `eth_getTransactionCount`, `EntryPoint.getNonce`,
+    /// `eth_gasPrice`, and the transaction receipt that confirms what the bundler
+    /// reports. Often the same URL as `bundler` (Alchemy co-locates them) but
+    /// logically distinct.
     pub node: &'a RootProvider,
     /// Sponsorship paymaster — `None` when the sender pays its own gas
     /// (alto-against-Anvil dev setups, for instance). When `Some`, the
@@ -190,11 +195,12 @@ pub struct PaymasterRef<'a> {
 /// (and, where possible, mined).
 #[derive(Debug, Clone)]
 pub struct FundSwapReceipt {
-    /// `userOpHash` the bundler computed on submission.
+    /// `userOpHash` of the submitted operation, computed locally and confirmed by the bundler.
     pub user_op_hash: B256,
-    /// On-chain tx hash, if the receipt arrived within the polling
-    /// window. `None` means submitted-but-not-yet-mined — the caller
-    /// can poll `BundlerClient::get_user_operation_receipt` later.
+    /// On-chain tx hash, once the bundler reported it and the node confirmed
+    /// the operation ran in it within the polling window. `None` means neither
+    /// happened yet; confirm a later bundler answer against the node before
+    /// trusting it.
     pub transaction_hash: Option<B256>,
 }
 
@@ -482,19 +488,27 @@ pub async fn publish_batch_observed(
         .bundler
         .send_user_operation(&userop, inputs.entry_point, Some(&signed_auth))
         .await?;
-    submitted(user_op_hash_out).map_err(|e| {
+    // The receipt lookups key on this hash, so it must be the one we signed, not the
+    // bundler's answer. It is saved first because the operation may already be in flight.
+    submitted(hash).map_err(|e| {
         Error::Storage(format!(
-            "submitted user operation {user_op_hash_out}, but could not persist it: {e}"
+            "submitted user operation {hash}, but could not persist it: {e}"
         ))
     })?;
-    info!(user_op_hash = %user_op_hash_out, "fund_swap: submitted; polling receipt");
+    if user_op_hash_out != hash {
+        return Err(Error::InvalidSwap(format!(
+            "bundler returned user operation hash {user_op_hash_out}, expected {hash}"
+        )));
+    }
+    info!(user_op_hash = %hash, "fund_swap: submitted; polling receipt");
 
     // 12. Poll for the receipt.
-    let transaction_hash = poll_receipt(clients.bundler, user_op_hash_out).await?;
+    let transaction_hash =
+        poll_receipt(clients.bundler, clients.node, inputs.entry_point, hash).await?;
     info!(?transaction_hash, "fund_swap: poll complete");
 
     Ok(FundSwapReceipt {
-        user_op_hash: user_op_hash_out,
+        user_op_hash: hash,
         transaction_hash,
     })
 }
@@ -606,24 +620,68 @@ fn apply_paymaster(
     userop.paymaster_data = Some(fields.paymaster_data.clone());
 }
 
+/// A single successful `UserOperationEvent` for `user_op_hash` from the pinned
+/// EntryPoint proves the operation we signed ran in `tx`. The bundler alone
+/// cannot vouch for this, so `receipt` must come from the node.
+pub(crate) fn verify_user_operation_receipt(
+    receipt: &EvmReceipt,
+    entry_point: Address,
+    user_op_hash: B256,
+    tx: B256,
+) -> Result<()> {
+    let found = receipt
+        .logs
+        .iter()
+        .filter(|log| log.address == entry_point)
+        .filter_map(|log| {
+            IEntryPoint::UserOperationEvent::decode_raw_log(log.topics.iter().copied(), &log.data)
+                .ok()
+        })
+        .filter(|event| event.userOpHash == user_op_hash && event.success)
+        .count();
+    if receipt.transaction_hash != tx || !receipt.success || found != 1 {
+        return Err(Error::InvalidSwap(format!(
+            "bundler-reported transaction {tx} does not execute user operation {user_op_hash}"
+        )));
+    }
+    Ok(())
+}
+
 /// Poll `eth_getUserOperationReceipt` until it lands or we exhaust the
-/// attempt budget. Returns the tx hash if mined.
-async fn poll_receipt(bundler: &BundlerClient, user_op_hash: B256) -> Result<Option<B256>> {
+/// attempt budget. Returns the tx hash if mined and confirmed by the node.
+async fn poll_receipt(
+    bundler: &BundlerClient,
+    node: &RootProvider,
+    entry_point: Address,
+    user_op_hash: B256,
+) -> Result<Option<B256>> {
     for attempt in 1..=RECEIPT_POLL_ATTEMPTS {
         match bundler.get_user_operation_receipt(user_op_hash).await {
             Ok(Some(receipt)) => {
-                info!(
-                    attempt,
-                    tx_hash = %receipt.receipt.transaction_hash,
-                    "fund_swap: receipt received"
-                );
+                let tx = receipt.receipt.transaction_hash;
+                info!(attempt, tx_hash = %tx, "fund_swap: receipt received");
                 if !receipt.success {
                     return Err(Error::InvalidSwap(format!(
-                        "user operation {user_op_hash} failed in transaction {}",
-                        receipt.receipt.transaction_hash
+                        "user operation {user_op_hash} failed in transaction {tx}"
                     )));
                 }
-                return Ok(Some(receipt.receipt.transaction_hash));
+                match node.get_transaction_receipt(tx).await {
+                    Ok(Some(mined)) => {
+                        verify_user_operation_receipt(
+                            &crate::evm::evm_receipt(&mined)?,
+                            entry_point,
+                            user_op_hash,
+                            tx,
+                        )?;
+                        return Ok(Some(tx));
+                    }
+                    Ok(None) => {
+                        tracing::debug!(attempt, %tx, "fund_swap: node has no receipt yet");
+                    }
+                    Err(e) => {
+                        tracing::warn!(attempt, error = %e, "fund_swap: node receipt lookup errored");
+                    }
+                }
             }
             Ok(None) => {
                 tracing::debug!(attempt, "fund_swap: receipt pending");
@@ -709,9 +767,59 @@ pub async fn publish_with_config(
 }
 
 #[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+    use crate::evm::EvmLog;
+    use serde_json::json;
+
+    pub(crate) fn user_operation_log(
+        entry_point: Address,
+        user_op_hash: B256,
+        success: bool,
+    ) -> EvmLog {
+        let data = IEntryPoint::UserOperationEvent {
+            userOpHash: user_op_hash,
+            sender: Address::repeat_byte(0x51),
+            paymaster: Address::ZERO,
+            nonce: U256::ZERO,
+            success,
+            actualGasCost: U256::from(1),
+            actualGasUsed: U256::from(1),
+        }
+        .encode_log_data();
+        EvmLog {
+            address: entry_point,
+            topics: data.topics().to_vec(),
+            data: data.data,
+        }
+    }
+
+    /// `eth_getTransactionReceipt` result for a successful transaction.
+    pub(crate) fn node_receipt(tx: B256, logs: &[EvmLog]) -> Value {
+        let logs: Vec<Value> = logs
+            .iter()
+            .enumerate()
+            .map(|(index, log)| {
+                json!({"address":log.address,"topics":log.topics,"data":log.data,"blockHash":B256::repeat_byte(0xbb),"blockNumber":"0xa","transactionHash":tx,"transactionIndex":"0x0","logIndex":format!("{index:#x}"),"removed":false})
+            })
+            .collect();
+        json!({"transactionHash":tx,"transactionIndex":"0x0","blockHash":B256::repeat_byte(0xbb),"blockNumber":"0xa","from":Address::ZERO,"to":Address::ZERO,"cumulativeGasUsed":"0x1","gasUsed":"0x1","effectiveGasPrice":"0x1","contractAddress":null,"logs":logs,"logsBloom":format!("0x{}","00".repeat(256)),"type":"0x2","status":"0x1"})
+    }
+
+    /// The hash of the operation in an `eth_sendUserOperation` request, as the SDK signs it.
+    pub(crate) fn submitted_user_op_hash(body: &Value, chain_id: u64) -> B256 {
+        let op: PackedUserOperation = serde_json::from_value(body["params"][0].clone()).unwrap();
+        let entry_point: Address = serde_json::from_value(body["params"][1].clone()).unwrap();
+        user_op_hash(&op, entry_point, chain_id)
+    }
+}
+
+#[cfg(test)]
 mod tests {
+    use super::test_support::*;
     use super::*;
     use crate::aa::bundler::BundlerCasing;
+    use crate::evm::EvmLog;
     use serde_json::json;
     use wiremock::Mock;
     use wiremock::MockServer;
@@ -726,9 +834,176 @@ mod tests {
         }).expect(1).mount(&server).await;
         let bundler =
             BundlerClient::new(server.uri().parse().unwrap(), BundlerCasing::CamelCase).unwrap();
+        let node = crate::evm::http_provider(server.uri().parse().unwrap());
         assert!(matches!(
-            poll_receipt(&bundler, B256::repeat_byte(2)).await,
+            poll_receipt(
+                &bundler,
+                &node,
+                Address::repeat_byte(12),
+                B256::repeat_byte(2)
+            )
+            .await,
             Err(Error::InvalidSwap(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn bundler_receipt_is_accepted_only_when_the_node_shows_the_operation() {
+        let entry_point = Address::repeat_byte(12);
+        let operation = B256::repeat_byte(2);
+        let tx = B256::repeat_byte(1);
+        for (logs, accepted) in [
+            (vec![], false),
+            (
+                vec![user_operation_log(entry_point, B256::repeat_byte(3), true)],
+                false,
+            ),
+            (vec![user_operation_log(entry_point, operation, true)], true),
+        ] {
+            let server = MockServer::start().await;
+            let receipt = node_receipt(tx, &logs);
+            Mock::given(wiremock::matchers::method("POST"))
+                .respond_with(move |request: &wiremock::Request| {
+                    let body: Value = request.body_json().unwrap();
+                    let result = match body["method"].as_str().unwrap() {
+                        "eth_getUserOperationReceipt" => {
+                            json!({"success":true,"receipt":{"transactionHash":tx}})
+                        }
+                        "eth_getTransactionReceipt" => receipt.clone(),
+                        other => panic!("unexpected RPC {other}"),
+                    };
+                    ResponseTemplate::new(200)
+                        .set_body_json(json!({"jsonrpc":"2.0","id":body["id"],"result":result}))
+                })
+                .mount(&server)
+                .await;
+            let bundler =
+                BundlerClient::new(server.uri().parse().unwrap(), BundlerCasing::CamelCase)
+                    .unwrap();
+            let node = crate::evm::http_provider(server.uri().parse().unwrap());
+            let polled = poll_receipt(&bundler, &node, entry_point, operation).await;
+            if accepted {
+                assert_eq!(polled.unwrap(), Some(tx));
+            } else {
+                assert!(matches!(polled, Err(Error::InvalidSwap(_))), "{polled:?}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn bundler_hash_that_differs_from_the_signed_operation_is_refused_after_saving_ours() {
+        use std::sync::Arc;
+        use std::sync::Mutex;
+        let server = MockServer::start().await;
+        let signed = Arc::new(Mutex::new(None));
+        let observed = signed.clone();
+        Mock::given(wiremock::matchers::method("POST")).respond_with(move |request: &wiremock::Request| {
+            let body: Value = request.body_json().unwrap();
+            let result = match body["method"].as_str().unwrap() {
+                "eth_chainId" => json!("0x89"),
+                "eth_getTransactionCount" => json!("0x3"),
+                "eth_call" => json!(format!("0x{:064x}", 0)),
+                "eth_gasPrice" => json!("0x100000"),
+                "eth_estimateUserOperationGas" => json!({"callGasLimit":"0x70000","verificationGasLimit":"0x20000","preVerificationGas":"0x10000"}),
+                "eth_sendUserOperation" => {
+                    *observed.lock().unwrap() = Some(submitted_user_op_hash(&body, 137));
+                    json!(B256::repeat_byte(7))
+                }
+                other => panic!("unexpected RPC {other}"),
+            };
+            ResponseTemplate::new(200).set_body_json(json!({"jsonrpc":"2.0","id":body["id"],"result":result}))
+        }).mount(&server).await;
+        let bundler =
+            BundlerClient::new(server.uri().parse().unwrap(), BundlerCasing::CamelCase).unwrap();
+        let node = crate::evm::http_provider(server.uri().parse().unwrap());
+        let secret_key = [1u8; 32];
+        let saved = Mutex::new(Vec::new());
+        let result = publish_batch_observed(
+            PublishInputs {
+                secret_key,
+                eoa_address: signing::sign_hash(&secret_key, B256::ZERO)
+                    .unwrap()
+                    .recover_address_from_prehash(&B256::ZERO)
+                    .unwrap(),
+                chain_id: 137,
+                entry_point: Address::repeat_byte(12),
+                delegation_target: Address::repeat_byte(13),
+                call_data: Bytes::from_static(&[1]),
+                gas_overrides: None,
+            },
+            FundSwapClients {
+                bundler: &bundler,
+                node: &node,
+                paymaster: None,
+            },
+            &|| Ok(()),
+            &|hash| {
+                saved.lock().unwrap().push(hash);
+                Ok(())
+            },
+        )
+        .await;
+        assert!(
+            matches!(&result, Err(Error::InvalidSwap(m)) if m.starts_with("bundler returned user operation hash")),
+            "{result:?}"
+        );
+        let signed = signed.lock().unwrap().unwrap();
+        assert_ne!(signed, B256::repeat_byte(7));
+        assert_eq!(*saved.lock().unwrap(), vec![signed]);
+    }
+
+    #[test]
+    fn user_operation_receipt_needs_exactly_one_successful_event_from_the_entry_point() {
+        let entry_point = Address::repeat_byte(12);
+        let operation = B256::repeat_byte(2);
+        let tx = B256::repeat_byte(1);
+        let receipt = |logs: Vec<EvmLog>| EvmReceipt {
+            transaction_hash: tx,
+            success: true,
+            block_number: 10,
+            logs,
+        };
+        // topic0 of the event the deployed EntryPoint v0.7 emits
+        assert_eq!(
+            IEntryPoint::UserOperationEvent::SIGNATURE_HASH,
+            alloy::primitives::b256!(
+                "49628fd1471006c1482da88028e9ce4dbb080b815c9b0344d39e5a8e6ec1419f"
+            )
+        );
+        let event = user_operation_log(entry_point, operation, true);
+        assert!(
+            verify_user_operation_receipt(
+                &receipt(vec![event.clone()]),
+                entry_point,
+                operation,
+                tx
+            )
+            .is_ok()
+        );
+        let mut foreign_emitter = event.clone();
+        foreign_emitter.address = Address::repeat_byte(13);
+        for logs in [
+            vec![],
+            vec![foreign_emitter],
+            vec![user_operation_log(entry_point, B256::repeat_byte(3), true)],
+            vec![user_operation_log(entry_point, operation, false)],
+            vec![event.clone(), event.clone()],
+        ] {
+            assert!(
+                verify_user_operation_receipt(&receipt(logs), entry_point, operation, tx).is_err()
+            );
+        }
+        assert!(
+            verify_user_operation_receipt(
+                &receipt(vec![event.clone()]),
+                entry_point,
+                operation,
+                B256::repeat_byte(4)
+            )
+            .is_err()
+        );
+        let mut reverted = receipt(vec![event]);
+        reverted.success = false;
+        assert!(verify_user_operation_receipt(&reverted, entry_point, operation, tx).is_err());
     }
 }
