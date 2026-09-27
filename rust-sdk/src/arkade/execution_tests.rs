@@ -648,6 +648,59 @@ async fn delegated_claim_handles_swept_outputs_and_signs_the_typescript_intent_a
 }
 
 #[tokio::test]
+async fn delegated_settle_outlives_the_client_request_timeout() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    let (_, backend, store, destination) = setup("btc_to_arkade");
+    let server = MockServer::start().await;
+    let commitment = Txid::from_byte_array([14; 32]);
+    Mock::given(wiremock::matchers::path("/api/delegate/settle"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"commitment_txid":commitment}))
+                .set_delay(Duration::from_millis(800)),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .base_url(server.uri())
+        .http(
+            reqwest::Client::builder()
+                .timeout(Duration::from_millis(200))
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
+    assert_eq!(
+        client
+            .delegate_arkade(
+                "arkade",
+                &backend,
+                None,
+                ArkadeSpend::Claim,
+                pair(5).public_key(),
+                spend_options(destination)
+            )
+            .await
+            .unwrap(),
+        commitment
+    );
+    let state = store
+        .get_swap("arkade")
+        .unwrap()
+        .unwrap()
+        .metadata
+        .arkade_delegate
+        .unwrap();
+    assert_eq!(state.commitment_txid, Some(commitment.to_string()));
+}
+
+#[tokio::test]
 async fn interrupted_delegate_settlement_reconciles_observed_commitment_without_another_request() {
     use wiremock::Mock;
     use wiremock::MockServer;

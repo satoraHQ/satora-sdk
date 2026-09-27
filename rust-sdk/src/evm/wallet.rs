@@ -34,7 +34,7 @@ impl RpcWallet {
             .map_err(|e| Error::InvalidSigner(e.to_string()))?;
         let provider = ProviderBuilder::new()
             .wallet(EthereumWallet::from(signer.clone()))
-            .connect_http(url)
+            .connect_client(super::rpc_client(url))
             .erased();
         if provider.get_chain_id().await.map_err(transport)? != chain_id {
             return Err(invalid("RPC chain does not match wallet"));

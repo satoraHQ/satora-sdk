@@ -31,6 +31,21 @@ pub use wallet::RpcWallet;
 
 pub type WalletFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 
+/// reqwest and alloy transports default to no timeout, so a peer that accepts a
+/// request and never answers would hold an execution lock indefinitely.
+pub(crate) const RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+pub(crate) fn rpc_client(url: url::Url) -> alloy::rpc::client::RpcClient {
+    let http = reqwest::Client::builder()
+        .timeout(RPC_TIMEOUT)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+    alloy::rpc::client::RpcClient::new(alloy::transports::http::Http::with_client(http, url), false)
+}
+pub(crate) fn http_provider(url: url::Url) -> alloy::providers::RootProvider {
+    alloy::providers::RootProvider::new(rpc_client(url))
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct EvmTransaction {
     pub chain_id: u64,

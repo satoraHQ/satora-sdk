@@ -20,6 +20,7 @@ use bitcoin::taproot::LeafVersion;
 use bitcoin::transaction;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 fn key(n: u8) -> bitcoin::XOnlyPublicKey {
@@ -307,6 +308,63 @@ async fn manager_invalidates_stale_and_failed_reads_and_allows_reorg_regression(
     monitor.shutdown().await.unwrap();
     manager.unregister(&key).unwrap();
     assert!(manager.get(&key).unwrap().is_none());
+}
+struct SlowReader {
+    calls: AtomicUsize,
+}
+impl ContractReader for SlowReader {
+    fn can_observe(&self, reference: &ContractRef) -> bool {
+        matches!(reference, ContractRef::Bitcoin { .. })
+    }
+    fn observe<'a>(&'a self, _: &'a ContractRef) -> ObservationFuture<'a, Observation> {
+        Box::pin(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Ok(Observation {
+                state: HtlcState::Confirmed,
+                point: None,
+                funded_amount: "10000".into(),
+                remaining_amount: "10000".into(),
+                preimage: None,
+            })
+        })
+    }
+}
+#[tokio::test]
+async fn manager_lock_wait_does_not_consume_read_budget() {
+    let reader = Arc::new(SlowReader {
+        calls: AtomicUsize::new(0),
+    });
+    let manager = ContractManager::new(
+        reader.clone(),
+        ManagerOptions {
+            read_timeout: Duration::from_millis(150),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let reference = ContractRef::Bitcoin {
+        htlc: htlc(),
+        expected_sats: 10000,
+        confirmations: 1,
+    };
+    let key = reference.key().unwrap();
+    manager.register_unread(reference).unwrap();
+    let a = manager.clone();
+    let b = manager.clone();
+    // B queues behind A's 100ms read; its own 150ms budget must start once it
+    // holds the lock, not while it waits.
+    let (ra, rb) = tokio::join!(a.reconcile(&key), async {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        b.reconcile(&key).await
+    });
+    ra.unwrap();
+    rb.unwrap();
+    assert_eq!(
+        manager.get(&key).unwrap().unwrap().state,
+        HtlcState::Confirmed
+    );
+    assert_eq!(reader.calls.load(Ordering::Relaxed), 2);
 }
 #[test]
 fn timelocks_use_chain_height_and_mtp_and_preimages_are_redacted() {

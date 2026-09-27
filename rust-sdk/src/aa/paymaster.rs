@@ -71,7 +71,7 @@ impl PaymasterClient {
     /// bundler's setting — the paymaster talks the same dialect as the
     /// bundler it sits in front of).
     pub fn new(url: Url, casing: BundlerCasing) -> Result<Self> {
-        let provider = RootProvider::new_http(url);
+        let provider = crate::evm::http_provider(url);
         Ok(Self { provider, casing })
     }
 

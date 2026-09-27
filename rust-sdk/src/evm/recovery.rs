@@ -254,6 +254,21 @@ impl Client {
         refund: &RefundOptions,
         destination: &str,
     ) -> Result<String> {
+        tokio::time::timeout(
+            refund.timeout,
+            self.prepare_refunded_evm_swap_continuation_inner(id, wallet, refund, destination),
+        )
+        .await
+        .map_err(|_| Error::Timeout("refund continuation timed out".into()))?
+    }
+
+    async fn prepare_refunded_evm_swap_continuation_inner(
+        &self,
+        id: &str,
+        wallet: &dyn EvmWallet,
+        refund: &RefundOptions,
+        destination: &str,
+    ) -> Result<String> {
         let _execution = self.evm_execution.lock().await;
         let stored = self
             .get_stored_swap(id)?

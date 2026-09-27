@@ -438,6 +438,94 @@ async fn gasless_claim_binds_the_minimum_and_persists_submission() {
 }
 
 #[tokio::test]
+async fn gasless_claim_outlives_the_client_request_timeout() {
+    use alloy::primitives::keccak256;
+    use alloy::sol_types::SolValue;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+    let (_, wallet, store) = setup(true);
+    let server = MockServer::start().await;
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .http(
+            reqwest::Client::builder()
+                .timeout(Duration::from_millis(200))
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
+    let calls: Vec<crate::aa::abi::Call> = vec![];
+    Mock::given(path("/swap/test/redeem-and-swap-calldata")).respond_with(ResponseTemplate::new(200).set_body_json(json!({"min_amount_out":"100000","gasless_fee_sats":0,"calls_hash":keccak256(calls.abi_encode()),"dex_calldata":null}))).mount(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/swap/test/claim-gasless"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(
+                    json!({"id":"test","tx_hash":B256::repeat_byte(9),"message":"submitted"}),
+                )
+                .set_delay(Duration::from_millis(800)),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    client
+        .claim_evm_gasless("test", &wallet, claim_options(&wallet))
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .get_swap("test")
+            .unwrap()
+            .unwrap()
+            .metadata
+            .evm_claim_txid,
+        Some(B256::repeat_byte(9).to_string())
+    );
+}
+
+#[tokio::test]
+async fn gasless_claim_accepted_without_a_hash_keeps_the_claim_reserved() {
+    use alloy::primitives::keccak256;
+    use alloy::sol_types::SolValue;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+    let (_, wallet, store) = setup(true);
+    let server = MockServer::start().await;
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .build()
+        .unwrap();
+    let calls: Vec<crate::aa::abi::Call> = vec![];
+    Mock::given(path("/swap/test/redeem-and-swap-calldata")).respond_with(ResponseTemplate::new(200).set_body_json(json!({"min_amount_out":"100000","gasless_fee_sats":0,"calls_hash":keccak256(calls.abi_encode()),"dex_calldata":null}))).mount(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/swap/test/claim-gasless"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"id":"test","tx_hash":"","message":"Gasless claim already in progress"}),
+        ))
+        .mount(&server)
+        .await;
+    let submitted = client
+        .claim_evm_gasless("test", &wallet, claim_options(&wallet))
+        .await
+        .unwrap();
+    assert!(submitted.tx_hash.is_empty());
+    let metadata = store.get_swap("test").unwrap().unwrap().metadata;
+    assert_eq!(metadata.evm_claim_txid, None);
+    assert_eq!(metadata.evm_claim_started, Some(true));
+}
+
+#[tokio::test]
 async fn recovery_checks_balance_and_recipient_and_resumes_without_resending() {
     let (client, wallet, _) = setup(false);
     let mut options = DepositRecovery {

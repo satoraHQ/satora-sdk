@@ -30,6 +30,10 @@ use serde_json::Value;
 use std::str::FromStr;
 use url::Url;
 
+/// Covers the configuration fetches, the pre-submission RPC calls and the bounded
+/// receipt poll; the client-wide EVM lock is held for the whole call.
+const GASLESS_FUNDING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
 /// Bundler + node-RPC + optional paymaster configuration the gasless
 /// flow needs.
 ///
@@ -205,9 +209,28 @@ impl Client {
     ///   EVM chain, if it locks native currency or a hash lock not derived from the seed, if the
     ///   backend names an unpinned EntryPoint, delegation target or Permit2, or if its coordinator
     ///   differs from the one persisted for the swap.
+    /// - [`Error::Timeout`] if the whole flow outlives its deadline; inspect the persisted
+    ///   operation before retrying.
     /// - [`Error::Transport`] / [`Error::Api`] for backend, bundler, paymaster, or node RPC
     ///   failures.
     pub async fn fund_swap_gasless(
+        &self,
+        swap_id: &str,
+        opts: GaslessOpts,
+    ) -> Result<FundSwapReceipt> {
+        tokio::time::timeout(
+            GASLESS_FUNDING_TIMEOUT,
+            self.fund_swap_gasless_inner(swap_id, opts),
+        )
+        .await
+        .map_err(|_| {
+            Error::Timeout(
+                "gasless funding timed out; inspect the persisted operation before retrying".into(),
+            )
+        })?
+    }
+
+    async fn fund_swap_gasless_inner(
         &self,
         swap_id: &str,
         opts: GaslessOpts,
@@ -328,7 +351,7 @@ impl Client {
             .as_ref()
             .map(|pm| PaymasterClient::new(pm.url.clone(), aa_config.bundler_casing))
             .transpose()?;
-        let node = RootProvider::new_http(aa_config.node_rpc_url);
+        let node = crate::evm::http_provider(aa_config.node_rpc_url);
         let chain_id = node
             .get_chain_id()
             .await
@@ -476,7 +499,7 @@ impl Client {
             }
         };
 
-        let node: RootProvider = RootProvider::new_http(node_rpc_url);
+        let node: RootProvider = crate::evm::http_provider(node_rpc_url);
         let balance_calldata = IERC20::balanceOfCall {
             account: deposit_address,
         }
@@ -540,7 +563,7 @@ impl Client {
             // Explicit `RootProvider` (defaults to Ethereum network) — the
             // generic param is otherwise ambiguous when only `Provider`
             // methods (no Network-specific filler) are touched.
-            let node: RootProvider = RootProvider::new_http(node_rpc_url.clone());
+            let node: RootProvider = crate::evm::http_provider(node_rpc_url.clone());
             // The IERC20 ABI's `balanceOf(address)` selector + calldata.
             // Encoded once per loop iteration since the deposit address
             // doesn't change.

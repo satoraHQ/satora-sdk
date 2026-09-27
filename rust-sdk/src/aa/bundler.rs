@@ -140,7 +140,7 @@ impl BundlerClient {
     /// installs by default, and avoiding them keeps the type signature
     /// stable across alloy minor versions.
     pub fn new(url: Url, casing: BundlerCasing) -> Result<Self> {
-        let provider = RootProvider::new_http(url);
+        let provider = crate::evm::http_provider(url);
         Ok(Self { provider, casing })
     }
 

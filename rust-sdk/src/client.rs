@@ -51,6 +51,19 @@ pub const DEFAULT_BASE_URL: &str = "https://api.satora.io";
 
 /// Match the TypeScript client's bounded collision recovery policy.
 const MAX_KEY_INDEX_GRIND_ATTEMPTS: u32 = 10;
+/// reqwest defaults to no timeout, and several execution paths hold a lock
+/// across API calls.
+const API_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// A hung connect then fails as a connect error, which proves nothing was sent,
+/// instead of running into an operation deadline.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+fn default_http() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(API_TIMEOUT)
+        .connect_timeout(CONNECT_TIMEOUT)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
 const CLIENT_AGENT_HEADER: &str = "X-Lendaswap-Client";
 const SATORA_SERVER_VERSION_HEADER: &str = "x-satora-server-version";
 const CLIENT_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
@@ -113,7 +126,7 @@ impl Client {
         crate::crypto_init::ensure_default_provider_installed();
         let base_url = Url::parse(base_url)?;
         Ok(Self {
-            http: reqwest::Client::new(),
+            http: default_http(),
             base_url,
             signer: None,
             storage: Arc::new(InMemorySwapStorage::new()),
@@ -775,7 +788,9 @@ impl ClientBuilder {
     }
 
     /// Inject an existing `reqwest::Client` (custom timeouts, middleware,
-    /// shared pool, …). Defaults to a fresh one.
+    /// shared pool, …). Defaults to one with a 30 s request and 10 s connect
+    /// timeout. Its timeout does not apply to endpoints that block until
+    /// settlement: those use the operation's own deadline.
     pub fn http(mut self, http: reqwest::Client) -> Self {
         self.http = Some(http);
         self
@@ -833,7 +848,7 @@ impl ClientBuilder {
             )?),
             (None, None) => Arc::new(InMemorySwapStorage::new()),
         };
-        let http = self.http.unwrap_or_default();
+        let http = self.http.unwrap_or_else(default_http);
         Ok(Client {
             http,
             base_url,

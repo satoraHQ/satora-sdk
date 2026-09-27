@@ -678,7 +678,7 @@ pub async fn publish_with_config(
         .as_ref()
         .map(|pm| PaymasterClient::new(pm.url.clone(), config.aa.bundler_casing))
         .transpose()?;
-    let node = RootProvider::new_http(config.aa.node_rpc_url.clone());
+    let node = crate::evm::http_provider(config.aa.node_rpc_url.clone());
     publish_batch_observed(
         PublishInputs {
             secret_key,

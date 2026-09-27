@@ -155,10 +155,13 @@ impl ContractManager {
         let Some(entry) = entry else {
             return Ok(());
         };
-        let result = tokio::time::timeout(self.0.options.read_timeout, async {
-            let _guard = entry.read.lock().await;
-            self.0.reader.observe(&entry.reference).await
-        })
+        // Held through the store below, so results are written in the order their
+        // reads started. Time spent queued here is not charged to read_timeout.
+        let _guard = entry.read.lock().await;
+        let result = tokio::time::timeout(
+            self.0.options.read_timeout,
+            self.0.reader.observe(&entry.reference),
+        )
         .await
         .map_err(|_| Error::Timeout("contract observation".into()))
         .and_then(|result| result);

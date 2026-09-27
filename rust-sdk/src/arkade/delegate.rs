@@ -132,7 +132,15 @@ impl Client {
             let proof=restore(&state.intent_proof,preimage)?.to_string();
             let forfeits=state.forfeit_psbts.iter().map(|p|restore(p,preimage).map(|p|p.to_string())).collect::<Result<Vec<_>>>()?;
             let body=serde_json::json!({"intent_proof":proof,"intent_message":state.intent_message,"forfeit_psbts":forfeits,"cosigner_pk":state.cosigner_pk,"swap_id":preimage.map(|_|id),"preimage":preimage.map(hex::encode)});
-            let response=self.api_request(reqwest::Method::POST,self.base_url.join("/api/delegate/settle")?).json(&body).send().await?;
+            let settle=self.base_url.join("/api/delegate/settle")?;
+            // The server holds this open for a whole batch, so the operation deadline
+            // bounds it rather than the client-wide timeout.
+            let response=match self.api_request(reqwest::Method::POST,settle.clone()).timeout(options.timeout).json(&body).send().await {
+                Ok(response)=>response,
+                Err(error)=>{
+                    return Err(error.into());
+                }
+            };
             #[derive(Deserialize)]struct Response {commitment_txid:String}
             let response:Response=crate::client::check_status(response).await?.json().await?;
             let txid=response.commitment_txid.parse().map_err(decode)?;

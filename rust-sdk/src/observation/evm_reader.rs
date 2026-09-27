@@ -35,7 +35,7 @@ impl EvmRpcReader {
         if max_blocks_per_query == 0 || max_blocks_per_query > 10000 {
             return Err(invalid("invalid EVM log range bound"));
         }
-        let provider = RootProvider::new_http(url);
+        let provider = crate::evm::http_provider(url);
         if provider.get_chain_id().await.map_err(transport)? != chain_id {
             return Err(invalid("EVM observation RPC chain mismatch"));
         }

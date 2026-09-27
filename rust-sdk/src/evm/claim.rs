@@ -126,12 +126,16 @@ impl Client {
             .get_stored_swap(id)?
             .ok_or_else(|| invalid("swap record missing"))?;
         if verify_live
-            && (stored.metadata.evm_claim_started == Some(true)
-                || stored.metadata.evm_claim_txid.is_some()
+            && (stored.metadata.evm_claim_txid.is_some()
                 || stored.metadata.evm_claim_userop_hash.is_some())
         {
             return Err(invalid(
                 "claim already submitted; inspect the persisted transaction or operation",
+            ));
+        }
+        if verify_live && stored.metadata.evm_claim_started == Some(true) {
+            return Err(invalid(
+                "claim may already be submitted; attach its transaction, or release evm_claim_started once nothing was sent or the server shows the swap funded again",
             ));
         }
         let context = EvmContext::from_response(&stored.response)?;
@@ -356,7 +360,8 @@ impl Client {
 
     /// Authorize a server-submitted claim after verifying funding and the signing
     /// domain on chain. The destination, sweep token, minimum output, and exact
-    /// server call hash are bound into the EIP-712 signature.
+    /// server call hash are bound into the EIP-712 signature. An empty `tx_hash`
+    /// means the server accepted the claim without a transaction to name yet.
     pub async fn claim_evm_gasless(
         &self,
         id: &str,
@@ -389,14 +394,19 @@ impl Client {
             verify_signature(&signature,typed.digest,wallet.address())?;
             let stored = self.get_stored_swap(id)?.ok_or_else(|| invalid("swap record missing"))?;
             self.update_swap_metadata(id,SwapMetadata {evm_claim_started:Some(true),..Default::default()})?;
-            let response = self.api_request(Method::POST,self.swap_action_url(id,"claim-gasless")?).json(&json!({
+            // The daemon can hold this until its relay goes out, so the operation deadline
+            // bounds this request instead of the client-wide timeout.
+            let response = self.api_request(Method::POST,self.swap_action_url(id,"claim-gasless")?).timeout(options.timeout).json(&json!({
                 "secret":material.preimage,"destination":options.destination,"v":u8::from(signature.v())+27,"r":format!("0x{:064x}",signature.r()),"s":format!("0x{:064x}",signature.s()),
                 "dex_calldata":dex_calldata,"bridge_recipient":stored.metadata.bridge_recipient,"bridge_recipient_wallet":stored.metadata.bridge_recipient_wallet
             })).send().await?;
             let submitted: EvmSubmission = crate::client::check_status(response).await?.json().await?;
             if submitted.id != id { return Err(Error::Decode("claim response ID mismatch".into())); }
-            let _: B256 = parse(&submitted.tx_hash)?;
-            self.update_swap_metadata(id,SwapMetadata { evm_claim_txid:Some(submitted.tx_hash.clone()),target_address:Some(options.destination.to_string()),..Default::default() })?;
+            // An empty hash means the server accepted the claim but has no transaction to
+            // name yet, so the claim flag stays set. The caller releases it only if the
+            // server abandons the relay and the swap reads server-funded again.
+            let hash = if submitted.tx_hash.is_empty() { None } else { Some(parse::<B256>(&submitted.tx_hash)?.to_string()) };
+            self.update_swap_metadata(id,SwapMetadata { evm_claim_txid:hash,target_address:Some(options.destination.to_string()),..Default::default() })?;
             Ok(submitted)
         }).await.map_err(|_| Error::Timeout("gasless EVM claim timed out".into()))?
     }
