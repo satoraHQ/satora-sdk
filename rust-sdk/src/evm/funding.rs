@@ -234,6 +234,11 @@ impl Client {
         }
         let context = EvmContext::from_response(&stored.response)?;
         context.validate_wallet(wallet)?;
+        if context.kind == crate::types::EvmHtlcKind::Native {
+            return Err(invalid(
+                "funding a native lock is not supported by this SDK yet",
+            ));
+        }
         let funding = self.get_permit2_funding_data(id).await?;
         funding.validate(&context, &options)?;
         let amount = decimal(&funding.source_amount)?;
@@ -449,6 +454,7 @@ mod tests {
             timelock: 1_900_000_000,
             source_token: Address::repeat_byte(5),
             is_source: true,
+            kind: crate::types::EvmHtlcKind::Erc20,
         };
         let coordinator = Address::repeat_byte(6);
         let token = Address::repeat_byte(7);

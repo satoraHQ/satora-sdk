@@ -7,8 +7,20 @@ use super::htlc::Htlc;
 use super::*;
 use crate::Client;
 use crate::SwapMetadata;
+use crate::types::EvmHtlcKind;
 use alloy::sol_types::SolCall;
 use std::time::Duration;
+
+alloy::sol! {
+    // HTLCNative drops the asset word from its write ABIs only; its key, event and
+    // `isActive` keep it as the zero address.
+    interface NativeHtlc {
+        function refund(bytes32 preimageHash, uint256 amount, address claimAddress, uint256 timelock) external;
+    }
+    interface NativeCoordinator {
+        function refundTo(bytes32 preimageHash, uint256 amount, address claimAddress, uint256 timelock) external;
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct RefundOptions {
@@ -52,6 +64,9 @@ impl Client {
         context.validate_wallet(wallet)?;
         if !context.is_source || context.htlc != options.htlc {
             return Err(invalid("refund requires the configured EVM-source HTLC"));
+        }
+        if (context.kind == EvmHtlcKind::Native) != options.lock_token.is_zero() {
+            return Err(invalid("lock token does not match the swap's HTLC kind"));
         }
         let value =
             serde_json::to_value(&stored.response).map_err(|e| Error::Decode(e.to_string()))?;
@@ -139,8 +154,8 @@ impl Client {
             if wallet.block_timestamp().await? < htlc.timelock {
                 return Err(invalid("refund timelock has not expired on chain"));
             }
-            let (to, data) = if let Some(coordinator) = options.coordinator {
-                (
+            let (to, data) = match (options.coordinator, htlc.token.is_zero()) {
+                (Some(coordinator), false) => (
                     coordinator,
                     Coordinator::refundToCall {
                         preimageHash: htlc.hash_lock,
@@ -150,9 +165,18 @@ impl Client {
                         timelock: U256::from(htlc.timelock),
                     }
                     .abi_encode(),
-                )
-            } else {
-                (
+                ),
+                (Some(coordinator), true) => (
+                    coordinator,
+                    NativeCoordinator::refundToCall {
+                        preimageHash: htlc.hash_lock,
+                        amount: htlc.amount,
+                        claimAddress: htlc.claimer,
+                        timelock: U256::from(htlc.timelock),
+                    }
+                    .abi_encode(),
+                ),
+                (None, false) => (
                     htlc.address,
                     Htlc::refundCall {
                         preimageHash: htlc.hash_lock,
@@ -162,7 +186,17 @@ impl Client {
                         timelock: U256::from(htlc.timelock),
                     }
                     .abi_encode(),
-                )
+                ),
+                (None, true) => (
+                    htlc.address,
+                    NativeHtlc::refundCall {
+                        preimageHash: htlc.hash_lock,
+                        amount: htlc.amount,
+                        claimAddress: htlc.claimer,
+                        timelock: U256::from(htlc.timelock),
+                    }
+                    .abi_encode(),
+                ),
             };
             let tx = transaction(wallet, to, data);
             wallet.call(&tx).await?;

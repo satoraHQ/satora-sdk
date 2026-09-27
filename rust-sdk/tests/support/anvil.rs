@@ -133,28 +133,7 @@ impl Fixture {
         .await?;
         let wallet = RpcWallet::connect(&key, CHAIN, url.clone()).await?;
         let deploy = |path: &'static str, arguments: Vec<u8>| {
-            let http = &http;
-            let url = &url;
-            async move {
-                let mut bytes = artifact(path)?;
-                bytes.extend(arguments);
-                let receipt = send(
-                    http,
-                    url,
-                    json!({
-                        "from": deployer,
-                        "data": format!("0x{}", hex::encode(bytes)),
-                        "gas": "0x989680"
-                    }),
-                )
-                .await?;
-                Ok::<Address, Box<dyn std::error::Error + Send + Sync>>(
-                    receipt["contractAddress"]
-                        .as_str()
-                        .ok_or("missing contract address")?
-                        .parse()?,
-                )
-            }
+            deploy_contract(&http, &url, deployer, path, arguments)
         };
         let htlc = deploy("HTLCErc20.sol/HTLCErc20.json", (deployer,).abi_encode()).await?;
         let token = deploy("HTLCCoordinatorSwapAndLock.t.sol/MockWBTC.json", vec![]).await?;
@@ -234,11 +213,23 @@ impl Fixture {
     pub async fn rpc(&self, method: &str, params: Value) -> TestResult<Value> {
         rpc(&self.http, &self.url, method, params).await
     }
+    pub async fn deploy(&self, path: &str, arguments: Vec<u8>) -> TestResult<Address> {
+        deploy_contract(&self.http, &self.url, self.deployer, path, arguments).await
+    }
     pub async fn transact(
         &self,
         from: Address,
         to: Address,
         call: impl SolCall,
+    ) -> TestResult<B256> {
+        self.transact_value(from, to, call, U256::ZERO).await
+    }
+    pub async fn transact_value(
+        &self,
+        from: Address,
+        to: Address,
+        call: impl SolCall,
+        value: U256,
     ) -> TestResult<B256> {
         let receipt = send(
             &self.http,
@@ -246,6 +237,7 @@ impl Fixture {
             json!({
                 "from": from,
                 "to": to,
+                "value": format!("{value:#x}"),
                 "data": format!("0x{}", hex::encode(call.abi_encode())),
                 "gas": "0x989680"
             }),
@@ -344,6 +336,30 @@ impl Fixture {
         )
         .await
     }
+}
+async fn deploy_contract(
+    http: &reqwest::Client,
+    url: &url::Url,
+    deployer: Address,
+    path: &str,
+    arguments: Vec<u8>,
+) -> TestResult<Address> {
+    let mut bytes = artifact(path)?;
+    bytes.extend(arguments);
+    let receipt = send(
+        http,
+        url,
+        json!({
+            "from": deployer,
+            "data": format!("0x{}", hex::encode(bytes)),
+            "gas": "0x989680"
+        }),
+    )
+    .await?;
+    Ok(receipt["contractAddress"]
+        .as_str()
+        .ok_or("missing contract address")?
+        .parse()?)
 }
 async fn rpc(
     http: &reqwest::Client,

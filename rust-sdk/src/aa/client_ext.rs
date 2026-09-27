@@ -236,6 +236,11 @@ impl Client {
                 "gasless funding requires an EVM input".into(),
             ));
         }
+        if context.kind == crate::types::EvmHtlcKind::Native {
+            return Err(Error::InvalidSwap(
+                "funding a native lock is not supported by this SDK yet".into(),
+            ));
+        }
         let chain = crate::types::KnownChain::from_wire_str(&context.chain_id.to_string());
         let remote = self
             .fetch_aa_config(crate::types::Chain::from_wire_str(

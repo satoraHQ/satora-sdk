@@ -11,6 +11,7 @@ use crate::Signer;
 use crate::StoredSwap;
 use crate::SwapMetadata;
 use crate::SwapStorage;
+use crate::types::EvmHtlcKind;
 use alloy::sol_types::SolCall;
 use alloy::sol_types::SolEvent;
 use serde_json::json;
@@ -38,6 +39,7 @@ struct Wallet {
     funding_hash: B256,
     extra_logs: Vec<EvmLog>,
     token_balance: AtomicU64,
+    domains: Mutex<Vec<Value>>,
 }
 fn event_log(event: impl SolEvent, address: Address) -> EvmLog {
     let data = event.encode_log_data();
@@ -57,6 +59,10 @@ impl EvmWallet for Wallet {
     fn sign_typed_data<'a>(&'a self, data: &'a EvmTypedData) -> WalletFuture<'a, Signature> {
         Box::pin(async move {
             self.signatures.fetch_add(1, Ordering::Relaxed);
+            self.domains
+                .lock()
+                .unwrap()
+                .push(data.payload["domain"]["name"].clone());
             crate::aa::signing::sign_hash(&self.secret, data.digest)
         })
     }
@@ -164,6 +170,13 @@ impl EvmWallet for Wallet {
 }
 
 fn setup(claim: bool) -> (Client, Wallet, Arc<InMemorySwapStorage>) {
+    setup_kind(claim, EvmHtlcKind::Erc20)
+}
+fn setup_kind(claim: bool, kind: EvmHtlcKind) -> (Client, Wallet, Arc<InMemorySwapStorage>) {
+    let (token, version) = match kind {
+        EvmHtlcKind::Erc20 => (Address::repeat_byte(6), 6),
+        EvmHtlcKind::Native => (Address::ZERO, 1),
+    };
     let signer = Signer::from_mnemonic(MNEMONIC).unwrap();
     let key = signer.derive_evm_key(0).unwrap();
     let params = signer.derive_swap_params(0).unwrap();
@@ -175,7 +188,7 @@ fn setup(claim: bool) -> (Client, Wallet, Arc<InMemorySwapStorage>) {
         address: Address::repeat_byte(5),
         hash_lock: params.hash_lock.into(),
         amount: U256::from(100_000),
-        token: Address::repeat_byte(6),
+        token,
         sender: if claim { server } else { coordinator },
         claimer: if claim { owner } else { server },
         timelock: 2_000_000_000,
@@ -194,7 +207,8 @@ fn setup(claim: bool) -> (Client, Wallet, Arc<InMemorySwapStorage>) {
     r["server_evm_address"] = json!(server);
     r["hash_lock"] = json!(htlc.hash_lock);
     r["evm_refund_locktime"] = json!(htlc.timelock);
-    r["evm_htlc_version"] = json!(6);
+    r["evm_htlc_version"] = json!(version);
+    r["evm_htlc_kind"] = json!(kind);
     r["evm_coordinator_address"] = json!(coordinator);
     r["wbtc_address"] = json!(htlc.token);
     r["evm_expected_sats"] = json!(htlc.amount.to_string());
@@ -228,7 +242,7 @@ fn setup(claim: bool) -> (Client, Wallet, Arc<InMemorySwapStorage>) {
         secret: key.secret_key,
         preimage: params.preimage.into(),
         now: AtomicU64::new(1_999_999_000),
-        version: AtomicU64::new(6),
+        version: AtomicU64::new(version),
         sent: Mutex::new(vec![]),
         signatures: AtomicU64::new(0),
         fail_send: AtomicBool::new(false),
@@ -236,6 +250,7 @@ fn setup(claim: bool) -> (Client, Wallet, Arc<InMemorySwapStorage>) {
         funding_hash,
         extra_logs: Vec::new(),
         token_balance: AtomicU64::new(100_000),
+        domains: Mutex::new(vec![]),
     };
     (client, wallet, store)
 }
@@ -776,6 +791,13 @@ async fn outbound_cctp_claim_reconstructs_actual_burn_and_resumes_after_expiry()
     assert_eq!(wallet.sent.lock().unwrap().len(), 1);
 }
 
+fn outbound_dex_call() -> crate::types::DexCall {
+    crate::types::DexCall {
+        target: Address::repeat_byte(18).to_string(),
+        data: "0x1234".into(),
+        value: "0".into(),
+    }
+}
 #[tokio::test]
 async fn refund_lost_response_is_reserved_and_resumes_after_deposit_is_removed() {
     let (client, wallet, store) = setup(false);
@@ -857,4 +879,388 @@ async fn deposit_recovery_does_not_resubmit_after_a_lost_response() {
         .await
         .unwrap();
     assert_eq!(wallet.sent.lock().unwrap().len(), 1);
+}
+
+fn selector(signature: &str) -> [u8; 4] {
+    let hash = alloy::primitives::keccak256(signature);
+    [hash[0], hash[1], hash[2], hash[3]]
+}
+fn rewrite_response(store: &InMemorySwapStorage, edit: impl FnOnce(&mut Value)) {
+    let mut stored = store.get_swap("test").unwrap().unwrap();
+    let mut response = serde_json::to_value(&stored.response).unwrap();
+    edit(&mut response);
+    stored.response = serde_json::from_value(response).unwrap();
+    store.store_swap(stored).unwrap();
+}
+
+#[test]
+fn every_evm_leg_response_keeps_the_htlc_kind_and_defaults_to_erc20() {
+    let fixture: Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/swap-responses.json")).unwrap();
+    for direction in [
+        "lightning_to_evm",
+        "bitcoin_to_evm",
+        "arkade_to_evm",
+        "evm_to_arkade",
+        "evm_to_bitcoin",
+        "evm_to_lightning",
+    ] {
+        let mut value = fixture[direction].clone();
+        assert!(value.get("evm_htlc_kind").is_none(), "{direction}");
+        let parsed: crate::types::GetSwapResponse = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&parsed).unwrap()["evm_htlc_kind"],
+            "erc20",
+            "{direction}"
+        );
+        value["evm_htlc_kind"] = json!("native");
+        let parsed: crate::types::GetSwapResponse = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            serde_json::to_value(&parsed).unwrap()["evm_htlc_kind"],
+            "native",
+            "{direction}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn native_refunds_send_the_four_argument_native_calls() {
+    for coordinator in [true, false] {
+        let (client, mut wallet, _) = setup_kind(false, EvmHtlcKind::Native);
+        if !coordinator {
+            wallet.htlc.sender = wallet.owner;
+        }
+        wallet.now.store(wallet.htlc.timelock, Ordering::Relaxed);
+        let options = RefundOptions {
+            htlc: wallet.htlc.address,
+            lock_token: Address::repeat_byte(6),
+            coordinator: coordinator.then_some(wallet.coordinator),
+            timeout: Duration::from_secs(10),
+        };
+        assert!(
+            client
+                .refund_evm_with_wallet("test", &wallet, options.clone())
+                .await
+                .is_err()
+        );
+        assert!(wallet.sent.lock().unwrap().is_empty());
+        client
+            .refund_evm_with_wallet(
+                "test",
+                &wallet,
+                RefundOptions {
+                    lock_token: Address::ZERO,
+                    ..options
+                },
+            )
+            .await
+            .unwrap();
+        let sent = wallet.sent.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        let (to, signature) = if coordinator {
+            (
+                wallet.coordinator,
+                "refundTo(bytes32,uint256,address,uint256)",
+            )
+        } else {
+            (
+                wallet.htlc.address,
+                "refund(bytes32,uint256,address,uint256)",
+            )
+        };
+        assert_eq!(sent[0].to, to);
+        assert_eq!(sent[0].data[..4], selector(signature));
+        assert_eq!(sent[0].data.len(), 4 + 4 * 32);
+    }
+}
+
+#[tokio::test]
+async fn native_arkade_to_evm_claim_signs_the_native_domain_and_calls_the_native_coordinator() {
+    let (client, wallet, _) = setup_kind(true, EvmHtlcKind::Native);
+    client
+        .claim_evm_with_wallet("test", &wallet, claim_options(&wallet), vec![])
+        .await
+        .unwrap();
+    assert_eq!(*wallet.domains.lock().unwrap(), vec![json!("HTLCNative")]);
+    let sent = wallet.sent.lock().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].to, wallet.coordinator);
+    assert_eq!(
+        sent[0].data[..4],
+        selector(
+            "redeemAndExecute(bytes32,uint256,address,uint256,(address,uint256,bytes)[],address,uint256,address,uint8,bytes32,bytes32)"
+        )
+    );
+}
+
+#[tokio::test]
+async fn gasless_claim_refuses_a_kind_that_disagrees_with_the_lock_asset_before_signing() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::path;
+    for native in [false, true] {
+        let (_, wallet, store) = setup(true);
+        rewrite_response(&store, |response| {
+            if native {
+                response["evm_htlc_kind"] = json!("native");
+            } else {
+                response.as_object_mut().unwrap().remove("evm_htlc_kind");
+                response["wbtc_address"] = json!(Address::ZERO);
+            }
+        });
+        let server = MockServer::start().await;
+        Mock::given(path("/swap/test/redeem-and-swap-calldata"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+        Mock::given(path("/swap/test/claim-gasless"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let client = Client::builder()
+            .base_url(server.uri())
+            .mnemonic(MNEMONIC)
+            .storage(store.clone())
+            .build()
+            .unwrap();
+        let result = client
+            .claim_evm_gasless("test", &wallet, claim_options(&wallet))
+            .await;
+        assert!(matches!(result, Err(Error::InvalidSwap(_))), "{result:?}");
+        assert_eq!(wallet.signatures.load(Ordering::Relaxed), 0);
+        assert!(server.received_requests().await.unwrap().is_empty());
+        assert_eq!(
+            store
+                .get_swap("test")
+                .unwrap()
+                .unwrap()
+                .metadata
+                .evm_claim_started,
+            None
+        );
+    }
+}
+
+#[tokio::test]
+async fn native_funding_is_refused_before_any_request_or_signature() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::path;
+    let (_, wallet, fixture) = setup_kind(false, EvmHtlcKind::Native);
+    let response = fixture.get_swap("test").unwrap().unwrap().response;
+    let store = Arc::new(InMemorySwapStorage::new());
+    store
+        .store_swap(StoredSwap::new(0, response, SwapMetadata::default()).unwrap())
+        .unwrap();
+    let server = MockServer::start().await;
+    Mock::given(path("/swap/test/swap-and-lock-calldata-permit2"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(store)
+        .build()
+        .unwrap();
+    let result = client
+        .fund_swap_with_wallet(
+            "test",
+            &wallet,
+            FundingOptions {
+                coordinator: wallet.coordinator,
+                htlc: wallet.htlc.address,
+                lock_token: Address::ZERO,
+                max_source_amount: wallet.htlc.amount,
+                allowed_call_targets: vec![],
+                timeout: Duration::from_secs(10),
+            },
+        )
+        .await;
+    assert!(matches!(result, Err(Error::InvalidSwap(_))), "{result:?}");
+    assert!(server.received_requests().await.unwrap().is_empty());
+    assert!(wallet.sent.lock().unwrap().is_empty());
+    assert_eq!(wallet.signatures.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn native_gasless_funding_is_refused_before_the_aa_config_or_payload() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+    let (_, _, fixture) = setup_kind(false, EvmHtlcKind::Native);
+    let response = fixture.get_swap("test").unwrap().unwrap().response;
+    let store = Arc::new(InMemorySwapStorage::new());
+    store
+        .store_swap(StoredSwap::new(0, response.clone(), SwapMetadata::default()).unwrap())
+        .unwrap();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/swap/test"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+        .mount(&server)
+        .await;
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .build()
+        .unwrap();
+    let result = client
+        .fund_swap_gasless(
+            "test",
+            crate::aa::GaslessOpts::new(server.uri().parse().unwrap()),
+        )
+        .await;
+    assert!(matches!(result, Err(Error::InvalidSwap(_))), "{result:?}");
+    let paths: Vec<String> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|request| request.url.path().to_owned())
+        .collect();
+    assert_eq!(paths, ["/swap/test"]);
+    assert_eq!(
+        store
+            .get_swap("test")
+            .unwrap()
+            .unwrap()
+            .metadata
+            .evm_fund_started,
+        None
+    );
+}
+
+#[tokio::test]
+async fn native_refund_is_not_continued_through_permit2() {
+    let (client, wallet, store) = setup_kind(false, EvmHtlcKind::Native);
+    client
+        .update_swap_metadata(
+            "test",
+            SwapMetadata {
+                evm_refund_txid: Some(B256::repeat_byte(99).to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let mut stored = store.get_swap("test").unwrap().unwrap();
+    if let crate::types::GetSwapResponse::EvmToArkade(ref mut response) = stored.response {
+        response.status = crate::types::SwapStatus::ClientRefunded;
+    }
+    store.store_swap(stored).unwrap();
+    let result = client
+        .get_refunded_evm_swap_continuation(
+            "test",
+            &wallet,
+            &RefundOptions {
+                htlc: wallet.htlc.address,
+                lock_token: Address::ZERO,
+                coordinator: Some(wallet.coordinator),
+                timeout: Duration::from_secs(10),
+            },
+        )
+        .await;
+    assert!(
+        matches!(&result, Err(Error::InvalidSwap(message)) if message.contains("native")),
+        "{result:?}"
+    );
+}
+
+#[tokio::test]
+async fn native_claims_are_refused_before_the_bridge_route_is_pinned() {
+    use crate::bridge::BridgeSubmission;
+    use crate::bridge::OutboundBridge;
+    use crate::bridge::OutboundClaim;
+    use crate::bridge::cctp;
+    let (client, mut wallet, store) = setup_kind(true, EvmHtlcKind::Native);
+    wallet.htlc.chain_id = 42161;
+    rewrite_response(&store, |response| response["evm_chain_id"] = json!(42161));
+    let mut burn = crate::bridge::tests::burn();
+    burn.source_chain_id = 42161;
+    burn.source_domain = 3;
+    burn.destination_domain = 6;
+    burn.burn_token = cctp::CctpChain::for_chain(42161).unwrap().usdc;
+    burn.sender = cctp::ARBITRUM_ADAPTER;
+    let mut options = claim_options(&wallet);
+    options.sweep_token = burn.burn_token;
+    options.min_amount_out = U256::ZERO;
+    let request = OutboundClaim {
+        dex_calls: vec![outbound_dex_call()],
+        bridge: OutboundBridge::Cctp {
+            burn,
+            minimum_amount: U256::from(8_900_000),
+        },
+    };
+    let result = client
+        .claim_evm_to_bridge("test", &wallet, options, request, BridgeSubmission::Wallet)
+        .await;
+    assert!(matches!(result, Err(Error::InvalidSwap(_))), "{result:?}");
+    assert_eq!(wallet.signatures.load(Ordering::Relaxed), 0);
+    assert!(wallet.sent.lock().unwrap().is_empty());
+    assert!(
+        store
+            .get_swap("test")
+            .unwrap()
+            .unwrap()
+            .metadata
+            .bridge_operations
+            .is_none_or(|operations| !operations.contains_key("outbound_claim"))
+    );
+}
+
+#[test]
+fn native_source_references_track_the_zero_asset_word() {
+    use crate::observation::ContractRef;
+    use crate::observation::ReferenceOptions;
+    let (_, wallet, _) = setup_kind(false, EvmHtlcKind::Native);
+    let fixture: Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/swap-responses.json")).unwrap();
+    let mut r = fixture["evm_to_lightning"].clone();
+    r["id"] = json!("test");
+    r["evm_chain_id"] = json!(137);
+    r["evm_htlc_address"] = json!(wallet.htlc.address);
+    r["client_evm_address"] = json!(wallet.owner);
+    r["server_evm_address"] = json!(wallet.htlc.claimer);
+    r["hash_lock"] = json!(wallet.htlc.hash_lock);
+    r["evm_refund_locktime"] = json!(wallet.htlc.timelock);
+    r["evm_coordinator_address"] = json!(wallet.coordinator);
+    r["evm_expected_sats"] = json!(wallet.htlc.amount.to_string());
+    r["wbtc_address"] = json!(Address::ZERO);
+    r["source_token"]["token_id"] = json!(Address::ZERO);
+    for kind in [EvmHtlcKind::Native, EvmHtlcKind::Erc20] {
+        r["evm_htlc_kind"] = json!(kind);
+        let store = Arc::new(InMemorySwapStorage::new());
+        store
+            .store_swap(
+                StoredSwap::new(
+                    0,
+                    serde_json::from_value(r.clone()).unwrap(),
+                    SwapMetadata::default(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let client = Client::builder()
+            .mnemonic(MNEMONIC)
+            .storage(store)
+            .build()
+            .unwrap();
+        let references = client.contract_references("test", &ReferenceOptions::default());
+        if kind == EvmHtlcKind::Erc20 {
+            assert!(references.is_err());
+            continue;
+        }
+        let Some(ContractRef::Evm { htlc, .. }) = references.unwrap().client else {
+            panic!("expected an EVM source reference")
+        };
+        assert_eq!(htlc, wallet.htlc);
+    }
 }

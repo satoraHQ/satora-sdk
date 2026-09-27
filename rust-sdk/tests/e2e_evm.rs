@@ -8,9 +8,14 @@ mod anvil;
 use alloy::primitives::keccak256;
 use alloy::sol_types::SolValue;
 use anvil::*;
+use lendaswap_sdk::StoredSwap;
+use lendaswap_sdk::SwapMetadata;
+use lendaswap_sdk::SwapStorage;
 use lendaswap_sdk::aa::abi::Call;
 use lendaswap_sdk::actions::ActionKind;
 use lendaswap_sdk::actions::Outcome;
+use lendaswap_sdk::evm::Address;
+use lendaswap_sdk::evm::EvmClaimOptions;
 use lendaswap_sdk::evm::FundingOptions;
 use lendaswap_sdk::evm::RefundOptions;
 use lendaswap_sdk::evm::U256;
@@ -53,6 +58,27 @@ fn reference(f: &Fixture, source: bool) -> ContractRef {
 }
 async fn reader(f: &Fixture) -> TestResult<EvmRpcReader> {
     Ok(EvmRpcReader::connect(f.url.clone(), CHAIN, 1000).await?)
+}
+alloy::sol! {
+    interface NativeLock {
+        function create(bytes32 preimageHash, address claimAddress, uint256 timelock) external payable;
+    }
+    struct NativeCall { address target; uint256 value; bytes callData; }
+    interface NativeFunding {
+        function executeAndCreate(NativeCall[] calls, bytes32 preimageHash, uint256 amount, address claimAddress, uint256 timelock) external payable;
+    }
+}
+fn quantity(value: &serde_json::Value) -> TestResult<U256> {
+    Ok(U256::from_str_radix(
+        value
+            .as_str()
+            .ok_or("expected a hex quantity")?
+            .trim_start_matches("0x"),
+        16,
+    )?)
+}
+async fn coin_balance(f: &Fixture, address: Address) -> TestResult<U256> {
+    quantity(&f.rpc("eth_getBalance", json!([address, "latest"])).await?)
 }
 
 #[tokio::test]
@@ -306,5 +332,223 @@ async fn restored_tracker_automatically_claims_once_using_real_chain_observation
         nonce
     );
     assert_eq!(f.balance(f.owner).await?, U256::from(AMOUNT));
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires Anvil and freshly compiled repository contracts; run scripts/e2e/test-rust-sdk-local.sh"]
+async fn native_htlc_claim_verifies_on_chain_and_pays_the_coin() -> TestResult {
+    let f = Fixture::new().await?;
+    let htlc = f
+        .deploy("HTLCNative.sol/HTLCNative.json", (f.deployer,).abi_encode())
+        .await?;
+    let coordinator = f
+        .deploy(
+            "HTLCNativeCoordinator.sol/HTLCNativeCoordinator.json",
+            (htlc,).abi_encode(),
+        )
+        .await?;
+    f.transact_value(
+        f.deployer,
+        htlc,
+        NativeLock::createCall {
+            preimageHash: f.hash,
+            claimAddress: f.owner,
+            timelock: U256::from(f.timelock),
+        },
+        U256::from(AMOUNT),
+    )
+    .await?;
+    let fixtures: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/swap-responses.json"))?;
+    let mut value = fixtures["lightning_to_evm"].clone();
+    for (key, val) in [
+        ("id", json!(ID)),
+        ("evm_chain_id", json!(CHAIN)),
+        ("client_evm_address", json!(f.owner)),
+        ("server_evm_address", json!(f.deployer)),
+        ("evm_htlc_address", json!(htlc)),
+        ("evm_coordinator_address", json!(coordinator)),
+        ("hash_lock", json!(f.hash)),
+        ("evm_refund_locktime", json!(f.timelock)),
+        ("evm_htlc_version", json!(1)),
+        ("evm_htlc_kind", json!("native")),
+        ("wbtc_address", json!(Address::ZERO)),
+        ("evm_expected_sats", json!(AMOUNT.to_string())),
+    ] {
+        value[key] = val;
+    }
+    f.store.store_swap(StoredSwap::new(
+        0,
+        serde_json::from_value(value)?,
+        SwapMetadata::default(),
+    )?)?;
+    let lock = ContractRef::Evm {
+        htlc: lendaswap_sdk::evm::htlc::EvmHtlc {
+            chain_id: CHAIN,
+            address: htlc,
+            hash_lock: f.hash,
+            amount: U256::from(AMOUNT),
+            token: Address::ZERO,
+            sender: f.deployer,
+            claimer: f.owner,
+            timelock: f.timelock,
+        },
+        from_block: 0,
+        confirmations: 1,
+    };
+    assert_eq!(
+        reader(&f).await?.observe(&lock).await?.state,
+        HtlcState::Confirmed
+    );
+    let before = coin_balance(&f, f.owner).await?;
+    let receipt = f
+        .client
+        .claim_evm_with_wallet(
+            ID,
+            &f.wallet,
+            EvmClaimOptions {
+                htlc,
+                coordinator,
+                destination: f.owner,
+                sweep_token: Address::ZERO,
+                min_amount_out: U256::from(AMOUNT),
+                minimum_remaining_seconds: 300,
+                timeout: Duration::from_secs(20),
+            },
+            vec![],
+        )
+        .await?;
+    let mined = f
+        .rpc(
+            "eth_getTransactionReceipt",
+            json!([receipt.transaction_hash]),
+        )
+        .await?;
+    let fee = quantity(&mined["gasUsed"])? * quantity(&mined["effectiveGasPrice"])?;
+    assert_eq!(
+        coin_balance(&f, f.owner).await? + fee - before,
+        U256::from(AMOUNT)
+    );
+    assert_eq!(coin_balance(&f, coordinator).await?, U256::ZERO);
+    assert_eq!(
+        reader(&f).await?.observe(&lock).await?.state,
+        HtlcState::SpentClaim
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires Anvil and freshly compiled repository contracts; run scripts/e2e/test-rust-sdk-local.sh"]
+async fn native_htlc_refund_through_the_coordinator_returns_the_coin() -> TestResult {
+    let f = Fixture::new().await?;
+    let htlc = f
+        .deploy("HTLCNative.sol/HTLCNative.json", (f.deployer,).abi_encode())
+        .await?;
+    let coordinator = f
+        .deploy(
+            "HTLCNativeCoordinator.sol/HTLCNativeCoordinator.json",
+            (htlc,).abi_encode(),
+        )
+        .await?;
+    f.rpc("anvil_impersonateAccount", json!([f.owner])).await?;
+    let funding = f
+        .transact_value(
+            f.owner,
+            coordinator,
+            NativeFunding::executeAndCreateCall {
+                calls: vec![],
+                preimageHash: f.hash,
+                amount: U256::from(AMOUNT),
+                claimAddress: f.deployer,
+                timelock: U256::from(f.timelock),
+            },
+            U256::from(AMOUNT),
+        )
+        .await?;
+    f.rpc("anvil_stopImpersonatingAccount", json!([f.owner]))
+        .await?;
+    let fixtures: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/swap-responses.json"))?;
+    let mut value = fixtures["evm_to_arkade"].clone();
+    for (key, val) in [
+        ("id", json!(ID)),
+        ("evm_chain_id", json!(CHAIN)),
+        ("client_evm_address", json!(f.owner)),
+        ("server_evm_address", json!(f.deployer)),
+        ("evm_htlc_address", json!(htlc)),
+        ("hash_lock", json!(f.hash)),
+        ("evm_refund_locktime", json!(f.timelock)),
+        ("evm_htlc_version", json!(1)),
+        ("evm_htlc_kind", json!("native")),
+        ("evm_expected_sats", json!(AMOUNT.to_string())),
+    ] {
+        value[key] = val;
+    }
+    value["source_token"]["token_id"] = json!(Address::ZERO);
+    f.store.store_swap(StoredSwap::new(
+        0,
+        serde_json::from_value(value)?,
+        SwapMetadata {
+            evm_fund_txid: Some(funding.to_string()),
+            evm_coordinator_address: Some(coordinator.to_string()),
+            ..Default::default()
+        },
+    )?)?;
+    let lock = ContractRef::Evm {
+        htlc: lendaswap_sdk::evm::htlc::EvmHtlc {
+            chain_id: CHAIN,
+            address: htlc,
+            hash_lock: f.hash,
+            amount: U256::from(AMOUNT),
+            token: Address::ZERO,
+            sender: coordinator,
+            claimer: f.deployer,
+            timelock: f.timelock,
+        },
+        from_block: 0,
+        confirmations: 1,
+    };
+    assert_eq!(
+        reader(&f).await?.observe(&lock).await?.state,
+        HtlcState::Confirmed
+    );
+    let options = RefundOptions {
+        htlc,
+        lock_token: Address::ZERO,
+        coordinator: Some(coordinator),
+        timeout: Duration::from_secs(20),
+    };
+    assert!(
+        f.client
+            .refund_evm_with_wallet(ID, &f.wallet, options.clone())
+            .await
+            .is_err()
+    );
+    f.rpc("evm_setNextBlockTimestamp", json!([f.timelock + 1]))
+        .await?;
+    f.rpc("evm_mine", json!([])).await?;
+    let before = coin_balance(&f, f.owner).await?;
+    let receipt = f
+        .client
+        .refund_evm_with_wallet(ID, &f.wallet, options)
+        .await?;
+    let mined = f
+        .rpc(
+            "eth_getTransactionReceipt",
+            json!([receipt.transaction_hash]),
+        )
+        .await?;
+    let fee = quantity(&mined["gasUsed"])? * quantity(&mined["effectiveGasPrice"])?;
+    assert_eq!(
+        coin_balance(&f, f.owner).await? + fee - before,
+        U256::from(AMOUNT)
+    );
+    assert_eq!(coin_balance(&f, htlc).await?, U256::ZERO);
+    assert_eq!(coin_balance(&f, coordinator).await?, U256::ZERO);
+    assert_eq!(
+        reader(&f).await?.observe(&lock).await?.state,
+        HtlcState::SpentRefund
+    );
     Ok(())
 }

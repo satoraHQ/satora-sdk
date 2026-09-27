@@ -5,6 +5,7 @@ use super::htlc::verify_version;
 use super::*;
 use crate::Client;
 use crate::SwapMetadata;
+use crate::types::EvmHtlcKind;
 use alloy::primitives::keccak256;
 use alloy::sol;
 use alloy::sol_types::SolCall;
@@ -17,6 +18,9 @@ sol! {
     struct Call { address target; uint256 value; bytes callData; }
     interface ClaimCoordinator {
         function redeemAndExecute(bytes32 preimage, uint256 amount, address token, address sender, uint256 timelock, Call[] calls, address sweepToken, uint256 minAmountOut, address destination, uint8 v, bytes32 r, bytes32 s) external;
+    }
+    interface NativeClaimCoordinator {
+        function redeemAndExecute(bytes32 preimage, uint256 amount, address htlcSender, uint256 timelock, Call[] calls, address sweepToken, uint256 minAmountOut, address destination, uint8 v, bytes32 r, bytes32 s) external payable;
     }
 }
 
@@ -50,28 +54,39 @@ struct ClaimMaterial {
     htlc: EvmHtlc,
     preimage: B256,
     version: u64,
+    kind: EvmHtlcKind,
 }
 impl ClaimMaterial {
+    /// The native HTLC has no asset word: its Redeem struct omits `token` and its
+    /// domain name differs, so a signature never verifies on the other family.
     fn typed_data(&self, options: &EvmClaimOptions, calls_hash: B256) -> Result<EvmTypedData> {
+        let mut fields = vec![("preimage", "bytes32"), ("amount", "uint256")];
+        let mut message = json!({"preimage":self.preimage,"amount":self.htlc.amount.to_string(),"sender":self.htlc.sender,"timelock":self.htlc.timelock.to_string(),"caller":options.coordinator,"destination":options.destination,"sweepToken":options.sweep_token,"minAmountOut":options.min_amount_out.to_string(),"callsHash":calls_hash});
+        let name = match self.kind {
+            EvmHtlcKind::Erc20 => {
+                fields.push(("token", "address"));
+                message["token"] = json!(self.htlc.token);
+                "HTLCErc20"
+            }
+            EvmHtlcKind::Native => "HTLCNative",
+        };
+        fields.extend([
+            ("sender", "address"),
+            ("timelock", "uint256"),
+            ("caller", "address"),
+            ("destination", "address"),
+            ("sweepToken", "address"),
+            ("minAmountOut", "uint256"),
+            ("callsHash", "bytes32"),
+        ]);
         typed_data(
-            "HTLCErc20",
+            name,
             self.version,
             self.htlc.chain_id,
             self.htlc.address,
             "Redeem",
-            &[
-                ("preimage", "bytes32"),
-                ("amount", "uint256"),
-                ("token", "address"),
-                ("sender", "address"),
-                ("timelock", "uint256"),
-                ("caller", "address"),
-                ("destination", "address"),
-                ("sweepToken", "address"),
-                ("minAmountOut", "uint256"),
-                ("callsHash", "bytes32"),
-            ],
-            json!({"preimage":self.preimage,"amount":self.htlc.amount.to_string(),"token":self.htlc.token,"sender":self.htlc.sender,"timelock":self.htlc.timelock.to_string(),"caller":options.coordinator,"destination":options.destination,"sweepToken":options.sweep_token,"minAmountOut":options.min_amount_out.to_string(),"callsHash":calls_hash}),
+            &fields,
+            message,
         )
     }
 }
@@ -137,12 +152,13 @@ impl Client {
         let version = value["evm_htlc_version"]
             .as_u64()
             .ok_or_else(|| invalid("invalid HTLC version"))?;
+        let kind = context.kind;
         let htlc = EvmHtlc {
             chain_id: context.chain_id,
             address: context.htlc,
             hash_lock: context.hash,
             amount: decimal(field("evm_expected_sats")?)?,
-            token: parse(field("wbtc_address")?)?,
+            token: context.source_token,
             sender: context.server,
             claimer: context.owner,
             timelock: context.timelock,
@@ -171,6 +187,7 @@ impl Client {
             htlc,
             preimage: B256::from(params.preimage),
             version,
+            kind,
         })
     }
 
@@ -270,21 +287,43 @@ impl Client {
         let typed = material.typed_data(options, keccak256(calls.abi_encode()))?;
         let signature = wallet.sign_typed_data(&typed).await?;
         verify_signature(&signature, typed.digest, wallet.address())?;
-        let call = ClaimCoordinator::redeemAndExecuteCall {
-            preimage: material.preimage,
-            amount: material.htlc.amount,
-            token: material.htlc.token,
-            sender: material.htlc.sender,
-            timelock: U256::from(material.htlc.timelock),
-            calls,
-            sweepToken: options.sweep_token,
-            minAmountOut: options.min_amount_out,
-            destination: options.destination,
-            v: u8::from(signature.v()) + 27,
-            r: signature.r().into(),
-            s: signature.s().into(),
+        let (v, r, s) = (
+            u8::from(signature.v()) + 27,
+            signature.r().into(),
+            signature.s().into(),
+        );
+        let data = match material.kind {
+            EvmHtlcKind::Erc20 => ClaimCoordinator::redeemAndExecuteCall {
+                preimage: material.preimage,
+                amount: material.htlc.amount,
+                token: material.htlc.token,
+                sender: material.htlc.sender,
+                timelock: U256::from(material.htlc.timelock),
+                calls,
+                sweepToken: options.sweep_token,
+                minAmountOut: options.min_amount_out,
+                destination: options.destination,
+                v,
+                r,
+                s,
+            }
+            .abi_encode(),
+            EvmHtlcKind::Native => NativeClaimCoordinator::redeemAndExecuteCall {
+                preimage: material.preimage,
+                amount: material.htlc.amount,
+                htlcSender: material.htlc.sender,
+                timelock: U256::from(material.htlc.timelock),
+                calls,
+                sweepToken: options.sweep_token,
+                minAmountOut: options.min_amount_out,
+                destination: options.destination,
+                v,
+                r,
+                s,
+            }
+            .abi_encode(),
         };
-        let mut tx = transaction(wallet, options.coordinator, call.abi_encode());
+        let mut tx = transaction(wallet, options.coordinator, data);
         tx.value = native_fee;
         Ok((material, tx))
     }
@@ -327,18 +366,32 @@ impl Client {
         tokio::time::timeout(options.timeout,async {
             let _execution = self.evm_execution.lock().await;
             let material = self.claim_material(id,wallet,&options).await?;
-            let calldata = self.get_redeem_calldata(id,options.destination).await?;
-            let server_min = decimal(&calldata.min_amount_out)?;
-            if server_min < options.min_amount_out { return Err(invalid("server claim output is below the requested minimum")); }
-            options.min_amount_out = server_min;
-            let typed = material.typed_data(&options,parse(&calldata.calls_hash)?)?;
+            // The daemon settles a native lock with a fixed shape: no calls, the coin
+            // swept to the destination, at least the full amount.
+            let (calls_hash, dex_calldata) = match material.kind {
+                EvmHtlcKind::Native => {
+                    if options.sweep_token != Address::ZERO || options.min_amount_out > material.htlc.amount {
+                        return Err(invalid("native claim output does not match the locked coin/amount"));
+                    }
+                    options.min_amount_out = material.htlc.amount;
+                    (keccak256(Vec::<Call>::new().abi_encode()), None)
+                }
+                EvmHtlcKind::Erc20 => {
+                    let calldata = self.get_redeem_calldata(id,options.destination).await?;
+                    let server_min = decimal(&calldata.min_amount_out)?;
+                    if server_min < options.min_amount_out { return Err(invalid("server claim output is below the requested minimum")); }
+                    options.min_amount_out = server_min;
+                    (parse(&calldata.calls_hash)?, calldata.dex_calldata)
+                }
+            };
+            let typed = material.typed_data(&options,calls_hash)?;
             let signature = wallet.sign_typed_data(&typed).await?;
             verify_signature(&signature,typed.digest,wallet.address())?;
             let stored = self.get_stored_swap(id)?.ok_or_else(|| invalid("swap record missing"))?;
             self.update_swap_metadata(id,SwapMetadata {evm_claim_started:Some(true),..Default::default()})?;
             let response = self.api_request(Method::POST,self.swap_action_url(id,"claim-gasless")?).json(&json!({
                 "secret":material.preimage,"destination":options.destination,"v":u8::from(signature.v())+27,"r":format!("0x{:064x}",signature.r()),"s":format!("0x{:064x}",signature.s()),
-                "dex_calldata":calldata.dex_calldata,"bridge_recipient":stored.metadata.bridge_recipient,"bridge_recipient_wallet":stored.metadata.bridge_recipient_wallet
+                "dex_calldata":dex_calldata,"bridge_recipient":stored.metadata.bridge_recipient,"bridge_recipient_wallet":stored.metadata.bridge_recipient_wallet
             })).send().await?;
             let submitted: EvmSubmission = crate::client::check_status(response).await?.json().await?;
             if submitted.id != id { return Err(Error::Decode("claim response ID mismatch".into())); }
@@ -514,33 +567,50 @@ mod tests {
     sol! {
         struct Redeem { bytes32 preimage; uint256 amount; address token; address sender; uint256 timelock; address caller; address destination; address sweepToken; uint256 minAmountOut; bytes32 callsHash; }
     }
-    #[test]
-    fn redeem_json_digest_matches_contract_encoding_for_each_domain_version() {
-        for version in [4, 5, 6] {
-            let htlc = EvmHtlc {
-                chain_id: 137,
-                address: Address::repeat_byte(1),
-                hash_lock: B256::repeat_byte(2),
-                amount: U256::from(100000),
-                token: Address::repeat_byte(3),
-                sender: Address::repeat_byte(4),
-                claimer: Address::repeat_byte(5),
-                timelock: 1900000000,
-            };
-            let options = EvmClaimOptions {
-                htlc: htlc.address,
-                coordinator: Address::repeat_byte(6),
-                destination: Address::repeat_byte(7),
-                sweep_token: htlc.token,
-                min_amount_out: htlc.amount,
-                minimum_remaining_seconds: 300,
-                timeout: Duration::from_secs(10),
-            };
-            let material = ClaimMaterial {
+    // The struct name is part of the type hash, so the native shape keeps the
+    // contract's `Redeem` name in its own namespace.
+    mod native {
+        alloy::sol! {
+            struct Redeem { bytes32 preimage; uint256 amount; address sender; uint256 timelock; address caller; address destination; address sweepToken; uint256 minAmountOut; bytes32 callsHash; }
+        }
+    }
+    fn fixture(version: u64, kind: EvmHtlcKind) -> (ClaimMaterial, EvmClaimOptions) {
+        let htlc = EvmHtlc {
+            chain_id: 137,
+            address: Address::repeat_byte(1),
+            hash_lock: B256::repeat_byte(2),
+            amount: U256::from(100000),
+            token: match kind {
+                EvmHtlcKind::Erc20 => Address::repeat_byte(3),
+                EvmHtlcKind::Native => Address::ZERO,
+            },
+            sender: Address::repeat_byte(4),
+            claimer: Address::repeat_byte(5),
+            timelock: 1900000000,
+        };
+        let options = EvmClaimOptions {
+            htlc: htlc.address,
+            coordinator: Address::repeat_byte(6),
+            destination: Address::repeat_byte(7),
+            sweep_token: htlc.token,
+            min_amount_out: htlc.amount,
+            minimum_remaining_seconds: 300,
+            timeout: Duration::from_secs(10),
+        };
+        (
+            ClaimMaterial {
                 htlc,
                 preimage: B256::repeat_byte(8),
                 version,
-            };
+                kind,
+            },
+            options,
+        )
+    }
+    #[test]
+    fn redeem_json_digest_matches_contract_encoding_for_each_domain_version() {
+        for version in [4, 5, 6] {
+            let (material, options) = fixture(version, EvmHtlcKind::Erc20);
             let hash = B256::repeat_byte(9);
             let typed = material.typed_data(&options, hash).unwrap();
             let reference = Redeem {
@@ -559,5 +629,29 @@ mod tests {
             assert_eq!(typed.digest, reference.eip712_signing_hash(&domain));
             assert!(!format!("{typed:?}").contains(&material.preimage.to_string()));
         }
+    }
+    #[test]
+    fn native_redeem_digest_omits_the_token_and_uses_the_native_domain() {
+        let (material, options) = fixture(1, EvmHtlcKind::Native);
+        let hash = B256::repeat_byte(9);
+        let typed = material.typed_data(&options, hash).unwrap();
+        let reference = native::Redeem {
+            preimage: material.preimage,
+            amount: material.htlc.amount,
+            sender: material.htlc.sender,
+            timelock: U256::from(material.htlc.timelock),
+            caller: options.coordinator,
+            destination: options.destination,
+            sweepToken: options.sweep_token,
+            minAmountOut: options.min_amount_out,
+            callsHash: hash,
+        };
+        let domain = eip712_domain! {name:"HTLCNative",version:"1",chain_id:137,verifying_contract:material.htlc.address,};
+        assert_eq!(typed.digest, reference.eip712_signing_hash(&domain));
+        let erc20 = fixture(1, EvmHtlcKind::Erc20)
+            .0
+            .typed_data(&options, hash)
+            .unwrap();
+        assert_ne!(typed.digest, erc20.digest);
     }
 }

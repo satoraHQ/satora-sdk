@@ -327,9 +327,11 @@ pub struct EvmToArkadeSwapResponse {
     pub target_amount: String,
     pub evm_expected_sats: String,
     pub evm_htlc_address: String,
-    /// HTLCErc20 contract VERSION of the deployment this swap lives on —
-    /// the EIP-712 domain version string for redeem/refund signatures.
+    /// VERSION of the HTLC contract named by `evm_htlc_kind`: the EIP-712
+    /// domain version string for redeem/refund signatures.
     pub evm_htlc_version: i64,
+    #[serde(default)]
+    pub evm_htlc_kind: super::EvmHtlcKind,
     pub client_evm_address: String,
     pub server_evm_address: String,
     pub evm_refund_locktime: u64,

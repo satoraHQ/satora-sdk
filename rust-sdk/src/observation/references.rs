@@ -97,12 +97,15 @@ impl Client {
                     .as_str()
                     .ok_or_else(|| invalid(format!("missing EVM {name}")))
             };
-            let token = options
-                .evm_lock_token
-                .or_else(|| value["wbtc_address"].as_str().and_then(|s| s.parse().ok()))
-                .ok_or_else(|| {
-                    invalid("configure the locked EVM token; the swap response omits it")
-                })?;
+            let token = match context.kind {
+                crate::types::EvmHtlcKind::Native => Address::ZERO,
+                crate::types::EvmHtlcKind::Erc20 => options
+                    .evm_lock_token
+                    .or_else(|| value["wbtc_address"].as_str().and_then(|s| s.parse().ok()))
+                    .ok_or_else(|| {
+                        invalid("configure the locked EVM token; the swap response omits it")
+                    })?,
+            };
             let sender = if client {
                 options
                     .evm_source_sender
@@ -124,7 +127,9 @@ impl Client {
             } else {
                 context.server
             };
-            if token == Address::ZERO || sender == Address::ZERO {
+            if (token == Address::ZERO && context.kind == crate::types::EvmHtlcKind::Erc20)
+                || sender == Address::ZERO
+            {
                 return Err(invalid("invalid EVM reference token or sender"));
             }
             let amount = decimal(field("evm_expected_sats")?)?;

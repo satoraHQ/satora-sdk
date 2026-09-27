@@ -138,6 +138,7 @@ pub(crate) struct EvmContext {
     pub timelock: u64,
     pub source_token: Address,
     pub is_source: bool,
+    pub kind: crate::types::EvmHtlcKind,
 }
 impl EvmContext {
     pub fn from_response(response: &crate::types::GetSwapResponse) -> Result<Self> {
@@ -160,13 +161,27 @@ impl EvmContext {
                 .as_str()
                 .ok_or_else(|| invalid(format!("missing {field}")))
         };
-        let source_token = if is_source {
+        let source_token: Address = parse(if is_source {
             value["source_token"]["token_id"]
                 .as_str()
                 .ok_or_else(|| invalid("missing source token"))?
         } else {
             string("wbtc_address")?
+        })?;
+        let kind: crate::types::EvmHtlcKind = match value.get("evm_htlc_kind") {
+            Some(kind) => {
+                serde_json::from_value(kind.clone()).map_err(|e| Error::Decode(e.to_string()))?
+            }
+            None => crate::types::EvmHtlcKind::Erc20,
         };
+        // HTLCErc20 cannot lock the zero address and HTLCNative always reports it. A
+        // record stored before the kind was kept would otherwise sign the ERC20 domain
+        // and hand the server a preimage for a claim it then rejects.
+        if !is_source && (kind == crate::types::EvmHtlcKind::Native) != source_token.is_zero() {
+            return Err(invalid(
+                "HTLC kind and lock asset disagree; refresh the swap",
+            ));
+        }
         Ok(Self {
             chain_id: value["evm_chain_id"]
                 .as_u64()
@@ -183,8 +198,9 @@ impl EvmContext {
             timelock: value["evm_refund_locktime"]
                 .as_u64()
                 .ok_or_else(|| invalid("invalid refund timelock"))?,
-            source_token: parse(source_token)?,
+            source_token,
             is_source,
+            kind,
         })
     }
     pub fn validate_wallet(&self, wallet: &dyn EvmWallet) -> Result<()> {

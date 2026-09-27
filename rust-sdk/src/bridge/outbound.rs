@@ -259,6 +259,8 @@ impl Client {
             let intent=json!({"bridge":request.bridge,"coordinator":options.coordinator,"htlc":options.htlc,"destination":options.destination,"sweep_token":options.sweep_token});
             {
                 let _guard=self.evm_execution.lock().await;
+                let stored=self.get_stored_swap(id)?.ok_or_else(||invalid("swap record missing"))?;
+                if crate::evm::EvmContext::from_response(&stored.response)?.kind==crate::types::EvmHtlcKind::Native {return Err(invalid("a native lock cannot be claimed into a bridge"));}
                 if let Some(existing)=self.bridge_operation(id,"outbound_claim")? {
                     if existing.intent!=intent {return Err(invalid("outbound bridge differs from the persisted claim"));}
                 } else {

@@ -70,6 +70,8 @@ pub struct BitcoinToEvmSwapResponse {
     pub evm_fund_txid: Option<String>,
     pub evm_hash_lock: String,
     pub evm_htlc_address: String,
+    #[serde(default)]
+    pub evm_htlc_kind: EvmHtlcKind,
     pub evm_htlc_version: i64,
     pub evm_refund_locktime: i64,
     pub fee_sats: i64,
@@ -111,6 +113,8 @@ pub struct ArkadeToEvmSwapResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evm_fund_txid: Option<String>,
     pub evm_htlc_address: String,
+    #[serde(default)]
+    pub evm_htlc_kind: EvmHtlcKind,
     pub evm_htlc_version: i64,
     pub evm_refund_locktime: i64,
     pub fee_sats: i64,
@@ -134,10 +138,24 @@ pub struct ArkadeToEvmSwapResponse {
     pub wbtc_address: String,
 }
 
+/// HTLC family of an EVM lock. On EVM-target swaps it selects the EIP-712 domain and
+/// the claim call; on EVM-source swaps it decides how the lock is funded and refunded.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum EvmHtlcKind {
+    /// `HTLCErc20` plus `HTLCCoordinator`: locks the chain's BTC-pegged token.
+    #[default]
+    Erc20,
+    /// `HTLCNative` plus `HTLCNativeCoordinator`: locks the chain's native coin.
+    Native,
+}
+
 /// `LightningToEvmSwapResponse` in `openapi.json`.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LightningToEvmSwapResponse {
     pub bolt11_invoice: String,
+    #[serde(default)]
+    pub evm_htlc_kind: EvmHtlcKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bridge_target_chain: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -202,6 +220,8 @@ pub struct EvmToBitcoinSwapResponse {
     pub evm_fund_txid: Option<String>,
     pub evm_hash_lock: String,
     pub evm_htlc_address: String,
+    #[serde(default)]
+    pub evm_htlc_kind: EvmHtlcKind,
     pub evm_htlc_version: i64,
     pub evm_refund_locktime: i64,
     pub fee_sats: i64,
@@ -238,6 +258,8 @@ pub struct EvmToLightningSwapResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evm_fund_txid: Option<String>,
     pub evm_htlc_address: String,
+    #[serde(default)]
+    pub evm_htlc_kind: EvmHtlcKind,
     pub evm_htlc_version: i64,
     pub evm_refund_locktime: i64,
     pub fee_sats: i64,

@@ -217,6 +217,11 @@ impl Client {
             let htlc = self
                 .read_funded_evm_htlc(id, wallet, options, false)
                 .await?;
+            if htlc.token.is_zero() {
+                return Err(invalid(
+                    "continuing a native refund is not supported: the replacement is funded through Permit2",
+                ));
+            }
             let hash = stored
                 .metadata
                 .evm_refund_txid
