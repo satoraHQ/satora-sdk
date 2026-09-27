@@ -984,3 +984,69 @@ async fn electrum_reads_actual_funding_outputs_and_converts_btc_per_kb_fees() {
     drop(backend);
     server.join().unwrap();
 }
+
+#[cfg(feature = "electrum")]
+#[tokio::test]
+async fn electrum_reports_unknown_transactions_as_missing() {
+    use serde_json::json;
+    let missing = [
+        json!({"code":-5,"message":"No such mempool or blockchain transaction"}),
+        json!({
+            "code": 2,
+            "message": "daemon error: DaemonError({'code': -5, 'message': 'No such mempool or blockchain transaction. Use gettransaction for wallet transactions.'})"
+        }),
+        json!("missing transaction"),
+    ];
+    for error in missing {
+        let reply = error.clone();
+        let (url, server) = electrum_mock(1, move |_, method| {
+            assert_eq!(method, "blockchain.transaction.get");
+            Some(Err(reply.clone()))
+        });
+        let backend = ElectrumBackend::connect(url, Network::Regtest, 3)
+            .await
+            .unwrap();
+        let result = backend.transaction(Txid::all_zeros()).await;
+        assert!(matches!(result, Ok(None)), "{error} gave {result:?}");
+        drop(backend);
+        server.join().unwrap();
+    }
+    let (url, server) = electrum_mock(1, |_, _| {
+        Some(Err(
+            json!({"code":-101,"message":"excessive resource usage"}),
+        ))
+    });
+    let backend = ElectrumBackend::connect(url, Network::Regtest, 3)
+        .await
+        .unwrap();
+    assert!(backend.transaction(Txid::all_zeros()).await.is_err());
+    drop(backend);
+    server.join().unwrap();
+}
+
+#[cfg(feature = "electrum")]
+#[tokio::test]
+async fn electrum_reconnects_after_the_socket_drops() {
+    use serde_json::json;
+    let (htlc, _, _, _, _) = fixture();
+    let tx = electrum_test_transaction(&htlc.address().unwrap());
+    let id = tx.compute_txid();
+    let (url, server) = electrum_mock(2, move |connection, method| {
+        assert_eq!(method, "blockchain.transaction.get");
+        (connection == 1).then(|| Ok(json!(bitcoin::consensus::encode::serialize_hex(&tx))))
+    });
+    let backend = ElectrumBackend::connect(url, Network::Regtest, 3)
+        .await
+        .unwrap();
+    assert_eq!(
+        backend
+            .transaction(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .compute_txid(),
+        id
+    );
+    drop(backend);
+    server.join().unwrap();
+}

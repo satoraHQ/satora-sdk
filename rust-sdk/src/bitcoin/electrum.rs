@@ -19,7 +19,7 @@ impl ElectrumBackend {
         let client = tokio::task::spawn_blocking(move || {
             let config = ConfigBuilder::new()
                 .timeout(Some(timeout_seconds))
-                .retry(0)
+                .retry(1)
                 .build();
             let client = ElectrumClient::from_config(&url, config).map_err(transport)?;
             if client.block_header(0).map_err(transport)?.block_hash()
@@ -38,6 +38,22 @@ impl ElectrumBackend {
             network,
         })
     }
+}
+// Servers report an unknown txid differently: bitcoind's -5 at the top level,
+// ElectrumX and Fulcrum wrap it in a daemon error, Blockstream electrs sends a string.
+// The markers stay specific because a bare "not found" also matches "method not found".
+fn is_missing_transaction(error: &serde_json::Value) -> bool {
+    if error["code"] == -5 {
+        return true;
+    }
+    let text = error.to_string().to_ascii_lowercase();
+    [
+        "no such mempool or blockchain transaction",
+        "missing transaction",
+        "transaction not found",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker))
 }
 impl BitcoinBackend for ElectrumBackend {
     fn network(&self) -> Network {
@@ -165,7 +181,9 @@ impl BitcoinBackend for ElectrumBackend {
             tokio::task::spawn_blocking(move || match client.transaction_get(&id) {
                 Ok(tx) if tx.compute_txid() == id => Ok(Some(tx)),
                 Ok(_) => Err(invalid("Electrum transaction ID mismatch")),
-                Err(electrum_client::Error::Protocol(value)) if value["code"] == -5 => Ok(None),
+                Err(electrum_client::Error::Protocol(value)) if is_missing_transaction(&value) => {
+                    Ok(None)
+                }
                 Err(error) => Err(transport(error)),
             })
             .await
