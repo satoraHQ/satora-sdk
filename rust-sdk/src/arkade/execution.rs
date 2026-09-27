@@ -428,7 +428,7 @@ impl Client {
                 let list = VtxoList::new(info.dust, vtxos);
                 if list.recoverable().next().is_some() {
                     return Err(invalid(
-                        "recoverable Arkade outputs require delegated settlement",
+                        "recoverable Arkade outputs require delegated settlement; use Client::settle",
                     ));
                 }
                 let now = std::time::SystemTime::now()

@@ -1242,6 +1242,354 @@ async fn cooperative_delegate_rejects_forfeit_signed_without_anyonecanpay() {
     );
 }
 #[tokio::test]
+async fn one_call_settle_fetches_the_cosigner_for_a_recoverable_claim() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    let (_, mut backend, store, destination) = setup("btc_to_arkade");
+    backend.vtxos.truncate(1);
+    backend.vtxos[0].amount = Amount::from_sat(100_000);
+    backend.vtxos[0].is_swept = true;
+    backend.vtxos[0].expires_at = 0;
+    let server = MockServer::start().await;
+    let cosigner = pair(5).public_key();
+    let commitment = Txid::from_byte_array([16; 32]);
+    Mock::given(wiremock::matchers::path("/api/delegate/cosigner-pk"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"cosigner_pk":cosigner.to_string()})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    // The first settle fails after persisting its intent; the retry must reuse the
+    // persisted cosigner key rather than fetch it again.
+    let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = attempts.clone();
+    Mock::given(wiremock::matchers::path("/api/delegate/settle"))
+        .respond_with(move |request: &wiremock::Request| {
+            let body: Value = request.body_json().unwrap();
+            assert_eq!(body["cosigner_pk"], json!(cosigner.to_string()));
+            if seen.fetch_add(1, Ordering::Relaxed) == 0 {
+                return ResponseTemplate::new(500);
+            }
+            ResponseTemplate::new(200).set_body_json(json!({"commitment_txid":commitment}))
+        })
+        .expect(2)
+        .mount(&server)
+        .await;
+    let client = Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(store)
+        .base_url(server.uri())
+        .build()
+        .unwrap();
+    let error = client
+        .spend_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            spend_options(destination.clone()),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("Client::settle"), "{error}");
+    assert!(
+        client
+            .settle_with("arkade", &backend, ArkadeSpend::Claim, destination.clone())
+            .await
+            .is_err()
+    );
+    let result = client
+        .settle_with("arkade", &backend, ArkadeSpend::Claim, destination)
+        .await
+        .unwrap();
+    assert!(matches!(
+        result,
+        super::super::ArkadeSettlement::Delegated { commitment_txid } if commitment_txid == commitment
+    ));
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn an_expired_delegated_intent_is_replaced_after_its_batch_grace_period() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    let grace = super::super::delegate::INTENT_REPLACEMENT_GRACE_SECS;
+    // Near the lock the first claim went out with margin 0 and may have delivered the
+    // preimage, so its replacement must not be refused by the claim window.
+    for (near_lock, new_destination) in [(false, false), (false, true), (true, false)] {
+        let lock = if near_lock {
+            now() + 60
+        } else {
+            now() + 86_400
+        };
+        let (_, mut backend, store, destination) = setup_with_lock("btc_to_arkade", lock);
+        backend.vtxos.truncate(1);
+        backend.vtxos[0].amount = Amount::from_sat(100_000);
+        backend.vtxos[0].is_swept = true;
+        backend.vtxos[0].expires_at = 0;
+        let other = {
+            let address = ArkAddress::decode(&destination).unwrap();
+            ArkAddress::new(
+                Network::Regtest,
+                address.server(),
+                TweakedPublicKey::dangerous_assume_tweaked(pair(6).x_only_public_key().0),
+            )
+            .encode()
+        };
+        let server = MockServer::start().await;
+        let commitment = Txid::from_byte_array([17; 32]);
+        let posts = Arc::new(AtomicUsize::new(0));
+        let seen = posts.clone();
+        Mock::given(wiremock::matchers::path("/api/delegate/settle"))
+            .respond_with(move |_: &wiremock::Request| {
+                if seen.fetch_add(1, Ordering::Relaxed) == 0 {
+                    return ResponseTemplate::new(500);
+                }
+                ResponseTemplate::new(200).set_body_json(json!({"commitment_txid":commitment}))
+            })
+            .mount(&server)
+            .await;
+        let client = Client::builder()
+            .mnemonic(MNEMONIC)
+            .storage(store.clone())
+            .base_url(server.uri())
+            .build()
+            .unwrap();
+        let delegate = |destination: &str, margin: u64| {
+            client.delegate_arkade(
+                "arkade",
+                &backend,
+                None,
+                ArkadeSpend::Claim,
+                pair(5).public_key(),
+                ArkadeSpendOptions {
+                    minimum_remaining_seconds: margin,
+                    ..spend_options(destination.to_owned())
+                },
+            )
+        };
+        let first_margin = if near_lock { 0 } else { 300 };
+        assert!(delegate(&destination, first_margin).await.is_err());
+        let requested = if new_destination {
+            &other
+        } else {
+            &destination
+        };
+        age_delegation(&store, 60);
+        let error = delegate(requested, 300).await.unwrap_err().to_string();
+        let expected = if new_destination {
+            "differs"
+        } else {
+            "grace period"
+        };
+        assert!(error.contains(expected), "{error}");
+        assert_eq!(posts.load(Ordering::Relaxed), 1);
+        age_delegation(&store, grace + 1);
+        assert_eq!(delegate(requested, 300).await.unwrap(), commitment);
+        assert_eq!(posts.load(Ordering::Relaxed), 2);
+        let state = store
+            .get_swap("arkade")
+            .unwrap()
+            .unwrap()
+            .metadata
+            .arkade_delegate
+            .unwrap();
+        assert_eq!(&state.destination, requested);
+        let message: Value = serde_json::from_str(&state.intent_message).unwrap();
+        assert!(message["expire_at"].as_u64().unwrap() > u64::from(now()));
+    }
+}
+
+async fn delegate_claim(client: &Client, backend: &Backend, destination: &str) -> Result<Txid> {
+    client
+        .delegate_arkade(
+            "arkade",
+            backend,
+            None,
+            ArkadeSpend::Claim,
+            pair(5).public_key(),
+            spend_options(destination.to_owned()),
+        )
+        .await
+}
+
+fn age_delegation(store: &InMemorySwapStorage, seconds: u64) {
+    let mut stored = store.get_swap("arkade").unwrap().unwrap();
+    let state = stored.metadata.arkade_delegate.as_mut().unwrap();
+    let mut message: Value = serde_json::from_str(&state.intent_message).unwrap();
+    message["expire_at"] = json!(u64::from(now()) - seconds);
+    state.intent_message = message.to_string();
+    store.store_swap(stored).unwrap();
+}
+
+#[tokio::test]
+async fn a_replacement_keeps_an_earlier_preimage_delivery_across_a_failed_connect() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    let (_, mut backend, store, destination) = setup_with_lock("btc_to_arkade", now() + 60);
+    backend.vtxos.truncate(1);
+    backend.vtxos[0].amount = Amount::from_sat(100_000);
+    backend.vtxos[0].is_swept = true;
+    backend.vtxos[0].expires_at = 0;
+    let server = MockServer::start().await;
+    let commitment = Txid::from_byte_array([18; 32]);
+    let posts = Arc::new(AtomicUsize::new(0));
+    let seen = posts.clone();
+    Mock::given(wiremock::matchers::path("/api/delegate/settle"))
+        .respond_with(move |_: &wiremock::Request| {
+            if seen.fetch_add(1, Ordering::Relaxed) == 0 {
+                return ResponseTemplate::new(500);
+            }
+            ResponseTemplate::new(200).set_body_json(json!({"commitment_txid":commitment}))
+        })
+        .mount(&server)
+        .await;
+    let client = |base_url: String| {
+        Client::builder()
+            .mnemonic(MNEMONIC)
+            .storage(store.clone())
+            .base_url(base_url)
+            .build()
+            .unwrap()
+    };
+    let (reachable, unreachable) = (client(server.uri()), client("http://127.0.0.1:1".into()));
+    let options = |margin| ArkadeSpendOptions {
+        minimum_remaining_seconds: margin,
+        ..spend_options(destination.clone())
+    };
+    let cosigner = pair(5).public_key();
+    let claim = ArkadeSpend::Claim;
+    assert!(
+        reachable
+            .delegate_arkade("arkade", &backend, None, claim, cosigner, options(0))
+            .await
+            .is_err()
+    );
+    age_delegation(
+        &store,
+        super::super::delegate::INTENT_REPLACEMENT_GRACE_SECS + 1,
+    );
+    let error = unreachable
+        .delegate_arkade("arkade", &backend, None, claim, cosigner, options(300))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::Transport(_)), "{error}");
+    let state = store.get_swap("arkade").unwrap().unwrap().metadata;
+    let state = state.arkade_delegate.unwrap();
+    assert!(state.preimage_sent && state.unsent);
+    // The replacement never left, but the first claim's preimage may have.
+    let settled = reachable
+        .delegate_arkade("arkade", &backend, None, claim, cosigner, options(300))
+        .await
+        .unwrap();
+    assert_eq!(settled, commitment);
+}
+
+#[tokio::test]
+async fn a_late_settlement_of_a_replaced_intent_reconciles_to_its_destination() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    let (_, mut backend, store, destination) = setup("btc_to_arkade");
+    backend.vtxos.truncate(1);
+    backend.vtxos[0].amount = Amount::from_sat(100_000);
+    backend.vtxos[0].is_swept = true;
+    backend.vtxos[0].expires_at = 0;
+    let other = {
+        let address = ArkAddress::decode(&destination).unwrap();
+        ArkAddress::new(
+            Network::Regtest,
+            address.server(),
+            TweakedPublicKey::dangerous_assume_tweaked(pair(6).x_only_public_key().0),
+        )
+        .encode()
+    };
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::path("/api/delegate/settle"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let client = Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .base_url(server.uri())
+        .build()
+        .unwrap();
+    assert!(
+        delegate_claim(&client, &backend, &destination)
+            .await
+            .is_err()
+    );
+    let first = store
+        .get_swap("arkade")
+        .unwrap()
+        .unwrap()
+        .metadata
+        .arkade_delegate
+        .unwrap();
+    age_delegation(
+        &store,
+        super::super::delegate::INTENT_REPLACEMENT_GRACE_SECS + 1,
+    );
+    assert!(delegate_claim(&client, &backend, &other).await.is_err());
+    // The first intent's batch settles after all and pays its own destination.
+    let commitment = Txid::from_byte_array([19; 32]);
+    let mut paid = backend.vtxos[0].clone();
+    backend.vtxos[0].is_spent = true;
+    backend.vtxos[0].settled_by = Some(commitment);
+    paid.outpoint = OutPoint {
+        txid: commitment,
+        vout: 0,
+    };
+    paid.amount = Amount::from_sat(first.amount_sats);
+    paid.script = ArkAddress::decode(&destination)
+        .unwrap()
+        .to_p2tr_script_pubkey();
+    paid.is_swept = false;
+    paid.commitment_txids = vec![commitment];
+    backend.vtxos.push(paid);
+    assert_eq!(
+        delegate_claim(&client, &backend, &other).await.unwrap(),
+        commitment
+    );
+}
+
+#[tokio::test]
+async fn one_call_settle_spends_spendable_outputs_offchain_without_the_cosigner() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    let (_, backend, store, destination) = setup("btc_to_arkade");
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::any())
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let client = Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(store)
+        .base_url(server.uri())
+        .build()
+        .unwrap();
+    let result = client
+        .settle_with("arkade", &backend, ArkadeSpend::Claim, destination)
+        .await
+        .unwrap();
+    assert!(matches!(
+        result,
+        super::super::ArkadeSettlement::Offchain(_)
+    ));
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
 async fn underfunded_claim_is_refused_without_consulting_the_server() {
     use wiremock::Mock;
     use wiremock::MockServer;

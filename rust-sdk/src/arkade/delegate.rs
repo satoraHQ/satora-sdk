@@ -18,6 +18,29 @@ use bitcoin::TxOut;
 use serde::Deserialize;
 use serde::Serialize;
 
+/// How long after an intent expires a batch that took it may still settle it. If
+/// one does after a replacement, reconciling the replacement's inputs finds it.
+pub(super) const INTENT_REPLACEMENT_GRACE_SECS: u64 = 120;
+
+fn unix_now() -> Result<u64> {
+    Ok(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(decode)?
+        .as_secs())
+}
+
+fn intent_expiry(state: &ArkadeDelegateState) -> Result<u64> {
+    let message: serde_json::Value = serde_json::from_str(&state.intent_message).map_err(decode)?;
+    message["expire_at"]
+        .as_u64()
+        .ok_or_else(|| invalid("delegated intent has no expiry"))
+}
+
+/// Whether a persisted intent expired long enough ago to be replaced.
+pub(super) fn delegation_replaceable(state: &ArkadeDelegateState) -> Result<bool> {
+    Ok(unix_now()? >= intent_expiry(state)?.saturating_add(INTENT_REPLACEMENT_GRACE_SECS))
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArkadeDelegateState {
     pub operation: ArkadeSpend,
@@ -32,6 +55,14 @@ pub struct ArkadeDelegateState {
     /// seen this intent's preimage.
     #[serde(default)]
     pub unsent: bool,
+    /// A claim request for an intent this one replaced may have delivered the
+    /// preimage.
+    #[serde(default)]
+    pub preimage_sent: bool,
+    /// Destination and amount of each intent this one replaced; a batch that settled
+    /// one of them late paid that destination instead.
+    #[serde(default)]
+    pub superseded: Vec<(String, u64)>,
 }
 impl std::fmt::Debug for ArkadeDelegateState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -83,28 +114,48 @@ impl Client {
             let pair=Keypair::from_secret_key(&Secp256k1::new(),&secp256k1::SecretKey::from_slice(&params.secret).map_err(decode)?);
             let preimage=(operation==ArkadeSpend::Claim).then_some(params.preimage);
             let vtxos=validate_vtxos(&htlc,backend.vtxos(htlc.address()).await?)?;
-            let mut state=if let Some(state)=stored.metadata.arkade_delegate {
-                if state.operation!=operation || state.destination!=options.destination || state.cosigner_pk!=cosigner.to_string() { return Err(invalid("persisted Arkade delegation differs from this request")); }
+            // A replaced claim whose request may have delivered the preimage skips the window check.
+            let mut delivered=false;
+            let mut superseded=Vec::new();
+            let persisted=if let Some(state)=stored.metadata.arkade_delegate {
+                let replaceable=delegation_replaceable(&state)?;
+                let payout_differs=state.operation!=operation || state.destination!=options.destination;
+                let differs=payout_differs || state.cosigner_pk!=cosigner.to_string();
+                if differs && (!replaceable || state.commitment_txid.is_some()) { return Err(invalid("persisted Arkade delegation differs from this request")); }
                 if let Some(hash)=&state.commitment_txid { return hash.parse().map_err(decode); }
                 let proof=restore(&state.intent_proof,None)?;
                 let inputs:Vec<_>=proof.unsigned_tx.input.iter().skip(1).map(|i|i.previous_output).collect();
                 let spent:Vec<_>=inputs.iter().filter_map(|outpoint|vtxos.iter().find(|v|v.outpoint==*outpoint && v.is_spent).and_then(|v|v.settled_by)).collect();
                 if !inputs.is_empty() && spent.len()==inputs.len() && spent.iter().all(|txid|*txid==spent[0]) {
+                    // The cosigner key does not change whether a settlement paid us.
+                    if payout_differs { return Err(invalid("persisted Arkade delegation differs from this request and its inputs were settled")); }
                     // Spent inputs alone could be another party's settlement; the batch
                     // must also have created the intended output. The indexer can lag
                     // the commitment, so a missing output is retryable, not final.
-                    let paid=backend.vtxos(destination).await?.iter().any(|v|v.amount.to_sat()==state.amount_sats && v.commitment_txids.contains(&spent[0]));
+                    let mut paid=false;
+                    for (address,amount) in std::iter::once((options.destination.as_str(),state.amount_sats)).chain(state.superseded.iter().map(|(a,n)|(a.as_str(),*n))) {
+                        let address=ArkAddress::decode(address).map_err(decode)?;
+                        if backend.vtxos(address).await?.iter().any(|v|v.amount.to_sat()==amount && v.commitment_txids.contains(&spent[0])) { paid=true; break; }
+                    }
                     if !paid { return Err(invalid(format!("Arkade inputs were settled by commitment {} but the destination output is not visible yet; retry once the indexer has caught up",spent[0]))); }
                     let mut completed=state;
                     completed.commitment_txid=Some(spent[0].to_string());self.save_arkade_delegate(id,completed)?;
                     return Ok(spent[0]);
                 }
-                let message:serde_json::Value=serde_json::from_str(&state.intent_message).map_err(decode)?;
-                let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(decode)?.as_secs();
-                if message["expire_at"].as_u64().is_none_or(|expires|expires<=now) { return Err(invalid("delegated intent expired before its outcome was observed; reconcile its inputs before creating another intent")); }
+                if replaceable {
+                    delivered=state.preimage_sent || (state.operation==ArkadeSpend::Claim && !state.unsent);
+                    superseded=state.superseded;
+                    let replaced=(state.destination,state.amount_sats);
+                    if !superseded.contains(&replaced) { superseded.push(replaced); }
+                    None
+                } else if intent_expiry(&state)?<=unix_now()? {
+                    return Err(invalid("delegated intent expired before its outcome was observed; retry after its batch grace period"));
+                } else { Some(state) }
+            } else { None };
+            let mut state=if let Some(state)=persisted {
                 // Unless the last request provably never left, the server may already hold
                 // the preimage, and refusing to resubmit would strand the claim.
-                if operation==ArkadeSpend::Claim && state.unsent {ensure_claim_window(&htlc,chain,options.minimum_remaining_seconds).await?;}
+                if operation==ArkadeSpend::Claim && state.unsent && !state.preimage_sent {ensure_claim_window(&htlc,chain,options.minimum_remaining_seconds).await?;}
                 state
             } else {
                 if operation==ArkadeSpend::Refund {
@@ -114,9 +165,9 @@ impl Client {
                     let lock=htlc.options.refund_locktime;
                     if !(if lock<500_000_000 {clock.height>=lock} else {clock.median_time_past>lock}) {return Err(invalid("Arkade refund timelock has not matured"));}
                 }
-                if operation==ArkadeSpend::Claim {ensure_claim_window(&htlc,chain,options.minimum_remaining_seconds).await?;}
+                if operation==ArkadeSpend::Claim && !delivered {ensure_claim_window(&htlc,chain,options.minimum_remaining_seconds).await?;}
                 let list=VtxoList::new(info.dust,vtxos);
-                let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(decode)?.as_secs();
+                let now=unix_now()?;
                 let available:Vec<_>=list.batch_settleable_at(&info,i64::try_from(now).map_err(decode)?,|_|Some(htlc.options.server)).collect();
                 if available.is_empty() {return Err(invalid("no settleable Arkade VTXOs"));}
                 let amount=available.iter().try_fold(0u64,|sum,v|sum.checked_add(v.amount.to_sat()).filter(|sum|*sum<=Amount::MAX_MONEY.to_sat()).ok_or_else(||invalid("Arkade amount overflow")))?;
@@ -133,7 +184,8 @@ impl Client {
                     if let Some(lock)=lock {forfeit.unsigned_tx.lock_time=lock;forfeit.unsigned_tx.input[0].sequence=Sequence::ENABLE_LOCKTIME_NO_RBF;}
                     sign_psbt(forfeit,&pair,preimage)?;
                 }
-                let mut state=ArkadeDelegateState {operation,destination:options.destination.clone(),amount_sats:amount,intent_proof:archive(&delegate.intent.proof),intent_message:delegate.intent.serialize_message().map_err(decode)?,forfeit_psbts:delegate.forfeit_psbts.iter().map(archive).collect(),cosigner_pk:cosigner.to_string(),commitment_txid:None,unsent:false};
+                superseded.retain(|(address,sats)|!(address==&options.destination && *sats==amount));
+                let mut state=ArkadeDelegateState {operation,destination:options.destination.clone(),amount_sats:amount,intent_proof:archive(&delegate.intent.proof),intent_message:delegate.intent.serialize_message().map_err(decode)?,forfeit_psbts:delegate.forfeit_psbts.iter().map(archive).collect(),cosigner_pk:cosigner.to_string(),commitment_txid:None,unsent:false,preimage_sent:delivered,superseded};
                 if operation==ArkadeSpend::CooperativeRefund {self.cosign_arkade_delegate(id,&mut state,&htlc).await?;}
                 self.save_arkade_delegate(id,state.clone())?;
                 state

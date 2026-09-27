@@ -241,6 +241,9 @@ Recoverable/expired VTXOs use delegated settlement.
 `settle_arkade` chooses offchain or delegated settlement from VTXO state and
 resumes the persisted path. `delegate_arkade` exposes the batch path explicitly.
 Pin the expected delegate public key, obtainable with `delegate_cosigner_key`.
+`settle` does the same routing in one call with the configured Arkade wallet,
+but trusts the cosigner key the API server reports (as the TypeScript SDK does);
+`settle_arkade` or `delegate_arkade` with a pinned key is the stricter path.
 Claims and cooperative/timeout refunds support mixed and swept VTXOs. Delegated
 intent signatures use ALL; forfeits use ALL|ANYONECANPAY for the batch connector.
 Timeout-refund forfeits carry the refund locktime and a non-final sequence.
@@ -252,8 +255,11 @@ settled inputs first. A retried claim resubmits even inside
 preimage already, unless the request failed to connect and so provably never left.
 An offchain claim likewise finishes once its submit was attempted, reusing arkd's
 pending entry when it has one and resubmitting otherwise. An intent lives
-for about two minutes, so keep the margin above that. An expired intent with no observable settlement is left
-unresolved for investigation; it is never silently replaced with new authorization.
+for about two minutes, so keep the margin above that. Two minutes after an intent
+expires with its inputs unspent, the next call replaces it with a new intent for its
+own request; the claim window is checked again unless an earlier claim may have
+delivered the preimage. A late settlement of a replaced intent is still recognised
+when the replacement spends the same inputs.
 The timeout refund path still requires the Arkade server, as in TypeScript.
 `StrictVhtlcOptions` exposes all six script paths for wallet-level exit integrations.
 

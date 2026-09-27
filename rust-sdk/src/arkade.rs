@@ -607,6 +607,88 @@ impl Client {
         )
         .await
     }
+
+    /// Claim or refund through [`Client::settle_arkade`], routing recoverable
+    /// outputs to delegated settlement with the cosigner key the API server reports.
+    pub async fn settle(
+        &self,
+        swap_id: &str,
+        operation: ArkadeSpend,
+        destination: String,
+    ) -> Result<ArkadeSettlement> {
+        if self.get_stored_swap(swap_id)?.is_none() {
+            self.refresh_swap(swap_id).await?;
+        }
+        let backend = self.arkade_wallet().await?;
+        self.settle_with(swap_id, backend, operation, destination)
+            .await
+    }
+
+    async fn settle_with(
+        &self,
+        swap_id: &str,
+        backend: &dyn ArkadeBackend,
+        operation: ArkadeSpend,
+        destination: String,
+    ) -> Result<ArkadeSettlement> {
+        let htlc = self.arkade_htlc(swap_id)?;
+        let chain = match operation {
+            ArkadeSpend::Refund => true,
+            ArkadeSpend::Claim => htlc.options.refund_locktime < 500_000_000,
+            ArkadeSpend::CooperativeRefund => false,
+        }
+        .then(|| {
+            let config = self.arkade_config()?;
+            crate::bitcoin::EsploraBackend::new(&config.esplora_url, config.network)
+        })
+        .transpose()?;
+        let stored = self
+            .get_stored_swap(swap_id)?
+            .ok_or_else(|| Error::InvalidSwap("swap record missing".into()))?;
+        let timeout = Duration::from_secs(120);
+        // Mirrors the routing in settle_arkade, so the key is only fetched when used.
+        // A persisted delegation must resume with the key it was signed for.
+        let cosigner = tokio::time::timeout(timeout, async {
+            if let Some(state) = &stored.metadata.arkade_delegate {
+                // A replacement is signed for the server's current key; reconciling a
+                // settlement needs no key, so an unreachable server falls back to it.
+                if state.commitment_txid.is_none()
+                    && delegate::delegation_replaceable(state)?
+                    && let Ok(key) = self.delegate_cosigner_key().await
+                {
+                    return Ok(Some(key));
+                }
+                return state
+                    .cosigner_pk
+                    .parse::<secp256k1::PublicKey>()
+                    .map(Some)
+                    .map_err(|e| Error::Decode(e.to_string()));
+            }
+            if stored.metadata.arkade_pending.is_none()
+                && self.vhtlc_balance(swap_id, backend).await?.recoverable_sats > 0
+            {
+                return self.delegate_cosigner_key().await.map(Some);
+            }
+            Ok(None)
+        })
+        .await
+        .map_err(|_| Error::Timeout("Arkade settlement routing timed out".into()))??;
+        self.settle_arkade(
+            swap_id,
+            backend,
+            chain
+                .as_ref()
+                .map(|c| c as &dyn crate::bitcoin::BitcoinBackend),
+            operation,
+            cosigner,
+            ArkadeSpendOptions {
+                destination,
+                timeout,
+                minimum_remaining_seconds: 300,
+            },
+        )
+        .await
+    }
 }
 
 #[cfg(test)]
