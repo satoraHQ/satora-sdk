@@ -242,6 +242,7 @@ impl Client {
                 "funding a native lock is not supported by this SDK yet".into(),
             ));
         }
+        crate::evm::verify_derived_hash_lock(self, &stored, &context)?;
         let (_, _, quoted_amount) = evm_deposit_fields(response)?;
         let chain = crate::types::KnownChain::from_wire_str(&context.chain_id.to_string());
         let remote = self

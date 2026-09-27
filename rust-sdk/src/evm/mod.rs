@@ -126,6 +126,31 @@ pub(super) fn verify_signature(
     Ok(())
 }
 
+/// A lock under any other hash could only be opened by whoever chose that hash.
+/// Lightning-destination swaps lock under the invoice's payment hash instead.
+pub(crate) fn verify_derived_hash_lock(
+    client: &crate::Client,
+    stored: &crate::StoredSwap,
+    context: &EvmContext,
+) -> Result<()> {
+    if matches!(
+        stored.response,
+        crate::types::GetSwapResponse::EvmToLightning(_)
+    ) {
+        return Ok(());
+    }
+    let signer = client
+        .signer
+        .as_ref()
+        .ok_or_else(|| Error::InvalidSigner("funding requires the swap seed".into()))?;
+    if B256::from(signer.derive_swap_params(stored.key_index)?.hash_lock) != context.hash {
+        return Err(invalid(
+            "swap hash lock does not match the seed-derived preimage",
+        ));
+    }
+    Ok(())
+}
+
 /// Shared identity fields. Amounts used for refunds are discovered from the
 /// funding receipt, since a DEX's actual locked amount can differ from the quote.
 #[derive(Clone, Debug)]

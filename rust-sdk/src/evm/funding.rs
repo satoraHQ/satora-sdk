@@ -239,6 +239,7 @@ impl Client {
                 "funding a native lock is not supported by this SDK yet",
             ));
         }
+        super::verify_derived_hash_lock(self, &stored, &context)?;
         let funding = self.get_permit2_funding_data(id).await?;
         funding.validate(&context, &options)?;
         let amount = decimal(&funding.source_amount)?;
@@ -585,12 +586,14 @@ mod tests {
             swap["hash_lock"] = json!(context.hash);
             swap["evm_refund_locktime"] = json!(context.timelock);
             swap["source_token"]["token_id"] = json!(context.source_token);
+            let mut foreign = swap.clone();
+            foreign["hash_lock"] = json!(B256::repeat_byte(1));
             let store = Arc::new(InMemorySwapStorage::new());
             store
                 .store_swap(
                     StoredSwap::new(
                         0,
-                        serde_json::from_value(swap.clone()).unwrap(),
+                        serde_json::from_value(foreign).unwrap(),
                         SwapMetadata::default(),
                     )
                     .unwrap(),
@@ -641,6 +644,24 @@ mod tests {
                 fail_receipt,
                 fail_send,
             };
+            let rejected = client
+                .fund_swap_with_wallet("test", &wallet, policy.clone())
+                .await;
+            assert!(
+                matches!(&rejected, Err(crate::Error::InvalidSwap(message)) if message.contains("seed-derived")),
+                "{rejected:?}"
+            );
+            assert!(wallet.transactions.lock().unwrap().is_empty());
+            store
+                .store_swap(
+                    StoredSwap::new(
+                        0,
+                        serde_json::from_value(swap.clone()).unwrap(),
+                        SwapMetadata::default(),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
             let result = client
                 .fund_swap_with_wallet("test", &wallet, policy.clone())
                 .await;

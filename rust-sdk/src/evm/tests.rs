@@ -953,6 +953,100 @@ async fn gasless_funding_rejects_unpinned_aa_deployments_before_any_payload_or_n
     }
 }
 
+#[test]
+fn derived_hash_lock_check() {
+    let (client, _, store) = setup(false);
+    let stored = store.get_swap("test").unwrap().unwrap();
+    let context = EvmContext::from_response(&stored.response).unwrap();
+    verify_derived_hash_lock(&client, &stored, &context).unwrap();
+    let mut foreign = context.clone();
+    foreign.hash = B256::repeat_byte(1);
+    let rejected = verify_derived_hash_lock(&client, &stored, &foreign);
+    assert!(
+        matches!(&rejected, Err(Error::InvalidSwap(message)) if message.contains("seed-derived")),
+        "{rejected:?}"
+    );
+    // Lightning-destination swaps lock under the invoice's payment hash. If an invoice check
+    // replaces this exemption, this assertion should change with it.
+    let fixture: Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/swap-responses.json")).unwrap();
+    let mut lightning = fixture["evm_to_lightning"].clone();
+    lightning["evm_htlc_address"] = json!(context.htlc);
+    lightning["server_evm_address"] = json!(context.server);
+    lightning["hash_lock"] = json!(B256::repeat_byte(1));
+    let lightning = StoredSwap::new(
+        0,
+        serde_json::from_value(lightning).unwrap(),
+        SwapMetadata::default(),
+    )
+    .unwrap();
+    let lightning_context = EvmContext::from_response(&lightning.response).unwrap();
+    assert_eq!(lightning_context.hash, B256::repeat_byte(1));
+    verify_derived_hash_lock(&client, &lightning, &lightning_context).unwrap();
+    let unsigned = Client::new("http://localhost").unwrap();
+    let rejected = verify_derived_hash_lock(&unsigned, &stored, &context);
+    assert!(
+        matches!(rejected, Err(Error::InvalidSigner(_))),
+        "{rejected:?}"
+    );
+}
+
+#[tokio::test]
+async fn gasless_funding_rejects_foreign_hash_lock() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+    let (_, _, fixture) = setup(false);
+    let response = fixture.get_swap("test").unwrap().unwrap().response;
+    let store = Arc::new(InMemorySwapStorage::new());
+    store
+        .store_swap(StoredSwap::new(0, response.clone(), SwapMetadata::default()).unwrap())
+        .unwrap();
+    let mut served = serde_json::to_value(&response).unwrap();
+    served["hash_lock"] = json!(B256::repeat_byte(1));
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/swap/test"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&served))
+        .mount(&server)
+        .await;
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .build()
+        .unwrap();
+    let result = client
+        .fund_swap_gasless(
+            "test",
+            crate::aa::GaslessOpts::new(server.uri().parse().unwrap()),
+        )
+        .await;
+    assert!(
+        matches!(&result, Err(Error::InvalidSwap(message)) if message.contains("seed-derived")),
+        "{result:?}"
+    );
+    let paths: Vec<String> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|request| request.url.path().to_owned())
+        .collect();
+    assert_eq!(paths, ["/swap/test"]);
+    assert_eq!(
+        store
+            .get_swap("test")
+            .unwrap()
+            .unwrap()
+            .metadata
+            .evm_fund_started,
+        None
+    );
+}
+
 fn selector(signature: &str) -> [u8; 4] {
     let hash = alloy::primitives::keccak256(signature);
     [hash[0], hash[1], hash[2], hash[3]]

@@ -422,7 +422,14 @@ async fn sponsored_cctp_mint_and_funding_share_one_batch_and_resume_after_restar
     let htlc = EvmHtlc {
         chain_id: 42161,
         address: Address::repeat_byte(23),
-        hash_lock: B256::repeat_byte(24),
+        hash_lock: B256::from(
+            sdk.signer
+                .as_ref()
+                .unwrap()
+                .derive_swap_params(0)
+                .unwrap()
+                .hash_lock,
+        ),
         amount: U256::from(100_000),
         token: Address::repeat_byte(25),
         sender: coordinator,
@@ -438,11 +445,13 @@ async fn sponsored_cctp_mint_and_funding_share_one_batch_and_resume_after_restar
     response["server_evm_address"] = json!(htlc.claimer);
     response["evm_refund_locktime"] = json!(htlc.timelock);
     response["source_token"]["token_id"] = json!(destination.usdc);
+    let mut foreign = response.clone();
+    foreign["hash_lock"] = json!(B256::repeat_byte(24));
     storage
         .store_swap(
             StoredSwap::new(
                 0,
-                serde_json::from_value(response).unwrap(),
+                serde_json::from_value(foreign).unwrap(),
                 SwapMetadata::default(),
             )
             .unwrap(),
@@ -529,6 +538,30 @@ async fn sponsored_cctp_mint_and_funding_share_one_batch_and_resume_after_restar
         },
         account: &config,
     };
+    let rejected = sdk
+        .fund_swap_from_cctp(&id, &wallet, request.clone(), &PollOptions::default())
+        .await
+        .unwrap_err();
+    assert!(rejected.to_string().contains("seed-derived"), "{rejected}");
+    assert!(
+        !storage
+            .get_swap(&id)
+            .unwrap()
+            .unwrap()
+            .metadata
+            .bridge_operations
+            .is_some_and(|operations| operations.contains_key("cctp_fund"))
+    );
+    storage
+        .store_swap(
+            StoredSwap::new(
+                0,
+                serde_json::from_value(response).unwrap(),
+                SwapMetadata::default(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
     sdk.fund_swap_from_cctp(&id, &wallet, request.clone(), &PollOptions::default())
         .await
         .unwrap();

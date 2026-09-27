@@ -58,6 +58,7 @@ impl Client {
                     if stored.metadata.evm_fund_started == Some(true) || stored.metadata.evm_fund_txid.is_some() || stored.metadata.evm_fund_userop_hash.is_some() {
                         return Err(invalid("swap funding already submitted"));
                     }
+                    crate::evm::verify_derived_hash_lock(self,&stored,&context)?;
                     let used=word(&wallet.call(&transaction(wallet,destination.transmitter,super::cctp::usedNoncesCall {nonce:decoded.nonce}.abi_encode())).await?)?;
                     if used>U256::ONE {return Err(invalid("invalid CCTP nonce state"));}
                     let funding=self.get_permit2_funding_data(id).await?;
