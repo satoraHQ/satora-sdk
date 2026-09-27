@@ -40,12 +40,12 @@ pub trait ArkadeBackend: Send + Sync {
         checkpoints: Vec<Psbt>,
     ) -> ArkadeFuture<'_, SubmitOffchainTxResponse>;
     fn finalize(&self, txid: Txid, checkpoints: Vec<Psbt>) -> ArkadeFuture<'_, ()>;
+    /// An empty answer makes an attempted submission resubmit, so return arkd's
+    /// pending transactions for the intent.
     fn pending(
         &self,
-        _intent: ark_rs::core::intent::Intent,
-    ) -> ArkadeFuture<'_, Vec<ark_rs::core::server::PendingTx>> {
-        Box::pin(async { Ok(vec![]) })
-    }
+        intent: ark_rs::core::intent::Intent,
+    ) -> ArkadeFuture<'_, Vec<ark_rs::core::server::PendingTx>>;
 }
 impl ArkadeBackend for ArkadeWallet {
     fn virtual_transaction(&self, id: Txid) -> ArkadeFuture<'_, Option<Psbt>> {
