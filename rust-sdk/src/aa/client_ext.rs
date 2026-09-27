@@ -185,9 +185,10 @@ impl Client {
 
     /// Submit a gasless EVM funding UserOp for `swap_id`.
     ///
-    /// Bundler URL + paymaster URL + ERC-4337 / Kernel addresses are
-    /// fetched from the backend via [`Self::fetch_aa_config`] — the
-    /// caller only supplies the bits the server can't ship (node RPC,
+    /// Bundler and paymaster URLs come from the backend via
+    /// [`Self::fetch_aa_config`]. The EntryPoint, Kernel delegation target
+    /// and Permit2 addresses it reports must equal the pinned deployments.
+    /// The caller only supplies the bits the server can't ship (node RPC,
     /// paymaster context, gas overrides) via [`GaslessOpts`]. The
     /// source chain is derived from the swap's `deposit_token`.
     ///
@@ -241,12 +242,22 @@ impl Client {
                 "funding a native lock is not supported by this SDK yet".into(),
             ));
         }
+        let (_, _, quoted_amount) = evm_deposit_fields(response)?;
         let chain = crate::types::KnownChain::from_wire_str(&context.chain_id.to_string());
         let remote = self
             .fetch_aa_config(crate::types::Chain::from_wire_str(
                 &context.chain_id.to_string(),
             ))
             .await?;
+        // The account delegates its code to this target and the EntryPoint executes
+        // its calls, so neither may come from the API alone.
+        if remote.entry_point != crate::aa::userop::ENTRY_POINT_V07
+            || remote.delegation_target != crate::aa::kernel::KERNEL_DELEGATION_TARGET
+        {
+            return Err(Error::InvalidSwap(
+                "server-named EntryPoint or delegation target is not the pinned deployment".into(),
+            ));
+        }
         let expected_entry_point = remote.entry_point;
         let expected_delegation_target = remote.delegation_target;
         if remote.permit2 != crate::aa::permit2::PERMIT2_ADDRESS {
@@ -328,12 +339,27 @@ impl Client {
             || parse_address(&backend.source_token_address, "source_token")? != context.source_token
             || parse_address(&backend.claim_address, "claim_address")? != context.server
             || backend.timelock != context.timelock
+            // Both amounts come from the server, so this catches an inconsistent
+            // payload, not a hostile one. A bridged deposit is shrunk by the bridge
+            // fee, hence an upper bound rather than equality.
+            || parse_u256_dec(&backend.source_amount, "source_amount")?
+                > parse_u256_dec(&quoted_amount, "quoted source_amount")?
         {
             return Err(Error::InvalidSwap(
                 "gasless funding payload does not match swap/configuration".into(),
             ));
         }
         let coordinator = backend.coordinator_address.clone();
+        if stored
+            .metadata
+            .evm_coordinator_address
+            .as_ref()
+            .is_some_and(|pinned| !pinned.eq_ignore_ascii_case(&coordinator))
+        {
+            return Err(Error::InvalidSwap(
+                "coordinator differs from the one persisted for this swap".into(),
+            ));
+        }
         // 4. Map backend wire types onto the orchestration input.
         let inputs = build_fund_swap_inputs(
             backend,

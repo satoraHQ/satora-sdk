@@ -19,6 +19,10 @@ use alloy::primitives::keccak256;
 use alloy::rpc::types::erc4337::PackedUserOperation;
 use alloy::sol_types::SolValue;
 
+/// Canonical EntryPoint v0.7, deployed at the same address on every chain.
+pub const ENTRY_POINT_V07: Address =
+    alloy::primitives::address!("0000000071727De22E5E9d8BAf0edAc6f37da032");
+
 /// Compute the EntryPoint v0.7 `userOpHash` — the digest the account's
 /// signature signs.
 ///
@@ -127,8 +131,7 @@ mod tests {
     use super::*;
     use alloy::primitives::address;
 
-    /// Canonical EntryPoint v0.7 — same address on every chain.
-    const ENTRY_POINT: Address = address!("0000000071727De22E5E9d8BAf0edAc6f37da032");
+    const ENTRY_POINT: Address = ENTRY_POINT_V07;
     const ARBITRUM: u64 = 42161;
 
     /// A fully-populated sample op. Includes a factory + paymaster so

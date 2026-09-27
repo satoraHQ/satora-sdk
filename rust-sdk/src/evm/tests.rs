@@ -881,6 +881,78 @@ async fn deposit_recovery_does_not_resubmit_after_a_lost_response() {
     assert_eq!(wallet.sent.lock().unwrap().len(), 1);
 }
 
+#[tokio::test]
+async fn gasless_funding_rejects_unpinned_aa_deployments_before_any_payload_or_node_request() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+    let (_, _, fixture) = setup(false);
+    let response = fixture.get_swap("test").unwrap().unwrap().response;
+    let pinned_entry_point = crate::aa::userop::ENTRY_POINT_V07;
+    let pinned_delegation = crate::aa::kernel::KERNEL_DELEGATION_TARGET;
+    for (entry_point, delegation_target) in [
+        (pinned_entry_point, Address::repeat_byte(0xde)),
+        (Address::repeat_byte(0xee), pinned_delegation),
+        (pinned_entry_point, pinned_delegation),
+    ] {
+        let store = Arc::new(InMemorySwapStorage::new());
+        store
+            .store_swap(StoredSwap::new(0, response.clone(), SwapMetadata::default()).unwrap())
+            .unwrap();
+        let server = MockServer::start().await;
+        let client = Client::builder()
+            .base_url(server.uri())
+            .mnemonic(MNEMONIC)
+            .storage(store.clone())
+            .build()
+            .unwrap();
+        Mock::given(method("GET"))
+            .and(path("/swap/test"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/aa/config"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "entry_point": entry_point,
+                "delegation_target": delegation_target,
+                "permit2": crate::aa::permit2::PERMIT2_ADDRESS,
+                "bundler": {"url": server.uri(), "casing": "camel"},
+                "paymaster": {"url": server.uri()},
+            })))
+            .mount(&server)
+            .await;
+        let opts = crate::aa::GaslessOpts::new(server.uri().parse().unwrap());
+        let result = client.fund_swap_gasless("test", opts).await;
+        let paths: Vec<String> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|request| request.url.path().to_owned())
+            .collect();
+        if entry_point == pinned_entry_point && delegation_target == pinned_delegation {
+            // Control: with the pinned deployment the flow reaches the payload fetch, so the
+            // rejections above come from the pins and not from the fixture.
+            assert!(paths.contains(&"/swap/test/swap-and-lock-calldata-userop".to_owned()));
+            continue;
+        }
+        assert!(matches!(result, Err(Error::InvalidSwap(_))), "{result:?}");
+        assert_eq!(paths, ["/swap/test", "/aa/config"]);
+        assert_eq!(
+            store
+                .get_swap("test")
+                .unwrap()
+                .unwrap()
+                .metadata
+                .evm_fund_started,
+            None
+        );
+    }
+}
+
 fn selector(signature: &str) -> [u8; 4] {
     let hash = alloy::primitives::keccak256(signature);
     [hash[0], hash[1], hash[2], hash[3]]
