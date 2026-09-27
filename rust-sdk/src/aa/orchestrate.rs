@@ -7,8 +7,8 @@
 //!
 //! 1. Build the Permit2 witness signature (Kernel-V3.3-wrapped under 7702), so the signature can be
 //!    embedded in the coordinator call.
-//! 2. Encode the outer batch — `USDC.approve(Permit2, max)` +
-//!    `HTLCCoordinator.executeAndCreateWithPermit2(..., permit2_sig)` — wrap it in Kernel's
+//! 2. Encode the outer batch (`approve(Permit2, 0)`, `approve(Permit2, source_amount)`,
+//!    `HTLCCoordinator.executeAndCreateWithPermit2(..., permit2_sig)`) and wrap it in Kernel's
 //!    `execute(BATCH_MODE, …)`. That's `callData`.
 //! 3. Look up the userOp `nonce` via `EntryPoint.getNonce(sender, 0)` and the EOA's `tx_nonce` via
 //!    `eth_getTransactionCount(sender)`.
@@ -243,8 +243,9 @@ pub(crate) async fn fund_swap_observed(
     .await
 }
 
-/// Build the bounded Permit2 approval and signed funding call for an atomic
-/// batch. Callers must validate the backend payload against their swap and limits.
+/// Build the Permit2 allowance reset, the bounded approval and the signed funding
+/// call for an atomic batch. Callers must validate the backend payload against their
+/// swap and limits.
 pub fn funding_calls(inputs: &FundSwapInputs) -> Result<Vec<Call>> {
     // 1. Permit2 witness signature.
     let (permit2_nonce, permit2_deadline) = generate_permit2_nonce_and_deadline();
@@ -271,12 +272,13 @@ pub fn funding_calls(inputs: &FundSwapInputs) -> Result<Vec<Call>> {
     let permit2_sig_raw = signing::sign_hash(&inputs.secret_key, kernel_wrapped_digest)?;
     let permit2_signature = kernel::wrap_erc1271_signature(&sig_to_array(&permit2_sig_raw));
 
-    // 2. Outer batch: approve(Permit2, max) + executeAndCreateWithPermit2.
-    let approve_call =
-        build_approve_permit2_call(inputs.source_token_address, inputs.source_amount);
-    let execute_and_create_call =
-        build_execute_and_create_call(inputs, permit2_nonce, permit2_deadline, permit2_signature);
-    Ok(vec![approve_call, execute_and_create_call])
+    // USDT reverts on a non-zero to non-zero approval, and wallet funding from the
+    // same address can leave a residual allowance.
+    Ok(vec![
+        build_approve_permit2_call(inputs.source_token_address, U256::ZERO),
+        build_approve_permit2_call(inputs.source_token_address, inputs.source_amount),
+        build_execute_and_create_call(inputs, permit2_nonce, permit2_deadline, permit2_signature),
+    ])
 }
 
 /// Fully encoded Kernel execution, signed by its EIP-7702 owner.

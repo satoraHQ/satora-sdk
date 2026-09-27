@@ -272,24 +272,33 @@ impl Client {
                 .abi_encode(),
             ))
             .await?;
-        if word(&allowance)? < amount {
-            let approve = transaction(
-                wallet,
-                context.source_token,
-                IERC20::approveCall {
-                    spender: PERMIT2_ADDRESS,
-                    amount: options.max_source_amount,
+        let allowance = word(&allowance)?;
+        if allowance < amount {
+            let approve = |amount: U256| async move {
+                let approve = transaction(
+                    wallet,
+                    context.source_token,
+                    IERC20::approveCall {
+                        spender: PERMIT2_ADDRESS,
+                        amount,
+                    }
+                    .abi_encode(),
+                );
+                let hash = wallet.send_transaction(&approve).await?;
+                let receipt = wallet.wait_for_receipt(hash).await?;
+                if receipt.transaction_hash != hash {
+                    return Err(invalid("funding receipt transaction hash mismatch"));
                 }
-                .abi_encode(),
-            );
-            let hash = wallet.send_transaction(&approve).await?;
-            let receipt = wallet.wait_for_receipt(hash).await?;
-            if receipt.transaction_hash != hash {
-                return Err(invalid("funding receipt transaction hash mismatch"));
+                if !receipt.success {
+                    return Err(invalid("token approval reverted"));
+                }
+                Ok::<_, Error>(())
+            };
+            // USDT reverts when a non-zero allowance is changed to another non-zero value.
+            if !allowance.is_zero() {
+                approve(U256::ZERO).await?;
             }
-            if !receipt.success {
-                return Err(invalid("token approval reverted"));
-            }
+            approve(options.max_source_amount).await?;
         }
         let fresh = self.get_permit2_funding_data(id).await?;
         let calls = fresh.validate(&context, &options)?;
@@ -530,6 +539,7 @@ mod tests {
         transactions: Mutex<Vec<EvmTransaction>>,
         fail_receipt: bool,
         fail_send: bool,
+        allowance: U256,
     }
     impl EvmWallet for Wallet {
         fn address(&self) -> Address {
@@ -541,8 +551,24 @@ mod tests {
         fn sign_typed_data<'a>(&'a self, data: &'a EvmTypedData) -> WalletFuture<'a, Signature> {
             Box::pin(async move { crate::aa::signing::sign_hash(&self.secret, data.digest) })
         }
-        fn call<'a>(&'a self, _: &'a EvmTransaction) -> WalletFuture<'a, Bytes> {
-            Box::pin(async { Ok(U256::from(1000).to_be_bytes::<32>().to_vec().into()) })
+        fn call<'a>(&'a self, tx: &'a EvmTransaction) -> WalletFuture<'a, Bytes> {
+            Box::pin(async move {
+                let value = if tx
+                    .data
+                    .starts_with(&TokenAllowance::allowanceCall::SELECTOR)
+                {
+                    self.transactions
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .filter_map(|tx| IERC20::approveCall::abi_decode(&tx.data).ok())
+                        .last()
+                        .map_or(self.allowance, |approve| approve.amount)
+                } else {
+                    U256::from(1000)
+                };
+                Ok(value.to_be_bytes::<32>().to_vec().into())
+            })
         }
         fn send_transaction<'a>(&'a self, tx: &'a EvmTransaction) -> WalletFuture<'a, B256> {
             Box::pin(async move {
@@ -565,8 +591,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn funding_checks_receipt_and_persists_before_a_failed_wait() {
-        for (fail_receipt, fail_send) in [(false, false), (true, false), (false, true)] {
+    async fn funding_checks_hash_lock_resets_allowance_and_persists_before_a_failed_wait() {
+        for (fail_receipt, fail_send, allowance, expected) in [
+            (false, false, 1000, vec![]),
+            (true, false, 1000, vec![]),
+            (false, true, 1000, vec![]),
+            (false, false, 400, vec![0, 1000]),
+            (false, false, 0, vec![1000]),
+        ] {
+            let expected: Vec<U256> = expected.into_iter().map(U256::from).collect();
             let server = MockServer::start().await;
             let (mut context, mut funding, policy) = data();
             let signer = Signer::from_mnemonic(MNEMONIC).unwrap();
@@ -648,6 +681,7 @@ mod tests {
                 transactions: Mutex::new(vec![]),
                 fail_receipt,
                 fail_send,
+                allowance: U256::from(allowance),
             };
             let rejected = client
                 .fund_swap_with_wallet("test", &wallet, policy.clone())
@@ -671,7 +705,21 @@ mod tests {
                 .fund_swap_with_wallet("test", &wallet, policy.clone())
                 .await;
             assert_eq!(result.is_err(), fail_receipt || fail_send);
-            assert_eq!(wallet.transactions.lock().unwrap().len(), 1);
+            {
+                let transactions = wallet.transactions.lock().unwrap();
+                assert_eq!(transactions.len(), 1 + expected.len());
+                let (fund, approvals) = transactions.split_last().unwrap();
+                let approvals: Vec<U256> = approvals
+                    .iter()
+                    .map(|tx| {
+                        let approve = IERC20::approveCall::abi_decode(&tx.data).unwrap();
+                        assert_eq!(approve.spender, PERMIT2_ADDRESS);
+                        approve.amount
+                    })
+                    .collect();
+                assert_eq!(approvals, expected);
+                assert_eq!(fund.to, policy.coordinator);
+            }
             let stored = store.get_swap("test").unwrap().unwrap();
             assert_eq!(
                 stored.metadata.evm_fund_txid,
@@ -691,7 +739,10 @@ mod tests {
                     .await
                     .is_err()
             );
-            assert_eq!(wallet.transactions.lock().unwrap().len(), 1);
+            assert_eq!(
+                wallet.transactions.lock().unwrap().len(),
+                1 + expected.len()
+            );
         }
     }
 }

@@ -494,10 +494,11 @@ async fn sponsored_cctp_mint_and_funding_share_one_batch_and_resume_after_restar
                 let encoded:Bytes=body["params"][0]["callData"].as_str().unwrap().parse().unwrap();
                 let execute=IKernel::executeCall::abi_decode(&encoded).unwrap();
                 let calls=Vec::<Call>::abi_decode(&execute.executionCalldata).unwrap();
-                assert_eq!(calls.len(),3);
+                assert_eq!(calls.len(),4);
                 assert_eq!(calls[0].target,cctp::MESSAGE_TRANSMITTER);assert!(calls[0].callData.starts_with(&cctp::receiveMessageCall::SELECTOR));
-                let approval=IERC20::approveCall::abi_decode(&calls[1].callData).unwrap();assert_eq!(approval.amount,U256::from(9_999_000));
-                let funding=IHTLCCoordinator::executeAndCreateWithPermit2Call::abi_decode(&calls[2].callData).unwrap();
+                let reset=IERC20::approveCall::abi_decode(&calls[1].callData).unwrap();assert_eq!(reset.amount,U256::ZERO);
+                let approval=IERC20::approveCall::abi_decode(&calls[2].callData).unwrap();assert_eq!(approval.amount,U256::from(9_999_000));
+                let funding=IHTLCCoordinator::executeAndCreateWithPermit2Call::abi_decode(&calls[3].callData).unwrap();
                 assert_eq!(funding.depositor,owner);assert_eq!(funding.permit.permitted.amount,approval.amount);
                 assert!(!funding.signature.is_empty());
                 assert!(persisted.get_swap(&swap_id).unwrap().unwrap().metadata.bridge_operations.unwrap().contains_key("cctp_fund"));
