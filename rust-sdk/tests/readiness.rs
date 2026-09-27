@@ -1130,11 +1130,13 @@ async fn dex_quote_and_unsigned_calldata_match_api_schema() {
     let server = MockServer::start().await;
     let response = json!({"chain":"137","payload":{"kind":"evm","calls":[{"target":"0x1111111111111111111111111111111111111111","data":"0x1234","value":"0"}]},"expected_amount_in":"100000","estimated_amount_out":"200000","estimated_settlement_seconds":0,"router":"uniswap"});
     assert_schema(&response, "DexCalldataResponse");
-    Mock::given(path("/dex-calldata"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(response))
-        .expect(1)
-        .mount(&server)
-        .await;
+    for route in ["/dex-calldata/claim", "/dex-calldata/fund"] {
+        Mock::given(path(route))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
     let token = DexToken::Evm {
         chain_id: 137,
         address: "0x1111111111111111111111111111111111111111".into(),
@@ -1147,21 +1149,37 @@ async fn dex_quote_and_unsigned_calldata_match_api_schema() {
         cctp_recipient_setup: true,
     };
     assert_schema(&serde_json::to_value(request).unwrap(), "DexQuoteRequest");
-    let response = client(&server)
-        .get_dex_calldata(DexCalldataRequest {
-            from: token.clone(),
-            to: token,
-            amount: DexAmount::ExactIn("100000".into()),
-            sender: "0x2222222222222222222222222222222222222222".into(),
-            slippage_bps: 100,
-            bridge_recipient: None,
-        })
+    let calldata_request = DexCalldataRequest {
+        from: token.clone(),
+        to: token,
+        amount: DexAmount::ExactIn("100000".into()),
+        sender: "0x2222222222222222222222222222222222222222".into(),
+        slippage_bps: 100,
+        bridge_recipient: None,
+    };
+    let client = client(&server);
+    let response = client
+        .get_dex_calldata(calldata_request.clone())
         .await
         .unwrap();
     assert_eq!(response.expected_amount_in, "100000");
+    let response = client
+        .get_dex_calldata_fund(calldata_request)
+        .await
+        .unwrap();
+    assert_eq!(response.expected_amount_in, "100000");
+    let spec: Value = serde_json::from_str(include_str!("../openapi.json")).unwrap();
     let requests = server.received_requests().await.unwrap();
-    assert_schema(
-        &serde_json::from_slice(&requests[0].body).unwrap(),
-        "DexCalldataRequest",
-    );
+    assert_eq!(requests.len(), 2);
+    for request in requests {
+        let route = request.url.path();
+        assert!(
+            spec["paths"][route]["post"].is_object(),
+            "{route} is not a served POST route"
+        );
+        assert_schema(
+            &serde_json::from_slice(&request.body).unwrap(),
+            "DexCalldataRequest",
+        );
+    }
 }

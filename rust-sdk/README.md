@@ -100,7 +100,7 @@ arbitrary-precision integers, including bridge-fee and peg-rate rounding.
 can use `get_quote`; automatic fallback is left to the caller. Pair/config/referral
 data caches for 60 seconds; `clear_quote_cache` invalidates it immediately.
 DEX and network-fee requests always use fresh data. `get_dex_calldata` returns
-unsigned calls for caller review and execution.
+unsigned calls that pay the output to `sender`, for caller review and execution.
 
 ## Persistence and recovery
 
@@ -308,9 +308,10 @@ operation blocks other funding paths until its original receipt is reconciled.
 
 `claim_evm_to_bridge` appends CCTP or USDT0 adapter calls to reviewed DEX calldata
 and returns the actual CCTP burn or LayerZero message query for delivery tracking.
-Use `get_dex_calldata_fund` with the coordinator as recipient; the DEX calls must
-enforce their own minimum output. Bridge calls consume that output, so the
-coordinator's final sweep minimum is zero. The adapter pulls the whole coordinator balance, so it gets an unlimited
+Use `get_dex_calldata_fund` with the coordinator as sender; the server sets the
+coordinator as recipient, and the DEX calls must enforce their own minimum output.
+Bridge calls consume that output, so the coordinator's final sweep minimum is
+zero. The adapter pulls the whole coordinator balance, so it gets an unlimited
 approval that is reset to zero in the same batch, matching the daemon. The bridge minimum is only
 checked on the claim receipt after it is mined, so the DEX calls' own minimum
 output is what bounds the bridged amount. USDT0 native fees require an explicit

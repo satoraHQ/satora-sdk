@@ -81,14 +81,16 @@ impl Client {
         Ok(check_status(response).await?.json().await?)
     }
 
-    /// Fetch unsigned calls. Callers must validate destinations and approvals before signing.
+    /// Fetch unsigned calls whose output lands on `sender`. Not for coordinator claims or
+    /// funding, which need `get_dex_calldata_fund`. Callers must validate destinations and
+    /// approvals before signing.
     pub async fn get_dex_calldata(
         &self,
         request: DexCalldataRequest,
     ) -> Result<DexCalldataResponse> {
         validate_dex(&request.amount, request.slippage_bps)?;
         let response = self
-            .api_request(Method::POST, self.url("dex-calldata")?)
+            .api_request(Method::POST, self.url("dex-calldata/claim")?)
             .json(&request)
             .send()
             .await?;
