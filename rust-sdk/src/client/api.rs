@@ -197,7 +197,7 @@ impl Client {
         }
         self.storage.ensure_next_key_index(recovery.next_index)?;
         for recovered in &recovery.swaps {
-            self.persist_swap(recovered.index, recovered.swap.clone())?;
+            self.persist_server_swap(recovered.index, recovered.swap.clone())?;
         }
         Ok(recovery)
     }

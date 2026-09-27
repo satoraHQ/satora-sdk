@@ -429,6 +429,42 @@ async fn sqlite_reopen_retains_timed_out_attempt_and_opt_in_options() {
     assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
 }
 
+#[tokio::test]
+async fn restore_reports_unreadable_sqlite_rows_and_installs_the_rest() {
+    let (tracker, reader, executor, id) = setup(0, TrackerOptions::default());
+    track(&tracker, &id).await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("swaps.db");
+    let store = Arc::new(crate::SqliteSwapStorage::open(&path, "wallet").unwrap());
+    store
+        .store_swap(tracker.0.client.get_stored_swap(&id).unwrap().unwrap())
+        .unwrap();
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute(
+            "INSERT INTO sdk_swap_records VALUES ('wallet', 'corrupt', '{not json')",
+            [],
+        )
+        .unwrap();
+    let client = Client::builder().mnemonic("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about").storage(store).build().unwrap();
+    let restarted = SwapTracker::new(
+        client,
+        ContractManager::new(reader, ManagerOptions::default()).unwrap(),
+        TrackerOptions::default(),
+        Some(executor),
+    )
+    .unwrap();
+    let failures = restarted.restore().await.unwrap();
+    assert_eq!(
+        failures
+            .iter()
+            .map(|(id, _)| id.as_str())
+            .collect::<Vec<_>>(),
+        ["corrupt"]
+    );
+    assert!(restarted.record(&id).await.unwrap().enabled);
+}
+
 fn unsent_operation() -> crate::storage::BridgeOperation {
     crate::storage::BridgeOperation {
         intent: serde_json::json!({}),

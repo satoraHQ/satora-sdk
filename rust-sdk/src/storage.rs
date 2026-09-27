@@ -53,24 +53,30 @@ pub trait SwapStorage: Send + Sync {
     fn get_swap_key_index(&self, swap_id: &str) -> Result<Option<u32>>;
 
     /// Save a snapshot and merge its metadata, retaining its original index and creation time.
-    /// Legacy custom stores default to index-only persistence. Override this and
-    /// the record methods to support offline listing and execution resumption.
+    /// Legacy custom stores default to index-only persistence: the client then keeps
+    /// records and their execution journal in memory for the life of one `Client`.
+    /// After a restart, call [`crate::Client::refresh_swap`]; EVM funding is then
+    /// treated as possibly submitted. Override this and the record methods for
+    /// durable resumption.
     fn store_swap(&self, record: StoredSwap) -> Result<()> {
         record.validate()?;
         self.put_swap_key_index(record.response.id(), record.key_index)
     }
 
     fn get_swap(&self, _swap_id: &str) -> Result<Option<StoredSwap>> {
-        Err(Error::Storage(
-            "this store does not support complete records".into(),
-        ))
+        Ok(None)
     }
 
     /// List records by swap ID, in ascending order.
     fn list_swaps(&self) -> Result<Vec<StoredSwap>> {
-        Err(Error::Storage(
-            "this store does not support complete records".into(),
-        ))
+        Ok(Vec::new())
+    }
+
+    /// Records this build cannot decode, as (swap ID, error). [`Self::list_swaps`]
+    /// skips them, and [`crate::tracker::SwapTracker::restore`] reports them as
+    /// failures.
+    fn unreadable_swaps(&self) -> Result<Vec<(String, String)>> {
+        Ok(Vec::new())
     }
 
     /// Atomically merge supplied fields; absent fields are retained.

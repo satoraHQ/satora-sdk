@@ -99,6 +99,18 @@ impl SqliteSwapStorage {
         Ok(())
     }
 
+    fn decode_row(swap_id: &str, json: &str) -> Result<StoredSwap> {
+        let record: StoredSwap =
+            serde_json::from_str(json).map_err(|e| Error::Storage(e.to_string()))?;
+        record.validate()?;
+        if record.response.id() != swap_id {
+            return Err(Error::Storage(
+                "swap record ID does not match its database key".into(),
+            ));
+        }
+        Ok(record)
+    }
+
     fn connection(&self) -> Result<MutexGuard<'_, Connection>> {
         self.connection
             .lock()
@@ -149,19 +161,38 @@ impl SwapStorage for SqliteSwapStorage {
         let rows = statement.query_map([&self.wallet_id], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
-        rows.map(|row| {
-            let (id, json) = row?;
-            let record: StoredSwap =
-                serde_json::from_str(&json).map_err(|e| Error::Storage(e.to_string()))?;
-            record.validate()?;
-            if record.response.id() != id {
-                return Err(Error::Storage(
-                    "swap record ID does not match its database key".into(),
-                ));
+        rows.filter_map(|row| {
+            let (id, json) = match row {
+                Ok(row) => row,
+                Err(error) => return Some(Err(Error::from(error))),
+            };
+            match Self::decode_row(&id, &json) {
+                Ok(record) => Some(Ok(record)),
+                // A row this build cannot read (a newer SDK's record, or corruption)
+                // must not hide every other swap from restoration.
+                Err(error) => {
+                    tracing::warn!(swap_id = %id, %error, "skipping unreadable swap record");
+                    None
+                }
             }
-            Ok(record)
         })
         .collect()
+    }
+
+    fn unreadable_swaps(&self) -> Result<Vec<(String, String)>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare("SELECT swap_id, record_json FROM sdk_swap_records WHERE wallet_id = ?1 ORDER BY swap_id")?;
+        let rows = statement.query_map([&self.wallet_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut unreadable = Vec::new();
+        for row in rows {
+            let (id, json) = row?;
+            if let Err(error) = Self::decode_row(&id, &json) {
+                unreadable.push((id, error.to_string()));
+            }
+        }
+        Ok(unreadable)
     }
 
     fn update_metadata(&self, swap_id: &str, metadata: SwapMetadata) -> Result<()> {

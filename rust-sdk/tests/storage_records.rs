@@ -259,3 +259,170 @@ async fn interrupted_recovery_keeps_completed_pages_after_restart() {
         .unwrap();
     assert_eq!(client.get_stored_swap(&id).unwrap().unwrap().key_index, 3);
 }
+
+#[test]
+fn known_field_names_in_extra_do_not_corrupt_sqlite_records() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteSwapStorage::open(dir.path().join("swaps.db"), "wallet").unwrap();
+    let record = record(7);
+    let id = record.response.id().to_owned();
+    store.store_swap(record).unwrap();
+    store
+        .update_metadata(
+            &id,
+            SwapMetadata {
+                extra: [("evm_fund_txid".to_owned(), json!("x"))].into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let stored = store.get_swap(&id).unwrap().unwrap();
+    assert!(stored.metadata.extra.is_empty());
+    assert_eq!(store.list_swaps().unwrap(), vec![stored]);
+    assert!(store.unreadable_swaps().unwrap().is_empty());
+}
+
+#[derive(Default)]
+struct IndexOnly {
+    indices: std::sync::Mutex<std::collections::HashMap<String, u32>>,
+    next: std::sync::atomic::AtomicU32,
+}
+
+impl SwapStorage for IndexOnly {
+    fn next_key_index(&self) -> lendaswap_sdk::Result<u32> {
+        Ok(self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+
+    fn put_swap_key_index(&self, swap_id: &str, key_index: u32) -> lendaswap_sdk::Result<()> {
+        self.indices
+            .lock()
+            .unwrap()
+            .insert(swap_id.to_owned(), key_index);
+        Ok(())
+    }
+
+    fn get_swap_key_index(&self, swap_id: &str) -> lendaswap_sdk::Result<Option<u32>> {
+        Ok(self.indices.lock().unwrap().get(swap_id).copied())
+    }
+
+    fn ensure_next_key_index(&self, next_index: u32) -> lendaswap_sdk::Result<()> {
+        self.next
+            .fetch_max(next_index, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+async fn refreshed_client(store: std::sync::Arc<dyn SwapStorage>) -> (Client, String, MockServer) {
+    let signer = Signer::from_mnemonic(MNEMONIC).unwrap();
+    let mut response = serde_json::to_value(record(0).response).unwrap();
+    response["client_evm_address"] = json!(signer.derive_evm_key(0).unwrap().address);
+    let id = response["id"].as_str().unwrap().to_owned();
+    store.put_swap_key_index(&id, 0).unwrap();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/swap/{id}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response))
+        .mount(&server)
+        .await;
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(store)
+        .build()
+        .unwrap();
+    client.refresh_swap(&id).await.unwrap();
+    (client, id, server)
+}
+
+#[tokio::test]
+async fn index_only_store_treats_funding_as_unresolved_after_restart() {
+    let (client, id, _server) = refreshed_client(std::sync::Arc::new(IndexOnly::default())).await;
+    let fund_started = |client: &Client| {
+        client
+            .get_stored_swap(&id)
+            .unwrap()
+            .unwrap()
+            .metadata
+            .evm_fund_started
+    };
+    assert_eq!(fund_started(&client), Some(true));
+
+    client
+        .update_swap_metadata(
+            &id,
+            SwapMetadata {
+                evm_fund_started: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    client.refresh_swap(&id).await.unwrap();
+    assert_eq!(fund_started(&client), Some(false));
+
+    assert!(client.delete_swap(&id).is_err());
+    assert!(client.get_stored_swap(&id).unwrap().is_some());
+    assert!(client.clear_swap_storage().is_err());
+    assert!(client.get_stored_swap(&id).unwrap().is_some());
+
+    let (durable, id, _server) = refreshed_client(InMemorySwapStorage::shared()).await;
+    assert_eq!(
+        durable
+            .get_stored_swap(&id)
+            .unwrap()
+            .unwrap()
+            .metadata
+            .evm_fund_started,
+        None
+    );
+}
+
+#[tokio::test]
+async fn index_only_store_treats_recovered_funding_as_unresolved() {
+    let signer = Signer::from_mnemonic(MNEMONIC).unwrap();
+    let mut response = serde_json::to_value(record(0).response).unwrap();
+    response["client_evm_address"] = json!(signer.derive_evm_key(0).unwrap().address);
+    response["hash_lock"] = json!(hex::encode(signer.derive_swap_params(0).unwrap().hash_lock));
+    response["index"] = json!(0);
+    let id = response["id"].as_str().unwrap().to_owned();
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/swap/recover"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "swaps": [response],
+            "highest_index": 0,
+            "next_index": 1,
+            "scanned_until": 20,
+            "complete": true
+        })))
+        .mount(&server)
+        .await;
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(std::sync::Arc::new(IndexOnly::default()))
+        .build()
+        .unwrap();
+    client.recover_all_swaps(None).await.unwrap();
+    assert_eq!(
+        client
+            .get_stored_swap(&id)
+            .unwrap()
+            .unwrap()
+            .metadata
+            .evm_fund_started,
+        Some(true)
+    );
+    #[cfg(feature = "gasless")]
+    {
+        let error = client
+            .fund_swap_gasless(&id, lendaswap_sdk::aa::GaslessOpts::default())
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("funding may already be submitted"),
+            "{error}"
+        );
+    }
+}

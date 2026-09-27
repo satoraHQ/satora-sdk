@@ -89,6 +89,8 @@ pub struct Client {
     /// [`Error::InvalidSigner`].
     pub(crate) signer: Option<Signer>,
     pub(crate) storage: Arc<dyn SwapStorage>,
+    /// Records for swaps whose store keeps only key indices.
+    pub(crate) process_records: Arc<InMemorySwapStorage>,
     /// Optional referral code attached to every swap this client creates.
     /// Set via [`ClientBuilder::referral_code`].
     pub(crate) referral_code: Option<String>,
@@ -130,6 +132,7 @@ impl Client {
             base_url,
             signer: None,
             storage: Arc::new(InMemorySwapStorage::new()),
+            process_records: Arc::default(),
             referral_code: None,
             arkade_config: None,
             arkade_wallet: Arc::new(tokio::sync::OnceCell::new()),
@@ -854,6 +857,7 @@ impl ClientBuilder {
             base_url,
             signer: Some(signer),
             storage,
+            process_records: Arc::default(),
             referral_code: self.referral_code,
             arkade_config: self.arkade_config,
             arkade_wallet: Arc::new(tokio::sync::OnceCell::new()),

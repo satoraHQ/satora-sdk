@@ -337,6 +337,7 @@ impl SwapTracker {
                 failures.push((id, error.to_string()));
             }
         }
+        failures.extend(self.0.client.unreadable_swaps()?);
         Ok(failures)
     }
     /// Disable tracking while retaining the execution journal for later recovery.
@@ -572,10 +573,10 @@ impl SwapTracker {
                 claim_submitted: metadata.evm_claim_txid.is_some()
                     || metadata.evm_claim_userop_hash.is_some()
                     || submitted.is_some_and(|a| a.action == ActionKind::Claim),
+                funding_uncertain: metadata.evm_fund_started == Some(true)
+                    && metadata.evm_fund_txid.is_none()
+                    && metadata.evm_fund_userop_hash.is_none(),
                 submission_uncertain: uncertain
-                    || (metadata.evm_fund_started == Some(true)
-                        && metadata.evm_fund_txid.is_none()
-                        && metadata.evm_fund_userop_hash.is_none())
                     || metadata.evm_refund_started == Some(true)
                     || metadata.btc_spend_txid.is_some()
                     || metadata.arkade_pending.is_some()

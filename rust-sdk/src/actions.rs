@@ -105,6 +105,9 @@ pub struct ActionInput<'a> {
     pub server: Option<&'a Observation>,
     pub funding_submitted: bool,
     pub claim_submitted: bool,
+    /// A funding reservation with no recorded hash. It only matters while the
+    /// client lock is absent: once the lock is observed, funding is settled.
+    pub funding_uncertain: bool,
     pub submission_uncertain: bool,
     /// Application-verified Arkade capability; ignored for other client rails.
     pub collaborative_refund_available: bool,
@@ -300,6 +303,9 @@ pub fn derive_actions(input: ActionInput<'_>, policy: &ActionPolicy) -> SwapActi
         match status {
             None => wait(WaitingOn::Verification),
             Some(Pending) => {
+                if input.funding_uncertain {
+                    return wait(WaitingOn::SubmissionRecovery);
+                }
                 if input.contracts.client.is_none() {
                     return wait(WaitingOn::ClientPayment);
                 }

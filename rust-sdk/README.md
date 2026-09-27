@@ -118,6 +118,12 @@ counter without moving an existing counter backwards. Custom stores must
 implement `ensure_next_key_index` to support recovery. Existing index-only SQLite
 databases upgrade on open; refresh or recover swaps to populate their snapshots.
 Custom stores retain index-only behavior until they implement the record methods.
+An index-only store keeps records and their execution journal only for the life
+of one `Client`. After a restart, `refresh_swap` and `recover_swaps` treat EVM
+funding as possibly submitted and refuse it. If you know nothing was sent, clear it with
+`update_swap_metadata(id, SwapMetadata { evm_fund_started: Some(false), ..Default::default() })`.
+Deposit recoveries are not deduplicated across restarts on such a store.
+Resuming submitted spends and claims after a restart requires the record methods.
 
 Use `get_stored_swap` and `list_all_swaps` for offline snapshots, `refresh_swap`
 for a persisted API refresh, and `update_swap_metadata` to merge local execution

@@ -4,30 +4,55 @@ use crate::Result;
 use crate::storage::EvmKeySource;
 use crate::storage::StoredSwap;
 use crate::storage::SwapMetadata;
+use crate::storage::SwapStorage;
 use crate::types::GetSwapResponse;
 
 impl Client {
-    /// Read a complete local snapshot without making a network request.
+    /// Read a complete local snapshot without making a network request. An
+    /// index-only store keeps no records, so the process-local copy is consulted.
     pub fn get_stored_swap(&self, id: &str) -> Result<Option<StoredSwap>> {
-        self.storage.get_swap(id)
+        match self.storage.get_swap(id)? {
+            Some(record) => Ok(Some(record)),
+            None => self.process_records.get_swap(id),
+        }
     }
 
     pub fn list_all_swaps(&self) -> Result<Vec<StoredSwap>> {
-        self.storage.list_swaps()
+        let mut records = self.storage.list_swaps()?;
+        let known: std::collections::HashSet<_> =
+            records.iter().map(|r| r.response.id().to_owned()).collect();
+        records.extend(
+            self.process_records
+                .list_swaps()?
+                .into_iter()
+                .filter(|r| !known.contains(r.response.id())),
+        );
+        records.sort_by(|a, b| a.response.id().cmp(b.response.id()));
+        Ok(records)
     }
 
     pub fn update_swap_metadata(&self, id: &str, metadata: SwapMetadata) -> Result<()> {
-        self.storage.update_metadata(id, metadata)
+        if self.storage.get_swap(id)?.is_some() {
+            self.storage.update_metadata(id, metadata)
+        } else {
+            self.process_records.update_metadata(id, metadata)
+        }
     }
 
     /// Forget the local record. This does not cancel a swap or reset key allocation.
     pub fn delete_swap(&self, id: &str) -> Result<()> {
-        self.storage.delete_swap(id)
+        self.storage.delete_swap(id)?;
+        self.process_records.delete_swap(id)
     }
 
     /// Forget this wallet's local records without resetting key allocation.
     pub fn clear_swap_storage(&self) -> Result<()> {
-        self.storage.clear()
+        self.storage.clear()?;
+        self.process_records.clear()
+    }
+
+    pub(crate) fn unreadable_swaps(&self) -> Result<Vec<(String, String)>> {
+        self.storage.unreadable_swaps()
     }
 
     /// Refresh an existing local swap, retaining its execution metadata.
@@ -43,8 +68,33 @@ impl Client {
                 "response swap ID does not match request".into(),
             ));
         }
-        self.persist_swap(index, response.clone())?;
+        self.persist_server_swap(index, response.clone())?;
         Ok(response)
+    }
+
+    /// Persists a server snapshot from refresh or recovery.
+    pub(super) fn persist_server_swap(&self, index: u32, response: GetSwapResponse) -> Result<()> {
+        let id = response.id().to_owned();
+        let journal_unknown = self.process_records.get_swap(&id)?.is_none();
+        let evm_source = matches!(
+            response,
+            GetSwapResponse::EvmToBitcoin(_)
+                | GetSwapResponse::EvmToArkade(_)
+                | GetSwapResponse::EvmToLightning(_)
+        );
+        self.persist_swap(index, response)?;
+        if journal_unknown && evm_source && self.storage.get_swap(&id)?.is_none() {
+            // This store keeps no journal, so a funding sent before a restart or by
+            // another Client is invisible here. Treat it as unresolved, not absent.
+            self.process_records.update_metadata(
+                &id,
+                SwapMetadata {
+                    evm_fund_started: Some(true),
+                    ..Default::default()
+                },
+            )?;
+        }
+        Ok(())
     }
 
     pub(super) fn persist_swap(&self, index: u32, response: GetSwapResponse) -> Result<()> {
@@ -97,7 +147,11 @@ impl Client {
             })
             .transpose()?;
         metadata.evm_key_source = evm_key_source;
-        self.storage
-            .store_swap(StoredSwap::new(index, response, metadata)?)
+        let record = StoredSwap::new(index, response, metadata)?;
+        self.storage.store_swap(record.clone())?;
+        if self.storage.get_swap(record.response.id())?.is_none() {
+            self.process_records.store_swap(record)?;
+        }
+        Ok(())
     }
 }

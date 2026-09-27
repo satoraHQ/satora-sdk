@@ -46,6 +46,7 @@ fn input<'a>(
         server: Some(server),
         funding_submitted: false,
         claim_submitted: false,
+        funding_uncertain: false,
         submission_uncertain: false,
         collaborative_refund_available: false,
         bridge: &BridgeState::None,
@@ -153,6 +154,31 @@ fn funding_claim_and_refund_transitions_use_confirmed_state_and_chain_clock() {
                 Automation::Confirm
             );
         }
+    }
+}
+#[test]
+fn a_hashless_funding_reservation_blocks_only_before_the_client_lock_is_seen() {
+    use HtlcState::*;
+    let contracts = SwapContracts {
+        client: Some(reference(200)),
+        server: Some(reference(100)),
+    };
+    for (client, server, expected) in [
+        (
+            Absent,
+            Absent,
+            ActionKind::Wait {
+                on: WaitingOn::SubmissionRecovery,
+            },
+        ),
+        (Confirmed, Confirmed, ActionKind::Claim),
+    ] {
+        let client = observation(client, 50);
+        let server = observation(server, 50);
+        let mut input = input(&contracts, &client, &server);
+        input.funding_uncertain = true;
+        let actions = derive_actions(input, &ActionPolicy::default());
+        assert_eq!(actions.recommended().unwrap().kind, expected);
     }
 }
 #[test]

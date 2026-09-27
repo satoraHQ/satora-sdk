@@ -49,13 +49,19 @@ pub struct SwapMetadata {
     pub evm_fund_userop_hash: Option<String>,
     pub evm_coordinator_address: Option<String>,
     pub evm_key_source: Option<EvmKeySource>,
+    /// Fields written by a newer SDK, preserved across this build's rewrites.
+    #[serde(flatten)]
+    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 impl SwapMetadata {
     pub(super) fn merge(&mut self, update: Self) {
+        self.extra.extend(update.extra);
         macro_rules! merge {
             ($($field:ident),* $(,)?) => {$(
                 if update.$field.is_some() { self.$field = update.$field; }
+                // A known name in `extra` would serialize as a duplicate JSON key.
+                self.extra.remove(stringify!($field));
             )*};
         }
         merge!(
