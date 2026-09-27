@@ -426,11 +426,14 @@ impl Blockchain for EsploraBlockchain {
     ) -> std::result::Result<Vec<ExplorerUtxo>, ArkError> {
         let current_block_height = self.inner.get_height().await.map_err(ArkError::consumer)?;
         let script_pubkey = address.script_pubkey();
-        let txs = self
-            .inner
-            .scripthash_txs(&script_pubkey, None)
-            .await
-            .map_err(ArkError::consumer)?;
+        let txs = crate::bitcoin::scripthash_history(
+            &self.inner,
+            &self.http,
+            &self.base_url,
+            &script_pubkey,
+        )
+        .await
+        .map_err(ArkError::consumer)?;
 
         let outputs = txs
             .into_iter()

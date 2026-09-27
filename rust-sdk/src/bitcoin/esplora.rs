@@ -94,6 +94,55 @@ impl EsploraBackend {
         Ok(())
     }
 }
+pub(crate) async fn scripthash_history(
+    client: &esplora_client::AsyncClient,
+    http: &reqwest::Client,
+    base_url: &str,
+    script: &bitcoin::Script,
+) -> Result<Vec<esplora_client::Tx>> {
+    // /txs lists mempool entries before confirmed ones and some servers cap the whole
+    // page, so confirmed history is paged on its own: unconfirmed spam must not hide
+    // a confirmed funding.
+    let mut entries = client
+        .scripthash_txs(script, None)
+        .await
+        .map_err(transport)?;
+    let hash = bitcoin::hashes::sha256::Hash::hash(script.as_bytes());
+    let mut last_seen = None;
+    loop {
+        let page: Vec<esplora_client::Tx> = match last_seen {
+            // esplora-client only wraps the continuation form of /txs/chain.
+            None => http
+                .get(format!("{base_url}/scripthash/{hash:x}/txs/chain"))
+                .send()
+                .await
+                .map_err(transport)?
+                .error_for_status()
+                .map_err(transport)?
+                .json()
+                .await
+                .map_err(decode)?,
+            Some(last) => client
+                .scripthash_txs(script, Some(last))
+                .await
+                .map_err(transport)?,
+        };
+        let next = page.last().map(|tx| tx.txid);
+        let full = page.len() >= 25;
+        entries.extend(page);
+        if !full {
+            break;
+        }
+        if next.is_none() || next == last_seen {
+            return Err(invalid("Esplora history pagination did not advance"));
+        }
+        last_seen = next;
+    }
+    let mut seen = HashSet::new();
+    entries.retain(|tx| seen.insert(tx.txid));
+    Ok(entries)
+}
+
 impl BitcoinBackend for EsploraBackend {
     fn network(&self) -> Network {
         self.network
@@ -134,78 +183,87 @@ impl BitcoinBackend for EsploraBackend {
             let script = address.script_pubkey();
             let mut utxos = vec![];
             let mut transactions = vec![];
-            let mut seen = HashSet::new();
-            let mut last_seen = None;
-            loop {
-                let page = self
-                    .client
-                    .scripthash_txs(&script, last_seen)
-                    .await
-                    .map_err(transport)?;
-                let confirmed: Vec<_> = page
-                    .iter()
-                    .filter(|tx| tx.status.confirmed)
-                    .map(|tx| tx.txid)
-                    .collect();
-                let next = confirmed.last().copied();
-                for tx in page {
-                    if !seen.insert(tx.txid) {
-                        continue;
+            let entries =
+                scripthash_history(&self.client, &self.http, &self.base_url, &script).await?;
+            let listed: HashSet<Txid> = entries.iter().map(|tx| tx.txid).collect();
+            let listed_spends: HashSet<(Txid, u32)> = entries
+                .iter()
+                .flat_map(|tx| tx.vin.iter().map(|input| (input.txid, input.vout)))
+                .collect();
+            let mut unlisted_spenders: Vec<Txid> = vec![];
+            for tx in entries {
+                let confirmed_height = if tx.status.confirmed {
+                    let h = tx
+                        .status
+                        .block_height
+                        .ok_or_else(|| invalid("confirmed Bitcoin transaction has no height"))?;
+                    if h > height
+                        || Some(self.client.get_block_hash(h).await.map_err(transport)?)
+                            != tx.status.block_hash
+                    {
+                        return Err(invalid(
+                            "Bitcoin funding block is not on the observed chain",
+                        ));
                     }
-                    let confirmed_height = if tx.status.confirmed {
-                        let h = tx.status.block_height.ok_or_else(|| {
-                            invalid("confirmed Bitcoin transaction has no height")
-                        })?;
-                        if h > height
-                            || Some(self.client.get_block_hash(h).await.map_err(transport)?)
-                                != tx.status.block_hash
+                    Some(h)
+                } else {
+                    None
+                };
+                let raw = self
+                    .fetch_transaction(tx.txid)
+                    .await?
+                    .ok_or_else(|| invalid("Bitcoin funding transaction missing"))?;
+                if raw.compute_txid() != tx.txid {
+                    return Err(invalid("Bitcoin funding transaction ID mismatch"));
+                }
+                transactions.push(BitcoinHistoryTransaction {
+                    transaction: raw.clone(),
+                    confirmed_height,
+                });
+                for (vout, output) in raw
+                    .output
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, o)| o.script_pubkey == script)
+                {
+                    let vout = u32::try_from(vout).map_err(decode)?;
+                    let status = self.output_status(tx.txid, vout).await?;
+                    if !status.spent {
+                        utxos.push(BitcoinUtxo {
+                            outpoint: OutPoint {
+                                txid: tx.txid,
+                                vout,
+                            },
+                            output: output.clone(),
+                            confirmed_height,
+                        });
+                    } else if let Some(spender) =
+                        status.txid.filter(|spender| !listed.contains(spender))
+                    {
+                        // The capped mempool listing can leave out a spend of ours,
+                        // for example behind dust spam, so follow the outspend. Only
+                        // an unconfirmed spender can be missing from a consistent read.
+                        if status.status.is_some_and(|s| s.confirmed)
+                            || listed_spends.contains(&(tx.txid, vout))
                         {
-                            return Err(invalid(
-                                "Bitcoin funding block is not on the observed chain",
-                            ));
+                            return Err(invalid("Bitcoin history changed during observation"));
                         }
-                        Some(h)
-                    } else {
-                        None
-                    };
-                    let raw = self
-                        .fetch_transaction(tx.txid)
-                        .await?
-                        .ok_or_else(|| invalid("Bitcoin funding transaction missing"))?;
-                    if raw.compute_txid() != tx.txid {
-                        return Err(invalid("Bitcoin funding transaction ID mismatch"));
+                        if !unlisted_spenders.contains(&spender) {
+                            unlisted_spenders.push(spender);
+                        }
+                    }
+                }
+            }
+            for spender in unlisted_spenders {
+                if let Some(raw) = self.fetch_transaction(spender).await? {
+                    if raw.compute_txid() != spender {
+                        return Err(invalid("Bitcoin spending transaction ID mismatch"));
                     }
                     transactions.push(BitcoinHistoryTransaction {
-                        transaction: raw.clone(),
-                        confirmed_height,
+                        transaction: raw,
+                        confirmed_height: None,
                     });
-                    for (vout, output) in raw
-                        .output
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, o)| o.script_pubkey == script)
-                    {
-                        let vout = u32::try_from(vout).map_err(decode)?;
-                        let status = self.output_status(tx.txid, vout).await?;
-                        if !status.spent {
-                            utxos.push(BitcoinUtxo {
-                                outpoint: OutPoint {
-                                    txid: tx.txid,
-                                    vout,
-                                },
-                                output: output.clone(),
-                                confirmed_height,
-                            });
-                        }
-                    }
                 }
-                if confirmed.len() < 25 {
-                    break;
-                }
-                if next.is_none() || next == last_seen {
-                    return Err(invalid("Esplora history pagination did not advance"));
-                }
-                last_seen = next;
             }
             if self.client.get_tip_hash().await.map_err(transport)? != tip {
                 return Err(invalid("Bitcoin tip changed during observation"));

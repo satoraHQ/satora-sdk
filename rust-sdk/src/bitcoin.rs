@@ -42,6 +42,7 @@ use std::time::Duration;
 
 mod esplora;
 pub use esplora::EsploraBackend;
+pub(crate) use esplora::scripthash_history;
 #[cfg(feature = "electrum")]
 mod electrum;
 #[cfg(feature = "electrum")]

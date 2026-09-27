@@ -734,17 +734,210 @@ async fn esplora_observes_paginated_history_filters_spent_outputs_and_rejects_ti
     assert!(wrong_network.observe(&address).await.is_err());
 }
 
-#[cfg(feature = "electrum")]
 #[tokio::test]
-async fn electrum_reads_actual_funding_outputs_and_converts_btc_per_kb_fees() {
+async fn esplora_confirmed_funding_survives_mempool_spam() {
+    use serde_json::json;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    let (htlc, _, _, _, _) = fixture();
+    let address = htlc.address().unwrap();
+    let genesis = bitcoin::blockdata::constants::genesis_block(Network::Regtest);
+    let hash = genesis.block_hash();
+    let script_hash = bitcoin::hashes::sha256::Hash::hash(address.script_pubkey().as_bytes());
+    // 0..50 are unconfirmed dust, 50..75 a full page of confirmed decoys, 75 the funding.
+    let transactions: Vec<_> = (0..76)
+        .map(|n| Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: LockTime::from_consensus(n),
+            input: vec![TxIn {
+                previous_output: OutPoint::null(),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(if n == 75 { 50_000 } else { 330 }),
+                script_pubkey: address.script_pubkey(),
+            }],
+        })
+        .collect();
+    let entry = |tx: &Transaction, confirmed: bool| {
+        let status = if confirmed {
+            json!({"confirmed":true,"block_height":0,"block_hash":hash,"block_time":genesis.header.time})
+        } else {
+            json!({"confirmed":false})
+        };
+        json!({"txid":tx.compute_txid(),"version":2,"locktime":tx.lock_time.to_consensus_u32(),"vin":[],"vout":[],"size":tx.total_size(),"weight":tx.weight().to_wu(),"fee":0,"status":status})
+    };
+    let mempool: Vec<_> = transactions[..50]
+        .iter()
+        .map(|tx| entry(tx, false))
+        .collect();
+    let decoys: Vec<_> = transactions[50..75]
+        .iter()
+        .map(|tx| entry(tx, true))
+        .collect();
+    let funding = vec![entry(&transactions[75], true)];
+    let funding_txid = transactions[75].compute_txid();
+    let last_decoy = transactions[74].compute_txid();
+    let spender = Transaction {
+        version: bitcoin::transaction::Version::TWO,
+        lock_time: LockTime::ZERO,
+        input: vec![TxIn {
+            previous_output: OutPoint {
+                txid: funding_txid,
+                vout: 0,
+            },
+            script_sig: ScriptBuf::new(),
+            sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+            witness: Witness::new(),
+        }],
+        output: vec![TxOut {
+            value: Amount::from_sat(49_000),
+            script_pubkey: ScriptBuf::new(),
+        }],
+    };
+    let spender_txid = spender.compute_txid();
+    // 0 unspent, 1 spent in the mempool, 2 spent in a block the listing missed.
+    let spent = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
+    let funding_spent = spent.clone();
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::method("GET"))
+        .respond_with(move |request: &wiremock::Request| {
+            let path = request.url.path();
+            if path == "/block-height/0" || path == "/blocks/tip/hash" {
+                return ResponseTemplate::new(200).set_body_string(hash.to_string());
+            }
+            if path == "/blocks/tip/height" {
+                return ResponseTemplate::new(200).set_body_string("0");
+            }
+            if path == format!("/block/{hash}/header") {
+                return ResponseTemplate::new(200)
+                    .set_body_string(bitcoin::consensus::encode::serialize_hex(&genesis.header));
+            }
+            if path == format!("/scripthash/{script_hash:x}/txs") {
+                return ResponseTemplate::new(200).set_body_json(&mempool);
+            }
+            if path == format!("/scripthash/{script_hash:x}/txs/chain") {
+                return ResponseTemplate::new(200).set_body_json(&decoys);
+            }
+            if path == format!("/scripthash/{script_hash:x}/txs/chain/{last_decoy}") {
+                return ResponseTemplate::new(200).set_body_json(&funding);
+            }
+            if path == format!("/tx/{spender_txid}/raw") {
+                return ResponseTemplate::new(200)
+                    .set_body_bytes(bitcoin::consensus::serialize(&spender));
+            }
+            let state = funding_spent.load(std::sync::atomic::Ordering::Relaxed);
+            if path == format!("/tx/{funding_txid}/outspend/0") && state > 0 {
+                return ResponseTemplate::new(200).set_body_json(json!({
+                    "spent": true,
+                    "txid": spender_txid,
+                    "vin": 0,
+                    "status": if state == 1 {
+                        json!({"confirmed": false})
+                    } else {
+                        json!({"confirmed": true, "block_height": 0, "block_hash": hash})
+                    }
+                }));
+            }
+            for tx in &transactions {
+                if path == format!("/tx/{}/raw", tx.compute_txid()) {
+                    return ResponseTemplate::new(200)
+                        .set_body_bytes(bitcoin::consensus::serialize(tx));
+                }
+                if path == format!("/tx/{}/outspend/0", tx.compute_txid()) {
+                    return ResponseTemplate::new(200).set_body_json(json!({"spent":false}));
+                }
+            }
+            ResponseTemplate::new(404)
+        })
+        .mount(&server)
+        .await;
+    let backend = EsploraBackend::new(&server.uri(), Network::Regtest).unwrap();
+    // The same spam must not hide our pending spend of the funding either.
+    spent.store(1, std::sync::atomic::Ordering::Relaxed);
+    let history = backend.history(&address).await.unwrap();
+    assert_eq!(history.observation.utxos.len(), 75);
+    let pending = history
+        .transactions
+        .iter()
+        .find(|entry| entry.transaction.compute_txid() == spender_txid)
+        .expect("pending spend hidden by mempool spam");
+    assert_eq!(pending.confirmed_height, None);
+    spent.store(2, std::sync::atomic::Ordering::Relaxed);
+    let error = backend.history(&address).await.unwrap_err();
+    assert!(
+        error.to_string().contains("changed during observation"),
+        "{error}"
+    );
+    spent.store(0, std::sync::atomic::Ordering::Relaxed);
+    let observed = backend.observe(&address).await.unwrap();
+    assert_eq!(observed.utxos.len(), 76);
+    let funded = observed
+        .utxos
+        .iter()
+        .find(|utxo| utxo.outpoint.txid == funding_txid)
+        .expect("confirmed funding hidden by mempool spam");
+    assert_eq!(funded.confirmed_height, Some(0));
+    assert_eq!(funded.output.value, Amount::from_sat(50_000));
+}
+
+/// Line-delimited JSON-RPC server for `connections` sequential sockets. It answers the
+/// genesis header itself; `respond` gets the connection index and method and returns
+/// `None` to drop the socket, `Ok` for a result or `Err` for a JSON-RPC error.
+#[cfg(feature = "electrum")]
+fn electrum_mock(
+    connections: usize,
+    respond: impl Fn(usize, &str) -> Option<std::result::Result<serde_json::Value, serde_json::Value>>
+    + Send
+    + 'static,
+) -> (String, std::thread::JoinHandle<()>) {
     use serde_json::Value;
     use serde_json::json;
     use std::io::BufRead;
     use std::io::BufReader;
     use std::io::Write;
-    let (htlc, _, _, _, _) = fixture();
-    let address = htlc.address().unwrap();
-    let tx = Transaction {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("tcp://{}", listener.local_addr().unwrap());
+    let header = bitcoin::consensus::encode::serialize_hex(
+        &bitcoin::blockdata::constants::genesis_block(Network::Regtest).header,
+    );
+    let server = std::thread::spawn(move || {
+        for connection in 0..connections {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let method = request["method"].as_str().unwrap();
+                let reply = if method == "blockchain.block.header" {
+                    Some(Ok(json!(header)))
+                } else {
+                    respond(connection, method)
+                };
+                let body = match reply {
+                    Some(Ok(result)) => json!({"jsonrpc":"2.0","id":request["id"],"result":result}),
+                    Some(Err(error)) => json!({"jsonrpc":"2.0","id":request["id"],"error":error}),
+                    None => break,
+                };
+                writeln!(stream, "{body}").unwrap();
+            }
+        }
+    });
+    (url, server)
+}
+
+#[cfg(feature = "electrum")]
+fn electrum_test_transaction(address: &Address) -> Transaction {
+    Transaction {
         version: bitcoin::transaction::Version::TWO,
         lock_time: LockTime::ZERO,
         input: vec![TxIn::default()],
@@ -752,43 +945,31 @@ async fn electrum_reads_actual_funding_outputs_and_converts_btc_per_kb_fees() {
             value: Amount::from_sat(1000),
             script_pubkey: address.script_pubkey(),
         }],
-    };
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("tcp://{}", listener.local_addr().unwrap());
-    let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut reader = BufReader::new(stream.try_clone().unwrap());
-        let header = bitcoin::consensus::encode::serialize_hex(
-            &bitcoin::blockdata::constants::genesis_block(Network::Regtest).header,
-        );
-        loop {
-            let mut line = String::new();
-            if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                break;
+    }
+}
+
+#[cfg(feature = "electrum")]
+#[tokio::test]
+async fn electrum_reads_actual_funding_outputs_and_converts_btc_per_kb_fees() {
+    use serde_json::json;
+    let (htlc, _, _, _, _) = fixture();
+    let address = htlc.address().unwrap();
+    let tx = electrum_test_transaction(&address);
+    let header = bitcoin::consensus::encode::serialize_hex(
+        &bitcoin::blockdata::constants::genesis_block(Network::Regtest).header,
+    );
+    let (url, server) = electrum_mock(1, move |_, method| {
+        Some(Ok(match method {
+            "blockchain.headers.subscribe" => json!({"height":0,"hex":header}),
+            "blockchain.scripthash.listunspent" => {
+                json!([{"tx_hash":tx.compute_txid(),"tx_pos":0,"value":1000,"height":0}])
             }
-            let request: Value = serde_json::from_str(&line).unwrap();
-            let result = match request["method"].as_str().unwrap() {
-                "blockchain.block.header" => json!(header),
-                "blockchain.headers.subscribe" => json!({"height":0,"hex":header}),
-                "blockchain.scripthash.listunspent" => {
-                    json!([{"tx_hash":tx.compute_txid(),"tx_pos":0,"value":1000,"height":0}])
-                }
-                "blockchain.transaction.get" => {
-                    json!(bitcoin::consensus::encode::serialize_hex(&tx))
-                }
-                "blockchain.estimatefee" => json!(0.00002),
-                method => panic!("unexpected method {method}"),
-            };
-            writeln!(
-                stream,
-                "{}",
-                json!({"jsonrpc":"2.0","id":request["id"],"result":result})
-            )
-            .unwrap();
-        }
+            "blockchain.transaction.get" => {
+                json!(bitcoin::consensus::encode::serialize_hex(&tx))
+            }
+            "blockchain.estimatefee" => json!(0.00002),
+            method => panic!("unexpected method {method}"),
+        }))
     });
     let backend = ElectrumBackend::connect(url, Network::Regtest, 3)
         .await
