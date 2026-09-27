@@ -1,5 +1,88 @@
 # @satora/swap
 
+## 1.6.0
+
+### Minor Changes
+
+- 033243b: Send one protocol compatibility epoch header per protocol component (`bitcoin-htlc`, `arkade-vhtlc`, `lightning`, `evm-erc20-htlc`, `evm-native-htlc`) on every request instead of the legacy server-version header.
+- 208a6a9: Arkade ↔ RBTC on Rootstock: `createSwap` accepts RBTC as a source for
+  Arkade, `fundSwap` funds the native lock in a single payable transaction,
+  and the claim signs the native domain for an RBTC target. The tracker's
+  EVM → Arkade leg now uses the swap's coordinator as the lock's sender and
+  the zero asset word for a native lock.
+- 101ebea: On-chain Bitcoin ↔ RBTC on Rootstock: `createSwap` accepts RBTC as a source
+  for on-chain Bitcoin, `fundSwap` funds the native lock in a single payable
+  transaction, and the claim signs the native domain for an RBTC target. The
+  tracker's EVM → Bitcoin leg now uses the swap's coordinator as the lock's
+  sender.
+- c8b3c05: RBTC → Lightning swaps: `fundSwap` funds a native Rootstock lock with a single
+  payable transaction, refunds pick the native contract calls, and `createSwap`
+  accepts RBTC on chain `"30"` as a source. `EvmSigner` adapters should pass
+  `value` through on `sendTransaction` and `call`, and may implement
+  `getBalance`.
+- 630b4e9: Add `client.claimEvmWithSigner(swapId, signer)`: claim an Arbitrum-hub BTC → EVM swap from the user's own wallet, which pays the gas. It publishes the same signed `redeemAndExecute` calldata as the sponsored UserOp path, so it works without AA / paymaster config and serves as the manual fallback when the automatic claim fails. `buildRedeemAndExecuteTx` and `claimViaSigner` are exported for custom integrations.
+
+### Patch Changes
+
+- 28e51fb: Target backend 0.3.16 in the x-satora-server-version header.
+- fad103c: A gasless claim that is already on its way resolves instead of throwing.
+
+  The server now answers a repeated claim, or one that arrives while it is
+  relaying, with `200`, the swap's post-claim status and the claim transaction
+  hash (empty until the relay is broadcast). The claim helpers pass that through
+  as a successful claim, and still accept the `400` older servers answer with,
+  so the auto-claim worker and the frontend stop retrying while the relay
+  confirms.
+
+- f79264e: Rootstock testnet (chain `"31"`). The EVM tracker knows its block cadence,
+  public RPC and confirmation depth, so swaps a testnet daemon reports on
+  chain `"31"` are tracked like mainnet Rootstock ones.
+- bf5ea77: Claim EVM → Bitcoin and EVM → Arkade swaps whose DEX lock came in short.
+
+  When the DEX returned less than quoted, the server accepted the lock and paid
+  out a correspondingly lower amount, but chain-verified tracking marked the
+  swap invalid and never claimed. It now accepts any payout the server's
+  slippage rule allows.
+
+## 1.5.0
+
+### Minor Changes
+
+- 4a99ca0: Let the Bitcoin confirmation depth change after the client is built.
+
+  `setBitcoinMinConfirmations` updates the depth a server-funded Bitcoin HTLC
+  needs before it reads as claimable, so callers that cache a single client can
+  change it without rebuilding and orphaning tracking already in flight. It
+  applies to every swap the client tracks, including ones already in flight,
+  and at a depth above 1 the at-risk chain re-read runs every 15s instead of 60s
+  so the claim follows the satisfying block promptly.
+
+  Only the chain monitors read a depth, so it needs `withChainVerifiedTracking`;
+  setting one without it now warns rather than silently doing nothing. A depth
+  that is not a whole block count is rejected instead of stalling every read.
+
+- d84290b: Lightning → RBTC on Rootstock.
+
+  Follows `@lendasat/lendaswap-sdk-pure`: chain `"30"`, the native-lock claim,
+  and RBTC kept on Rootstock instead of the Arbitrum hub. Chain-verified
+  tracking knows Rootstock's block time (~30s) and its public HTTP RPC
+  (`https://public-node.rsk.co`); override it with `withEvmRpcUrls` as for the
+  other chains.
+
+### Patch Changes
+
+- 1519eac: Target backend 0.3.15 in the x-satora-server-version header.
+- d299719: Chain-verified tracking stops recommending a claim the server already relayed.
+
+  A server status hint of `clientredeeming`, `clientredeemed` or `serverredeemed`
+  now overrides a chain view that still says "claim now". The chain still wins
+  once it moves, and a refund observed on chain is never overridden. Without
+  this, a chain the tracker cannot read (the public Rootstock RPCs serve no
+  `eth_getLogs`) kept the frontend re-submitting claims.
+
+  EVM log reads are chunked on chains whose providers cap the block span of
+  `eth_getLogs` (Rootstock: 2000 blocks on rpc.rootstock.io).
+
 ## 1.4.0
 
 ### Minor Changes

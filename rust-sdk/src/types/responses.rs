@@ -215,9 +215,11 @@ pub struct EvmToBitcoinSwapResponse {
     pub evm_chain_id: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evm_claim_txid: Option<String>,
+    pub evm_coordinator_address: String,
     pub evm_expected_sats: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evm_fund_txid: Option<String>,
+    pub evm_funding_confirmations: i64,
     pub evm_hash_lock: String,
     pub evm_htlc_address: String,
     #[serde(default)]
@@ -257,6 +259,7 @@ pub struct EvmToLightningSwapResponse {
     pub evm_expected_sats: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evm_fund_txid: Option<String>,
+    pub evm_funding_confirmations: i64,
     pub evm_htlc_address: String,
     #[serde(default)]
     pub evm_htlc_kind: EvmHtlcKind,
@@ -267,6 +270,7 @@ pub struct EvmToLightningSwapResponse {
     pub hash_lock: String,
     pub id: String,
     pub invoice_expires_at: i64,
+    pub lightning_payment_settled: bool,
     pub network: String,
     pub network_fee_sats: i64,
     pub server_evm_address: String,

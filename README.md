@@ -34,7 +34,7 @@ where new features land. Existing integrations do not need to migrate urgently.
 
 ## Compatibility headers
 
-SDK HTTP clients send `X-Lendaswap-Client: <sdk-name>/<semver>` and `x-satora-server-version: <server-api-semver>` on API requests. The server-version header identifies the server/API version the SDK was built against; the backend logs it for compatibility diagnostics and does not enforce it yet.
+SDK HTTP clients send `X-Lendaswap-Client: <sdk-name>/<semver>` plus one integer protocol epoch per protocol component on every request: `x-satora-bitcoin-htlc-version`, `x-satora-arkade-vhtlc-version`, `x-satora-lightning-version`, `x-satora-evm-erc20-htlc-version` and `x-satora-evm-native-htlc-version`. The server checks the components a request's swap uses and rejects clients whose epoch for one of them is too old.
 
 ## Building
 

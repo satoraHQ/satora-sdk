@@ -189,20 +189,24 @@ export function isBtc(token: { chain: string }): boolean {
 }
 
 /**
- * Returns true if the token is a BTC-pegged EVM token (WBTC or tBTC).
- * These tokens should be displayed like BTC (sats/BTC, 8 decimal precision)
- * even though tBTC has 18 on-chain decimals.
+ * Returns true if the token is a BTC-pegged EVM asset (WBTC, tBTC, or RBTC,
+ * Rootstock's coin). These should be displayed like BTC (sats/BTC, 8 decimal
+ * precision) even though tBTC and RBTC have 18 on-chain decimals.
  */
 export function isBtcPegged(token: { chain: string; symbol: string }): boolean {
   const sym = token.symbol.toLowerCase();
-  return (sym === "wbtc" || sym === "tbtc") && isEvmToken(token.chain);
+  return (
+    (sym === "wbtc" || sym === "tbtc" || sym === "rbtc") &&
+    isEvmToken(token.chain)
+  );
 }
 
 /** Returns true if the chain is any EVM chain (source or bridge destination). */
 export function isEvmToken(chain: string): boolean {
   return (
     SOURCE_EVM_CHAINS.includes(chain as (typeof SOURCE_EVM_CHAINS)[number]) ||
-    Object.values(ALL_EVM_CHAIN_IDS).includes(chain)
+    Object.values(ALL_EVM_CHAIN_IDS).includes(chain) ||
+    isNativeLockChain(chain)
   );
 }
 
@@ -217,6 +221,37 @@ export function isSourceEvmChain(chain: string): boolean {
 export function isBridgeOnlyChain(chain: string): boolean {
   if (isSolanaToken(chain)) return true;
   return isEvmToken(chain) && !isSourceEvmChain(chain);
+}
+
+/**
+ * Returns true for a chain that locks its own coin in its own HTLC: Rootstock,
+ * under its mainnet id ("30"), its testnet id ("31" — what a testnet daemon
+ * reports it as) or by name.
+ */
+export function isNativeLockChain(chain: string): boolean {
+  const c = chain.toLowerCase();
+  return c === "30" || c === "31" || c === "rootstock";
+}
+
+/**
+ * Returns true for the native coin of a chain that locks it in its own HTLC
+ * (RBTC on Rootstock, token id = the zero address). Rootstock is also a USDT0
+ * bridge destination, so the chain alone does not say whether a target is
+ * bridged; its coin is a first-class target settled on Rootstock itself, never
+ * remapped to the Arbitrum hub.
+ */
+export function isNativeLockTarget(chain: string, token: string): boolean {
+  return isNativeLockChain(chain) && /^0x0{40}$/i.test(token);
+}
+
+/**
+ * Returns true when `token` on `chain` can be the source of an EVM-sourced
+ * swap: any asset on a chain with the ERC20 HTLC contracts, or the native
+ * coin of a native-lock chain (RBTC on Rootstock). Rootstock is not a source
+ * chain in general, since its USDT0 bridge deposits are targets only.
+ */
+export function isEvmSwapSource(chain: string, token: string): boolean {
+  return isSourceEvmChain(chain) || isNativeLockTarget(chain, token);
 }
 
 /**
@@ -291,6 +326,10 @@ export function toChain(str: string): Chain {
   if (c === "ethereum" || c === "1") return "1";
   if (c === "polygon" || c === "137") return "137";
   if (c === "arbitrum" || c === "42161") return "42161";
+  if (c === "rootstock" || c === "30") return "30";
+  // Rootstock testnet keeps its own id: a testnet daemon's chain "31" must
+  // not collapse into mainnet's "30".
+  if (c === "31") return "31";
   if (c === "lightning") return "Lightning";
   if (c === "arkade") return "Arkade";
   if (c === "bitcoin") return "Bitcoin";
@@ -315,7 +354,10 @@ export function toChainName(chain: Chain): string {
  * or is not an EVM token.
  */
 export function getBridgeTargetChain(token: TokenInfo): string | undefined {
-  if (isBridgeOnlyChain(token.chain)) {
+  if (
+    isBridgeOnlyChain(token.chain) &&
+    !isNativeLockTarget(token.chain, String(token.token_id))
+  ) {
     return CHAIN_ID_TO_NAME[token.chain] ?? toChainName(token.chain as Chain);
   }
   return undefined;

@@ -353,6 +353,11 @@ export async function collabRefundArkadeToEvmDelegate(
 
   const btcNetwork = networks[networkName];
   const forfeitDecoded = Address(btcNetwork).decode(serverInfo.forfeitAddress);
+  if (!forfeitDecoded) {
+    throw new Error(
+      `Unrecognised forfeit address: ${serverInfo.forfeitAddress}`,
+    );
+  }
   const forfeitPkScript = OutScript.encode(forfeitDecoded);
 
   const vhtlcPkScript = hex.encode(vhtlc.pkScript);

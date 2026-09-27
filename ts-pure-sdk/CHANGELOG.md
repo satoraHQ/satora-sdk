@@ -1,5 +1,121 @@
 # @lendasat/lendaswap-sdk-pure
 
+## 2.5.0
+
+### Minor Changes
+
+- 033243b: Send one protocol compatibility epoch header per protocol component (`bitcoin-htlc`, `arkade-vhtlc`, `lightning`, `evm-erc20-htlc`, `evm-native-htlc`) on every request instead of the legacy server-version header. Exports `PROTOCOL_HEADERS`, `PROTOCOL_VERSIONS`, `ProtocolComponent` and `ProtocolEpoch`.
+- f0b81a7: Inbound swaps (Bitcoin / Arkade / Lightning → EVM) are now created with the swap's own key as `claiming_address` instead of the wallet-level EVM address. A sponsored UserOp claim installs an EIP-7702 Kernel delegation on the claiming address; keeping that off the wallet-level address means gasless deposits (`fundSwapGasless`) keep signing Permit2 and EIP-2612 as a plain EOA, and the one-address / single-approval deposit UX is unchanged. Swaps created before this release still carry the wallet-level claim address and keep claiming with it; recovery re-derives per-swap keys by index as before.
+- 208a6a9: Arkade ↔ RBTC on Rootstock. `createSwap` routes RBTC (chain `"30"`, the
+  zero-address token) → Arkade to the EVM → Arkade path, and `fundSwap` funds
+  that swap's native lock with one payable transaction, keyed on the
+  `evm_htlc_kind` the EVM → Arkade response now carries alongside its
+  `evm_coordinator_address`. The Arkade → EVM response carries `evm_htlc_kind`
+  too, so the gasless claim signs the `HTLCNative` domain for an RBTC target.
+  `NATIVE_TOKEN_ADDRESS` is exported.
+- 101ebea: On-chain Bitcoin ↔ RBTC on Rootstock. `createSwap` routes RBTC (chain
+  `"30"`, the zero-address token) → Bitcoin to the EVM → Bitcoin path, and
+  `fundSwap` funds that swap's native lock with one payable transaction, keyed
+  on the `evm_htlc_kind` the EVM → Bitcoin response now carries alongside its
+  `evm_coordinator_address`. The Bitcoin → EVM response carries `evm_htlc_kind`
+  too, so the gasless claim signs the `HTLCNative` domain for an RBTC target.
+- c8b3c05: RBTC → Lightning: `fundSwap` funds a native lock (an EVM → Lightning swap whose
+  `evm_htlc_kind` is `native`) with one payable `executeAndCreate` on the native
+  coordinator, carrying the quoted amount as the transaction value; no token
+  approval, Permit2 signature or server calldata. `EvmSigner.sendTransaction` and
+  `call` take an optional `value`, and an optional `getBalance` lets the SDK
+  refuse an underfunded wallet before it signs. Refunds built from the funding
+  log pick the native `refundTo` / `refund` when the lock's asset word is zero.
+  `createSwap` and the Lightning-send quote accept RBTC on Rootstock (chain
+  `"30"`, the zero-address token) as a source (`isEvmSwapSource`).
+- d3d6781: Add `client.claimEvmWithSigner(swapId, signer)`: claim an Arbitrum-hub BTC → EVM swap from the user's own wallet, which pays the gas. It publishes the same signed `redeemAndExecute` calldata as the sponsored UserOp path, so it works without AA / paymaster config and serves as the manual fallback when the automatic claim fails. `buildRedeemAndExecuteTx` and `claimViaSigner` are exported for custom integrations.
+
+### Patch Changes
+
+- 28e51fb: Target backend 0.3.16 in the x-satora-server-version header.
+- fad103c: `claimViaGasless` no longer throws when the server has already relayed, or is
+  already relaying, a claim for the same swap: the result carries the swap's
+  post-claim status (and the claim transaction hash when the server has it), so
+  the auto-claim worker and the frontend stop retrying while the relay confirms.
+  Covers both the current server's idempotent `200` and the `400` older servers
+  answer with.
+- b16242b: Gasless funding (`fundSwapGasless`, `getCoordinatorFundingCallDataPermit2`) now works after the same SDK key has claimed a swap via the sponsored UserOp path. The claim delegates the SDK's EVM address to Kernel V3.3 through EIP-7702, after which Permit2 verifies signatures via Kernel's `isValidSignature`. The SDK now detects the delegation from the server's new `depositor_delegation` hint on the calldata endpoint (authoritative for the swap's chain; against older servers it falls back to probing the AA RPC on Arbitrum) and signs both the Permit2 message and the EIP-2612 permit in Kernel's ERC-1271 envelope instead of as a plain EOA (the permit is sent as an opaque `signature` and submitted through the token's bytes-signature `permit` variant). Helpers `kernelErc1271Digest`, `wrapKernelErc1271Signature`, `isKernelDelegation` and `parseEip7702Delegation` are exported.
+- f79264e: Rootstock testnet (chain `"31"`). A testnet daemon reports Rootstock under
+  its own id, and the SDK now keeps it as `"31"` instead of collapsing it into
+  mainnet's `"30"`. It is typed on `Chain` and the Lightning send source
+  chains, and `isNativeLockChain` recognises it, so RBTC swaps route and fund
+  the same way on testnet.
+
+## 2.4.0
+
+### Minor Changes
+
+- 2e75f65: Refund EVM-sourced swaps without the server.
+
+  `refundSwap` accepts an EVM signer and builds the refund from the funding
+  transaction's `SwapCreated` log instead of asking the server for calldata, on
+  the EVM → Arkade, Bitcoin and Lightning directions. The log's sender decides
+  the shape, the coordinator's `refundTo` or a direct `HTLCErc20.refund` for an
+  HTLC the wallet created itself, and the HTLC is checked to be active on-chain
+  first. The funding tx is taken from the client's own record, then the server's
+  copy; the server is asked for another txid only when none of those yields a
+  receipt, and for calldata once the chain path has failed. When both fail the
+  result is `success: false` with both reasons, and a transport error on the
+  calldata request is reported the same way instead of thrown. `refundSwap`
+  throws when the signer is on another chain than the swap.
+
+  `fundSwap` (on the direct Permit2 path; CCTP-inbound funding is not covered)
+  and `fundSwapGasless` record the funding transaction and the coordinator on the
+  stored swap as `StoredSwap.evmFundTxid` and `evmCoordinatorAddress`, which
+  survive server refreshes and swap recovery; the SQLite storage gains two
+  columns for them. `fundSwap` returns the mined hash when the wallet replaced
+  the transaction and rejects a replacement that did not create the HTLC.
+  `TxReceipt` gains an optional `logs` field that signer implementations must
+  fill for this path (`fundSwap` logs a warning when it is missing), and
+  `getTransaction` must reject for a hash the node does not know.
+
+  Before building through the coordinator, the client reads its `deposits(key)`
+  and requires the depositor to be the wallet, one of the SDK's gasless keys or
+  the depositor the server recorded; anything else fails the chain path.
+  `evmRefundData.recipient` names where the refund pays out, and the message
+  points at `recoverGaslessFunds` when that is an SDK key. `fundSwap` records a
+  replacement only if its receipt carries this swap's `SwapCreated` from the
+  coordinator on the HTLC or, for a signer without logs, if the mined
+  transaction is the same call repriced; a mined funding is never reported as
+  failed.
+
+- d84290b: Lightning → RBTC on Rootstock.
+
+  `Chain` and `WireChain` gain `"30"` (Rootstock). RBTC is the chain's own coin,
+  locked in `HTLCNative` rather than an ERC-20 HTLC, and is addressed by the zero
+  token address. The generated types carry `evm_htlc_kind` (`"erc20"` or
+  `"native"`) on the responses of the directions that can lock it.
+
+  `claim` on a swap whose lock is native signs `HTLCNative`'s `Redeem` instead of
+  `HTLCErc20`'s: `buildNativeRedeemDigest` (exported) builds the token-less
+  digest under the `HTLCNative` domain, and the relayed claim sweeps the coin to
+  the destination with the full locked amount as the floor and no calls. There
+  is no DEX leg on this route, so the target amount equals the lock.
+
+  Rootstock is also a USDT0 bridge destination, so the chain alone does not say
+  whether a target is bridged: `isNativeLockTarget(chain, token)` (exported) is
+  true for RBTC on chain 30, and `getQuote` / `createSwap` keep that target on
+  Rootstock instead of remapping it to the Arbitrum hub. USDT0 on Rootstock
+  still bridges. `NATIVE_TOKEN_ADDRESS` is exported.
+
+### Patch Changes
+
+- 1519eac: Target backend 0.3.15 in the x-satora-server-version header.
+- d299719: A gasless claim the server has already relayed succeeds instead of throwing.
+
+  The server rejects a second claim for a swap in `client_redeeming`,
+  `client_redeemed` or `server_redeemed` with "wrong state". `claim` now returns
+  `success: true` with that state, since the claim is done from the client's
+  side; any other rejection still throws.
+
+- 900781f: `isBtcPegged` includes RBTC (Rootstock's coin, 18 decimals), so it displays at
+  bitcoin precision like WBTC and tBTC.
+
 ## 2.3.0
 
 ### Minor Changes

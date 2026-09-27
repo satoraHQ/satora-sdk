@@ -2042,7 +2042,7 @@ fn every_evm_leg_response_keeps_the_htlc_kind_and_defaults_to_erc20() {
         "evm_to_lightning",
     ] {
         let mut value = fixture[direction].clone();
-        assert!(value.get("evm_htlc_kind").is_none(), "{direction}");
+        value.as_object_mut().unwrap().remove("evm_htlc_kind");
         let parsed: crate::types::GetSwapResponse = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(
             serde_json::to_value(&parsed).unwrap()["evm_htlc_kind"],

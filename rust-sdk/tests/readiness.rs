@@ -240,7 +240,6 @@ async fn expected_invoice_amount_reaches_creation_and_quote() {
 #[tokio::test]
 async fn get_swap_sends_compatibility_headers_for_every_direction() {
     let server = MockServer::start().await;
-    let spec: Value = serde_json::from_str(include_str!("../openapi.json")).unwrap();
     for direction in [
         "btc_to_arkade",
         "lightning_to_arkade",
@@ -254,10 +253,11 @@ async fn get_swap_sends_compatibility_headers_for_every_direction() {
     ] {
         Mock::given(method("GET"))
             .and(path(format!("/swap/{direction}")))
-            .and(header(
-                "x-satora-server-version",
-                spec["info"]["version"].as_str().unwrap(),
-            ))
+            .and(header("x-satora-bitcoin-htlc-version", "1"))
+            .and(header("x-satora-arkade-vhtlc-version", "1"))
+            .and(header("x-satora-lightning-version", "1"))
+            .and(header("x-satora-evm-erc20-htlc-version", "1"))
+            .and(header("x-satora-evm-native-htlc-version", "1"))
             .and(header(
                 "X-Lendaswap-Client",
                 concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION")),

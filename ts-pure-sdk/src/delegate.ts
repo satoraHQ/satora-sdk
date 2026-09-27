@@ -41,11 +41,12 @@ import {
   resolveArkadeServerUrlByName,
 } from "./arkade-network.js";
 import { createSdkLogger, type Logger, type LogLevel } from "./logging.js";
+import { PROTOCOL_HEADERS } from "./protocol.js";
 import {
   ARKADE_HTLC_SCRIPT_VERSION_STRICT,
   StrictVhtlcScript,
 } from "./strict-vhtlc.js";
-import { CLIENT_AGENT, SATORA_SERVER_VERSION } from "./version.js";
+import { CLIENT_AGENT } from "./version.js";
 
 function secondsToTimelock(
   seconds: number,
@@ -139,7 +140,7 @@ export async function fetchCosignerPk(
   const res = await fetch(url, {
     headers: {
       "X-Lendaswap-Client": CLIENT_AGENT,
-      "x-satora-server-version": SATORA_SERVER_VERSION,
+      ...PROTOCOL_HEADERS,
     },
   });
   if (!res.ok) {
@@ -328,6 +329,11 @@ async function settleDelegate(
   // Decode forfeit address (bech32) to pkScript
   const btcNetwork = networks[networkName];
   const forfeitDecoded = Address(btcNetwork).decode(serverInfo.forfeitAddress);
+  if (!forfeitDecoded) {
+    throw new Error(
+      `Unrecognised forfeit address: ${serverInfo.forfeitAddress}`,
+    );
+  }
   const forfeitPkScript = OutScript.encode(forfeitDecoded);
 
   // Fetch VTXOs — include all (not just spendable)
@@ -460,7 +466,7 @@ async function settleDelegate(
     headers: {
       "Content-Type": "application/json",
       "X-Lendaswap-Client": CLIENT_AGENT,
-      "x-satora-server-version": SATORA_SERVER_VERSION,
+      ...PROTOCOL_HEADERS,
     },
     body: JSON.stringify({
       intent_proof: intentProofBase64,

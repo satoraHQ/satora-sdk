@@ -30,6 +30,7 @@ export {
 export { encodeClaimSwapCallData, uuidToBytes32 } from "./ethereum.js";
 // Re-export gasless claim
 export { claimViaGasless, type GaslessClaimParams } from "./gasless.js";
+export { claimViaSigner, type SignerClaimParams } from "./signer-claim.js";
 // Re-export types
 export type {
   ArkadeClaimData,
@@ -41,7 +42,12 @@ export type {
   RedeemContext,
 } from "./types.js";
 export { getChainFromTokenId } from "./types.js";
-export { claimViaUserOp, type UserOpClaimParams } from "./userop-claim.js";
+export {
+  buildRedeemAndExecuteTx,
+  claimViaUserOp,
+  type RedeemTxParams,
+  type UserOpClaimParams,
+} from "./userop-claim.js";
 
 /**
  * Claims a swap by revealing the preimage.

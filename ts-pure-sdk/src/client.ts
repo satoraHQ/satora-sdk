@@ -93,13 +93,21 @@ import {
   encodeExecuteAndCreateWithPermit2,
   encodeHtlcErc20IsActiveCallData,
   encodeHtlcErc20RefundCallData,
+  encodeHtlcNativeRefundCallData,
+  encodeNativeExecuteAndCreate,
+  encodeNativeRefundTo,
   encodeRefundTo,
   findSwapCreated,
+  isKernelDelegation,
+  KERNEL_DELEGATION_TARGET,
+  kernelErc1271Digest,
+  NATIVE_TOKEN_ADDRESS,
   normalizeBytes32,
   PERMIT2_ADDRESS,
   type Permit2SignedFundingCallData,
   signEvmDigest,
   type UnsignedPermit2FundingData,
+  wrapKernelErc1271Signature,
 } from "./evm/index.js";
 import {
   decodeUint256,
@@ -110,6 +118,7 @@ import {
   getRevertReason,
   parseSignature,
   simulateTransaction,
+  txTypeFor,
 } from "./evm/wallet.js";
 import {
   createSdkLogger,
@@ -117,10 +126,12 @@ import {
   type LogLevel,
   type SdkLogger,
 } from "./logging.js";
+import { PROTOCOL_HEADERS } from "./protocol.js";
 import {
   buildArkadeClaim,
   type ClaimGaslessResult,
   type ClaimResult,
+  claimViaSigner,
   claimViaUserOp,
   continueArkadeClaim,
   claimViaGasless as gaslessClaim,
@@ -152,10 +163,11 @@ import {
   isArkade,
   isBridgeOnlyChain,
   isBtcOnchain,
+  isEvmSwapSource,
   isEvmToken,
   isLightning,
+  isNativeLockTarget,
   isSolanaToken,
-  isSourceEvmChain,
   toChainName,
 } from "./tokens.js";
 import {
@@ -187,7 +199,6 @@ import {
   CLIENT_AGENT,
   DEFAULT_AA_BUNDLER_URL,
   DEFAULT_AA_POLICY_ID,
-  SATORA_SERVER_VERSION,
 } from "./version.js";
 import {
   createSwapStatusWatcher,
@@ -263,6 +274,18 @@ export type {
   CoordinatorClaimData,
   EthereumClaimData,
 } from "./redeem/index.js";
+
+/** How an EVM-targeted swap has to be claimed (see `#classifyEvmClaim`). */
+interface EvmClaimClassification {
+  targetTokenAddr: string;
+  dexSwapNeeded: boolean;
+  bridgeTargetChain: string | undefined;
+  bridgeTargetToken: string | undefined;
+  isBridge: boolean;
+  isCctpBridge: boolean;
+  isSolanaBridge: boolean;
+  arbitrumHubClaim: boolean;
+}
 
 /** A support agent's Nostr identity */
 export interface SupportAgentInfo {
@@ -407,6 +430,13 @@ class FundingTxUnavailableError extends Error {}
 // A funding still in the mempool has nothing to refund yet, and a mined one
 // answers in one round trip, so a pending hash must not hold the refund.
 const FUNDING_RECEIPT_WAIT_MS = 30_000;
+
+/**
+ * Gas limit for a plain native lock (`HTLCNativeCoordinator.executeAndCreate`
+ * with no calls): the HTLC create plus the coordinator's bookkeeping, with
+ * headroom; the unused part is not charged.
+ */
+const NATIVE_LOCK_GAS = 250_000n;
 
 function withDeadline<T>(
   promise: Promise<T>,
@@ -719,7 +749,13 @@ export interface GetQuoteParams {
 }
 
 /** Source chains `/quote/lightning-send` can price. */
-export type LightningSendSourceChain = "Arkade" | "1" | "137" | "42161";
+export type LightningSendSourceChain =
+  | "Arkade"
+  | "1"
+  | "137"
+  | "42161"
+  | "30"
+  | "31";
 
 /**
  * Parameters for {@link Client.getLightningSendQuote}. Exactly one of the
@@ -1229,6 +1265,12 @@ export class ClientBuilder {
  * const params = await client.deriveSwapParams();
  * ```
  */
+/**
+ * Chain the AA config (bundler, paymaster, 7702 Kernel delegation) applies
+ * to. Must match `createSwapSmartAccountClient` in `cctp-inbound/smartAccount.ts`.
+ */
+const AA_CHAIN_ID = 42161;
+
 export class Client {
   readonly #apiClient: ApiClient;
   readonly #config: ClientConfig;
@@ -1282,7 +1324,7 @@ export class Client {
   #apiHeaders(extra?: Record<string, string>): Record<string, string> {
     return {
       "X-Lendaswap-Client": CLIENT_AGENT,
-      "x-satora-server-version": SATORA_SERVER_VERSION,
+      ...PROTOCOL_HEADERS,
       ...(this.#config.defaultHeaders ?? {}),
       ...(extra ?? {}),
     };
@@ -1475,6 +1517,132 @@ export class Client {
    */
   #getEvmSigningKey(): string {
     return bytesToHex(this.#signer.deriveEvmKey().secretKey);
+  }
+
+  /**
+   * Sign an EIP-712 digest (Permit2 witness or EIP-2612 permit) with the
+   * SDK-controlled EVM key in the format the verifying contract will
+   * accept for `depositor`.
+   *
+   * A sponsored UserOp claim delegates the SDK's EVM address to Kernel V3.3
+   * via EIP-7702. From then on the address has code, so Permit2 verifies
+   * through Kernel's `isValidSignature` instead of `ecrecover`. In that case
+   * this returns Kernel's ERC-1271 envelope (66 bytes: `0x00 || sig` over
+   * the `Kernel(bytes32 hash)` wrapper). Otherwise a plain 65-byte
+   * `r || s || v` signature. `delegated` comes from
+   * {@link Client.#isKernelDelegated}.
+   */
+  #signDepositorDigest(
+    evmKey: string,
+    depositor: string,
+    chainId: number,
+    digest: string,
+    delegated: boolean,
+  ): string {
+    const toSign = delegated
+      ? kernelErc1271Digest(digest, depositor, chainId)
+      : digest;
+    const sig = signEvmDigest(evmKey, toSign);
+    const compact = `0x${sig.r.replace(/^0x/, "")}${sig.s.replace(/^0x/, "")}${sig.v
+      .toString(16)
+      .padStart(2, "0")}`;
+    return delegated ? wrapKernelErc1271Signature(compact) : compact;
+  }
+
+  /**
+   * Whether the depositor must sign in Kernel's ERC-1271 envelope on
+   * `chainId`.
+   *
+   * `serverHint` is the calldata endpoint's `depositor_delegation`: the
+   * EIP-7702 target the depositor's code points at on the source chain,
+   * `null` for a plain EOA. A delegation is per chain and this SDK holds
+   * no RPC for most chains, so the server's view is authoritative. Only
+   * when an older server omits the field do we fall back to probing the
+   * AA RPC, which is Arbitrum-only.
+   *
+   * A delegation to anything other than Kernel V3.3 cannot be signed for
+   * by this SDK (Permit2 would hand the signature to unknown code), so it
+   * throws rather than let the relayer dry-run explain it.
+   */
+  /**
+   * The calldata endpoint's `depositor_delegation` describes the swap's
+   * recorded `client_evm_address`. For gasless swaps that is the SDK's own
+   * key; for non-gasless swaps it is the user's wallet, which may differ
+   * from the key this SDK signs Permit2 with. Only hand the hint on when
+   * it was looked up for the address we actually sign for; otherwise the
+   * caller falls back to probing.
+   */
+  #delegationHintFor(
+    swap: { client_evm_address?: string | null },
+    depositor: string,
+    hint: string | null | undefined,
+  ): string | null | undefined {
+    const hinted = swap.client_evm_address?.toLowerCase();
+    return hinted && hinted === depositor.toLowerCase() ? hint : undefined;
+  }
+
+  async #isKernelDelegated(
+    address: string,
+    chainId: number,
+    serverHint: string | null | undefined,
+  ): Promise<boolean> {
+    if (serverHint !== undefined) {
+      if (serverHint === null) return false;
+      if (serverHint.toLowerCase() === KERNEL_DELEGATION_TARGET.toLowerCase()) {
+        return true;
+      }
+      throw new Error(
+        `Depositor ${address} is EIP-7702-delegated to ${serverHint} on chain ${chainId}, ` +
+          `which this SDK cannot sign for. Expected Kernel V3.3 (${KERNEL_DELEGATION_TARGET}) ` +
+          `or a plain EOA. Revoke the delegation or use a separate key for gasless deposits.`,
+      );
+    }
+    if (chainId !== AA_CHAIN_ID) return false;
+    const rpcUrl = this.#config.aa?.rpcUrl ?? this.#config.aa?.bundlerUrl;
+    if (!rpcUrl) return false;
+    const { createPublicClient, http } = await import("viem");
+    const publicClient = createPublicClient({ transport: http(rpcUrl) });
+    try {
+      const code = await publicClient.getCode({
+        address: address as `0x${string}`,
+      });
+      return isKernelDelegation(code);
+    } catch (e) {
+      // Fall back to the plain signature; if the address is in fact
+      // delegated the server's pre-broadcast dry-run rejects it with a
+      // clear reason instead of burning gas.
+      this.#logger.warn({
+        event: "client.isKernelDelegated.codeLookupFailed",
+        message:
+          "could not read code to detect Kernel delegation; assuming plain EOA",
+        data: { address, error: e instanceof Error ? e.message : String(e) },
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Select the SDK-controlled EVM key that signs and publishes the claim of
+   * an inbound (BTC / Arkade / Lightning → EVM) swap.
+   *
+   * New swaps are created with the per-swap key as `claiming_address`, so
+   * the sponsored claim's EIP-7702 delegation never lands on the wallet-level
+   * deposit address. Swaps created before that still carry the wallet-level
+   * address and keep claiming with it.
+   */
+  #getClaimEvmSigningKey(storedSwap: StoredSwap): string {
+    const swapKey = storedSwap.secretKey;
+    const clientAddress = (
+      storedSwap.response as { client_evm_address?: string }
+    ).client_evm_address?.toLowerCase();
+    if (
+      swapKey &&
+      clientAddress &&
+      clientAddress === deriveEvmAddress(swapKey).toLowerCase()
+    ) {
+      return swapKey;
+    }
+    return this.#getEvmSigningKey();
   }
 
   /**
@@ -1859,7 +2027,8 @@ export class Client {
     if (
       params.lightningDestination &&
       params.targetChain === "Lightning" &&
-      (params.sourceChain === "Arkade" || isSourceEvmChain(params.sourceChain))
+      (params.sourceChain === "Arkade" ||
+        isEvmSwapSource(params.sourceChain, params.sourceToken))
     ) {
       try {
         return await this.#lightningSendQuoteAsQuote(
@@ -1962,7 +2131,10 @@ export class Client {
       throw new Error("No lightning send quote data returned");
     }
 
-    const evmSource = isSourceEvmChain(params.sourceChain ?? "Arkade");
+    const evmSource = isEvmSwapSource(
+      params.sourceChain ?? "Arkade",
+      params.sourceToken ?? "",
+    );
     return {
       sourceAmount: data.source_amount,
       sourceAmountSats: evmSource ? undefined : Number(data.source_amount),
@@ -1990,7 +2162,7 @@ export class Client {
     if (!kind) {
       throw new Error(`unrecognized lightning destination: ${destination}`);
     }
-    const evmSource = isSourceEvmChain(params.sourceChain);
+    const evmSource = isEvmSwapSource(params.sourceChain, params.sourceToken);
     // The invoice pins the payout itself; only address/LNURL flows take a
     // pinned amount (in the source token's smallest unit: sats for Arkade,
     // token units for EVM).
@@ -2075,7 +2247,10 @@ export class Client {
     let targetChain = params.targetChain;
     let targetToken = params.targetToken;
     let bridgeTargetChain: string | undefined;
-    if (isBridgeOnlyChain(targetChain)) {
+    if (
+      isBridgeOnlyChain(targetChain) &&
+      !isNativeLockTarget(targetChain, targetToken)
+    ) {
       bridgeTargetChain = toChainName(targetChain);
       // Determine if this is a USDT0 or USDC bridge token by checking
       // if the target token matches a known USDT0 address on the destination.
@@ -2644,6 +2819,254 @@ export class Client {
     });
   }
 
+  /** Loads the stored swap + fresh server state for an EVM-targeted claim. */
+  async #loadEvmClaimSwap(id: string): Promise<{
+    stored: StoredSwap;
+    swap: ArkadeToEvmSwapResponse & { direction: string };
+  }> {
+    if (!this.#swapStorage) {
+      throw new Error(
+        "Swap storage is not configured. Cannot retrieve preimage needed for the claim.",
+      );
+    }
+    const stored = await this.#swapStorage.get(id);
+    if (!stored) {
+      throw new Error(`Swap ${id} not found in local storage.`);
+    }
+    const swap = (await this.getSwap(id, {
+      updateStorage: true,
+    })) as ArkadeToEvmSwapResponse & {
+      direction: string;
+    };
+    if (
+      swap.direction !== "arkade_to_evm" &&
+      swap.direction !== "bitcoin_to_evm" &&
+      swap.direction !== "lightning_to_evm"
+    ) {
+      throw new Error(
+        `Expected an EVM-targeted swap (arkade_to_evm, bitcoin_to_evm or lightning_to_evm), got ${swap.direction}.`,
+      );
+    }
+    return { stored, swap };
+  }
+
+  /**
+   * The user-facing EVM address the claim pays out to, as recorded at swap
+   * creation (falls back to the SDK's own EVM address for legacy swaps).
+   */
+  #resolveEvmClaimDestination(
+    swap: ArkadeToEvmSwapResponse,
+  ): string | undefined {
+    const bridgeTargetChain = (swap as { bridge_target_chain?: string })
+      .bridge_target_chain;
+    const isSolanaBridge = bridgeTargetChain === "Solana";
+    return isSolanaBridge
+      ? swap.client_evm_address
+      : (swap.target_evm_address ?? swap.client_evm_address);
+  }
+
+  /** Static facts about how an EVM-targeted swap has to be claimed. */
+  #classifyEvmClaim(
+    swap: ArkadeToEvmSwapResponse & { direction: string },
+  ): EvmClaimClassification {
+    const targetTokenAddr = String(swap.target_token.token_id);
+    const dexSwapNeeded =
+      targetTokenAddr.toLowerCase() !== swap.wbtc_address.toLowerCase();
+    const bridgeSwap = swap as {
+      bridge_target_chain?: string | null;
+      bridge_target_token_address?: string | null;
+    };
+    const bridgeTargetChain = bridgeSwap.bridge_target_chain || undefined;
+    const bridgeTargetToken =
+      bridgeSwap.bridge_target_token_address || undefined;
+    const isBridge = bridgeTargetChain != null;
+    // A USDT0 target token is a LayerZero OFT bridge; everything else CCTP.
+    const isOftBridge =
+      isBridge &&
+      bridgeTargetToken != null &&
+      Object.values(USDT0_ADDRESSES).some(
+        (a) => a.toLowerCase() === bridgeTargetToken.toLowerCase(),
+      );
+    const isCctpBridge = isBridge && !isOftBridge && bridgeTargetToken != null;
+    const isSolanaBridge = isBridge && isSolanaToken(bridgeTargetChain);
+
+    // TODO: this needs some refactoring, this function is ugly as a naked cat
+    // The sponsored path exists for the Arbitrum hub only (Ethereum/Polygon
+    // claims and OFT bridges stay on the server-submitted path).
+    const arbitrumHubClaim =
+      swap.evm_chain_id === 42161 && (!isBridge || isCctpBridge);
+    return {
+      targetTokenAddr,
+      dexSwapNeeded,
+      bridgeTargetChain,
+      bridgeTargetToken,
+      isBridge,
+      isCctpBridge,
+      isSolanaBridge,
+      arbitrumHubClaim,
+    };
+  }
+
+  /**
+   * The coordinator calls (DEX / CCTP legs from `/dex-calldata/fund`) and
+   * the sweep floor for an Arbitrum-hub claim. Shared by the sponsored
+   * UserOp path and the wallet-paid path so both publish identical calldata.
+   */
+  async #fetchArbitrumHubCalls(
+    swap: ArkadeToEvmSwapResponse & { direction: string },
+    destination: string,
+    cls: EvmClaimClassification,
+    {
+      bridgeRecipient,
+      bridgeRecipientWallet,
+    }: { bridgeRecipient?: string; bridgeRecipientWallet?: string },
+  ): Promise<{ calls: CoordinatorCall[]; minAmountOut: bigint }> {
+    const {
+      targetTokenAddr,
+      dexSwapNeeded,
+      bridgeTargetChain,
+      bridgeTargetToken,
+      isBridge,
+      isCctpBridge,
+      isSolanaBridge,
+    } = cls;
+    let calls: CoordinatorCall[] = [];
+    let minAmountOut = BigInt(swap.evm_expected_sats);
+    if (dexSwapNeeded) {
+      // The swap leg always runs on Arbitrum. For a CCTP target the `to` Token
+      // names the destination (USDC on the dest chain / Solana) — the server
+      // reads the bridge from it; for same-chain it's the hub target itself.
+      const toToken = !isBridge
+        ? { kind: "evm" as const, chain_id: 42161, address: targetTokenAddr }
+        : isSolanaBridge
+          ? { kind: "solana" as const, address: bridgeTargetToken as string }
+          : {
+              kind: "evm" as const,
+              chain_id: Number(ALL_EVM_CHAIN_IDS[bridgeTargetChain as string]),
+              address: bridgeTargetToken as string,
+            };
+      // A Solana bridge target's mint recipient is its USDC ATA, which only
+      // rides on `bridgeRecipient` — reject a missing one here with an
+      // actionable error instead of round-tripping "" to the server (which
+      // fails opaquely in `solana_pubkey_to_bytes32`).
+      if (isCctpBridge && isSolanaBridge && !bridgeRecipient) {
+        throw new Error(
+          "Solana bridge claim requires `bridgeRecipient` (the recipient's USDC ATA).",
+        );
+      }
+      // CCTP mint recipient: the user's address for EVM (same address cross-
+      // chain), the recipient ATA (+ optional wallet for ATA-setup) for Solana.
+      const bridgeRecipientParam = !isCctpBridge
+        ? undefined
+        : isSolanaBridge
+          ? {
+              kind: "solana" as const,
+              address: bridgeRecipient ?? "",
+              wallet: bridgeRecipientWallet,
+            }
+          : { kind: "evm" as const, address: destination };
+
+      // Mirror the per-direction slippage floor the legacy server path uses;
+      // the coordinator's `_sweep` enforces `min_amount_out` on-chain.
+      const slippageBps = swap.direction === "bitcoin_to_evm" ? 200 : 100;
+      const fundResp = await this.#apiClient.POST("/dex-calldata/fund", {
+        body: {
+          from: {
+            kind: "evm",
+            chain_id: swap.evm_chain_id,
+            address: swap.wbtc_address,
+          },
+          to: toToken,
+          amount: { kind: "exact_in", value: String(swap.evm_expected_sats) },
+          sender: swap.evm_coordinator_address,
+          slippage_bps: slippageBps,
+          bridge_recipient: bridgeRecipientParam,
+        },
+      });
+      if (fundResp.error || !fundResp.data) {
+        throw new Error(
+          `Failed to fetch /dex-calldata/fund: ${JSON.stringify(fundResp.error)}`,
+        );
+      }
+      const payload = fundResp.data.payload;
+      if (payload.kind !== "evm") {
+        throw new Error(
+          `Unexpected /dex-calldata payload kind: ${payload.kind}`,
+        );
+      }
+      calls = payload.calls.map((c) => ({
+        target: c.target,
+        value: BigInt(c.value),
+        data: c.data,
+      }));
+      // A CCTP bridge claim's `_sweep` is a no-op (USDC is forwarded), so the
+      // floor is 0; a same-chain claim sweeps the swapped token to destination.
+      minAmountOut = isBridge ? 0n : BigInt(fundResp.data.estimated_amount_out);
+    }
+    return { calls, minAmountOut };
+  }
+
+  /**
+   * Claims an EVM-targeted swap from the user's own wallet, paying gas.
+   *
+   * Uses the exact `redeemAndExecute` calldata the sponsored UserOp path
+   * would publish - the swap's derived key signs the redeem, the wallet only
+   * broadcasts - so it works without any AA / paymaster configuration and is
+   * the manual fallback when the automatic claim fails. Arbitrum-hub swaps
+   * only (same coverage as the sponsored path).
+   *
+   * @param id - Swap ID.
+   * @param signer - A connected wallet on the swap's EVM chain.
+   * @param options - Bridge recipient details for non-EVM (Solana) targets.
+   */
+  async claimEvmWithSigner(
+    id: string,
+    signer: EvmSigner,
+    options: { bridgeRecipient?: string; bridgeRecipientWallet?: string } = {},
+  ): Promise<ClaimGaslessResult> {
+    const { stored, swap } = await this.#loadEvmClaimSwap(id);
+    const destination = this.#resolveEvmClaimDestination(swap);
+    if (!destination) {
+      throw new Error(
+        "No target address found for this swap; cannot build the claim.",
+      );
+    }
+    if (signer.chainId !== swap.evm_chain_id) {
+      throw new Error(
+        `Wallet is on chain ${signer.chainId}; switch it to chain ${swap.evm_chain_id} to claim.`,
+      );
+    }
+    const cls = this.#classifyEvmClaim(swap);
+    if (!cls.arbitrumHubClaim) {
+      throw new Error(
+        "Wallet-paid claims are only supported for Arbitrum-hub swaps (same-chain or CCTP targets).",
+      );
+    }
+    const bridgeRecipient = options.bridgeRecipient ?? stored.bridgeRecipient;
+    const bridgeRecipientWallet =
+      options.bridgeRecipient !== undefined
+        ? options.bridgeRecipientWallet
+        : stored.bridgeRecipientWallet;
+    const { calls, minAmountOut } = await this.#fetchArbitrumHubCalls(
+      swap,
+      destination,
+      cls,
+      { bridgeRecipient, bridgeRecipientWallet },
+    );
+    const result = await claimViaSigner({
+      preimage: stored.preimage,
+      secretKey: hexToBytes(this.#getClaimEvmSigningKey(stored)),
+      swap,
+      destination,
+      calls,
+      minAmountOut,
+      signer,
+    });
+    // Refresh the stored status so callers see `clientredeemed` right away.
+    await this.getSwap(id, { updateStorage: true }).catch(() => undefined);
+    return result;
+  }
+
   /**
    * Claims an Arkade-to-EVM swap gaslessly via the server.
    *
@@ -2672,33 +3095,7 @@ export class Client {
       bridgeRecipientWallet?: string;
     } = {},
   ): Promise<ClaimGaslessResult> {
-    if (!this.#swapStorage) {
-      throw new Error(
-        "Swap storage is not configured. Cannot retrieve preimage needed for gasless claim.",
-      );
-    }
-
-    // Fetch all data upfront
-    const stored = await this.#swapStorage.get(id);
-    if (!stored) {
-      throw new Error(`Swap ${id} not found in local storage.`);
-    }
-
-    const swap = (await this.getSwap(id, {
-      updateStorage: true,
-    })) as ArkadeToEvmSwapResponse & {
-      direction: string;
-    };
-
-    if (
-      swap.direction !== "arkade_to_evm" &&
-      swap.direction !== "bitcoin_to_evm" &&
-      swap.direction !== "lightning_to_evm"
-    ) {
-      throw new Error(
-        `Expected an EVM-targeted swap (arkade_to_evm, bitcoin_to_evm or lightning_to_evm), got ${swap.direction}. claimViaGasless is for EVM-targeted swaps.`,
-      );
-    }
+    const { stored, swap } = await this.#loadEvmClaimSwap(id);
 
     // Client-side claim via a paymaster-sponsored UserOp. Covers Arbitrum-hub
     // DEX swaps (e.g. EURe — LI.FI-only, broken on the legacy fixed-gas Uniswap
@@ -2717,32 +3114,8 @@ export class Client {
     // entirely. Unlike DEX/CCTP claims they have a working legacy fallback, so
     // a missing AA config or a failed publish degrades to the
     // server-submitted path instead of throwing.
-    const targetTokenAddr = String(swap.target_token.token_id);
-    const dexSwapNeeded =
-      targetTokenAddr.toLowerCase() !== swap.wbtc_address.toLowerCase();
-    const bridgeSwap = swap as {
-      bridge_target_chain?: string | null;
-      bridge_target_token_address?: string | null;
-    };
-    const bridgeTargetChain = bridgeSwap.bridge_target_chain || undefined;
-    const bridgeTargetToken =
-      bridgeSwap.bridge_target_token_address || undefined;
-    const isBridge = bridgeTargetChain != null;
-    // A USDT0 target token is a LayerZero OFT bridge; everything else CCTP.
-    const isOftBridge =
-      isBridge &&
-      bridgeTargetToken != null &&
-      Object.values(USDT0_ADDRESSES).some(
-        (a) => a.toLowerCase() === bridgeTargetToken.toLowerCase(),
-      );
-    const isCctpBridge = isBridge && !isOftBridge && bridgeTargetToken != null;
-    const isSolanaBridge = isBridge && isSolanaToken(bridgeTargetChain);
-
-    // TODO: this needs some refactoring, this function is ugly as a naked cat
-    // The sponsored path exists for the Arbitrum hub only (Ethereum/Polygon
-    // claims and OFT bridges stay on the server-submitted path).
-    const arbitrumHubClaim =
-      swap.evm_chain_id === 42161 && (!isBridge || isCctpBridge);
+    const cls = this.#classifyEvmClaim(swap);
+    const { arbitrumHubClaim, dexSwapNeeded } = cls;
     if (arbitrumHubClaim && dexSwapNeeded && this.#config.aa == null) {
       throw new Error(
         "Claiming an Arbitrum EVM DEX/CCTP swap requires AA config for the " +
@@ -2754,87 +3127,16 @@ export class Client {
       // Direct claim default: no DEX leg — the coordinator redeems and
       // sweeps the locked token itself, so the sweep floor is the full HTLC
       // amount.
-      let calls: CoordinatorCall[] = [];
-      let minAmountOut = BigInt(swap.evm_expected_sats);
-      if (dexSwapNeeded) {
-        // The swap leg always runs on Arbitrum. For a CCTP target the `to` Token
-        // names the destination (USDC on the dest chain / Solana) — the server
-        // reads the bridge from it; for same-chain it's the hub target itself.
-        const toToken = !isBridge
-          ? { kind: "evm" as const, chain_id: 42161, address: targetTokenAddr }
-          : isSolanaBridge
-            ? { kind: "solana" as const, address: bridgeTargetToken as string }
-            : {
-                kind: "evm" as const,
-                chain_id: Number(
-                  ALL_EVM_CHAIN_IDS[bridgeTargetChain as string],
-                ),
-                address: bridgeTargetToken as string,
-              };
-        // A Solana bridge target's mint recipient is its USDC ATA, which only
-        // rides on `bridgeRecipient` — reject a missing one here with an
-        // actionable error instead of round-tripping "" to the server (which
-        // fails opaquely in `solana_pubkey_to_bytes32`).
-        if (isCctpBridge && isSolanaBridge && !bridgeRecipient) {
-          throw new Error(
-            "Solana bridge claim requires `bridgeRecipient` (the recipient's USDC ATA).",
-          );
-        }
-        // CCTP mint recipient: the user's address for EVM (same address cross-
-        // chain), the recipient ATA (+ optional wallet for ATA-setup) for Solana.
-        const bridgeRecipientParam = !isCctpBridge
-          ? undefined
-          : isSolanaBridge
-            ? {
-                kind: "solana" as const,
-                address: bridgeRecipient ?? "",
-                wallet: bridgeRecipientWallet,
-              }
-            : { kind: "evm" as const, address: destination };
-
-        // Mirror the per-direction slippage floor the legacy server path uses;
-        // the coordinator's `_sweep` enforces `min_amount_out` on-chain.
-        const slippageBps = swap.direction === "bitcoin_to_evm" ? 200 : 100;
-        const fundResp = await this.#apiClient.POST("/dex-calldata/fund", {
-          body: {
-            from: {
-              kind: "evm",
-              chain_id: swap.evm_chain_id,
-              address: swap.wbtc_address,
-            },
-            to: toToken,
-            amount: { kind: "exact_in", value: String(swap.evm_expected_sats) },
-            sender: swap.evm_coordinator_address,
-            slippage_bps: slippageBps,
-            bridge_recipient: bridgeRecipientParam,
-          },
-        });
-        if (fundResp.error || !fundResp.data) {
-          throw new Error(
-            `Failed to fetch /dex-calldata/fund: ${JSON.stringify(fundResp.error)}`,
-          );
-        }
-        const payload = fundResp.data.payload;
-        if (payload.kind !== "evm") {
-          throw new Error(
-            `Unexpected /dex-calldata payload kind: ${payload.kind}`,
-          );
-        }
-        calls = payload.calls.map((c) => ({
-          target: c.target,
-          value: BigInt(c.value),
-          data: c.data,
-        }));
-        // A CCTP bridge claim's `_sweep` is a no-op (USDC is forwarded), so the
-        // floor is 0; a same-chain claim sweeps the swapped token to destination.
-        minAmountOut = isBridge
-          ? 0n
-          : BigInt(fundResp.data.estimated_amount_out);
-      }
+      const { calls, minAmountOut } = await this.#fetchArbitrumHubCalls(
+        swap,
+        destination,
+        cls,
+        { bridgeRecipient, bridgeRecipientWallet },
+      );
       try {
         return await claimViaUserOp({
           preimage: stored.preimage,
-          secretKey: hexToBytes(this.#getEvmSigningKey()),
+          secretKey: hexToBytes(this.#getClaimEvmSigningKey(stored)),
           swap,
           destination,
           calls,
@@ -2903,7 +3205,7 @@ export class Client {
     return gaslessClaim({
       baseUrl: this.#config.baseUrl,
       preimage: stored.preimage,
-      secretKey: hexToBytes(this.#getEvmSigningKey()),
+      secretKey: hexToBytes(this.#getClaimEvmSigningKey(stored)),
       swap,
       destination,
       dexCalldata,
@@ -4716,9 +5018,16 @@ export class Client {
       }
       recipient = depositor;
     }
+    // A zero asset word is a native lock (`HTLCNative`), whose refund and
+    // coordinator `refundTo` take no token parameter.
+    const native = created.token === NATIVE_TOKEN_ADDRESS.toLowerCase();
     const { to, data } = ownHtlc
-      ? encodeHtlcErc20RefundCallData(leg.htlcAddress, created)
-      : encodeRefundTo(created.refundAddress, created);
+      ? native
+        ? encodeHtlcNativeRefundCallData(leg.htlcAddress, created)
+        : encodeHtlcErc20RefundCallData(leg.htlcAddress, created)
+      : native
+        ? encodeNativeRefundTo(created.refundAddress, created)
+        : encodeRefundTo(created.refundAddress, created);
     return {
       to,
       data,
@@ -5043,7 +5352,11 @@ export class Client {
     // so the backend knows to bridge after. This keeps the remapping logic
     // in one place — SDK consumers just pass their desired target.
     let bridgeParams = options.bridgeParams;
-    if (!bridgeParams && isBridgeOnlyChain(targetChain)) {
+    if (
+      !bridgeParams &&
+      isBridgeOnlyChain(targetChain) &&
+      !isNativeLockTarget(targetChain, tokenAddress)
+    ) {
       const chainName = toChainName(targetChain as Chain);
       if (chainName) {
         const isUsdt0 = Object.values(USDT0_ADDRESSES).some(
@@ -5254,7 +5567,10 @@ export class Client {
     // EVM → Lightning. `targetAddress` carries the Lightning destination:
     // a BOLT11 invoice ("ln..."), an LNURL ("lnurl1..."), or a lightning
     // address ("user@domain").
-    if (isSourceEvmChain(sourceChain) && isLightning(targetAsset)) {
+    if (
+      isEvmSwapSource(sourceChain, sourceTokenId) &&
+      isLightning(targetAsset)
+    ) {
       if (!options.userAddress && !options.gasless) {
         throw new Error(
           "userAddress is required for EVM → Lightning swaps (unless gasless)",
@@ -5312,7 +5628,7 @@ export class Client {
     }
 
     // EVM → Arkade
-    if (isSourceEvmChain(sourceChain) && isArkade(targetAsset)) {
+    if (isEvmSwapSource(sourceChain, sourceTokenId) && isArkade(targetAsset)) {
       if (!options.userAddress && !options.gasless) {
         throw new Error(
           "userAddress is required for EVM → Arkade swaps (unless gasless)",
@@ -5338,7 +5654,10 @@ export class Client {
     }
 
     // EVM → Bitcoin (on-chain)
-    if (isSourceEvmChain(sourceChain) && isBtcOnchain(targetAsset)) {
+    if (
+      isEvmSwapSource(sourceChain, sourceTokenId) &&
+      isBtcOnchain(targetAsset)
+    ) {
       if (!options.userAddress && !options.gasless) {
         throw new Error(
           "userAddress is required for EVM → Bitcoin swaps (unless gasless)",
@@ -5712,7 +6031,9 @@ export class Client {
     const baseUrl = this.#config.baseUrl.replace(/\/$/, "");
     const url = `${baseUrl}/swap/${swapId}/swap-and-lock-calldata-permit2`;
 
-    const resp = await fetch(url, { headers: this.#apiHeaders() });
+    const resp = await fetch(url, {
+      headers: this.#apiHeaders(),
+    });
     if (!resp.ok) {
       const body = await resp.text();
       throw new Error(
@@ -5731,6 +6052,7 @@ export class Client {
       timelock: number;
       calls: Array<{ target: string; value: string; call_data: string }>;
       calls_hash: string;
+      depositor_delegation?: string | null;
     };
 
     // 3. Generate random Permit2 nonce and deadline
@@ -5762,14 +6084,27 @@ export class Client {
       deadline,
     });
 
-    // 5. Sign with the EVM key (deterministic for new swaps, per-swap for legacy)
+    // 5. Sign with the EVM key (deterministic for new swaps, per-swap for legacy).
+    // Kernel-delegated depositors get the ERC-1271 envelope, plain EOAs a
+    // compact r || s || v signature.
     const evmKey = this.#getEvmSigningKey();
-    const sig = signEvmDigest(evmKey, digest);
-    // Compact signature: r (32 bytes) || s (32 bytes) || v (1 byte)
-    const rClean = sig.r.replace(/^0x/, "");
-    const sClean = sig.s.replace(/^0x/, "");
-    const vHex = sig.v.toString(16).padStart(2, "0");
-    const compactSignature = `0x${rClean}${sClean}${vHex}`;
+    const depositorAddress = deriveEvmAddress(evmKey);
+    const delegated = await this.#isKernelDelegated(
+      depositorAddress,
+      chainId,
+      this.#delegationHintFor(
+        swap as { client_evm_address?: string | null },
+        depositorAddress,
+        serverData.depositor_delegation,
+      ),
+    );
+    const compactSignature = this.#signDepositorDigest(
+      evmKey,
+      depositorAddress,
+      chainId,
+      digest,
+      delegated,
+    );
 
     // 6. Build calls array for the coordinator
     const calls = serverData.calls.map((c) => ({
@@ -5777,9 +6112,6 @@ export class Client {
       value: BigInt(c.value),
       data: c.call_data,
     }));
-
-    // Derive depositor address from the EVM signing key
-    const depositorAddress = deriveEvmAddress(evmKey);
 
     // 7. Encode executeAndCreateWithPermit2 calldata
     const encoded = encodeExecuteAndCreateWithPermit2(
@@ -5882,7 +6214,9 @@ export class Client {
     const baseUrl = this.#config.baseUrl.replace(/\/$/, "");
     const url = `${baseUrl}/swap/${swapId}/swap-and-lock-calldata-permit2`;
 
-    const resp = await fetch(url, { headers: this.#apiHeaders() });
+    const resp = await fetch(url, {
+      headers: this.#apiHeaders(),
+    });
     if (!resp.ok) {
       const body = await resp.text();
       throw new Error(
@@ -5985,10 +6319,11 @@ export class Client {
    *   address: walletClient.account.address,
    *   chainId: walletClient.chain.id,
    *   signTypedData: (td) => walletClient.signTypedData({ ...td, account: walletClient.account }),
-   *   sendTransaction: (tx) => walletClient.sendTransaction({ to: tx.to, data: tx.data, chain, gas: tx.gas }),
+   *   sendTransaction: (tx) => walletClient.sendTransaction({ to: tx.to, data: tx.data, value: tx.value, type: tx.type, chain, gas: tx.gas }),
    *   waitForReceipt: (hash) => publicClient.waitForReceipt({ hash }),
    *   getTransaction: (hash) => publicClient.getTransaction({ hash }),
    *   call: (tx) => publicClient.call(tx),
+   *   getBalance: (address) => publicClient.getBalance({ address }),
    * };
    *
    * const { txHash } = await client.fundSwap(swapId, signer);
@@ -6019,6 +6354,30 @@ export class Client {
       }) => void;
     },
   ): Promise<{ txHash: string; cctp?: CctpFundSwapResult }> {
+    // A native lock (RBTC on Rootstock) is one payable transaction to the
+    // native coordinator: no token approval, no Permit2, no server calldata.
+    // The lock family is pinned on the swap at creation.
+    {
+      const stored = await this.#swapStorage?.get(swapId);
+      const response =
+        stored?.response ??
+        (await this.getSwap(swapId, { updateStorage: true }));
+      if (
+        (response.direction === "evm_to_lightning" ||
+          response.direction === "evm_to_arkade" ||
+          response.direction === "evm_to_bitcoin") &&
+        response.evm_htlc_kind === "native"
+      ) {
+        const txHash = await this.#fundNativeLock(
+          swapId,
+          response,
+          signer,
+          options?.onQuote,
+        );
+        return { txHash };
+      }
+    }
+
     // Dispatch the CCTP-inbound path only for chains the backend does
     // NOT accept as a direct swap source (Optimism, Base, Linea, …).
     // Ethereum / Polygon / Arbitrum fund via Permit2 on the source
@@ -6192,20 +6551,116 @@ export class Client {
     // 7. Simulate before sending to catch reverts without burning gas
     await simulateTransaction(signer, encoded, "Funding transaction");
 
-    // 8. Send the funding transaction
+    // 8. Send the funding transaction, then see it through
     const txHash = await signer.sendTransaction({
       to: encoded.to,
       data: encoded.data,
       gas: 500_000n,
     });
+    const mined = await this.#awaitFunding(swapId, signer, txHash, encoded, {
+      htlcAddress: freshFunding.htlcAddress,
+      preimageHash: freshFunding.preimageHash,
+      claimAddress: freshFunding.claimAddress,
+      coordinatorAddress: freshFunding.coordinatorAddress,
+      token: freshFunding.lockTokenAddress,
+    });
+    return { txHash: mined };
+  }
+
+  /**
+   * Fund a native lock: `HTLCNativeCoordinator.executeAndCreate` with no
+   * calls and the quoted amount as the transaction value. The amount is
+   * pinned on the swap (`evm_expected_sats`, in wei): there is no DEX leg,
+   * so nothing is re-quoted at funding time.
+   */
+  async #fundNativeLock(
+    swapId: string,
+    swap:
+      | EvmToLightningSwapResponse
+      | EvmToArkadeSwapResponse
+      | EvmToBitcoinSwapResponse,
+    signer: EvmSigner,
+    onQuote?: (quote: {
+      sourceAmount: bigint;
+      sourceTokenAddress: string;
+    }) => void,
+  ): Promise<string> {
+    if (signer.chainId !== swap.evm_chain_id) {
+      throw new Error(
+        `fundSwap signer is on chain ${signer.chainId} but the swap locks on chain ${swap.evm_chain_id}`,
+      );
+    }
+    const amount = BigInt(swap.evm_expected_sats);
+    // The Bitcoin direction names the EVM hash lock separately from the
+    // Bitcoin HTLC's; the other two carry a single hash_lock.
+    const hashLock =
+      "evm_hash_lock" in swap ? swap.evm_hash_lock : swap.hash_lock;
+    onQuote?.({
+      sourceAmount: amount,
+      sourceTokenAddress: NATIVE_TOKEN_ADDRESS,
+    });
+
+    const encoded = encodeNativeExecuteAndCreate(swap.evm_coordinator_address, {
+      calls: [],
+      preimageHash: hashLock,
+      amount,
+      claimAddress: swap.server_evm_address,
+      timelock: swap.evm_refund_locktime,
+    });
+
+    // Fail before the wallet prompts when the coin is not there; gas comes
+    // out of the same balance, so this is a floor, not the exact need.
+    if (signer.getBalance) {
+      const balance = await signer.getBalance(signer.address);
+      if (balance < encoded.value) {
+        throw new Error(
+          `Insufficient native balance: have ${balance} wei, need ${encoded.value} wei plus gas`,
+        );
+      }
+    }
+
+    await simulateTransaction(signer, encoded, "Funding transaction");
+
+    const txHash = await signer.sendTransaction({
+      to: encoded.to,
+      data: encoded.data,
+      value: encoded.value,
+      type: txTypeFor(signer.chainId),
+      gas: NATIVE_LOCK_GAS,
+    });
+    return this.#awaitFunding(swapId, signer, txHash, encoded, {
+      htlcAddress: swap.evm_htlc_address,
+      preimageHash: hashLock,
+      claimAddress: swap.server_evm_address,
+      coordinatorAddress: swap.evm_coordinator_address,
+      token: NATIVE_TOKEN_ADDRESS,
+    });
+  }
+
+  /**
+   * Record a sent funding tx, wait for it, and settle which tx funded the
+   * swap. Returns the mined hash.
+   */
+  async #awaitFunding(
+    swapId: string,
+    signer: EvmSigner,
+    txHash: string,
+    sent: { to: string; data: string },
+    expected: {
+      htlcAddress: string;
+      preimageHash: string;
+      claimAddress: string;
+      coordinatorAddress: string;
+      token: string;
+    },
+  ): Promise<string> {
     // Recorded before the wait, so an RPC failure on a tx that did mine
     // cannot lose it; corrected below if the wallet replaced the tx.
     await this.#recordEvmFunding(swapId, {
       txid: txHash,
-      coordinatorAddress: freshFunding.coordinatorAddress,
+      coordinatorAddress: expected.coordinatorAddress,
     });
 
-    // 9. Wait for receipt
     const receipt = await signer.waitForReceipt(txHash);
     if (receipt.status !== "success") {
       const reason = await getRevertReason(signer, txHash, receipt.blockNumber);
@@ -6225,15 +6680,15 @@ export class Client {
           "this signer's waitForReceipt returns no logs, so the swap can only be refunded through the server",
         swapId,
       });
-      created = !replaced || (await isSameCall(signer, mined, encoded));
+      created = !replaced || (await isSameCall(signer, mined, sent));
     } else {
       created =
         findSwapCreated(receipt.logs, {
-          htlcAddress: freshFunding.htlcAddress,
-          hashLock: freshFunding.preimageHash,
-          claimAddress: freshFunding.claimAddress,
-          senders: [freshFunding.coordinatorAddress],
-          token: freshFunding.lockTokenAddress,
+          htlcAddress: expected.htlcAddress,
+          hashLock: expected.preimageHash,
+          claimAddress: expected.claimAddress,
+          senders: [expected.coordinatorAddress],
+          token: expected.token,
         }).length > 0;
     }
     if (!created && replaced) {
@@ -6256,15 +6711,15 @@ export class Client {
     if (replaced) {
       await this.#recordEvmFunding(swapId, {
         txid: mined,
-        coordinatorAddress: freshFunding.coordinatorAddress,
+        coordinatorAddress: expected.coordinatorAddress,
       });
     }
 
-    // 10. The server may have re-quoted the source amount for this funding;
-    //     bring the stored copy up to date. Best effort — the funding is done.
+    // The server may have re-quoted the source amount for this funding;
+    // bring the stored copy up to date. Best effort — the funding is done.
     await this.getSwap(swapId, { updateStorage: true }).catch(() => undefined);
 
-    return { txHash: mined };
+    return mined;
   }
 
   /**
@@ -6312,6 +6767,7 @@ export class Client {
     const txHash = await signer.sendTransaction({
       to: result.evmRefundData.to,
       data: result.evmRefundData.data,
+      type: txTypeFor(signer.chainId),
       gas: 500_000n,
     });
 
@@ -6650,7 +7106,9 @@ export class Client {
     const baseUrl = this.#config.baseUrl.replace(/\/$/, "");
     const url = `${baseUrl}/swap/${swapId}/swap-and-lock-calldata-permit2`;
 
-    const resp = await fetch(url, { headers: this.#apiHeaders() });
+    const resp = await fetch(url, {
+      headers: this.#apiHeaders(),
+    });
     if (!resp.ok) {
       const body = await resp.text();
       throw new Error(
@@ -6676,6 +7134,7 @@ export class Client {
         domain_separator: string;
       };
       relay_fee?: string;
+      depositor_delegation?: string | null;
     };
 
     // 3. Generate random Permit2 nonce and deadline
@@ -6705,23 +7164,37 @@ export class Client {
       nonce,
       deadline,
     });
-    // 4b. Use the EVM key (deterministic for new swaps, per-swap for legacy)
+    // 4b. Use the EVM key (deterministic for new swaps, per-swap for legacy).
+    // If the depositor has been delegated to Kernel by a sponsored claim,
+    // Permit2 verifies via ERC-1271 and needs Kernel's envelope.
     const evmKey = this.#getEvmSigningKey();
-    const permit2Sig = signEvmDigest(evmKey, digest);
-    const rClean = permit2Sig.r.replace(/^0x/, "");
-    const sClean = permit2Sig.s.replace(/^0x/, "");
-    const vHex = permit2Sig.v.toString(16).padStart(2, "0");
-    const compactSignature = `0x${rClean}${sClean}${vHex}`;
-
-    // 5. Derive depositor address from EVM key
     const depositorAddress = deriveEvmAddress(evmKey);
+    const delegated = await this.#isKernelDelegated(
+      depositorAddress,
+      chainId,
+      this.#delegationHintFor(
+        swap as { client_evm_address?: string | null },
+        depositorAddress,
+        serverData.depositor_delegation,
+      ),
+    );
+    const compactSignature = this.#signDepositorDigest(
+      evmKey,
+      depositorAddress,
+      chainId,
+      digest,
+      delegated,
+    );
 
-    // 6. If EIP-2612 needed (token supports it and not yet approved to Permit2)
+    // 6. If EIP-2612 needed (token supports it and not yet approved to Permit2).
+    // A Kernel-delegated depositor has code, so the token verifies the permit
+    // via ERC-1271: send Kernel's envelope as `signature` instead of v/r/s.
     let eip2612Permit:
       | {
-          v: number;
-          r: string;
-          s: string;
+          v?: number;
+          r?: string;
+          s?: string;
+          signature?: string;
           value: string;
           deadline: number;
           nonce: number;
@@ -6740,15 +7213,30 @@ export class Client {
         nonce: serverData.eip2612.nonce,
         deadline,
       });
-      const sig = signEvmDigest(evmKey, eip2612Digest);
-      eip2612Permit = {
-        v: sig.v,
-        r: sig.r.replace(/^0x/, ""),
-        s: sig.s.replace(/^0x/, ""),
-        value: maxUint256.toString(),
-        deadline: Number(deadline),
-        nonce: serverData.eip2612.nonce,
-      };
+      if (delegated) {
+        eip2612Permit = {
+          signature: this.#signDepositorDigest(
+            evmKey,
+            depositorAddress,
+            chainId,
+            eip2612Digest,
+            delegated,
+          ),
+          value: maxUint256.toString(),
+          deadline: Number(deadline),
+          nonce: serverData.eip2612.nonce,
+        };
+      } else {
+        const sig = signEvmDigest(evmKey, eip2612Digest);
+        eip2612Permit = {
+          v: sig.v,
+          r: sig.r.replace(/^0x/, ""),
+          s: sig.s.replace(/^0x/, ""),
+          value: maxUint256.toString(),
+          deadline: Number(deadline),
+          nonce: serverData.eip2612.nonce,
+        };
+      }
     }
 
     // 7. POST to fund-gasless relay endpoint

@@ -211,6 +211,7 @@ export {
   signEscrowDelegate,
 } from "./escrow/index.js";
 // EVM HTLC utilities
+/** The zero address: the asset word of a native lock (RBTC on Rootstock). */
 export {
   type ApproveCallData,
   buildEvmHtlcCallData,
@@ -227,14 +228,20 @@ export {
   encodeHtlcErc20CreateCallData,
   type HtlcErc20CreateCallData,
   type HtlcErc20CreateParams,
+  isKernelDelegation,
   isUserRejection,
+  KERNEL_DELEGATION_TARGET,
+  kernelErc1271Digest,
+  NATIVE_TOKEN_ADDRESS,
   PERMIT2_ADDRESS,
   type Permit2TypedData,
+  parseEip7702Delegation,
   type ReceiptLog,
   SimulationRevertError,
   signEvmDigest,
   type TxReceipt,
   type UnsignedPermit2FundingData,
+  wrapKernelErc1271Signature,
 } from "./evm/index.js";
 export {
   createConsoleLogger,
@@ -253,6 +260,13 @@ export {
   calculateTargetAmount,
   computeExchangeRate,
 } from "./price-calculations.js";
+export {
+  PROTOCOL_HEADERS,
+  PROTOCOL_VERSIONS,
+  ProtocolComponent,
+  ProtocolEpoch,
+  protocolHeaderName,
+} from "./protocol.js";
 // Redeem module (Arkade claim)
 export {
   type ArkadeClaimParams,
@@ -322,9 +336,11 @@ export {
   isBtcPegged,
   isCctpUsdc,
   isEthereumToken,
+  isEvmSwapSource,
   isEvmToken,
   isLightning,
   isLineaToken,
+  isNativeLockTarget,
   isOptimismToken,
   isPolygonToken,
   isSolanaToken,

@@ -149,6 +149,16 @@ const REDEEM_TYPEHASH =
   "Redeem(bytes32 preimage,uint256 amount,address token,address sender,uint256 timelock,address caller,address destination,address sweepToken,uint256 minAmountOut,bytes32 callsHash)";
 const HTLC_NAME = "HTLCErc20";
 const HTLC_VERSION = "4";
+// The native-coin family (`HTLCNative` + `HTLCNativeCoordinator`, e.g. RBTC on
+// Rootstock). Same domain layout under its own name; the `Redeem` struct has no
+// `token` field because the lock asset is the chain's coin.
+const NATIVE_REDEEM_TYPEHASH =
+  "Redeem(bytes32 preimage,uint256 amount,address sender,uint256 timelock,address caller,address destination,address sweepToken,uint256 minAmountOut,bytes32 callsHash)";
+const NATIVE_HTLC_NAME = "HTLCNative";
+const NATIVE_HTLC_VERSION = "1";
+/** `address(0)`: the native coin wherever an ERC-20 address is expected. */
+export const NATIVE_TOKEN_ADDRESS =
+  "0x0000000000000000000000000000000000000000";
 
 // ── redeemAndExecute selector ────────────────────────────────────────────────
 // keccak256("redeemAndExecute(bytes32,uint256,address,address,uint256,(address,uint256,bytes)[],address,uint256,address,uint8,bytes32,bytes32)")
@@ -235,6 +245,73 @@ export function buildRedeemDigest(params: RedeemDigestParams): string {
   );
 
   // EIP-712 digest: \x19\x01 ‖ domainSeparator ‖ structHash
+  const prefix = new Uint8Array([0x19, 0x01]);
+  const domainBytes = hexToBytes(domainSeparator);
+  const structBytes = hexToBytes(structHash);
+  const message = new Uint8Array(
+    prefix.length + domainBytes.length + structBytes.length,
+  );
+  message.set(prefix, 0);
+  message.set(domainBytes, prefix.length);
+  message.set(structBytes, prefix.length + domainBytes.length);
+
+  return keccak256(message);
+}
+
+/** Parameters of the `HTLCNative` `Redeem` digest (no `token`). */
+export type NativeRedeemDigestParams = Omit<RedeemDigestParams, "token">;
+
+/**
+ * Builds the EIP-712 digest a claimant signs for a native-coin lock
+ * (`HTLCNative.redeemBySig`, relayed through `HTLCNativeCoordinator`).
+ *
+ * Mirrors {@link buildRedeemDigest} with the domain name `HTLCNative` and the
+ * token-less `Redeem` struct. The server relays a fixed claim shape: no calls
+ * (`callsHash` of an empty array), `sweepToken` = {@link NATIVE_TOKEN_ADDRESS},
+ * `minAmountOut` = the locked amount, `caller` = the native coordinator.
+ */
+export function buildNativeRedeemDigest(
+  params: NativeRedeemDigestParams,
+): string {
+  const domainSeparator = keccak256(
+    abiEncode([
+      {
+        type: "bytes32",
+        value: keccak256(stringToUtf8Bytes(EIP712_DOMAIN_TYPEHASH)),
+      },
+      {
+        type: "bytes32",
+        value: keccak256(stringToUtf8Bytes(NATIVE_HTLC_NAME)),
+      },
+      {
+        type: "bytes32",
+        value: keccak256(
+          stringToUtf8Bytes(String(params.htlcVersion ?? NATIVE_HTLC_VERSION)),
+        ),
+      },
+      { type: "uint256", value: BigInt(params.chainId) },
+      { type: "address", value: params.htlcAddress },
+    ]),
+  );
+
+  const structHash = keccak256(
+    abiEncode([
+      {
+        type: "bytes32",
+        value: keccak256(stringToUtf8Bytes(NATIVE_REDEEM_TYPEHASH)),
+      },
+      { type: "bytes32", value: params.preimage },
+      { type: "uint256", value: params.amount },
+      { type: "address", value: params.sender },
+      { type: "uint256", value: BigInt(params.timelock) },
+      { type: "address", value: params.caller },
+      { type: "address", value: params.destination },
+      { type: "address", value: params.sweepToken },
+      { type: "uint256", value: params.minAmountOut },
+      { type: "bytes32", value: params.callsHash },
+    ]),
+  );
+
   const prefix = new Uint8Array([0x19, 0x01]);
   const domainBytes = hexToBytes(domainSeparator);
   const structBytes = hexToBytes(structHash);
@@ -443,6 +520,116 @@ export function encodeRefundAndExecute(
     data,
     functionSignature:
       "refundAndExecute(bytes32,uint256,address,address,uint256,(address,uint256,bytes)[],address,uint256)",
+  };
+}
+
+// ── HTLCNativeCoordinator ────────────────────────────────────────────────────
+// The native coordinator locks the chain's own coin, so its functions carry
+// no `token` parameter; everything else mirrors HTLCCoordinator.
+
+// keccak256("executeAndCreate((address,uint256,bytes)[],bytes32,uint256,address,uint256)")
+const NATIVE_EXECUTE_AND_CREATE_SELECTOR = keccak256(
+  stringToUtf8Bytes(
+    "executeAndCreate((address,uint256,bytes)[],bytes32,uint256,address,uint256)",
+  ),
+).slice(0, 10);
+
+// keccak256("refundTo(bytes32,uint256,address,uint256)")
+const NATIVE_REFUND_TO_SELECTOR = keccak256(
+  stringToUtf8Bytes("refundTo(bytes32,uint256,address,uint256)"),
+).slice(0, 10);
+
+/** Parameters for `HTLCNativeCoordinator.executeAndCreate`. */
+export interface NativeExecuteAndCreateParams {
+  /** Calls to run before the lock; a plain native lock sends none. */
+  calls: CoordinatorCall[];
+  /** SHA256 hash of the preimage (32-byte hex with 0x prefix) */
+  preimageHash: string;
+  /** Exact amount to lock, in wei. The transaction value must cover it. */
+  amount: bigint;
+  /** Claim address (server's EVM address) */
+  claimAddress: string;
+  /** HTLC timelock (unix timestamp) */
+  timelock: number;
+}
+
+/** Call data for a native lock: the transaction must carry `value`. */
+export interface NativeExecuteAndCreateCallData
+  extends ExecuteAndCreateCallData {
+  /** Native coin to attach, in wei (the lock amount for a plain lock). */
+  value: bigint;
+}
+
+/**
+ * Encodes `HTLCNativeCoordinator.executeAndCreate(calls, preimageHash, amount, claimAddress, timelock)`.
+ *
+ * The coordinator locks exactly `amount` of the value it received (after the
+ * calls ran) and returns any excess, so a plain lock sends `value == amount`
+ * and no calls.
+ */
+export function encodeNativeExecuteAndCreate(
+  coordinatorAddress: string,
+  params: NativeExecuteAndCreateParams,
+): NativeExecuteAndCreateCallData {
+  // Head: calls_offset, preimageHash, amount, claimAddress, timelock (5 slots)
+  const callsOffset = encodeUint256(5n * 32n);
+  const preimageHash = normalizeBytes32(params.preimageHash);
+  const amount = encodeUint256(params.amount);
+  const claimAddress = normalizeAddress(params.claimAddress);
+  const timelock = encodeUint256(BigInt(params.timelock));
+  const callsEncoded = encodeCalls(params.calls);
+
+  const data = [
+    NATIVE_EXECUTE_AND_CREATE_SELECTOR,
+    callsOffset,
+    preimageHash,
+    amount,
+    claimAddress,
+    timelock,
+    callsEncoded,
+  ].join("");
+
+  return {
+    to: coordinatorAddress,
+    data,
+    value: params.calls.reduce((sum, call) => sum + call.value, params.amount),
+    functionSignature:
+      "executeAndCreate((address,uint256,bytes)[],bytes32,uint256,address,uint256)",
+  };
+}
+
+/** Parameters for `HTLCNativeCoordinator.refundTo`. */
+export interface NativeRefundToParams {
+  /** SHA256 hash of the preimage (32-byte hex with 0x prefix) */
+  preimageHash: string;
+  /** Amount locked in the HTLC, in wei */
+  amount: bigint;
+  /** Claim address (server's EVM address) */
+  claimAddress: string;
+  /** HTLC timelock (unix timestamp) */
+  timelock: number;
+}
+
+/**
+ * Encodes `HTLCNativeCoordinator.refundTo(preimageHash, amount, claimAddress, timelock)`:
+ * the permissionless refund of an expired native lock to its depositor.
+ */
+export function encodeNativeRefundTo(
+  coordinatorAddress: string,
+  params: NativeRefundToParams,
+): ExecuteAndCreateCallData {
+  const data = [
+    NATIVE_REFUND_TO_SELECTOR,
+    normalizeBytes32(params.preimageHash),
+    encodeUint256(params.amount),
+    normalizeAddress(params.claimAddress),
+    encodeUint256(BigInt(params.timelock)),
+  ].join("");
+
+  return {
+    to: coordinatorAddress,
+    data,
+    functionSignature: "refundTo(bytes32,uint256,address,uint256)",
   };
 }
 

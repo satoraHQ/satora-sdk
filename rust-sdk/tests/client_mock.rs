@@ -22,26 +22,19 @@ use wiremock::matchers::header;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
-fn openapi_version() -> String {
-    let spec_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("openapi.json");
-    let spec: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(&spec_path)
-            .unwrap_or_else(|err| panic!("failed to read {}: {err}", spec_path.display())),
-    )
-    .expect("openapi.json is not valid JSON");
-    spec.pointer("/info/version")
-        .and_then(|v| v.as_str())
-        .expect("openapi.json has no string info.version")
-        .to_string()
-}
-
 #[tokio::test]
 async fn version_returns_decoded_response() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/version"))
         .and(header("X-Lendaswap-Client", "satora-rust-sdk/0.0.1"))
-        .and(header("x-satora-server-version", openapi_version()))
+        // Every request carries each component's protocol epoch; the server
+        // checks the ones the request's swap uses.
+        .and(header("x-satora-bitcoin-htlc-version", "1"))
+        .and(header("x-satora-arkade-vhtlc-version", "1"))
+        .and(header("x-satora-lightning-version", "1"))
+        .and(header("x-satora-evm-erc20-htlc-version", "1"))
+        .and(header("x-satora-evm-native-htlc-version", "1"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "tag": "v0.2.30",
             "commit_hash": "abc123",
@@ -309,6 +302,9 @@ async fn create_evm_to_arkade_swap_posts_high_level_request() {
             "client_evm_address": "0xclient",
             "server_evm_address": "0xserver",
             "evm_refund_locktime": 1_000_000,
+            "evm_funding_confirmations": 64,
+            "evm_htlc_kind": "erc20",
+            "evm_coordinator_address": "0xcoordinator",
             "btc_vhtlc_address": "ark1qvhtlc",
             "target_arkade_address": "tark1qqellv77udfmr20tun8dvju5vgudpf9vxe8jwhthrkn26fz96pawqfdy8nk05rsmrf8h94j26905e7n6sng8y059z8ykn2j5xcuw4xt846qj6x",
             "sender_pk": "02sender",
@@ -426,6 +422,9 @@ async fn create_swap_dispatcher_routes_to_evm_to_arkade() {
             "client_evm_address": "0xclient",
             "server_evm_address": "0xserver",
             "evm_refund_locktime": 1_000_000,
+            "evm_funding_confirmations": 64,
+            "evm_htlc_kind": "erc20",
+            "evm_coordinator_address": "0xcoordinator",
             "btc_vhtlc_address": "ark1qvhtlc",
             "target_arkade_address": "tark1qqellv77udfmr20tun8dvju5vgudpf9vxe8jwhthrkn26fz96pawqfdy8nk05rsmrf8h94j26905e7n6sng8y059z8ykn2j5xcuw4xt846qj6x",
             "sender_pk": "02sender",

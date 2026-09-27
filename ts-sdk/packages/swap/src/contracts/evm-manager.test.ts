@@ -192,6 +192,14 @@ describe("EvmContractManager", () => {
     expect(m.getState(ref)).toBe("invalid");
   });
 
+  it("minAmount, not expectedAmount, is the invalid threshold when set", async () => {
+    const m = build();
+    reader.events = [{ kind: "created", amount: 999n, token: "0xwbtc" }];
+    await m.register({ ...ref, minAmount: 0n });
+    await m.refresh();
+    expect(m.getState({ ...ref, minAmount: 0n })).toBe("confirmed");
+  });
+
   it("re-observes and notifies on refresh", async () => {
     const m = build();
     const seen: HtlcObservation[] = [];

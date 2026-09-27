@@ -3,6 +3,7 @@ import {
   encodeEventTopics,
   encodeFunctionResult,
   keccak256,
+  numberToHex,
   parseAbiItem,
 } from "viem";
 import { describe, expect, it, vi } from "vitest";
@@ -400,5 +401,55 @@ describe("defaultEvmReaders", () => {
     const readers = defaultEvmReaders({ 10: "https://my-optimism" });
     expect(readers.has(10)).toBe(true);
     expect(readers.size).toBe(Object.keys(DEFAULT_EVM_RPCS).length + 1);
+  });
+});
+
+describe("chunked eth_getLogs", () => {
+  it("splits a read past the provider's span cap into consecutive chunks", async () => {
+    // The redeem sits in the last chunk; the merged result must still carry it.
+    const request = vi.fn(
+      async (args: { params: [{ fromBlock: string; toBlock?: string }] }) =>
+        args.params[0].toBlock === numberToHex(5000n)
+          ? [createdLog(1n), redeemedLog(`0x${"ab".repeat(32)}`)]
+          : [],
+    );
+    const client: EvmLogClient = {
+      request: request as unknown as EvmLogClient["request"],
+      call: async () => ({ data: "0x" as const }),
+      getBlock: async () => ({ timestamp: 1_700_000_000n, number: 5000n }),
+    };
+    const reader = evmReaderFromClient(client, { maxBlockRange: 2000n });
+    const query = {
+      htlc: HTLC,
+      preimageHash: PH,
+      claimAddress: CLAIM,
+      terms: TERMS,
+    };
+    const events = await reader.getHtlcEventsBatch([query], 0n);
+
+    const ranges = request.mock.calls.map(([args]) => [
+      args.params[0].fromBlock,
+      args.params[0].toBlock,
+    ]);
+    expect(ranges).toEqual([
+      [numberToHex(0n), numberToHex(1999n)],
+      [numberToHex(2000n), numberToHex(3999n)],
+      [numberToHex(4000n), numberToHex(5000n)],
+    ]);
+    expect(events.get(htlcQueryKey(query))?.map((e) => e.kind)).toEqual([
+      "created",
+      "redeemed",
+    ]);
+  });
+
+  it("makes one unbounded call without a cap", async () => {
+    const client = fakeClient([]);
+    const reader = evmReaderFromClient(client);
+    await reader.getHtlcEventsBatch(
+      [{ htlc: HTLC, preimageHash: PH, claimAddress: CLAIM, terms: TERMS }],
+      7n,
+    );
+    expect(client.request).toHaveBeenCalledOnce();
+    expect(client.request.mock.calls[0][0].params[0].toBlock).toBeUndefined();
   });
 });

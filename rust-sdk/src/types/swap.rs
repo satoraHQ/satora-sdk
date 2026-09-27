@@ -333,11 +333,17 @@ pub struct EvmToArkadeSwapResponse {
     /// VERSION of the HTLC contract named by `evm_htlc_kind`: the EIP-712
     /// domain version string for redeem/refund signatures.
     pub evm_htlc_version: i64,
-    #[serde(default)]
-    pub evm_htlc_kind: super::EvmHtlcKind,
     pub client_evm_address: String,
     pub server_evm_address: String,
     pub evm_refund_locktime: u64,
+    /// Blocks the deposit must be buried under before the server acts on it.
+    pub evm_funding_confirmations: u64,
+    /// HTLC family of the lock: `erc20` (`HTLCErc20` + `HTLCCoordinator`) or
+    /// `native` (`HTLCNative` + `HTLCNativeCoordinator`).
+    #[serde(default)]
+    pub evm_htlc_kind: super::EvmHtlcKind,
+    /// The coordinator this swap is pinned to (the HTLC `refundAddress`).
+    pub evm_coordinator_address: String,
     pub btc_vhtlc_address: String,
     pub target_arkade_address: String,
     pub sender_pk: String,
@@ -364,8 +370,13 @@ pub struct EvmToArkadeSwapResponse {
     pub evm_fund_txid: Option<String>,
 }
 
-/// Full `GET /swap/{id}` response for every direction in the pinned API.
+/// `GET /swap/{id}` response for every direction the SDK can create.
+/// `bitcoin_to_lightning` is in the pinned spec but not modelled yet, so it fails
+/// to deserialize.
 /// Reading a direction does not imply that its claim/refund flow is implemented.
+// The per-direction responses are what the wire sends; a Box would only
+// move the size difference behind a pointer for callers that never see it.
+#[allow(clippy::large_enum_variant)]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(tag = "direction", rename_all = "snake_case")]
 pub enum GetSwapResponse {

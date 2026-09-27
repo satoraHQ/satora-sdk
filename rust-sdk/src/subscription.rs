@@ -407,12 +407,11 @@ async fn socket_loop(
                     .parse()
                     .expect("package version is a header"),
             );
-            request.headers_mut().insert(
-                "x-satora-server-version",
-                env!("SATORA_SERVER_VERSION")
-                    .parse()
-                    .expect("server version is a header"),
-            );
+            for (name, value) in crate::client::PROTOCOL_HEADERS {
+                request
+                    .headers_mut()
+                    .insert(name, value.parse().expect("protocol epoch is a header"));
+            }
             Ok::<_, Error>(request)
         })();
         let Ok(request) = request else {

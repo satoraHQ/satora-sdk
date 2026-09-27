@@ -444,6 +444,13 @@ export class Client {
   }
 
   /** Delegated to the legacy client (migration checkpoint). */
+  claimEvmWithSigner(
+    ...args: Parameters<LegacyClient["claimEvmWithSigner"]>
+  ): ReturnType<LegacyClient["claimEvmWithSigner"]> {
+    return this.#legacy.claimEvmWithSigner(...args);
+  }
+
+  /** Delegated to the legacy client (migration checkpoint). */
   claimViaGasless(
     ...args: Parameters<LegacyClient["claimViaGasless"]>
   ): ReturnType<LegacyClient["claimViaGasless"]> {

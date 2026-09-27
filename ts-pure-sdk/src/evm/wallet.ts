@@ -33,11 +33,17 @@ export interface EIP712TypedData {
  *   address: walletClient.account.address,
  *   chainId: walletClient.chain.id,
  *   signTypedData: (td) => walletClient.signTypedData({ ...td, account: walletClient.account }),
- *   sendTransaction: (tx) => walletClient.sendTransaction({ to: tx.to, data: tx.data, chain, gas: tx.gas }),
+ *   sendTransaction: (tx) => walletClient.sendTransaction({ to: tx.to, data: tx.data, value: tx.value, type: tx.type, chain, gas: tx.gas }),
  *   waitForReceipt: (hash) => publicClient.waitForTransactionReceipt({ hash }),
  *   getTransaction: (hash) => publicClient.getTransaction({ hash }),
- *   call: (tx) => publicClient.call({ to: tx.to, data: tx.data, account: tx.from, blockNumber: tx.blockNumber }),
+ *   call: (tx) => publicClient.call({ to: tx.to, data: tx.data, value: tx.value, account: tx.from, blockNumber: tx.blockNumber }),
+ *   getBalance: (address) => publicClient.getBalance({ address }),
  * };
+ * ```
+ *
+ * `value`, `type` and `getBalance` only matter for a native lock (RBTC on
+ * Rootstock); an adapter that drops `value` sends an empty lock and one that
+ * drops `type` sends an EIP-1559 transaction Rootstock rejects.
  * ```
  */
 export interface EvmSigner {
@@ -103,13 +109,30 @@ export interface EvmSigner {
    *
    * @param tx.to - Target contract address (0x-prefixed)
    * @param tx.data - ABI-encoded calldata (0x-prefixed)
+   * @param tx.value - Native coin to attach, in wei. Set only when funding
+   *   a native lock (RBTC on Rootstock); an adapter that drops it sends a
+   *   zero-value lock, which the coordinator rejects.
+   * @param tx.type - `"legacy"` on chains without EIP-1559 (Rootstock),
+   *   where a typed transaction is rejected with "transaction type not
+   *   supported"; unset elsewhere, so the wallet keeps its default.
    * @param tx.gas - Optional gas limit; the SDK provides sensible defaults
    */
   sendTransaction(tx: {
     to: string;
     data: string;
+    value?: bigint;
+    type?: "legacy";
     gas?: bigint;
   }): Promise<string>;
+
+  /**
+   * Native coin balance of `address`, in wei (`eth_getBalance`).
+   *
+   * Optional: consulted before funding a native lock so an underfunded
+   * wallet fails before it signs. Without it the balance check is skipped
+   * and the simulation reports the shortfall instead.
+   */
+  getBalance?(address: string): Promise<bigint>;
 
   /**
    * Wait for a transaction to be mined and return the receipt.
@@ -147,12 +170,14 @@ export interface EvmSigner {
    *
    * @param tx.to - Target contract address (0x-prefixed)
    * @param tx.data - ABI-encoded calldata (0x-prefixed)
+   * @param tx.value - Optional native coin to attach (see `sendTransaction`)
    * @param tx.from - Optional sender address for simulation context
    * @param tx.blockNumber - Optional block number to simulate against
    */
   call(tx: {
     to: string;
     data: string;
+    value?: bigint;
     from?: string;
     blockNumber?: bigint;
   }): Promise<string>;
@@ -292,11 +317,16 @@ export class SimulationRevertError extends Error {
  */
 export async function simulateTransaction(
   signer: EvmSigner,
-  tx: { to: string; data: string },
+  tx: { to: string; data: string; value?: bigint },
   label: string,
 ): Promise<void> {
   try {
-    await signer.call({ to: tx.to, data: tx.data, from: signer.address });
+    await signer.call({
+      to: tx.to,
+      data: tx.data,
+      value: tx.value,
+      from: signer.address,
+    });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     const match =
@@ -304,6 +334,18 @@ export async function simulateTransaction(
     const reason = match?.[1]?.trim() ?? msg;
     throw new SimulationRevertError(label, reason);
   }
+}
+
+/** Chains that only accept pre-EIP-2718 (legacy) transactions. */
+const LEGACY_TX_CHAINS = new Set([30, 31]);
+
+/**
+ * The transaction type the SDK asks a signer for on `chainId`: `"legacy"`
+ * where typed transactions are rejected (Rootstock mainnet and testnet),
+ * otherwise unset so the wallet chooses.
+ */
+export function txTypeFor(chainId: number): "legacy" | undefined {
+  return LEGACY_TX_CHAINS.has(chainId) ? "legacy" : undefined;
 }
 
 // ── Revert reason extraction ─────────────────────────────────────────────────

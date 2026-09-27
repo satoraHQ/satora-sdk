@@ -68,6 +68,7 @@ describe("SqliteWalletStorage", () => {
 const createTestResponse = (id: string): GetSwapResponse => ({
   id,
   direction: "bitcoin_to_evm",
+  evm_htlc_kind: "erc20",
   status: "pending",
   btc_hash_lock: "ab".repeat(20),
   btc_htlc_address: "tb1qtestaddress000000000000000000000000000",

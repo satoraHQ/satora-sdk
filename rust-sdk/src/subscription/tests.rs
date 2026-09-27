@@ -457,6 +457,53 @@ async fn slow_consumer_converges_without_lag() {
     }
 }
 #[tokio::test]
+// tungstenite's callback signature dictates the large error type.
+#[allow(clippy::result_large_err)]
+async fn websocket_upgrade_carries_every_protocol_epoch() {
+    use tokio_tungstenite::tungstenite::handshake::server::Request;
+    let http = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"statuses":[],"not_found":[]})),
+        )
+        .mount(&http)
+        .await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let config = options(&listener);
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut headers = None;
+        let mut socket =
+            tokio_tungstenite::accept_hdr_async(stream, |request: &Request, response| {
+                headers = Some(request.headers().clone());
+                Ok(response)
+            })
+            .await
+            .unwrap();
+        sender.send(headers.unwrap()).unwrap();
+        while let Some(Ok(_)) = socket.next().await {}
+    });
+    let subscription = Client::new(&http.uri())
+        .unwrap()
+        .subscribe_status(config)
+        .unwrap();
+    subscription.subscribe([id(1)]).unwrap();
+    let headers = tokio::time::timeout(Duration::from_secs(3), receiver)
+        .await
+        .unwrap()
+        .unwrap();
+    for (name, value) in crate::client::PROTOCOL_HEADERS {
+        assert_eq!(
+            headers.get(name).unwrap().to_str().unwrap(),
+            value,
+            "{name}"
+        );
+    }
+    subscription.shutdown().await.unwrap();
+    server.abort();
+}
+#[tokio::test]
 async fn canonical_ids_match_lowercase_replies() {
     let lower = "abcdef00-0000-0000-0000-000000000001".to_string();
     let http = MockServer::start().await;

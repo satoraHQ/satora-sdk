@@ -525,7 +525,8 @@ LENDASWAP_API_URL=http://localhost:3333 cargo test --test integration_live -- --
 
 Both SDKs pin the same `openapi.json`. Refresh it from the repository root with
 `just export-openapi-sdk`, then run schema and client tests. API requests include
-`X-Lendaswap-Client` and `x-satora-server-version` compatibility headers.
+`X-Lendaswap-Client` and one protocol epoch header per component
+(`x-satora-bitcoin-htlc-version` and the others in `client.rs`).
 
 For real EVM execution tests, run `scripts/e2e/test-rust-sdk-local.sh` from the
 repository root (Rust, Foundry and native build dependencies required). The suite

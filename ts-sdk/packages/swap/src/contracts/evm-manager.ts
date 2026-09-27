@@ -152,6 +152,8 @@ const AVG_BLOCK_MS: Record<number, number> = {
   1: 12_000,
   137: 2_100,
   42161: 250,
+  30: 30_000,
+  31: 30_000, // Rootstock testnet: same merge-mined cadence
 };
 
 /** Extra blocks to over-scan past the estimate (reorgs + estimate slack). */
@@ -388,7 +390,10 @@ export class EvmContractManager implements ContractManager {
     for (const ref of refs) {
       const { observation, preimage } = evmObservation(
         events.get(refQueryKey(ref)) ?? [],
-        { amount: ref.expectedAmount, token: ref.expectedToken },
+        {
+          amount: ref.minAmount ?? ref.expectedAmount,
+          token: ref.expectedToken,
+        },
       );
       const key = htlcKey(ref);
       if (preimage) this.#preimages.set(key, preimage);

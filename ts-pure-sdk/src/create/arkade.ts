@@ -2,6 +2,7 @@
  * Arkade to EVM swap creation.
  */
 
+import { deriveEvmAddress } from "../evm/signing.js";
 import { bytesToHex } from "../signer/index.js";
 import { ARKADE_HTLC_SCRIPT_VERSION_STRICT } from "../strict-vhtlc.js";
 import { retryOnHashCollision } from "./retry.js";
@@ -52,9 +53,12 @@ export async function createArkadeToEvmSwapGeneric(
     const refundPk = bytesToHex(swapParams.publicKey);
     const userId = bytesToHex(swapParams.userId);
 
-    // The claiming address is the SDK's deterministic EVM address,
-    // reused across swaps so a single Permit2 approval suffices.
-    const claimingAddress = ctx.evmAddress;
+    // The claiming address is this swap's own key, not the wallet-level
+    // EVM address used for gasless deposits. A sponsored claim installs an
+    // EIP-7702 delegation (Kernel) on the claiming address; keeping that
+    // off the deposit address means Permit2 / EIP-2612 keep seeing a plain
+    // EOA there. Recovery re-derives this key from the swap's index.
+    const claimingAddress = deriveEvmAddress(swapParams.secretKey);
 
     // Target address is where tokens are swept after the claim (user's final destination).
     // This is required and stored on the server for use during redemption.

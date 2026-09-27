@@ -831,6 +831,20 @@ export interface paths {
          *
          *     4. **POST** the request to this endpoint with the secret, destination, signature, and optionally
          *        the `dex_calldata` from step 2.
+         *
+         *     # Idempotency
+         *
+         *     Repeating the request is safe. A swap whose claim has already been relayed
+         *     or observed (`client_redeeming`, `client_redeemed`, `server_redeemed`)
+         *     answers `200` with that status and the claim transaction hash, and a
+         *     request that arrives while the relay is being broadcast answers `200` with
+         *     `client_redeeming` and no hash yet. Nothing is relayed twice.
+         *
+         *     On a native-coin target (Rootstock) the response is sent as soon as the
+         *     node has accepted the claim transaction: the swap is `client_redeeming`
+         *     with the hash recorded, and the server keeps following the transaction
+         *     until it is mined. A relay that reverts or is dropped by the node returns
+         *     the swap to `server_funded`, so a later request claims again.
          */
         post: operations["claim_via_gasless"];
         delete?: never;
@@ -893,9 +907,10 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Returns calldata to refund an expired EVM-to-Arkade HTLC via the coordinator.
-         * @description Calls `refundTo` — refunds the BTC-pegged HTLC token (tBTC/WBTC) directly to
-         *     the caller. Permissionless after the timelock expires.
+         * Returns calldata to refund an expired EVM-sourced HTLC via its coordinator.
+         * @description Calls `refundTo` — refunds the lock asset (tBTC/WBTC, or the native coin on
+         *     a native-lock chain) to the depositor. Permissionless after the timelock
+         *     expires.
          */
         get: operations["get_refund_calldata"];
         put?: never;
@@ -1117,6 +1132,11 @@ export interface components {
             evm_expected_sats: string;
             evm_fund_txid?: string | null;
             evm_htlc_address: string;
+            /**
+             * @description HTLC family of the lock: `erc20` (`HTLCErc20` + `HTLCCoordinator`) or
+             *     `native` (`HTLCNative` + `HTLCNativeCoordinator`).
+             */
+            evm_htlc_kind: components["schemas"]["EvmHtlcKind"];
             /**
              * Format: int64
              * @description HTLCErc20 contract VERSION of the deployment this swap lives on —
@@ -1452,6 +1472,11 @@ export interface components {
             /** @description EVM HTLC contract address */
             evm_htlc_address: string;
             /**
+             * @description HTLC family of the lock: `erc20` (`HTLCErc20` + `HTLCCoordinator`) or
+             *     `native` (`HTLCNative` + `HTLCNativeCoordinator`).
+             */
+            evm_htlc_kind: components["schemas"]["EvmHtlcKind"];
+            /**
              * Format: int64
              * @description HTLCErc20 contract VERSION of the deployment this swap lives on —
              *     the EIP-712 domain version string for redeem/refund signatures.
@@ -1486,6 +1511,66 @@ export interface components {
             target_token: components["schemas"]["TokenInfo"];
             /** @description WBTC token contract address on the target EVM chain (the token locked in the HTLC) */
             wbtc_address: string;
+        };
+        /** @description Bitcoin on-chain → Lightning swap response. */
+        BitcoinToLightningSwapResponse: {
+            /** @description Claim transaction ID (server claim) */
+            btc_claim_txid?: string | null;
+            /** @description Funding transaction ID (user funding) */
+            btc_fund_txid?: string | null;
+            /** @description HASH160 the HTLC script locks on (hex): ripemd160 of the payment hash */
+            btc_hash_lock: string;
+            /** @description On-chain HTLC address the user must fund */
+            btc_htlc_address: string;
+            /** Format: int64 */
+            btc_htlc_script_version: number;
+            /**
+             * Format: int64
+             * @description Absolute refund locktime of the HTLC (unix timestamp)
+             */
+            btc_refund_locktime: number;
+            /** @description Server's claim public key in the HTLC (x-only hex) */
+            btc_server_pk: string;
+            /** @description BOLT11 invoice the server pays once the HTLC funding has a confirmation */
+            client_lightning_invoice: string;
+            /**
+             * Format: date-time
+             * @description Timestamp of when the swap was created
+             */
+            created_at: string;
+            /**
+             * Format: int64
+             * @description Protocol fee in satoshis
+             */
+            fee_sats: number;
+            /** @description Hash lock (0x-prefixed 32-byte hex; the invoice's payment hash) */
+            hash_lock: string;
+            /** @description Unique swap identifier */
+            id: string;
+            /**
+             * Format: int64
+             * @description Unix timestamp after which the invoice can no longer be paid
+             */
+            invoice_expires_at: number;
+            /** @description Bitcoin network */
+            network: string;
+            /**
+             * Format: int64
+             * @description Network fee in satoshis: the provider's quoted Lightning send fee
+             *     plus the mining fee of the server's HTLC claim. The actual send fee
+             *     is paid out of `fee_sats + network_fee_sats`, never on top.
+             */
+            network_fee_sats: number;
+            /** @description Amount the user must lock in the on-chain HTLC in satoshis */
+            source_amount: string;
+            /** @description Source token info */
+            source_token: components["schemas"]["TokenInfo"];
+            /** @description Current status of the swap */
+            status: components["schemas"]["SwapStatus"];
+            /** @description Amount paid out on the user's Lightning invoice in satoshis */
+            target_amount: string;
+            /** @description Target token info */
+            target_token: components["schemas"]["TokenInfo"];
         };
         /**
          * @description Fee model for the cross-chain bridge leg of a quote, tagged by protocol
@@ -1654,11 +1739,10 @@ export interface components {
             value: string;
         };
         /**
-         * @description Supported blockchain networks.
-         *     EVM chains serialize to their chain ID as a string (e.g. "137" for Polygon).
+         * @description Supported blockchain networks. EVM chains serialize to their chain ID as a string (e.g. "137" for Polygon). Rootstock is "30" on a mainnet daemon and "31" on a testnet daemon.
          * @enum {string}
          */
-        Chain: "Arkade" | "Lightning" | "Bitcoin" | "137" | "1" | "42161";
+        Chain: "Arkade" | "Lightning" | "Bitcoin" | "137" | "1" | "42161" | "30" | "31";
         /**
          * @description Per-chain configuration. EVM chains only — Bitcoin / Lightning /
          *     Arkade don't have a meaningful chain-config shape.
@@ -1769,7 +1853,11 @@ export interface components {
             message: string;
             /** @description Current swap status */
             status: string;
-            /** @description Transaction hash */
+            /**
+             * @description Hash of the claim transaction. Empty while the relay is still being
+             *     broadcast (a concurrent request beat this one by seconds) or when the
+             *     swap was claimed by a transaction the server did not relay.
+             */
             tx_hash: string;
         };
         /** @description Request for collaborative refund of recoverable VTXOs (delegate batch flow). */
@@ -2157,14 +2245,26 @@ export interface components {
              */
             router: string;
         };
-        /** @description EIP-2612 permit signature for gasless token->Permit2 approval. */
+        /**
+         * @description EIP-2612 permit signature for gasless token->Permit2 approval.
+         *
+         *     Either `v`/`r`/`s` (plain EOA depositor) or `signature` (depositor whose
+         *     address carries code, e.g. EIP-7702-delegated to Kernel after a
+         *     sponsored claim; the token verifies it via ERC-1271). Exactly one form.
+         */
         Eip2612Permit: {
             /** Format: int64 */
             deadline: number;
-            r: string;
-            s: string;
+            r?: string | null;
+            s?: string | null;
+            /**
+             * @description Opaque ERC-1271 signature (hex). For a Kernel V3.3 depositor:
+             *     `0x00 || r || s || v` over Kernel's `Kernel(bytes32 hash)` wrapper of
+             *     the permit digest.
+             */
+            signature?: string | null;
             /** Format: int32 */
-            v: number;
+            v?: number | null;
             value: string;
         };
         ErrorResponse: {
@@ -2178,6 +2278,11 @@ export interface components {
         EvmChainsResponse: {
             chains: components["schemas"]["EvmChainInfo"][];
         };
+        /**
+         * @description HTLC family of an EVM lock, as the API reports it.
+         * @enum {string}
+         */
+        EvmHtlcKind: "erc20" | "native";
         /**
          * @description Request to create an EVM-to-Arkade swap.
          *
@@ -2258,9 +2363,23 @@ export interface components {
             /** Format: int64 */
             evm_chain_id: number;
             evm_claim_txid?: string | null;
+            /** @description The coordinator this swap is pinned to (the HTLC `refundAddress`). */
+            evm_coordinator_address: string;
             evm_expected_sats: string;
             evm_fund_txid?: string | null;
+            /**
+             * Format: int64
+             * @description Blocks the deposit must be buried under before the server acts on it
+             *     (funding finality on this chain). With the funding receipt's block
+             *     and the chain head a client can show the confirmation progress.
+             */
+            evm_funding_confirmations: number;
             evm_htlc_address: string;
+            /**
+             * @description HTLC family of the lock: `erc20` (`HTLCErc20` + `HTLCCoordinator`) or
+             *     `native` (`HTLCNative` + `HTLCNativeCoordinator`).
+             */
+            evm_htlc_kind: components["schemas"]["EvmHtlcKind"];
             /**
              * Format: int64
              * @description HTLCErc20 contract VERSION of the deployment this swap lives on —
@@ -2394,13 +2513,27 @@ export interface components {
              */
             evm_chain_id: number;
             evm_claim_txid?: string | null;
+            /** @description The coordinator this swap is pinned to (the HTLC `refundAddress`). */
+            evm_coordinator_address: string;
             /** @description Expected WBTC amount (in sats) on EVM */
             evm_expected_sats: string;
             evm_fund_txid?: string | null;
+            /**
+             * Format: int64
+             * @description Blocks the deposit must be buried under before the server acts on it
+             *     (funding finality on this chain). With the funding receipt's block
+             *     and the chain head a client can show the confirmation progress.
+             */
+            evm_funding_confirmations: number;
             /** @description EVM hash lock (SHA-256, 0x-prefixed 32-byte hex) */
             evm_hash_lock: string;
             /** @description EVM HTLC contract address (user creates, server claims) */
             evm_htlc_address: string;
+            /**
+             * @description HTLC family of the lock: `erc20` (`HTLCErc20` + `HTLCCoordinator`) or
+             *     `native` (`HTLCNative` + `HTLCNativeCoordinator`).
+             */
+            evm_htlc_kind: components["schemas"]["EvmHtlcKind"];
             /**
              * Format: int64
              * @description HTLCErc20 contract VERSION of the deployment this swap lives on —
@@ -2519,15 +2652,28 @@ export interface components {
             /** Format: int64 */
             evm_chain_id: number;
             evm_claim_txid?: string | null;
-            /** @description The HTLCCoordinator this swap is pinned to (the HTLC `refundAddress`). */
+            /** @description The coordinator this swap is pinned to (the HTLC `refundAddress`). */
             evm_coordinator_address: string;
             /** @description WBTC/tBTC the coordinator locks in the HTLC, in token smallest units */
             evm_expected_sats: string;
             evm_fund_txid?: string | null;
-            evm_htlc_address: string;
             /**
              * Format: int64
-             * @description HTLCErc20 contract VERSION of the deployment this swap lives on —
+             * @description Blocks the deposit must be buried under before the server acts on it
+             *     (funding finality on this chain). With the funding receipt's block
+             *     and the chain head a client can show the confirmation progress.
+             */
+            evm_funding_confirmations: number;
+            evm_htlc_address: string;
+            /**
+             * @description HTLC family of the lock: `erc20` (`HTLCErc20` + `HTLCCoordinator`) or
+             *     `native` (`HTLCNative` + `HTLCNativeCoordinator`). Selects how the
+             *     client funds (Permit2 vs a payable lock) and refunds the swap.
+             */
+            evm_htlc_kind: components["schemas"]["EvmHtlcKind"];
+            /**
+             * Format: int64
+             * @description HTLC contract VERSION of the deployment this swap lives on —
              *     the EIP-712 domain version string for redeem/refund signatures.
              */
             evm_htlc_version: number;
@@ -2548,6 +2694,12 @@ export interface components {
              * @description Unix timestamp after which the invoice can no longer be paid
              */
             invoice_expires_at: number;
+            /**
+             * @description Whether the invoice has settled. `serverfunded` only says the payment
+             *     was initiated; the preimage the recipient revealed is what proves it
+             *     landed, and the server claims the HTLC with it next.
+             */
+            lightning_payment_settled: boolean;
             network: string;
             /**
              * Format: int64
@@ -2630,6 +2782,9 @@ export interface components {
         }) | (components["schemas"]["EvmToLightningSwapResponse"] & {
             /** @enum {string} */
             direction: "evm_to_lightning";
+        }) | (components["schemas"]["BitcoinToLightningSwapResponse"] & {
+            /** @enum {string} */
+            direction: "bitcoin_to_lightning";
         });
         LightningSendQuoteResponse: {
             /**
@@ -2903,6 +3058,12 @@ export interface components {
             evm_fund_txid?: string | null;
             /** @description EVM HTLC contract address */
             evm_htlc_address: string;
+            /**
+             * @description HTLC family of the lock: `erc20` (`HTLCErc20` + `HTLCCoordinator`) or
+             *     `native` (`HTLCNative` + `HTLCNativeCoordinator`). Selects the EIP-712
+             *     domain name and the claim call a client uses.
+             */
+            evm_htlc_kind: components["schemas"]["EvmHtlcKind"];
             /**
              * Format: int64
              * @description HTLCErc20 contract VERSION of the deployment this swap lives on —
@@ -3923,7 +4084,7 @@ export interface operations {
     get_evm_tokens: {
         parameters: {
             query?: {
-                /** @description Filter by EVM chain ID (1=Ethereum, 137=Polygon, 42161=Arbitrum). Omit for all chains. */
+                /** @description Filter by EVM chain ID (1=Ethereum, 137=Polygon, 42161=Arbitrum, 30=Rootstock). Omit for all chains. */
                 chain_id?: number;
             };
             header?: never;
@@ -4961,7 +5122,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Swap claimed successfully via gasless execution */
+            /** @description Claim relayed, or already relayed / observed (idempotent): the status and the claim transaction hash */
             200: {
                 headers: {
                     [name: string]: unknown;

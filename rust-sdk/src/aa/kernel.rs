@@ -223,13 +223,15 @@ mod tests {
         assert_eq!(&wrapped[1..], &sig[..]);
     }
 
+    /// Cross-SDK vector: the TS SDK (`evm/kernel.ts`) pins the same
+    /// digest; expected value computed independently with `cast`.
     #[test]
-    fn erc1271_wrapped_digest_is_deterministic() {
+    fn erc1271_wrapped_digest_matches_pinned_vector() {
         let inner = b256!("1234567890123456789012345678901234567890123456789012345678901234");
         let account = address!("1111111111111111111111111111111111111111");
         assert_eq!(
             erc1271_wrapped_digest(inner, account, 42161),
-            erc1271_wrapped_digest(inner, account, 42161),
+            b256!("40167c9b20ce7aef51b92d380a861f31753b1789ace2be8b3f76c2c1331fcee9"),
         );
     }
 

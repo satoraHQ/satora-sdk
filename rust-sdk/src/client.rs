@@ -1,7 +1,7 @@
 //! HTTP client for the Lendaswap API.
 //!
 //! Typed requests, wallet key derivation, recovery, and swap orchestration.
-//! API calls carry SDK and server-version compatibility headers.
+//! API calls carry the SDK client header and one protocol epoch header per component.
 //!
 //! ## Public swap surface
 //!
@@ -67,10 +67,27 @@ fn default_http() -> reqwest::Client {
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
 }
-const CLIENT_AGENT_HEADER: &str = "X-Lendaswap-Client";
-const SATORA_SERVER_VERSION_HEADER: &str = "x-satora-server-version";
-const CLIENT_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
-const SATORA_SERVER_VERSION: &str = env!("SATORA_SERVER_VERSION");
+pub(crate) const CLIENT_AGENT_HEADER: &str = "X-Lendaswap-Client";
+pub(crate) const CLIENT_AGENT: &str =
+    concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
+/// Protocol epoch this SDK speaks for each protocol component, sent on every
+/// request. Mirrors the server's `protocol_compat::Component`.
+pub(crate) const PROTOCOL_HEADERS: [(&str, &str); 5] = [
+    ("x-satora-bitcoin-htlc-version", "1"),
+    ("x-satora-arkade-vhtlc-version", "1"),
+    ("x-satora-lightning-version", "1"),
+    ("x-satora-evm-erc20-htlc-version", "1"),
+    ("x-satora-evm-native-htlc-version", "1"),
+];
+
+/// Attach every component's protocol epoch to a request.
+pub(crate) fn protocol_headers(builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    PROTOCOL_HEADERS
+        .iter()
+        .fold(builder, |builder, (name, value)| {
+            builder.header(*name, *value)
+        })
+}
 
 /// Retry only the backend's explicit reused-preimage rejection.
 fn is_preimage_collision(err: &Error) -> bool {
@@ -175,8 +192,8 @@ impl Client {
         let builder = self
             .http
             .request(E::METHOD, url)
-            .header(CLIENT_AGENT_HEADER, CLIENT_AGENT)
-            .header(SATORA_SERVER_VERSION_HEADER, SATORA_SERVER_VERSION);
+            .header(CLIENT_AGENT_HEADER, CLIENT_AGENT);
+        let builder = protocol_headers(builder);
         let builder = attach_payload(builder, &req, E::PAYLOAD);
         let resp = builder.send().await?;
         tracing::debug!(status = %resp.status(), "response received");
@@ -192,11 +209,7 @@ impl Client {
     pub async fn health(&self) -> Result<String> {
         let url = self.url("health")?;
         tracing::debug!(%url, "sending health probe");
-        let resp = self
-            .http
-            .get(url)
-            .header(CLIENT_AGENT_HEADER, CLIENT_AGENT)
-            .header(SATORA_SERVER_VERSION_HEADER, SATORA_SERVER_VERSION)
+        let resp = protocol_headers(self.http.get(url).header(CLIENT_AGENT_HEADER, CLIENT_AGENT))
             .send()
             .await?;
         tracing::debug!(status = %resp.status(), "response received");
@@ -645,10 +658,11 @@ impl Client {
     }
 
     pub(crate) fn api_request(&self, method: reqwest::Method, url: Url) -> reqwest::RequestBuilder {
-        self.http
-            .request(method, url)
-            .header(CLIENT_AGENT_HEADER, CLIENT_AGENT)
-            .header(SATORA_SERVER_VERSION_HEADER, SATORA_SERVER_VERSION)
+        protocol_headers(
+            self.http
+                .request(method, url)
+                .header(CLIENT_AGENT_HEADER, CLIENT_AGENT),
+        )
     }
 
     /// Fetch all server-provided swap details, without the compact display projection.
