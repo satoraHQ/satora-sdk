@@ -342,16 +342,7 @@ fn build_spend(
         .control_block(&(script.clone(), LeafVersion::TapScript))
         .ok_or_else(|| invalid("missing Taproot control block"))?
         .serialize();
-    let witness_for = |signature: &[u8]| {
-        let mut witness = Witness::new();
-        if let BitcoinSpend::Claim { preimage } = spend {
-            witness.push(preimage);
-        }
-        witness.push(signature);
-        witness.push(script.as_bytes());
-        witness.push(&control);
-        witness
-    };
+    let witness_for = |signature: &[u8]| spend_witness(spend, signature, script, &control);
     let mut tx = Transaction {
         version: bitcoin::transaction::Version::TWO,
         lock_time: locktime,
@@ -399,6 +390,100 @@ fn build_spend(
     Ok(BitcoinSpendReceipt {
         transaction: tx,
         fee,
+    })
+}
+
+fn spend_witness(
+    spend: &BitcoinSpend,
+    signature: &[u8],
+    script: &ScriptBuf,
+    control: &[u8],
+) -> Witness {
+    let mut witness = Witness::new();
+    if let BitcoinSpend::Claim { preimage } = spend {
+        witness.push(preimage);
+    }
+    witness.push(signature);
+    witness.push(script.as_bytes());
+    witness.push(control);
+    witness
+}
+
+/// Anyone can send outputs to the public HTLC address, and each costs a
+/// script-path input to spend. Once `minimum` is covered, add an output only when
+/// it is worth more than that input's fee and the spend's fee stays within
+/// `maximum_fee`, so extra outputs cannot block a spend. Later calls sweep the rest.
+#[allow(clippy::too_many_arguments)]
+fn economical_outputs(
+    htlc: &BitcoinHtlc,
+    observation: &BitcoinObservation,
+    spend: &BitcoinSpend,
+    destination: &ScriptBuf,
+    fee_rate: FeeRate,
+    minimum_confirmations: u32,
+    minimum: Amount,
+    maximum_fee: Amount,
+) -> Result<BitcoinObservation> {
+    let scripts = htlc.scripts()?;
+    let script = match spend {
+        BitcoinSpend::Claim { .. } => &scripts.claim,
+        BitcoinSpend::Refund => &scripts.refund,
+    };
+    let control = scripts
+        .spend_info
+        .control_block(&(script.clone(), LeafVersion::TapScript))
+        .ok_or_else(|| invalid("missing Taproot control block"))?
+        .serialize();
+    let input = TxIn {
+        witness: spend_witness(spend, &[0; 64], script, &control),
+        ..TxIn::default()
+    };
+    let marginal = fee_rate
+        .checked_mul_by_weight(input.segwit_weight())
+        .unwrap_or(Amount::MAX_MONEY);
+    let base = Transaction {
+        version: bitcoin::transaction::Version::TWO,
+        lock_time: LockTime::ZERO,
+        input: vec![],
+        output: vec![TxOut {
+            value: Amount::ZERO,
+            script_pubkey: destination.clone(),
+        }],
+    }
+    .weight()
+        + bitcoin::Weight::from_wu(2);
+    let fee_with = |inputs: u64| {
+        input
+            .segwit_weight()
+            .checked_mul(inputs)
+            .and_then(|weight| weight.checked_add(base))
+            .and_then(|weight| fee_rate.checked_mul_by_weight(weight))
+            .unwrap_or(Amount::MAX_MONEY)
+    };
+    let mut utxos: Vec<_> = observation
+        .utxos
+        .iter()
+        .filter(|utxo| confirmations(observation, utxo) >= minimum_confirmations)
+        .cloned()
+        .collect();
+    // build_spend checks the kept outputs; a foreign script must not be pruned away silently.
+    let prev_script = htlc.address()?.script_pubkey();
+    if utxos.iter().any(|u| u.output.script_pubkey != prev_script) {
+        return Err(invalid("funding output does not match Bitcoin HTLC"));
+    }
+    utxos.sort_by_key(|u| std::cmp::Reverse(u.output.value));
+    let (mut total, mut kept) = (0u64, vec![]);
+    for utxo in utxos {
+        let affordable = fee_with(kept.len() as u64 + 1) <= maximum_fee;
+        if kept.is_empty() || total < minimum.to_sat() || utxo.output.value > marginal && affordable
+        {
+            total = total.saturating_add(utxo.output.value.to_sat());
+            kept.push(utxo);
+        }
+    }
+    Ok(BitcoinObservation {
+        utxos: kept,
+        ..observation.clone()
     })
 }
 
@@ -567,6 +652,24 @@ impl Client {
                     options.maximum_fee,
                 )
             };
+            // A replacement must keep its pending spend's inputs, so only fresh
+            // spends leave out uneconomical outputs.
+            let fresh = |observation: &BitcoinObservation,
+                         rate: FeeRate,
+                         claim_window: Option<u32>,
+                         minimum: Amount| {
+                let observation = economical_outputs(
+                    &htlc,
+                    observation,
+                    &spend,
+                    &destination,
+                    rate,
+                    options.minimum_confirmations,
+                    minimum,
+                    options.maximum_fee,
+                )?;
+                build(&observation, rate, claim_window, minimum)
+            };
             let history = match backend.history(&address).await {
                 Ok(history) => history,
                 Err(Error::InvalidSwap(message)) if message == NO_HISTORY => {
@@ -593,7 +696,7 @@ impl Client {
                     }
                     let observation = backend.observe(&address).await?;
                     let rate = spend_fee_rate(backend, &options).await?;
-                    let receipt = build(
+                    let receipt = fresh(
                         &observation,
                         rate,
                         Some(options.minimum_remaining_blocks),
@@ -653,7 +756,7 @@ impl Client {
                 .max_by_key(|s| s.confirmed_height);
             let Some(confirmed) = confirmed else {
                 let rate = spend_fee_rate(backend, &options).await?;
-                let receipt = build(
+                let receipt = fresh(
                     observation,
                     rate,
                     Some(options.minimum_remaining_blocks),
@@ -672,7 +775,7 @@ impl Client {
                 .iter()
                 .any(|u| confirmations(observation, u) >= options.minimum_confirmations)
                 && let Ok(rate) = spend_fee_rate(backend, &options).await
-                && let Ok(receipt) = build(
+                && let Ok(receipt) = fresh(
                     observation,
                     rate,
                     Some(options.minimum_remaining_blocks),

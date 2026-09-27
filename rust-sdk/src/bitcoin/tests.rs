@@ -368,6 +368,20 @@ fn claim_setup(
     Backend,
     BitcoinSpendOptions,
 ) {
+    spend_setup(with_history, false, 100_000)
+}
+
+/// A claim targets `target` sats; a refund is a Bitcoin-to-EVM swap past its locktime.
+fn spend_setup(
+    with_history: bool,
+    refund: bool,
+    target: u64,
+) -> (
+    Client,
+    std::sync::Arc<crate::InMemorySwapStorage>,
+    Backend,
+    BitcoinSpendOptions,
+) {
     use crate::InMemorySwapStorage;
     use crate::Signer;
     use crate::StoredSwap;
@@ -379,19 +393,30 @@ fn claim_setup(
         .unwrap();
     let (mut htlc, mut observation, _, _, destination) = fixture();
     htlc.hash_lock = hash160::Hash::hash(&params.preimage).to_byte_array();
-    htlc.claimer = parse_key(&hex::encode(params.public_key)).unwrap();
+    let own = parse_key(&hex::encode(params.public_key)).unwrap();
+    if refund {
+        htlc.refunder = own;
+        observation.median_time_past = htlc.refund_locktime + 1;
+    } else {
+        htlc.claimer = own;
+    }
     observation.utxos[0].output.script_pubkey = htlc.address().unwrap().script_pubkey();
     let mut fixture: serde_json::Value =
         serde_json::from_str(include_str!("../../tests/fixtures/swap-responses.json")).unwrap();
-    let r = &mut fixture["evm_to_bitcoin"];
+    let r = &mut fixture[if refund {
+        "bitcoin_to_evm"
+    } else {
+        "evm_to_bitcoin"
+    }];
     r["id"] = json!("bitcoin");
     r["btc_hash_lock"] = json!(hex::encode(htlc.hash_lock));
     r["btc_htlc_address"] = json!(htlc.address().unwrap().to_string());
     r["btc_user_claim_pk"] = json!(htlc.claimer.to_string());
     r["btc_server_refund_pk"] = json!(htlc.refunder.to_string());
+    r["btc_server_pk"] = json!(htlc.claimer.to_string());
     r["network"] = json!("regtest");
     r["btc_refund_locktime"] = json!(htlc.refund_locktime);
-    r["target_amount"] = json!("100000");
+    r["target_amount"] = json!(target.to_string());
     let storage = std::sync::Arc::new(InMemorySwapStorage::new());
     storage
         .store_swap(
@@ -642,6 +667,146 @@ async fn backend_without_history_refuses_a_different_unresolved_spend() {
     );
     assert_eq!(backend.submissions(), 0);
     assert_eq!(journaled(&storage).0, Some(Txid::all_zeros().to_string()));
+}
+
+fn set_fundings(backend: &Backend, amounts: &[u64]) {
+    backend.fundings.lock().unwrap().clear();
+    for sats in amounts {
+        backend.fund(*sats, Some(99));
+    }
+}
+
+fn funding_of(backend: &Backend, input: &TxIn) -> u64 {
+    let fundings = backend.fundings.lock().unwrap();
+    fundings
+        .iter()
+        .find(|f| f.transaction.compute_txid() == input.previous_output.txid)
+        .unwrap()
+        .transaction
+        .output[0]
+        .value
+        .to_sat()
+}
+
+#[tokio::test]
+async fn dust_sent_to_the_htlc_does_not_block_a_claim_or_refund() {
+    let amounts: Vec<u64> = std::iter::once(50_000)
+        .chain(std::iter::repeat_n(330, 40))
+        .collect();
+    for refund in [false, true] {
+        for with_history in [true, false] {
+            let (client, _, backend, mut options) = spend_setup(with_history, refund, 50_000);
+            set_fundings(&backend, &amounts);
+            options.fee_rate = Some(FeeRate::from_sat_per_vb(5).unwrap());
+            options.maximum_fee = Amount::from_sat(2_000);
+            let receipt = if refund {
+                client
+                    .refund_bitcoin("bitcoin", &backend, options.clone())
+                    .await
+            } else {
+                client
+                    .claim_bitcoin("bitcoin", &backend, options.clone())
+                    .await
+            }
+            .unwrap();
+            assert_eq!(receipt.transaction.input.len(), 1);
+            assert_eq!(funding_of(&backend, &receipt.transaction.input[0]), 50_000);
+            if refund || !with_history {
+                continue;
+            }
+            // The leftover sweep leaves the dust behind too.
+            backend.confirm(receipt.transaction.compute_txid(), 100);
+            backend.fund(20_000, Some(99));
+            let swept = client
+                .claim_bitcoin("bitcoin", &backend, options)
+                .await
+                .unwrap();
+            assert_ne!(
+                swept.transaction.compute_txid(),
+                receipt.transaction.compute_txid()
+            );
+            assert_eq!(swept.transaction.input.len(), 1);
+            assert_eq!(funding_of(&backend, &swept.transaction.input[0]), 20_000);
+        }
+    }
+}
+
+#[tokio::test]
+async fn outputs_just_above_the_input_fee_do_not_push_a_spend_over_its_fee_cap() {
+    // At 5 sat/vB an input costs under 500 sats, so each 600-sat output pays for
+    // itself, but a second input takes the spend past the 1,000-sat cap.
+    let amounts = [50_000, 600, 600, 600];
+    for refund in [false, true] {
+        for with_history in [true, false] {
+            let (client, _, backend, mut options) = spend_setup(with_history, refund, 50_000);
+            set_fundings(&backend, &amounts);
+            options.fee_rate = Some(FeeRate::from_sat_per_vb(5).unwrap());
+            options.maximum_fee = Amount::from_sat(1_000);
+            let receipt = if refund {
+                client
+                    .refund_bitcoin("bitcoin", &backend, options.clone())
+                    .await
+            } else {
+                client
+                    .claim_bitcoin("bitcoin", &backend, options.clone())
+                    .await
+            }
+            .unwrap();
+            assert_eq!(receipt.transaction.input.len(), 1);
+            assert_eq!(funding_of(&backend, &receipt.transaction.input[0]), 50_000);
+        }
+    }
+}
+
+#[tokio::test]
+async fn uneconomical_top_up_is_kept_when_the_claim_needs_it() {
+    let (client, _, backend, mut options) = spend_setup(true, false, 50_000);
+    let mut amounts = vec![49_600, 600];
+    amounts.extend([330; 5]);
+    set_fundings(&backend, &amounts);
+    // At 10 sat/vB a claim input costs about 980 sats, more than either small output.
+    options.fee_rate = Some(FeeRate::from_sat_per_vb(10).unwrap());
+    let receipt = client
+        .claim_bitcoin("bitcoin", &backend, options)
+        .await
+        .unwrap();
+    let mut spent: Vec<_> = receipt
+        .transaction
+        .input
+        .iter()
+        .map(|i| funding_of(&backend, i))
+        .collect();
+    spent.sort();
+    assert_eq!(spent, [600, 49_600]);
+}
+
+#[tokio::test]
+async fn fee_bump_keeps_inputs_that_became_uneconomical() {
+    let (client, _, backend, mut options) = claim_setup(true);
+    set_fundings(&backend, &[99_700, 400]);
+    options.fee_rate = Some(FeeRate::from_sat_per_vb(2).unwrap());
+    let first = client
+        .claim_bitcoin("bitcoin", &backend, options.clone())
+        .await
+        .unwrap();
+    assert_eq!(first.transaction.input.len(), 2);
+    options.fee_rate = Some(FeeRate::from_sat_per_vb(10).unwrap());
+    let bumped = client
+        .claim_bitcoin("bitcoin", &backend, options)
+        .await
+        .unwrap();
+    assert_ne!(
+        bumped.transaction.compute_txid(),
+        first.transaction.compute_txid()
+    );
+    let inputs = |tx: &Transaction| {
+        tx.input
+            .iter()
+            .map(|i| i.previous_output)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(inputs(&bumped.transaction), inputs(&first.transaction));
+    assert_eq!(backend.submissions(), 2);
 }
 
 #[tokio::test]
