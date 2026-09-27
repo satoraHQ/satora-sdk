@@ -137,7 +137,7 @@ pub fn derive_status(client: Option<HtlcState>, server: Option<HtlcState>) -> Op
         (None, Some(state)) => match state {
             SpentClaim => S::ClientRedeemed,
             Confirmed => S::ServerFunded,
-            SpentRefund => S::Expired,
+            SpentRefund => S::ClientRefunded,
             _ => S::Pending,
         },
         (Some(SpentClaim), Some(SpentClaim)) => S::ServerRedeemed,

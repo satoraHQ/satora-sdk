@@ -287,7 +287,20 @@ fn submitted_claims_bridges_and_lightning_are_not_assumed_complete() {
     );
     assert_eq!(
         derive_status(None, Some(HtlcState::SpentRefund)),
-        Some(SwapStatus::Expired)
+        Some(SwapStatus::ClientRefunded)
+    );
+    let refunded = observation(HtlcState::SpentRefund, 150);
+    assert_eq!(
+        derive_actions(
+            input(&contracts, &absent, &refunded),
+            &ActionPolicy::default()
+        )
+        .recommended()
+        .unwrap()
+        .kind,
+        ActionKind::Complete {
+            outcome: Outcome::Refunded
+        }
     );
     contracts.client = Some(reference(200));
     contracts.server = None;
