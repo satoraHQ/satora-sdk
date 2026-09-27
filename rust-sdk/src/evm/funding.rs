@@ -340,7 +340,7 @@ impl Client {
         );
         let typed = fresh.typed_data(context.chain_id, nonce, deadline)?;
         let signature = wallet.sign_typed_data(&typed).await?;
-        verify_signature(&signature, typed.digest, context.owner)?;
+        let signature = verify_signature(signature, typed.digest, context.owner)?;
         let call = IHTLCCoordinator::executeAndCreateWithPermit2Call {
             calls,
             preimageHash: context.hash,

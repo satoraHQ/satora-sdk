@@ -154,7 +154,7 @@ impl PermitApproval {
         }
         let typed = self.typed_data(wallet.address(), nonce)?;
         let signature = wallet.sign_typed_data(&typed).await?;
-        verify_signature(&signature, typed.digest, wallet.address())?;
+        let signature = verify_signature(signature, typed.digest, wallet.address())?;
         Ok(SignedPermit {
             token: self.domain.token,
             owner: wallet.address(),

@@ -125,11 +125,14 @@ where
         .parse()
         .map_err(|e: T::Err| Error::Decode(e.to_string()))
 }
+/// OpenZeppelin ECDSA and the daemon reject high-s even though alloy recovery accepts it,
+/// so callers must encode the returned signature, not the wallet's.
 pub(super) fn verify_signature(
-    signature: &Signature,
+    signature: Signature,
     digest: B256,
     address: Address,
-) -> Result<()> {
+) -> Result<Signature> {
+    let signature = signature.normalized_s();
     let recovered = signature
         .recover_address_from_prehash(&digest)
         .map_err(|e| Error::InvalidSigner(e.to_string()))?;
@@ -138,7 +141,7 @@ pub(super) fn verify_signature(
             "signature does not match the required EVM owner".into(),
         ));
     }
-    Ok(())
+    Ok(signature)
 }
 
 /// A lock under any other hash could only be opened by whoever chose that hash.

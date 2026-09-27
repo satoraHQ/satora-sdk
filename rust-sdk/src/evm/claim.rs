@@ -290,7 +290,7 @@ impl Client {
         }
         let typed = material.typed_data(options, keccak256(calls.abi_encode()))?;
         let signature = wallet.sign_typed_data(&typed).await?;
-        verify_signature(&signature, typed.digest, wallet.address())?;
+        let signature = verify_signature(signature, typed.digest, wallet.address())?;
         let (v, r, s) = (
             u8::from(signature.v()) + 27,
             signature.r().into(),
@@ -391,7 +391,7 @@ impl Client {
             };
             let typed = material.typed_data(&options,calls_hash)?;
             let signature = wallet.sign_typed_data(&typed).await?;
-            verify_signature(&signature,typed.digest,wallet.address())?;
+            let signature = verify_signature(signature,typed.digest,wallet.address())?;
             let stored = self.get_stored_swap(id)?.ok_or_else(|| invalid("swap record missing"))?;
             self.update_swap_metadata(id,SwapMetadata {evm_claim_started:Some(true),..Default::default()})?;
             // The daemon can hold this until its relay goes out, so the operation deadline

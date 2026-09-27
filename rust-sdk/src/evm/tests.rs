@@ -40,6 +40,15 @@ struct Wallet {
     extra_logs: Vec<EvmLog>,
     token_balance: AtomicU64,
     domains: Mutex<Vec<Value>>,
+    high_s: AtomicBool,
+    low_signatures: Mutex<Vec<Signature>>,
+}
+fn secp256k1_order() -> U256 {
+    U256::from_str_radix(
+        "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
+        16,
+    )
+    .unwrap()
 }
 fn event_log(event: impl SolEvent, address: Address) -> EvmLog {
     let data = event.encode_log_data();
@@ -63,7 +72,16 @@ impl EvmWallet for Wallet {
                 .lock()
                 .unwrap()
                 .push(data.payload["domain"]["name"].clone());
-            crate::aa::signing::sign_hash(&self.secret, data.digest)
+            let low = crate::aa::signing::sign_hash(&self.secret, data.digest)?;
+            self.low_signatures.lock().unwrap().push(low);
+            if self.high_s.load(Ordering::Relaxed) {
+                return Ok(Signature::new(
+                    low.r(),
+                    secp256k1_order() - low.s(),
+                    !low.v(),
+                ));
+            }
+            Ok(low)
         })
     }
     fn call<'a>(&'a self, tx: &'a EvmTransaction) -> WalletFuture<'a, Bytes> {
@@ -263,6 +281,8 @@ fn setup_kind(claim: bool, kind: EvmHtlcKind) -> (Client, Wallet, Arc<InMemorySw
         extra_logs: Vec::new(),
         token_balance: AtomicU64::new(100_000),
         domains: Mutex::new(vec![]),
+        high_s: AtomicBool::new(false),
+        low_signatures: Mutex::new(vec![]),
     };
     (client, wallet, store)
 }
@@ -523,6 +543,71 @@ async fn gasless_claim_accepted_without_a_hash_keeps_the_claim_reserved() {
     let metadata = store.get_swap("test").unwrap().unwrap().metadata;
     assert_eq!(metadata.evm_claim_txid, None);
     assert_eq!(metadata.evm_claim_started, Some(true));
+}
+
+#[tokio::test]
+async fn external_high_s_signatures_are_encoded_low_s() {
+    use alloy::primitives::keccak256;
+    use alloy::sol_types::SolValue;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+    let half_order = secp256k1_order() >> 1;
+
+    let (client, wallet, _) = setup(true);
+    wallet.high_s.store(true, Ordering::Relaxed);
+    client
+        .claim_evm_with_wallet("test", &wallet, claim_options(&wallet), vec![])
+        .await
+        .unwrap();
+    let low = wallet.low_signatures.lock().unwrap()[0];
+    let call = super::claim::ClaimCoordinator::redeemAndExecuteCall::abi_decode(
+        &wallet.sent.lock().unwrap()[0].data,
+    )
+    .unwrap();
+    let s = U256::from_be_bytes(call.s.0);
+    assert_eq!(s, low.s());
+    assert!(s <= half_order);
+    assert_eq!(U256::from_be_bytes(call.r.0), low.r());
+    assert_eq!(call.v, u8::from(low.v()) + 27);
+
+    let (_, wallet, store) = setup(true);
+    wallet.high_s.store(true, Ordering::Relaxed);
+    let server = MockServer::start().await;
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(store)
+        .build()
+        .unwrap();
+    let calls: Vec<crate::aa::abi::Call> = vec![];
+    Mock::given(path("/swap/test/redeem-and-swap-calldata")).respond_with(ResponseTemplate::new(200).set_body_json(json!({"min_amount_out":"100000","gasless_fee_sats":0,"calls_hash":keccak256(calls.abi_encode()),"dex_calldata":null}))).mount(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/swap/test/claim-gasless"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"id":"test","tx_hash":B256::repeat_byte(9),"message":"submitted"}),
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    client
+        .claim_evm_gasless("test", &wallet, claim_options(&wallet))
+        .await
+        .unwrap();
+    let low = wallet.low_signatures.lock().unwrap()[0];
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = requests
+        .iter()
+        .find(|r| r.url.path() == "/swap/test/claim-gasless")
+        .unwrap()
+        .body_json()
+        .unwrap();
+    assert!(low.s() <= half_order);
+    assert_eq!(body["s"], json!(format!("0x{:064x}", low.s())));
+    assert_eq!(body["r"], json!(format!("0x{:064x}", low.r())));
+    assert_eq!(body["v"], json!(u8::from(low.v()) + 27));
 }
 
 #[tokio::test]
