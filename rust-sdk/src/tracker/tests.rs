@@ -10,15 +10,19 @@ use crate::observation::HtlcState;
 use crate::observation::ManagerOptions;
 use crate::observation::Observation;
 use crate::observation::ObservationFuture;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-struct Reader(Mutex<(HtlcState, HtlcState, u64)>);
+struct Reader(Mutex<(HtlcState, HtlcState, u64)>, AtomicBool);
 impl ContractReader for Reader {
     fn can_observe(&self, _: &ContractRef) -> bool {
         true
     }
     fn observe<'a>(&'a self, reference: &'a ContractRef) -> ObservationFuture<'a, Observation> {
         Box::pin(async move {
+            if self.1.swap(false, Ordering::SeqCst) {
+                panic!("reader bug");
+            }
             let (client, server, height) = *self.0.lock().unwrap();
             Ok(observation(
                 if reference.timelock() == crate::observation::Timelock::Height(200) {
@@ -54,6 +58,13 @@ impl ActionExecutor for Executor {
                 }),
                 1 => Err(Error::Transport("response lost".into())),
                 2 => Ok(ExecutionResult::Retryable),
+                4 => panic!("app bug"),
+                5 => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    Ok(ExecutionResult::Submitted {
+                        reference: "claim-tx".into(),
+                    })
+                }
                 _ => std::future::pending().await,
             }
         })
@@ -72,11 +83,10 @@ fn setup(mode: u8, options: TrackerOptions) -> (SwapTracker, Arc<Reader>, Arc<Ex
     let id = record.response.id().to_string();
     store.store_swap(record).unwrap();
     let client = Client::builder().mnemonic("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about").storage(store.clone()).build().unwrap();
-    let reader = Arc::new(Reader(Mutex::new((
-        HtlcState::Absent,
-        HtlcState::Absent,
-        50,
-    ))));
+    let reader = Arc::new(Reader(
+        Mutex::new((HtlcState::Absent, HtlcState::Absent, 50)),
+        AtomicBool::new(false),
+    ));
     let manager = ContractManager::new(reader.clone(), ManagerOptions::default()).unwrap();
     let executor = Arc::new(Executor {
         calls: AtomicUsize::new(0),
@@ -689,4 +699,66 @@ async fn proven_not_submitted_recover_cctp_drops_only_hashless_cctp_operations()
         assert_eq!(metadata.evm_claim_started, Some(true));
         assert_eq!(metadata.evm_recovery_started, Some(true));
     }
+}
+
+#[tokio::test]
+async fn panicking_executor_records_uncertain_for_that_swap() {
+    let (tracker, reader, executor, id) = setup(4, TrackerOptions::default());
+    track(&tracker, &id).await;
+    *reader.0.lock().unwrap() = (HtlcState::Confirmed, HtlcState::Confirmed, 50);
+    let mut events = tracker.events();
+    tracker.reconcile(&id).await.unwrap();
+    assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
+    assert!(matches!(
+        tracker.record(&id).await.unwrap().attempt.unwrap().state,
+        AttemptState::Uncertain
+    ));
+    let mut reported = false;
+    while let Ok(event) = events.try_recv() {
+        reported |=
+            event.swap_id == id && event.error.is_some_and(|error| error.contains("panicked"));
+    }
+    assert!(reported);
+}
+
+#[tokio::test]
+async fn panicking_reconcile_does_not_abort_siblings() {
+    let (tracker, reader, _, id) = setup(
+        5,
+        TrackerOptions {
+            concurrency: 2,
+            ..Default::default()
+        },
+    );
+    let fixtures: serde_json::Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/swap-responses.json")).unwrap();
+    let mut response = fixtures["btc_to_arkade"].clone();
+    response["id"] = "00000000-0000-0000-0000-000000000002".into();
+    let stored = StoredSwap::new(
+        1,
+        serde_json::from_value(response).unwrap(),
+        SwapMetadata::default(),
+    )
+    .unwrap();
+    let second = stored.response.id().to_string();
+    tracker.0.client.storage.store_swap(stored).unwrap();
+    track(&tracker, &id).await;
+    track(&tracker, &second).await;
+    *reader.0.lock().unwrap() = (HtlcState::Confirmed, HtlcState::Confirmed, 50);
+    reader.1.store(true, Ordering::SeqCst);
+    assert!(tracker.refresh(false).await.is_err());
+    let mut states = Vec::new();
+    for swap in [&id, &second] {
+        states.push(tracker.record(swap).await.unwrap().attempt.map(|a| a.state));
+    }
+    assert!(
+        states.iter().any(Option::is_none),
+        "one reconcile hit the reader panic: {states:?}"
+    );
+    assert!(
+        states
+            .iter()
+            .any(|state| matches!(state, Some(AttemptState::Submitted { .. }))),
+        "the sibling finished its execution: {states:?}"
+    );
 }

@@ -16,9 +16,11 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::task::Poll;
 use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
@@ -674,11 +676,34 @@ impl SwapTracker {
                     });
                     self.save(id, &next)?;
                     *record = next;
-                    let result = tokio::time::timeout(
-                        self.0.options.execution_timeout,
-                        executor.execute(id, &kind),
-                    )
-                    .await;
+                    // Turn an app panic into an Uncertain attempt with an error event.
+                    // Unwinding would skip the re-derive and leave the attempt Running
+                    // with nothing reported.
+                    let panicked = || {
+                        Error::Transport(
+                            "automatic execution panicked; reconcile submission".into(),
+                        )
+                    };
+                    let mut execution =
+                        std::panic::catch_unwind(AssertUnwindSafe(|| executor.execute(id, &kind)))
+                            .ok();
+                    let guarded = std::future::poll_fn(|cx| {
+                        let Some(future) = execution.as_mut() else {
+                            return Poll::Ready(Err(panicked()));
+                        };
+                        match std::panic::catch_unwind(AssertUnwindSafe(|| {
+                            future.as_mut().poll(cx)
+                        })) {
+                            Ok(poll) => poll,
+                            Err(_) => {
+                                // A future that panicked must never be polled again.
+                                execution = None;
+                                Poll::Ready(Err(panicked()))
+                            }
+                        }
+                    });
+                    let result =
+                        tokio::time::timeout(self.0.options.execution_timeout, guarded).await;
                     let state = match result {
                         Ok(Ok(ExecutionResult::Submitted { reference }))
                             if !reference.is_empty() =>
@@ -754,6 +779,7 @@ impl SwapTracker {
     async fn refresh_ids(&self, ids: Vec<String>) -> Result<()> {
         let mut ids = ids.into_iter();
         let mut tasks = JoinSet::new();
+        let mut failure = None;
         loop {
             while tasks.len() < self.0.options.concurrency {
                 let Some(id) = ids.next() else {
@@ -768,8 +794,11 @@ impl SwapTracker {
             }
             match tasks.join_next().await {
                 Some(Ok(())) => {}
-                Some(Err(e)) => return Err(Error::Transport(e.to_string())),
-                None => return Ok(()),
+                // Returning here would drop the set and abort in-flight siblings.
+                Some(Err(e)) => {
+                    failure.get_or_insert(Error::Transport(e.to_string()));
+                }
+                None => return failure.map_or(Ok(()), Err),
             }
         }
     }
