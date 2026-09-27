@@ -68,6 +68,18 @@ impl EvmWallet for Wallet {
     }
     fn call<'a>(&'a self, tx: &'a EvmTransaction) -> WalletFuture<'a, Bytes> {
         Box::pin(async move {
+            if tx
+                .data
+                .starts_with(&crate::bridge::usdt0::quoteSendCall::SELECTOR)
+            {
+                return Ok(crate::bridge::usdt0::quoteSendCall::abi_encode_returns(
+                    &crate::bridge::usdt0::MessagingFee {
+                        nativeFee: U256::from(1000),
+                        lzTokenFee: U256::ZERO,
+                    },
+                )
+                .into());
+            }
             let word = if tx
                 .data
                 .starts_with(&crate::aa::abi::IERC20::balanceOfCall::SELECTOR)
@@ -791,6 +803,16 @@ async fn outbound_cctp_claim_reconstructs_actual_burn_and_resumes_after_expiry()
     assert_eq!(wallet.sent.lock().unwrap().len(), 1);
 }
 
+fn arbitrum_claim() -> (Client, Wallet, Arc<InMemorySwapStorage>) {
+    let (client, mut wallet, store) = setup(true);
+    wallet.htlc.chain_id = 42161;
+    let mut record = store.get_swap("test").unwrap().unwrap();
+    let mut response = serde_json::to_value(&record.response).unwrap();
+    response["evm_chain_id"] = json!(42161);
+    record.response = serde_json::from_value(response).unwrap();
+    store.store_swap(record).unwrap();
+    (client, wallet, store)
+}
 fn outbound_dex_call() -> crate::types::DexCall {
     crate::types::DexCall {
         target: Address::repeat_byte(18).to_string(),
@@ -798,6 +820,189 @@ fn outbound_dex_call() -> crate::types::DexCall {
         value: "0".into(),
     }
 }
+fn signed_calls(wallet: &Wallet) -> (Vec<(Address, U256, Bytes)>, U256) {
+    let sent = wallet.sent.lock().unwrap();
+    let claim =
+        super::claim::ClaimCoordinator::redeemAndExecuteCall::abi_decode(&sent[0].data).unwrap();
+    let calls = claim
+        .calls
+        .into_iter()
+        .map(|call| (call.target, call.value, call.callData))
+        .collect();
+    (calls, claim.minAmountOut)
+}
+fn approve_call(token: Address, spender: Address, amount: U256) -> (Address, U256, Bytes) {
+    (
+        token,
+        U256::ZERO,
+        crate::aa::abi::IERC20::approveCall { spender, amount }
+            .abi_encode()
+            .into(),
+    )
+}
+
+#[tokio::test]
+async fn outbound_cctp_claim_approves_the_whole_balance_and_accepts_a_burn_above_the_quote() {
+    use crate::bridge::BridgeSubmission;
+    use crate::bridge::OutboundBridge;
+    use crate::bridge::OutboundClaim;
+    use crate::bridge::OutboundReceipt;
+    use crate::bridge::cctp;
+    let (client, mut wallet, _store) = arbitrum_claim();
+    let mut burn = crate::bridge::tests::burn();
+    burn.source_chain_id = 42161;
+    burn.source_domain = 3;
+    burn.destination_domain = 6;
+    burn.burn_token = cctp::CctpChain::for_chain(42161).unwrap().usdc;
+    burn.sender = cctp::ARBITRUM_ADAPTER;
+    let mut actual = burn.clone();
+    actual.amount = U256::from(10_500_000);
+    assert!(actual.amount > burn.amount);
+    wallet.extra_logs.push(event_log(
+        cctp::MessageSent {
+            message: crate::bridge::tests::message(&actual).into(),
+        },
+        burn.source_transmitter,
+    ));
+    let mut options = claim_options(&wallet);
+    options.sweep_token = burn.burn_token;
+    options.min_amount_out = U256::ZERO;
+    let request = OutboundClaim {
+        dex_calls: vec![outbound_dex_call()],
+        bridge: OutboundBridge::Cctp {
+            burn: burn.clone(),
+            minimum_amount: U256::from(8_900_000),
+        },
+    };
+    let result = client
+        .claim_evm_to_bridge("test", &wallet, options, request, BridgeSubmission::Wallet)
+        .await
+        .unwrap();
+    let OutboundReceipt::Cctp { burn: observed, .. } = result else {
+        panic!("expected CCTP transfer")
+    };
+    assert_eq!(*observed, actual);
+    let (calls, min_amount_out) = signed_calls(&wallet);
+    assert_eq!(min_amount_out, U256::ZERO);
+    assert_eq!(
+        calls,
+        vec![
+            (
+                Address::repeat_byte(18),
+                U256::ZERO,
+                Bytes::from(vec![0x12, 0x34])
+            ),
+            approve_call(burn.burn_token, cctp::ARBITRUM_ADAPTER, U256::MAX),
+            (
+                cctp::ARBITRUM_ADAPTER,
+                U256::ZERO,
+                cctp::bridgeBalanceCall {
+                    destinationDomain: burn.destination_domain,
+                    mintRecipient: burn.mint_recipient,
+                    maxFee: burn.max_fee,
+                    hookData: burn.hook.clone(),
+                }
+                .abi_encode()
+                .into(),
+            ),
+            approve_call(burn.burn_token, cctp::ARBITRUM_ADAPTER, U256::ZERO),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn outbound_usdt0_claim_approves_the_whole_balance_and_accepts_a_send_above_the_quote() {
+    use crate::bridge::BridgeSubmission;
+    use crate::bridge::OutboundBridge;
+    use crate::bridge::OutboundClaim;
+    use crate::bridge::OutboundReceipt;
+    use crate::bridge::usdt0;
+    alloy::sol! {
+        event BridgeInitiated(uint32 indexed dstEid, bytes32 to, uint256 amount, uint256 nativeFee, address indexed caller);
+    }
+    let (client, mut wallet, _store) = arbitrum_claim();
+    let token = usdt0::CHAINS
+        .iter()
+        .find(|chain| chain.name == "Arbitrum")
+        .unwrap()
+        .token;
+    let transfer = usdt0::OftTransfer {
+        chain_id: 42161,
+        source_eid: 30110,
+        destination_eid: 30101,
+        token,
+        oft: usdt0::ARBITRUM_OFT,
+        sender: usdt0::ARBITRUM_ADAPTER,
+        recipient: B256::repeat_byte(77),
+        amount: U256::from(10_000_000),
+        minimum_received: U256::from(9_900_000),
+        max_native_fee: U256::from(2000),
+    };
+    let bridged = U256::from(10_500_000);
+    let guid = B256::repeat_byte(8);
+    wallet.extra_logs.push(event_log(
+        BridgeInitiated {
+            dstEid: transfer.destination_eid,
+            to: transfer.recipient,
+            amount: bridged,
+            nativeFee: U256::from(1200),
+            caller: wallet.coordinator,
+        },
+        usdt0::ARBITRUM_ADAPTER,
+    ));
+    wallet.extra_logs.push(event_log(
+        usdt0::OFTSent {
+            guid,
+            dstEid: transfer.destination_eid,
+            fromAddress: usdt0::ARBITRUM_ADAPTER,
+            amountSentLD: bridged,
+            amountReceivedLD: bridged,
+        },
+        usdt0::ARBITRUM_OFT,
+    ));
+    let mut options = claim_options(&wallet);
+    options.sweep_token = token;
+    options.min_amount_out = U256::ZERO;
+    let request = OutboundClaim {
+        dex_calls: vec![outbound_dex_call()],
+        bridge: OutboundBridge::Usdt0 {
+            transfer: transfer.clone(),
+        },
+    };
+    let result = client
+        .claim_evm_to_bridge("test", &wallet, options, request, BridgeSubmission::Wallet)
+        .await
+        .unwrap();
+    let OutboundReceipt::Usdt0(query) = result else {
+        panic!("expected USDT0 transfer")
+    };
+    assert_eq!(query.guid, guid);
+    let (calls, min_amount_out) = signed_calls(&wallet);
+    assert_eq!(min_amount_out, U256::ZERO);
+    assert_eq!(
+        calls,
+        vec![
+            (
+                Address::repeat_byte(18),
+                U256::ZERO,
+                Bytes::from(vec![0x12, 0x34])
+            ),
+            approve_call(token, usdt0::ARBITRUM_ADAPTER, U256::MAX),
+            (
+                usdt0::ARBITRUM_ADAPTER,
+                U256::from(1200),
+                usdt0::bridgeBalanceCall {
+                    dstEid: transfer.destination_eid,
+                    to: transfer.recipient,
+                }
+                .abi_encode()
+                .into(),
+            ),
+            approve_call(token, usdt0::ARBITRUM_ADAPTER, U256::ZERO),
+        ]
+    );
+}
+
 #[tokio::test]
 async fn refund_lost_response_is_reserved_and_resumes_after_deposit_is_removed() {
     let (client, wallet, store) = setup(false);

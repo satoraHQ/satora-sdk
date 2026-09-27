@@ -18,13 +18,14 @@ use serde_json::json;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "protocol", rename_all = "snake_case")]
 pub enum OutboundBridge {
-    /// `burn.sender` is the pinned adapter; `burn.amount` is the maximum
-    /// approved input. The actual DEX output is recovered from MessageSent.
+    /// `burn.sender` is the pinned adapter; `burn.amount` is the expected input.
+    /// The adapter bridges the coordinator's whole balance, so the actual DEX
+    /// output is recovered from MessageSent and only bounded from below.
     Cctp {
         burn: cctp::CctpBurn,
         minimum_amount: U256,
     },
-    /// `transfer.sender` is the pinned adapter; `amount` caps its approval.
+    /// `transfer.sender` is the pinned adapter; `amount` is the expected input.
     Usdt0 { transfer: usdt0::OftTransfer },
 }
 #[derive(Clone, Debug)]
@@ -97,9 +98,11 @@ impl OutboundBridge {
                 {
                     return Err(invalid("invalid CCTP coordinator bridge route"));
                 }
+                // The adapter pulls the coordinator's whole balance, which positive
+                // slippage can push above the quoted input; the trailing reset closes it.
                 Ok((
                     vec![
-                        approval(chain.usdc, burn.sender, burn.amount),
+                        approval(chain.usdc, burn.sender, U256::MAX),
                         dex_call(
                             burn.sender,
                             cctp::bridgeBalanceCall {
@@ -140,7 +143,7 @@ impl OutboundBridge {
                 let fee = quote.quote(wallet).await?;
                 Ok((
                     vec![
-                        approval(token, transfer.sender, transfer.amount),
+                        approval(token, transfer.sender, U256::MAX),
                         dex_call(
                             transfer.sender,
                             usdt0::bridgeBalanceCall {
@@ -181,7 +184,7 @@ impl OutboundBridge {
                     let Ok(message) = cctp::CctpMessage::decode(&event.message) else {
                         continue;
                     };
-                    if message.amount < *minimum_amount || message.amount > burn.amount {
+                    if message.amount < *minimum_amount {
                         continue;
                     }
                     let mut actual = burn.clone();
@@ -215,7 +218,6 @@ impl OutboundBridge {
                         event.dstEid == transfer.destination_eid
                             && event.to == transfer.recipient
                             && event.caller == coordinator
-                            && event.amount <= transfer.amount
                             && event.amount >= transfer.minimum_received
                             && event.nativeFee <= transfer.max_native_fee
                     })
@@ -261,12 +263,17 @@ impl Client {
                 let _guard=self.evm_execution.lock().await;
                 let stored=self.get_stored_swap(id)?.ok_or_else(||invalid("swap record missing"))?;
                 if crate::evm::EvmContext::from_response(&stored.response)?.kind==crate::types::EvmHtlcKind::Native {return Err(invalid("a native lock cannot be claimed into a bridge"));}
-                if let Some(existing)=self.bridge_operation(id,"outbound_claim")? {
-                    if existing.intent!=intent {return Err(invalid("outbound bridge differs from the persisted claim"));}
-                } else {
-                    // Validate before reserving the route or revealing any secret.
-                    request.bridge.calls(wallet,&options).await?;
-                    self.save_bridge_operation(id,"outbound_claim",BridgeOperation {intent: intent.clone(),transaction_hash:None,user_operation_hash:None,complete:false})?;
+                // The route is pinned before the claim reserves, so a claim that fails its
+                // checks leaves a pin that a re-quoted retry may replace.
+                let claim_started=stored.metadata.evm_claim_started==Some(true)||stored.metadata.evm_claim_txid.is_some()||stored.metadata.evm_claim_userop_hash.is_some();
+                match self.bridge_operation(id,"outbound_claim")? {
+                    Some(existing) if existing.intent==intent => {}
+                    Some(_) if claim_started => return Err(invalid("outbound bridge differs from the persisted claim")),
+                    _ => {
+                        // Validate before reserving the route or revealing any secret.
+                        request.bridge.calls(wallet,&options).await?;
+                        self.save_bridge_operation(id,"outbound_claim",BridgeOperation {intent: intent.clone(),transaction_hash:None,user_operation_hash:None,complete:false})?;
+                    }
                 }
             }
             let stored=self.get_stored_swap(id)?.ok_or_else(||invalid("swap record missing"))?;
@@ -296,9 +303,8 @@ impl Client {
             };
             self.verify_evm_claim_receipt(id,wallet,&options,&receipt).await?;
             let result=request.bridge.verify(&receipt,options.coordinator)?;
-            let mut state=self.bridge_operation(id,"outbound_claim")?.ok_or_else(||invalid("outbound claim intent missing"))?;
-            state.transaction_hash=Some(receipt.transaction_hash.to_string()); state.complete=true;
-            self.save_bridge_operation(id,"outbound_claim",state)?;
+            // The verified receipt proves this call's route, whichever pin a concurrent call left.
+            self.save_bridge_operation(id,"outbound_claim",BridgeOperation {intent,transaction_hash:Some(receipt.transaction_hash.to_string()),user_operation_hash:None,complete:true})?;
             Ok(result)
         }).await.map_err(|_|crate::Error::Timeout("outbound bridge claim deadline exceeded; inspect persisted claim".into()))?
     }

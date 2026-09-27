@@ -294,10 +294,13 @@ operation blocks other funding paths until its original receipt is reconciled.
 and returns the actual CCTP burn or LayerZero message query for delivery tracking.
 Use `get_dex_calldata_fund` with the coordinator as recipient; the DEX calls must
 enforce their own minimum output. Bridge calls consume that output, so the
-coordinator's final sweep minimum is zero. Adapter approval is capped and revoked
-in the same transaction. USDT0 native fees require an explicit cap; excess passed
-to the deployed adapter stays with that adapter, as its contract specifies.
-Outbound adapters currently use the repository's Arbitrum deployments.
+coordinator's final sweep minimum is zero. The adapter pulls the whole coordinator balance, so it gets an unlimited
+approval that is reset to zero in the same batch, matching the daemon. The bridge minimum is only
+checked on the claim receipt after it is mined, so the DEX calls' own minimum
+output is what bounds the bridged amount. USDT0 native fees require an explicit
+cap; excess passed to the deployed adapter stays with that adapter, as its
+contract specifies. Outbound adapters currently use the repository's Arbitrum
+deployments.
 
 A claim is reserved before its submission can leave the process, including
 server-submitted and sponsored claims. A lost response prevents another claim
