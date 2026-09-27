@@ -689,3 +689,56 @@ async fn bridge_resume_records_only_a_transaction_the_node_shows_executing_the_o
         Some(reported.to_string())
     );
 }
+#[tokio::test]
+async fn sweep_can_run_again_after_completion() {
+    let (client, id, _) = client();
+    let owner = Address::repeat_byte(1);
+    let token = Address::repeat_byte(2);
+    let recipient = Address::repeat_byte(3);
+    let transfer = |value: u64| {
+        log(
+            token,
+            execution::Transfer {
+                from: owner,
+                to: recipient,
+                value: U256::from(value),
+            },
+        )
+    };
+    let wallet = wallet(137, owner, vec![transfer(10), transfer(20), transfer(30)]);
+    let sweep = |amount: u64| BridgeRecovery {
+        chain_id: 137,
+        token,
+        recipient,
+        amount: U256::from(amount),
+    };
+    for amount in [10, 20, 20] {
+        client
+            .recover_bridge_balance(
+                &id,
+                &wallet,
+                &sweep(amount),
+                BridgeSubmission::Wallet,
+                &PollOptions::default(),
+            )
+            .await
+            .unwrap();
+    }
+    assert_eq!(wallet.calls.lock().unwrap().len(), 2);
+    wallet.lose_submission.store(true, Ordering::Relaxed);
+    for _ in 0..2 {
+        assert!(
+            client
+                .recover_bridge_balance(
+                    &id,
+                    &wallet,
+                    &sweep(30),
+                    BridgeSubmission::Wallet,
+                    &PollOptions::default(),
+                )
+                .await
+                .is_err()
+        );
+    }
+    assert_eq!(wallet.calls.lock().unwrap().len(), 3);
+}

@@ -42,6 +42,7 @@ struct Wallet {
     domains: Mutex<Vec<Value>>,
     high_s: AtomicBool,
     low_signatures: Mutex<Vec<Signature>>,
+    missing_receipts: Mutex<Vec<B256>>,
 }
 fn secp256k1_order() -> U256 {
     U256::from_str_radix(
@@ -135,6 +136,9 @@ impl EvmWallet for Wallet {
     }
     fn wait_for_receipt(&self, hash: B256) -> WalletFuture<'_, EvmReceipt> {
         Box::pin(async move {
+            if self.missing_receipts.lock().unwrap().contains(&hash) {
+                return Err(Error::Timeout("receipt not served".into()));
+            }
             let h = &self.htlc;
             let log = if hash == self.funding_hash {
                 event_log(
@@ -283,6 +287,7 @@ fn setup_kind(claim: bool, kind: EvmHtlcKind) -> (Client, Wallet, Arc<InMemorySw
         domains: Mutex::new(vec![]),
         high_s: AtomicBool::new(false),
         low_signatures: Mutex::new(vec![]),
+        missing_receipts: Mutex::new(vec![]),
     };
     (client, wallet, store)
 }
@@ -611,7 +616,7 @@ async fn external_high_s_signatures_are_encoded_low_s() {
 }
 
 #[tokio::test]
-async fn recovery_checks_balance_and_recipient_and_resumes_without_resending() {
+async fn recovery_checks_balance_and_resends_only_for_new_parameters() {
     let (client, wallet, _) = setup(false);
     let mut options = DepositRecovery {
         token: wallet.htlc.token,
@@ -636,14 +641,18 @@ async fn recovery_checks_balance_and_recipient_and_resumes_without_resending() {
         .recover_evm_deposit_with_wallet("test", &wallet, options.clone())
         .await
         .unwrap();
-    options.destination = Address::repeat_byte(9);
-    assert!(
-        client
-            .recover_evm_deposit_with_wallet("test", &wallet, options)
-            .await
-            .is_err()
-    );
     assert_eq!(wallet.sent.lock().unwrap().len(), 1);
+    options.destination = Address::repeat_byte(9);
+    client
+        .recover_evm_deposit_with_wallet("test", &wallet, options.clone())
+        .await
+        .unwrap();
+    assert_eq!(wallet.sent.lock().unwrap().len(), 2);
+    client
+        .recover_evm_deposit_with_wallet("test", &wallet, options)
+        .await
+        .unwrap();
+    assert_eq!(wallet.sent.lock().unwrap().len(), 2);
 }
 
 #[tokio::test]
@@ -1371,6 +1380,86 @@ async fn deposit_recovery_does_not_resubmit_after_a_lost_response() {
         .await
         .unwrap();
     assert_eq!(wallet.sent.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_different_recovery_does_not_need_the_settled_receipt() {
+    let (client, wallet, _) = setup(false);
+    let mut options = DepositRecovery {
+        token: wallet.htlc.token,
+        destination: Address::repeat_byte(80),
+        amount: U256::from(100),
+        timeout: Duration::from_secs(5),
+    };
+    client
+        .recover_evm_deposit_with_wallet("test", &wallet, options.clone())
+        .await
+        .unwrap();
+    // The mock reuses one transaction hash, so move the settled recovery onto a
+    // hash whose receipt the node no longer serves.
+    let old = B256::repeat_byte(55);
+    client
+        .update_swap_metadata(
+            "test",
+            SwapMetadata {
+                evm_recovery_txid: Some(old.to_string()),
+                evm_recovery_settled: Some(old.to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    wallet.missing_receipts.lock().unwrap().push(old);
+    assert!(
+        client
+            .recover_evm_deposit_with_wallet("test", &wallet, options.clone())
+            .await
+            .is_err()
+    );
+    options.amount = U256::from(200);
+    client
+        .recover_evm_deposit_with_wallet("test", &wallet, options)
+        .await
+        .unwrap();
+    assert_eq!(wallet.sent.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn second_recovery_lost_response_blocks_until_attached() {
+    let (client, wallet, _) = setup(false);
+    let mut options = DepositRecovery {
+        token: wallet.htlc.token,
+        destination: Address::repeat_byte(80),
+        amount: U256::from(100),
+        timeout: Duration::from_secs(5),
+    };
+    client
+        .recover_evm_deposit_with_wallet("test", &wallet, options.clone())
+        .await
+        .unwrap();
+    wallet.fail_send.store(true, Ordering::Relaxed);
+    options.amount = U256::from(200);
+    assert!(
+        client
+            .recover_evm_deposit_with_wallet("test", &wallet, options.clone())
+            .await
+            .is_err()
+    );
+    assert_eq!(wallet.sent.lock().unwrap().len(), 2);
+    let err = client
+        .recover_evm_deposit_with_wallet("test", &wallet, options.clone())
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("unresolved"), "{err}");
+    assert_eq!(wallet.sent.lock().unwrap().len(), 2);
+    client
+        .attach_evm_recovery_transaction("test", B256::repeat_byte(77))
+        .await
+        .unwrap();
+    client
+        .recover_evm_deposit_with_wallet("test", &wallet, options)
+        .await
+        .unwrap();
+    assert_eq!(wallet.sent.lock().unwrap().len(), 2);
 }
 
 #[tokio::test]

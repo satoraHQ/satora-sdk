@@ -45,6 +45,10 @@ pub struct SwapMetadata {
     pub evm_claim_txid: Option<String>,
     pub evm_recovery_started: Option<bool>,
     pub evm_recovery_txid: Option<String>,
+    /// The last recovery hash whose transfer was verified.
+    pub evm_recovery_settled: Option<String>,
+    /// Token, destination and amount of `evm_recovery_settled`.
+    pub evm_recovery_settled_intent: Option<String>,
     pub continuation_swap_id: Option<String>,
     pub evm_fund_userop_hash: Option<String>,
     pub evm_coordinator_address: Option<String>,
@@ -84,6 +88,8 @@ impl SwapMetadata {
             evm_claim_txid,
             evm_recovery_started,
             evm_recovery_txid,
+            evm_recovery_settled,
+            evm_recovery_settled_intent,
             continuation_swap_id,
             evm_fund_userop_hash,
             evm_coordinator_address,

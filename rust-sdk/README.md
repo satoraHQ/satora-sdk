@@ -184,12 +184,14 @@ Refund recovery APIs (`gasless` feature):
   `fund_swap_gasless`; the persisted replacement ID is reused after interruption.
 - `recover_evm_deposit_with_wallet` transfers an explicit ERC-20 amount to an
   explicit destination, verifies the transfer receipt, and resumes a stored submission.
+  Repeating the most recently settled recovery with identical parameters returns
+  its receipt; any other parameters start a new transfer.
 - `resume_gasless_funding` resolves a previously submitted UserOperation without
   sending it again. An operation receipt is not a substitute for verifying the
   HTLC funding event before proceeding with settlement.
 
-Refresh the original swap before refund continuation. Each recovery submission is
-retained in storage; a failed or mismatched receipt requires explicit investigation.
+Refresh the original swap before refund continuation. The latest recovery submission
+is retained in storage; a failed or mismatched receipt requires explicit investigation.
 Use one executor per swap across processes. Replacement creation and local storage
 cannot be atomic across the server boundary: a crash immediately after the API
 accepts creation may require swap recovery before attempting continuation again.
@@ -288,6 +290,7 @@ use `attach_bridge_transaction`; an unresolved intent deliberately prevents an
 automatic replacement. Supplied recovery hashes must identify the original
 transaction (OFT events do not encode the destination recipient). Failed operations
 remain available for inspection instead of authorizing another transfer.
+A completed `bridge_sweep` repeated with a different recovery starts a new transfer.
 
 `control::PollOptions` bounds the entire operation, including stalled network
 requests, and supports a cloneable `Cancellation`. Cancellation stops local work;

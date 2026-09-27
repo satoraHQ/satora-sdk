@@ -506,6 +506,7 @@ impl Client {
     }
     /// Recover minted tokens to an explicit address with a bounded amount.
     /// Operation key `bridge_sweep`; replay verifies the stored transfer receipt.
+    /// Once that sweep is complete, a different recovery starts a new transfer.
     pub async fn recover_bridge_balance(
         &self,
         id: &str,
@@ -526,10 +527,16 @@ impl Client {
                     return Err(invalid("invalid bridge recovery"));
                 }
                 let intent = json!({"recovery":recovery,"sender":wallet.address()});
-                let receipt = match self
-                    .bridge_receipt(id, "bridge_sweep", &intent, wallet, &mode)
-                    .await?
-                {
+                let settled_elsewhere = self
+                    .bridge_operation(id, "bridge_sweep")?
+                    .is_some_and(|op| op.complete && op.intent != intent);
+                let existing = if settled_elsewhere {
+                    None
+                } else {
+                    self.bridge_receipt(id, "bridge_sweep", &intent, wallet, &mode)
+                        .await?
+                };
+                let receipt = match existing {
                     Some(receipt) => receipt,
                     None => {
                         if token_balance(wallet, recovery.token).await? < recovery.amount {
