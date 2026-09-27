@@ -38,9 +38,35 @@ pub struct EvmSubmission {
     pub message: String,
 }
 
+const SERVER_FUNDING_HEDGE: Duration = Duration::from_secs(2);
+
+/// A failed funding check: whether the receipt was unavailable (so the server may
+/// know a different hash that mined), and why.
+type Unverified = (bool, Error);
+
+/// Whichever result verifies first; if neither does, the error from `first`.
+async fn first_verified<T>(
+    first: impl std::future::Future<Output = std::result::Result<T, Unverified>>,
+    second: impl std::future::Future<Output = std::result::Result<T, Unverified>>,
+) -> std::result::Result<T, Unverified> {
+    tokio::pin!(first, second);
+    tokio::select! {
+        result = &mut first => match result {
+            Ok(found) => Ok(found),
+            Err(error) => second.await.map_err(|_| error),
+        },
+        result = &mut second => match result {
+            Ok(found) => Ok(found),
+            Err(_) => first.await,
+        },
+    }
+}
+
 impl Client {
-    /// Read the actual locked amount from the persisted funding transaction,
-    /// checking the emitting contract, sender, token, lock, and timelock.
+    /// Read the actual locked amount from the funding transaction, checking the
+    /// emitting contract, sender, token, lock, and timelock. When a replaced funding
+    /// mined under the server-reported hash instead of the recorded one, that hash is
+    /// verified and persisted.
     pub async fn get_funded_evm_htlc(
         &self,
         id: &str,
@@ -80,53 +106,147 @@ impl Client {
         }
         let value =
             serde_json::to_value(&stored.response).map_err(|e| Error::Decode(e.to_string()))?;
-        let hash = stored
-            .metadata
-            .evm_fund_txid
-            .as_deref()
-            .or_else(|| value["evm_fund_txid"].as_str())
-            .ok_or_else(|| {
-                invalid("funding transaction is unknown; refresh or recover this swap")
-            })?;
-        let receipt = wallet.wait_for_receipt(parse(hash)?).await?;
-        if receipt.transaction_hash != parse::<B256>(hash)? {
-            return Err(invalid("funding receipt transaction hash mismatch"));
-        }
-        if !receipt.success {
-            return Err(invalid("funding transaction reverted"));
-        }
-        let sender = options.coordinator.unwrap_or(context.owner);
-        let created = matching_creation(&receipt.logs, &context, sender, options.lock_token)?
-            .ok_or_else(|| invalid("funding receipt does not contain this HTLC"))?;
-        let htlc = EvmHtlc {
-            chain_id: context.chain_id,
-            address: context.htlc,
-            hash_lock: context.hash,
-            amount: created.amount,
-            token: options.lock_token,
-            sender,
-            claimer: context.server,
-            timelock: context.timelock,
+        let local = stored.metadata.evm_fund_txid.as_deref();
+        // A replaced funding leaves a stale local hash while the server reports the
+        // mined one. The server hash only identifies the transaction to verify.
+        let server = value["evm_fund_txid"].as_str();
+        let context = &context;
+        // Like the TypeScript client, a receipt that cannot be read, reverted or holds
+        // no matching creation counts as unavailable; a proof that fails does not.
+        let verify = |hash: String| async move {
+            let unavailable = |error| (true, error);
+            let rejected = |error| (false, error);
+            let expected = parse::<B256>(&hash).map_err(unavailable)?;
+            let receipt = wallet
+                .wait_for_receipt(expected)
+                .await
+                .map_err(unavailable)?;
+            if receipt.transaction_hash != expected {
+                return Err(unavailable(invalid(
+                    "funding receipt transaction hash mismatch",
+                )));
+            }
+            if !receipt.success {
+                return Err(unavailable(invalid("funding transaction reverted")));
+            }
+            let sender = options.coordinator.unwrap_or(context.owner);
+            let created = matching_creation(&receipt.logs, context, sender, options.lock_token)
+                .map_err(rejected)?
+                .ok_or_else(|| {
+                    unavailable(invalid("funding receipt does not contain this HTLC"))
+                })?;
+            let htlc = EvmHtlc {
+                chain_id: context.chain_id,
+                address: context.htlc,
+                hash_lock: context.hash,
+                amount: created.amount,
+                token: options.lock_token,
+                sender,
+                claimer: context.server,
+                timelock: context.timelock,
+            };
+            if htlc.key() != created.key {
+                return Err(rejected(invalid("funding event HTLC key mismatch")));
+            }
+            if let Some(coordinator) = options.coordinator.filter(|_| require_depositor) {
+                let depositor = wallet
+                    .call(&transaction(
+                        wallet,
+                        coordinator,
+                        Coordinator::depositsCall { key: htlc.key() }.abi_encode(),
+                    ))
+                    .await
+                    .map_err(rejected)?;
+                let bytes = word(&depositor).map_err(rejected)?.to_be_bytes::<32>();
+                if bytes[..12] != [0u8; 12] || Address::from_slice(&bytes[12..]) != context.owner {
+                    return Err(rejected(invalid(
+                        "coordinator depositor does not match this swap",
+                    )));
+                }
+            }
+            Ok((htlc, hash))
         };
-        if htlc.key() != created.key {
-            return Err(invalid("funding event HTLC key mismatch"));
-        }
-        if let Some(coordinator) = options.coordinator.filter(|_| require_depositor) {
-            let depositor = wallet
-                .call(&transaction(
-                    wallet,
-                    coordinator,
-                    Coordinator::depositsCall { key: htlc.key() }.abi_encode(),
-                ))
-                .await?;
-            let bytes = word(&depositor)?.to_be_bytes::<32>();
-            if bytes[..12] != [0u8; 12] || Address::from_slice(&bytes[12..]) != context.owner {
+        let reason = |(_, error): Unverified| error;
+        // Receipt waits on a hash that never mined run until they time out, so
+        // candidates are checked at once.
+        let (htlc, hash) = match (server, local) {
+            (None, None) => {
                 return Err(invalid(
-                    "coordinator depositor does not match this swap",
+                    "funding transaction is unknown; refresh or recover this swap",
                 ));
             }
+            (Some(server), Some(local)) if !server.eq_ignore_ascii_case(local) => {
+                first_verified(verify(server.to_owned()), verify(local.to_owned()))
+                    .await
+                    .map_err(reason)?
+            }
+            (Some(hash), _) => verify(hash.to_owned()).await.map_err(reason)?,
+            (None, Some(local)) => {
+                // A replaced funding never mines under the recorded hash, so its receipt
+                // lookup fails or runs until it times out. Either way the server is
+                // asked which funding mined, while the recorded one is still checked.
+                let recorded = verify(local.to_owned());
+                tokio::pin!(recorded);
+                let early = tokio::select! {
+                    result = &mut recorded => Some(result),
+                    () = tokio::time::sleep(SERVER_FUNDING_HEDGE) => None,
+                };
+                let lookup = || async {
+                    self.server_funding_hash(id)
+                        .await
+                        .filter(|server| !server.eq_ignore_ascii_case(local))
+                };
+                // An unavailable recorded receipt falls back to the server's hash.
+                let fallback = |error: Error| async {
+                    match lookup().await {
+                        Some(server) => verify(server).await.map_err(|_| error),
+                        None => Err(error),
+                    }
+                };
+                match early {
+                    Some(Ok(found)) => found,
+                    Some(Err((true, error))) => fallback(error).await?,
+                    Some(Err((false, error))) => return Err(error),
+                    None => {
+                        let lookup = lookup();
+                        tokio::pin!(lookup);
+                        tokio::select! {
+                            result = &mut recorded => match result {
+                                Ok(found) => found,
+                                Err((true, error)) => match lookup.await {
+                                    Some(server) => verify(server).await.map_err(|_| error)?,
+                                    None => return Err(error),
+                                },
+                                Err((false, error)) => return Err(error),
+                            },
+                            server = &mut lookup => match server {
+                                Some(server) => first_verified(recorded, verify(server))
+                                    .await
+                                    .map_err(reason)?,
+                                None => recorded.await.map_err(reason)?,
+                            },
+                        }
+                    }
+                }
+            }
+        };
+        if local.is_none_or(|local| !local.eq_ignore_ascii_case(&hash)) {
+            self.update_swap_metadata(
+                id,
+                SwapMetadata {
+                    evm_fund_txid: Some(hash),
+                    ..Default::default()
+                },
+            )?;
         }
         Ok(htlc)
+    }
+
+    async fn server_funding_hash(&self, id: &str) -> Option<String> {
+        let response = self.get_swap_details(id).await.ok()?;
+        serde_json::to_value(&response).ok()?["evm_fund_txid"]
+            .as_str()
+            .map(str::to_owned)
     }
 
     pub async fn refund_evm_with_wallet(

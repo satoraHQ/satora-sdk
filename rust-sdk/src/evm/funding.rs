@@ -395,6 +395,16 @@ impl Client {
                 "receipt contains no matching HTLC creation; inspect the stored transaction before retrying",
             ));
         }
+        // The wallet replaced or sped up the transaction; refunds look up the mined one.
+        if receipt.transaction_hash != hash {
+            self.update_swap_metadata(
+                id,
+                SwapMetadata {
+                    evm_fund_txid: Some(receipt.transaction_hash.to_string()),
+                    ..Default::default()
+                },
+            )?;
+        }
         Ok(receipt)
     }
 }

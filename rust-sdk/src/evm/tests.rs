@@ -43,6 +43,11 @@ struct Wallet {
     high_s: AtomicBool,
     low_signatures: Mutex<Vec<Signature>>,
     missing_receipts: Mutex<Vec<B256>>,
+    /// Receipts that never arrive, like a hash that never mined.
+    hanging_receipts: Mutex<Vec<B256>>,
+    /// Receipts a lagging node serves only after a few seconds.
+    slow_receipts: Mutex<Vec<B256>>,
+    reverted_receipts: Mutex<Vec<B256>>,
 }
 fn secp256k1_order() -> U256 {
     U256::from_str_radix(
@@ -136,6 +141,12 @@ impl EvmWallet for Wallet {
     }
     fn wait_for_receipt(&self, hash: B256) -> WalletFuture<'_, EvmReceipt> {
         Box::pin(async move {
+            if self.hanging_receipts.lock().unwrap().contains(&hash) {
+                return std::future::pending().await;
+            }
+            if self.slow_receipts.lock().unwrap().contains(&hash) {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
             if self.missing_receipts.lock().unwrap().contains(&hash) {
                 return Err(Error::Timeout("receipt not served".into()));
             }
@@ -192,7 +203,7 @@ impl EvmWallet for Wallet {
             logs.extend(self.extra_logs.clone());
             Ok(EvmReceipt {
                 transaction_hash: hash,
-                success: true,
+                success: !self.reverted_receipts.lock().unwrap().contains(&hash),
                 block_number: 10,
                 logs,
             })
@@ -288,6 +299,9 @@ fn setup_kind(claim: bool, kind: EvmHtlcKind) -> (Client, Wallet, Arc<InMemorySw
         high_s: AtomicBool::new(false),
         low_signatures: Mutex::new(vec![]),
         missing_receipts: Mutex::new(vec![]),
+        hanging_receipts: Mutex::new(vec![]),
+        slow_receipts: Mutex::new(vec![]),
+        reverted_receipts: Mutex::new(vec![]),
     };
     (client, wallet, store)
 }
@@ -480,6 +494,285 @@ async fn coordinator_refunds_accept_any_submitter_for_the_recorded_depositor_onl
         Some(receipt.transaction_hash.to_string())
     );
 }
+
+/// A wallet that replaced its broadcast funding: the sent hash mines as `funding_hash`.
+struct Replacing<'a>(&'a Wallet);
+impl EvmWallet for Replacing<'_> {
+    fn address(&self) -> Address {
+        self.0.address()
+    }
+    fn chain_id(&self) -> u64 {
+        self.0.chain_id()
+    }
+    fn sign_typed_data<'a>(&'a self, data: &'a EvmTypedData) -> WalletFuture<'a, Signature> {
+        self.0.sign_typed_data(data)
+    }
+    fn call<'a>(&'a self, tx: &'a EvmTransaction) -> WalletFuture<'a, Bytes> {
+        if tx.data.starts_with(&selector("allowance(address,address)")) {
+            return Box::pin(async { Ok(U256::MAX.to_be_bytes::<32>().to_vec().into()) });
+        }
+        self.0.call(tx)
+    }
+    fn send_transaction<'a>(&'a self, tx: &'a EvmTransaction) -> WalletFuture<'a, B256> {
+        self.0.send_transaction(tx)
+    }
+    fn wait_for_receipt(&self, _: B256) -> WalletFuture<'_, EvmReceipt> {
+        self.0.wait_for_receipt(self.0.funding_hash)
+    }
+    fn block_timestamp(&self) -> WalletFuture<'_, u64> {
+        self.0.block_timestamp()
+    }
+}
+
+#[tokio::test]
+async fn a_replaced_funding_records_the_mined_hash_and_refunds() {
+    use crate::aa::abi::Call;
+    use alloy::sol_types::SolValue;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::path;
+    let (_, wallet, fixture) = setup(false);
+    let response = fixture.get_swap("test").unwrap().unwrap().response;
+    let store = Arc::new(InMemorySwapStorage::new());
+    store
+        .store_swap(StoredSwap::new(0, response, SwapMetadata::default()).unwrap())
+        .unwrap();
+    let h = &wallet.htlc;
+    let server = MockServer::start().await;
+    Mock::given(path("/swap/test/swap-and-lock-calldata-permit2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "coordinator_address": wallet.coordinator,
+            "permit2_address": crate::aa::permit2::PERMIT2_ADDRESS,
+            "source_token_address": h.token,
+            "source_amount": h.amount.to_string(),
+            "lock_token_address": h.token,
+            "preimage_hash": h.hash_lock,
+            "claim_address": h.claimer,
+            "timelock": h.timelock,
+            "calls": [],
+            "calls_hash": alloy::primitives::keccak256(Vec::<Call>::new().abi_encode()),
+        })))
+        .mount(&server)
+        .await;
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .build()
+        .unwrap();
+    let receipt = client
+        .fund_swap_with_wallet(
+            "test",
+            &Replacing(&wallet),
+            FundingOptions {
+                coordinator: wallet.coordinator,
+                htlc: h.address,
+                lock_token: h.token,
+                max_source_amount: h.amount,
+                allowed_call_targets: vec![],
+                timeout: Duration::from_secs(10),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt.transaction_hash, wallet.funding_hash);
+    assert_eq!(
+        store
+            .get_swap("test")
+            .unwrap()
+            .unwrap()
+            .metadata
+            .evm_fund_txid,
+        Some(wallet.funding_hash.to_string())
+    );
+    wallet.now.store(h.timelock, Ordering::Relaxed);
+    client
+        .refund_evm_with_wallet(
+            "test",
+            &wallet,
+            RefundOptions {
+                htlc: h.address,
+                lock_token: h.token,
+                coordinator: Some(wallet.coordinator),
+                timeout: Duration::from_secs(10),
+            },
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_recorded_funding_hash_that_never_mined_is_resolved_through_the_server() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::path;
+    // The stale hash's receipt never returns, fails at once, reverts, or fails
+    // after the hedge but before the server answers.
+    for (stale_mode, server_delay) in [("hangs", 0), ("missing", 0), ("reverted", 0), ("late", 2)] {
+        let (_, wallet, store) = setup(false);
+        let stale = B256::repeat_byte(43);
+        match stale_mode {
+            "hangs" => wallet.hanging_receipts.lock().unwrap().push(stale),
+            "missing" => wallet.missing_receipts.lock().unwrap().push(stale),
+            "reverted" => wallet.reverted_receipts.lock().unwrap().push(stale),
+            _ => {
+                wallet.slow_receipts.lock().unwrap().push(stale);
+                wallet.missing_receipts.lock().unwrap().push(stale);
+            }
+        }
+        let mut stored = store.get_swap("test").unwrap().unwrap();
+        stored.metadata.evm_fund_txid = Some(stale.to_string());
+        store.store_swap(stored.clone()).unwrap();
+        let mut response = serde_json::to_value(&stored.response).unwrap();
+        assert!(response.get("evm_fund_txid").is_none_or(Value::is_null));
+        response["evm_fund_txid"] = json!(wallet.funding_hash);
+        let server = MockServer::start().await;
+        Mock::given(path("/swap/test"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(response)
+                    .set_delay(Duration::from_secs(server_delay)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = Client::builder()
+            .base_url(server.uri())
+            .mnemonic(MNEMONIC)
+            .storage(store.clone())
+            .build()
+            .unwrap();
+        wallet.now.store(wallet.htlc.timelock, Ordering::Relaxed);
+        client
+            .refund_evm_with_wallet(
+                "test",
+                &wallet,
+                RefundOptions {
+                    htlc: wallet.htlc.address,
+                    lock_token: wallet.htlc.token,
+                    coordinator: Some(wallet.coordinator),
+                    timeout: Duration::from_secs(10),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .get_swap("test")
+                .unwrap()
+                .unwrap()
+                .metadata
+                .evm_fund_txid,
+            Some(wallet.funding_hash.to_string())
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_slow_but_valid_recorded_hash_is_not_held_up_by_a_hung_server() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::path;
+    let (_, wallet, store) = setup(false);
+    wallet
+        .slow_receipts
+        .lock()
+        .unwrap()
+        .push(wallet.funding_hash);
+    let server = MockServer::start().await;
+    Mock::given(path("/swap/test"))
+        .respond_with(ResponseTemplate::new(503).set_delay(Duration::from_secs(20)))
+        .mount(&server)
+        .await;
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .build()
+        .unwrap();
+    client
+        .update_swap_metadata(
+            "test",
+            SwapMetadata {
+                evm_fund_txid: Some(wallet.funding_hash.to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    wallet.now.store(wallet.htlc.timelock, Ordering::Relaxed);
+    let started = std::time::Instant::now();
+    client
+        .refund_evm_with_wallet(
+            "test",
+            &wallet,
+            RefundOptions {
+                htlc: wallet.htlc.address,
+                lock_token: wallet.htlc.token,
+                coordinator: Some(wallet.coordinator),
+                timeout: Duration::from_secs(15),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(8),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn a_funding_hash_that_never_mined_does_not_stall_the_refund() {
+    for stale_is_local in [true, false] {
+        let (client, wallet, store) = setup(false);
+        let stale = B256::repeat_byte(43);
+        wallet.hanging_receipts.lock().unwrap().push(stale);
+        let (local, server) = if stale_is_local {
+            (stale, wallet.funding_hash)
+        } else {
+            (wallet.funding_hash, stale)
+        };
+        client
+            .update_swap_metadata(
+                "test",
+                SwapMetadata {
+                    evm_fund_txid: Some(local.to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        rewrite_response(&store, |response| {
+            response["evm_fund_txid"] = json!(server);
+        });
+        wallet.now.store(wallet.htlc.timelock, Ordering::Relaxed);
+        client
+            .refund_evm_with_wallet(
+                "test",
+                &wallet,
+                RefundOptions {
+                    htlc: wallet.htlc.address,
+                    lock_token: wallet.htlc.token,
+                    coordinator: Some(wallet.coordinator),
+                    timeout: Duration::from_secs(2),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .get_swap("test")
+                .unwrap()
+                .unwrap()
+                .metadata
+                .evm_fund_txid,
+            Some(wallet.funding_hash.to_string())
+        );
+    }
+}
+
 #[tokio::test]
 async fn receipts_with_wrong_contract_key_or_preimage_are_rejected() {
     let (_, wallet, _) = setup(true);

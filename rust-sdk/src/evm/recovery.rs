@@ -374,8 +374,8 @@ impl Client {
         let stored = self
             .get_stored_swap(&replacement)?
             .ok_or_else(|| invalid("replacement record missing"))?;
-        if let Some(hash) = stored.metadata.evm_fund_txid {
-            let receipt = wallet.wait_for_receipt(parse(&hash)?).await?;
+        if stored.metadata.evm_fund_txid.is_some() {
+            // Verifying first settles which hash mined when the funding was replaced.
             self.get_funded_evm_htlc(
                 &replacement,
                 wallet,
@@ -387,6 +387,11 @@ impl Client {
                 },
             )
             .await?;
+            let hash = self
+                .get_stored_swap(&replacement)?
+                .and_then(|stored| stored.metadata.evm_fund_txid)
+                .ok_or_else(|| invalid("replacement funding hash missing"))?;
+            let receipt = wallet.wait_for_receipt(parse(&hash)?).await?;
             return Ok((replacement, receipt));
         }
         let funds = self
