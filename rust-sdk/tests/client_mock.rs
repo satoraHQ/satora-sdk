@@ -463,6 +463,39 @@ async fn create_swap_dispatcher_routes_to_evm_to_arkade() {
 }
 
 #[tokio::test]
+async fn create_swap_rejects_non_object_success_body() {
+    for body in [json!([]), json!("ok"), json!(1), json!(true)] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/swap/evm/arkade"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+            .mount(&server)
+            .await;
+
+        let client = Client::builder()
+            .base_url(server.uri())
+            .mnemonic(TEST_MNEMONIC)
+            .build()
+            .expect("client builds");
+
+        let result = client
+            .create_swap(
+                KnownChain::Polygon,
+                TokenId::UsdcPolygon,
+                TokenId::Btc,
+                QuoteAmount::Source(100_000_000),
+                Some(Address::Arkade("tark1qqellv77udfmr20tun8dvju5vgudpf9vxe8jwhthrkn26fz96pawqfdy8nk05rsmrf8h94j26905e7n6sng8y059z8ykn2j5xcuw4xt846qj6x".to_string())),
+                None,
+            )
+            .await;
+        assert!(
+            matches!(result, Err(Error::Decode(_))),
+            "body {body} should be a decode error, got {result:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn create_swap_rejects_unsupported_direction() {
     let client = Client::builder()
         .base_url("https://example.invalid")

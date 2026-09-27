@@ -348,7 +348,10 @@ impl Client {
                 Err(error) => return Err(error),
             };
             let mut response: Value = response.json().await?;
-            response["direction"] = json!(direction);
+            response
+                .as_object_mut()
+                .ok_or_else(|| Error::Decode("swap creation response is not a JSON object".into()))?
+                .insert("direction".into(), json!(direction));
             let response: GetSwapResponse =
                 serde_json::from_value(response).map_err(|e| Error::Decode(e.to_string()))?;
             self.persist_swap_with_metadata(index, response.clone(), metadata)?;
