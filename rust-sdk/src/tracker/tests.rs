@@ -799,3 +799,130 @@ async fn panicking_reconcile_does_not_abort_siblings() {
         "the sibling finished its execution: {states:?}"
     );
 }
+#[tokio::test]
+async fn swaps_stored_without_a_journal_are_adopted_after_restore() {
+    use crate::arkade::StrictVhtlcOptions;
+    use crate::arkade::StrictVhtlcScript;
+    use bitcoin::hashes::Hash;
+    use bitcoin::hashes::ripemd160;
+    use bitcoin::secp256k1::Keypair;
+    use bitcoin::secp256k1::Secp256k1;
+    use bitcoin::secp256k1::SecretKey;
+    use serde_json::json;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::path;
+    let fixtures: serde_json::Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/swap-responses.json")).unwrap();
+    let key = |byte: u8| {
+        Keypair::from_secret_key(
+            &Secp256k1::new(),
+            &SecretKey::from_slice(&[byte; 32]).unwrap(),
+        )
+        .public_key()
+    };
+    let next = AtomicUsize::new(0);
+    let server = MockServer::start().await;
+    Mock::given(path("/swap/lightning/arkade"))
+        .respond_with(move |request: &wiremock::Request| {
+            let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            let claim: bitcoin::secp256k1::PublicKey =
+                body["claim_pk"].as_str().unwrap().parse().unwrap();
+            let hash =
+                hex::decode(body["hash_lock"].as_str().unwrap().trim_start_matches("0x")).unwrap();
+            let options = StrictVhtlcOptions {
+                sender: key(2).x_only_public_key().0,
+                receiver: claim.x_only_public_key().0,
+                server: key(3).x_only_public_key().0,
+                preimage_hash: ripemd160::Hash::hash(&hash),
+                refund_locktime: 4_000_000_000,
+                unilateral_claim_delay: bitcoin::Sequence::from_height(21),
+                unilateral_refund_delay: bitcoin::Sequence::from_height(34),
+                unilateral_refund_without_receiver_delay: bitcoin::Sequence::from_height(55),
+            };
+            let script = StrictVhtlcScript::new(options, bitcoin::Network::Regtest).unwrap();
+            let mut response = fixtures["lightning_to_arkade"].clone();
+            response["id"] = json!(format!("swap-{}", next.fetch_add(1, Ordering::SeqCst)));
+            response["hash_lock"] = body["hash_lock"].clone();
+            response["sender_pk"] = json!(key(2).to_string());
+            response["receiver_pk"] = json!(claim.to_string());
+            response["arkade_server_pk"] = json!(key(3).to_string());
+            response["vhtlc_refund_locktime"] = json!(4_000_000_000u32);
+            response["unilateral_claim_delay"] = json!(21);
+            response["unilateral_refund_delay"] = json!(34);
+            response["unilateral_refund_without_receiver_delay"] = json!(55);
+            response["arkade_vhtlc_address"] = json!(script.address().encode());
+            ResponseTemplate::new(200).set_body_json(response)
+        })
+        .expect(2)
+        .mount(&server)
+        .await;
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about")
+        .storage(InMemorySwapStorage::shared())
+        .build()
+        .unwrap();
+    for _ in 0..2 {
+        client
+            .create_lightning_to_arkade_swap(100_000, crate::types::Address::Arkade("tark1qqellv77udfmr20tun8dvju5vgudpf9vxe8jwhthrkn26fz96pawqfdy8nk05rsmrf8h94j26905e7n6sng8y059z8ykn2j5xcuw4xt846qj6x".into()))
+            .await
+            .unwrap();
+    }
+    let reader = Arc::new(Reader(
+        Mutex::new((HtlcState::Absent, HtlcState::Absent, 50)),
+        AtomicBool::new(false),
+    ));
+    let fresh = |max_swaps| {
+        SwapTracker::new(
+            client.clone(),
+            ContractManager::new(reader.clone(), ManagerOptions::default()).unwrap(),
+            TrackerOptions {
+                max_swaps,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap()
+    };
+    let references = crate::observation::ReferenceOptions::default();
+    let tracker = fresh(1);
+    assert!(tracker.restore().await.unwrap().is_empty());
+    let failures = tracker
+        .adopt_untracked(|_| Some((references.clone(), TrackingOptions::default())))
+        .await
+        .unwrap();
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert!(failures[0].1.contains("capacity"), "{failures:?}");
+    assert!(tracker.record("swap-0").await.unwrap().enabled);
+    let set_status = |status: crate::types::SwapStatus| {
+        let mut stored = client.get_stored_swap("swap-1").unwrap().unwrap();
+        let crate::types::GetSwapResponse::LightningToArkade(response) = &mut stored.response
+        else {
+            panic!("expected a Lightning to Arkade swap");
+        };
+        response.status = status;
+        client.storage.store_swap(stored).unwrap();
+    };
+    // A settled stored status is skipped, as in the TypeScript client.
+    set_status(crate::types::SwapStatus::Expired);
+    let tracker = fresh(8);
+    assert!(tracker.restore().await.unwrap().is_empty());
+    let failures = tracker
+        .adopt_untracked(|_| Some((references.clone(), TrackingOptions::default())))
+        .await
+        .unwrap();
+    assert!(failures.is_empty(), "{failures:?}");
+    assert!(tracker.record("swap-1").await.is_err());
+    set_status(crate::types::SwapStatus::Pending);
+    let failures = tracker
+        .adopt_untracked(|_| Some((references.clone(), TrackingOptions::default())))
+        .await
+        .unwrap();
+    assert!(failures.is_empty(), "{failures:?}");
+    for id in ["swap-0", "swap-1"] {
+        let record = tracker.record(id).await.unwrap();
+        assert!(record.enabled && record.contracts.server.is_some());
+    }
+}

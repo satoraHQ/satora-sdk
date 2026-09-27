@@ -10,6 +10,7 @@ use crate::SwapMetadata;
 use crate::actions::*;
 use crate::control::Cancellation;
 use crate::observation::ContractManager;
+use crate::observation::ReferenceOptions;
 use crate::observation::SwapContracts;
 use serde::Deserialize;
 use serde::Serialize;
@@ -349,6 +350,46 @@ impl SwapTracker {
             }
         }
         failures.extend(self.0.client.unreadable_swaps()?);
+        Ok(failures)
+    }
+    /// Track stored swaps that have no journal, such as a swap created just before
+    /// a crash. `plan` gives each swap's references and options, or None to skip it;
+    /// the EVM scan start, sender and lock token in `ReferenceOptions` are per swap.
+    /// As in the TypeScript client, a swap whose last stored server status is settled
+    /// is skipped, so a stale or wrong status forgoes automatic claims and refunds for
+    /// it; track such a swap directly to watch it anyway. Failures are returned per swap.
+    pub async fn adopt_untracked(
+        &self,
+        plan: impl Fn(&crate::StoredSwap) -> Option<(ReferenceOptions, TrackingOptions)>,
+    ) -> Result<Vec<(String, String)>> {
+        use crate::types::SwapStatus::*;
+        let mut failures = Vec::new();
+        for stored in self.0.client.list_all_swaps()? {
+            let settled = matches!(
+                stored.response.status(),
+                ServerRedeemed
+                    | ClientRefunded
+                    | ClientRefundedServerFunded
+                    | ClientRefundedServerRefunded
+                    | ClientRedeemedAndClientRefunded
+                    | Expired
+            );
+            if stored.metadata.tracking.is_some() || settled {
+                continue;
+            }
+            let Some((references, options)) = plan(&stored) else {
+                continue;
+            };
+            let id = stored.response.id().to_string();
+            let result = async {
+                let contracts = self.0.client.contract_references(&id, &references)?;
+                self.track(&id, contracts, options).await
+            }
+            .await;
+            if let Err(error) = result {
+                failures.push((id, error.to_string()));
+            }
+        }
         Ok(failures)
     }
     /// Disable tracking while retaining the execution journal for later recovery.

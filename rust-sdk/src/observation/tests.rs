@@ -447,3 +447,31 @@ fn timelocks_use_chain_height_and_mtp_and_preimages_are_redacted() {
     assert!(!format!("{secret:?}").contains("42"));
     assert!(lock.preimage(&[42; 31]).is_none());
 }
+
+#[test]
+fn shared_policy_keeps_confirmation_depths_and_drops_swap_specific_fields() {
+    let options = ReferenceOptions {
+        client_confirmations: 3,
+        server_confirmations: 6,
+        #[cfg(feature = "gasless")]
+        evm_from_block: 1_000,
+        #[cfg(feature = "gasless")]
+        evm_source_sender: Some(crate::evm::Address::repeat_byte(1)),
+        #[cfg(feature = "gasless")]
+        evm_lock_token: Some(crate::evm::Address::repeat_byte(2)),
+    };
+    let shared = options.shared_policy();
+    assert_eq!(
+        (shared.client_confirmations, shared.server_confirmations),
+        (3, 6)
+    );
+    #[cfg(feature = "gasless")]
+    assert_eq!(
+        (
+            shared.evm_from_block,
+            shared.evm_source_sender,
+            shared.evm_lock_token
+        ),
+        (0, None, None)
+    );
+}

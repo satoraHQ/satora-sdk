@@ -38,6 +38,22 @@ impl Default for ReferenceOptions {
         }
     }
 }
+impl ReferenceOptions {
+    /// The same confirmation policy without the EVM fields that describe one swap,
+    /// for reconstructing references of other swaps.
+    pub fn shared_policy(&self) -> Self {
+        Self {
+            client_confirmations: self.client_confirmations,
+            server_confirmations: self.server_confirmations,
+            #[cfg(feature = "gasless")]
+            evm_from_block: 0,
+            #[cfg(feature = "gasless")]
+            evm_source_sender: None,
+            #[cfg(feature = "gasless")]
+            evm_lock_token: None,
+        }
+    }
+}
 impl Client {
     /// Reconstruct references from a stored swap, validating Bitcoin/Arkade
     /// addresses against their scripts and seed. Lightning's remote invoice leg

@@ -400,20 +400,33 @@ use lendaswap_sdk::observation::{ContractManager, ContractReader, ManagerOptions
 use lendaswap_sdk::tracker::{SwapTracker, TrackerOptions, TrackingOptions};
 
 # async fn track(client: Client, reader: Arc<dyn ContractReader>, id: &str, references: ReferenceOptions) -> Result<()> {
-let contracts = client.contract_references(id, &references)?;
 let manager = ContractManager::new(reader, ManagerOptions::default())?;
-// A retired swap keeps its journal; `resume` it rather than tracking it again.
-let journaled = client
-    .get_stored_swap(id)?
-    .is_some_and(|swap| swap.metadata.tracking.is_some());
-let tracker = SwapTracker::new(client, manager, TrackerOptions::default(), None)?;
+let tracker = SwapTracker::new(client.clone(), manager, TrackerOptions::default(), None)?;
 let failures = tracker.restore().await?;
 // Surface unsupported/corrupt records; they remain in storage for recovery.
 assert!(failures.is_empty(), "tracking restore failures: {failures:?}");
-if !journaled {
-    tracker.track(id, contracts, TrackingOptions::default()).await?;
-} else if tracker.record(id).await.is_err() {
-    tracker.resume(id).await?;
+// Stored swaps without a journal, such as one created just before a crash. The
+// EVM scan start, sender and lock token in `references` belong to `id` alone. A
+// failure (an unobservable leg, a full tracker) recurs until it is fixed.
+let failures = tracker
+    .adopt_untracked(|stored| {
+        let own = stored.response.id() == id;
+        let references = if own { references.clone() } else { references.shared_policy() };
+        Some((references, TrackingOptions::default()))
+    })
+    .await?;
+for (id, error) in failures {
+    tracing::warn!(%id, %error, "swap not adopted for tracking");
+}
+// A retired swap keeps its journal and is resumed; a swap adoption skipped is
+// tracked directly.
+if tracker.record(id).await.is_err() {
+    if client.get_stored_swap(id)?.is_some_and(|s| s.metadata.tracking.is_some()) {
+        tracker.resume(id).await?;
+    } else {
+        let contracts = client.contract_references(id, &references)?;
+        tracker.track(id, contracts, TrackingOptions::default()).await?;
+    }
 }
 let mut events = tracker.events();
 let worker = tracker.start()?;
@@ -425,6 +438,10 @@ worker.shutdown().await?;
 # Ok(())
 # }
 ```
+
+`adopt_untracked` skips a swap whose last stored server status is settled, as the
+TypeScript client does. Refresh the swap first, or track it directly, to watch it
+regardless.
 
 Use `status_hint` to feed WebSocket events into the tracker; status values only
 trigger chain reads. `hint` coalesces IDs, `refresh(true)` reconciles at-risk
