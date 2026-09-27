@@ -76,11 +76,13 @@ pub enum StatusEvent {
     Queued {
         count: usize,
     },
+    /// Sent once when HTTP reports the ID unknown, and again after `Lagged`.
     Missing {
         swap_id: String,
     },
     Reconciled,
-    /// The consumer fell behind. An HTTP reconcile is already scheduled.
+    /// The consumer fell behind. The next HTTP reconcile re-sends every status,
+    /// at most half a queue per sweep.
     Lagged {
         missed: u64,
     },
@@ -94,19 +96,30 @@ pub enum StatusEvent {
 pub struct StatusSubscription {
     desired: watch::Sender<Vec<String>>,
     events: broadcast::Receiver<StatusEvent>,
+    emitter: Arc<Emitter>,
     cancellation: Cancellation,
     reconcile: Arc<Notify>,
     task: Option<JoinHandle<()>>,
     max_tracked: usize,
 }
+/// The server keys every status by the lowercase hyphenated form, whatever
+/// spelling it was asked for.
+fn canonical_id(id: &str) -> Option<String> {
+    uuid::Uuid::parse_str(id)
+        .ok()
+        .map(|id| id.hyphenated().to_string())
+}
 impl StatusSubscription {
+    /// Event swap IDs are the lowercase hyphenated form, whatever spelling was subscribed.
     pub fn subscribe(&self, ids: impl IntoIterator<Item = String>) -> Result<()> {
-        let ids: Vec<_> = ids.into_iter().collect();
-        if ids.iter().any(|id| uuid::Uuid::parse_str(id).is_err()) {
-            return Err(Error::InvalidSwap(
-                "status subscriptions require UUID swap IDs".into(),
-            ));
-        }
+        let ids: Vec<_> = ids
+            .into_iter()
+            .map(|id| {
+                canonical_id(&id).ok_or_else(|| {
+                    Error::InvalidSwap("status subscriptions require UUID swap IDs".into())
+                })
+            })
+            .collect::<Result<_>>()?;
         let mut error = false;
         self.desired.send_if_modified(|current| {
             let mut next = current.clone();
@@ -133,6 +146,7 @@ impl StatusSubscription {
         Ok(())
     }
     pub fn unsubscribe(&self, ids: &[String]) {
+        let ids: Vec<_> = ids.iter().filter_map(|id| canonical_id(id)).collect();
         self.desired.send_if_modified(|current| {
             let before = current.len();
             current.retain(|id| !ids.contains(id));
@@ -146,6 +160,9 @@ impl StatusSubscription {
         match self.events.recv().await {
             Ok(event) => Some(event),
             Err(broadcast::error::RecvError::Lagged(missed)) => {
+                // Dropped events are unknown to the consumer, so the reconcile must
+                // re-send every status rather than only the ones that changed.
+                self.emitter.reset();
                 self.reconcile();
                 Some(StatusEvent::Lagged { missed })
             }
@@ -170,30 +187,45 @@ impl Drop for StatusSubscription {
 }
 struct Emitter {
     events: broadcast::Sender<StatusEvent>,
-    last: Mutex<HashMap<(String, StatusSource), SwapStatus>>,
+    capacity: usize,
+    /// None records a `Missing` event.
+    last: Mutex<HashMap<(String, StatusSource), Option<SwapStatus>>>,
 }
 impl Emitter {
     fn emit(&self, event: StatusEvent) {
         let _ = self.events.send(event);
     }
-    fn update(&self, id: String, status: SwapStatus, source: StatusSource) {
+    /// Returns false when an HTTP status was deferred to the next sweep.
+    fn update(&self, id: String, status: Option<SwapStatus>, source: StatusSource) -> bool {
         let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
         if last.get(&(id.clone(), source)) == Some(&status) {
-            return;
+            return true;
+        }
+        // An HTTP status can wait for the next sweep. Overfilling the queue would
+        // make the consumer lag, clear the dedupe and re-send everything again.
+        if source == StatusSource::Http && self.events.len() * 2 >= self.capacity {
+            return false;
         }
         last.insert((id.clone(), source), status.clone());
         drop(last);
-        self.emit(StatusEvent::Update {
-            swap_id: id,
-            status,
-            source,
+        self.emit(match status {
+            Some(status) => StatusEvent::Update {
+                swap_id: id,
+                status,
+                source,
+            },
+            None => StatusEvent::Missing { swap_id: id },
         });
+        true
     }
     fn retain(&self, ids: &[String]) {
         self.last
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .retain(|(id, _), _| ids.contains(id));
+    }
+    fn reset(&self) {
+        self.last.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
     fn error(&self, message: impl Into<String>) {
         self.emit(StatusEvent::Error {
@@ -230,6 +262,7 @@ impl Client {
         let (events, event_receiver) = broadcast::channel(options.event_capacity);
         let emitter = Arc::new(Emitter {
             events,
+            capacity: options.event_capacity,
             last: Mutex::new(HashMap::new()),
         });
         let cancellation = Cancellation::default();
@@ -238,6 +271,7 @@ impl Client {
         let notify = reconcile.clone();
         let client = self.clone();
         let max_tracked = options.max_tracked;
+        let shared = emitter.clone();
         let task = tokio::spawn(async move {
             tokio::select! {
                 biased;
@@ -250,6 +284,7 @@ impl Client {
         Ok(StatusSubscription {
             desired,
             events: event_receiver,
+            emitter: shared,
             cancellation,
             reconcile,
             task: Some(task),
@@ -339,7 +374,7 @@ fn process_message(text: &str, active: &[String], emitter: &Emitter) {
                     // legitimately move a swap backwards. Do not invent an ordering.
                     emitter.update(
                         id.clone(),
-                        SwapStatus::from(status.to_string()),
+                        Some(SwapStatus::from(status.to_string())),
                         StatusSource::WebSocket,
                     );
                 } else {
@@ -394,7 +429,7 @@ async fn socket_loop(
         .await
         {
             Ok(Ok((mut socket, _))) => {
-                backoff = options.reconnect_min;
+                let opened = Instant::now();
                 emitter.emit(StatusEvent::Connected { reconnected });
                 reconcile.notify_one();
                 let mut active = Vec::new();
@@ -432,6 +467,11 @@ async fn socket_loop(
                         }
                     }
                 }
+                // A handshake alone proves nothing: a proxy that upgrades and then
+                // drops would otherwise pin retries at reconnect_min.
+                if opened.elapsed() >= options.reconnect_max {
+                    backoff = options.reconnect_min;
+                }
             }
             Ok(Err(error)) => emitter.error(format!("WebSocket connection: {error}")),
             Err(_) => emitter.error("WebSocket connection deadline exceeded"),
@@ -459,29 +499,45 @@ async fn http_loop(
         }
         let ids = desired.borrow_and_update().clone();
         emitter.retain(&ids);
-        let result = tokio::time::timeout(options.request_timeout, async {
-            for chunk in ids.chunks(100) {
-                let response = client.get_bulk_status(chunk).await?;
-                // Subscription changes can happen while HTTP is in flight.
-                let current = desired.borrow().clone();
-                for entry in response.statuses {
-                    if chunk.contains(&entry.id) && current.contains(&entry.id) {
-                        emitter.update(entry.id, entry.status, StatusSource::Http);
+        let (mut deferred, mut failed, mut first_error) = (false, 0usize, None);
+        for chunk in ids.chunks(100) {
+            // A failed chunk does not end the sweep: the tail holds the HTTP-only IDs.
+            let response =
+                match tokio::time::timeout(options.request_timeout, client.get_bulk_status(chunk))
+                    .await
+                {
+                    Ok(Ok(response)) => response,
+                    Ok(Err(error)) => {
+                        failed += 1;
+                        first_error.get_or_insert(error.to_string());
+                        continue;
                     }
-                }
-                for id in response.not_found {
-                    if chunk.contains(&id) && current.contains(&id) {
-                        emitter.emit(StatusEvent::Missing { swap_id: id });
+                    Err(_) => {
+                        failed += 1;
+                        first_error.get_or_insert_with(|| "deadline exceeded".to_string());
+                        continue;
                     }
+                };
+            // Subscription changes can happen while HTTP is in flight.
+            let current = desired.borrow().clone();
+            for entry in response.statuses {
+                if chunk.contains(&entry.id) && current.contains(&entry.id) {
+                    deferred |= !emitter.update(entry.id, Some(entry.status), StatusSource::Http);
                 }
             }
-            Ok::<_, Error>(())
-        })
-        .await;
-        match result {
-            Ok(Ok(())) => emitter.emit(StatusEvent::Reconciled),
-            Ok(Err(error)) => emitter.error(error.to_string()),
-            Err(_) => emitter.error("HTTP status reconciliation deadline exceeded"),
+            for id in response.not_found {
+                if chunk.contains(&id) && current.contains(&id) {
+                    deferred |= !emitter.update(id, None, StatusSource::Http);
+                }
+            }
+        }
+        match first_error {
+            Some(error) => emitter.error(format!(
+                "HTTP status failed for {failed} of {} batches: {error}",
+                ids.len().div_ceil(100)
+            )),
+            None if !deferred => emitter.emit(StatusEvent::Reconciled),
+            None => {}
         }
     }
 }

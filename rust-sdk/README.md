@@ -329,8 +329,10 @@ and receive `StatusEvent`s with `recv`. Shutdown is explicit and awaited;
 dropping the handle cancels its workers. The source reconnects with bounded
 backoff, resubscribes in batches, maintains heartbeats, and reconciles over HTTP
 periodically and after reconnects. IDs beyond the socket's 256 limit continue
-through HTTP and are promoted when slots become free. A slow consumer receives
-`Lagged` and triggers reconciliation. Unknown statuses and backwards transitions
+through HTTP and are promoted when slots become free. Events carry the
+lowercase hyphenated swap ID, whatever spelling was subscribed. A slow consumer
+receives `Lagged`, and the following HTTP reconciles re-send every status, at
+most half the event queue per sweep. Unknown statuses and backwards transitions
 are preserved as hints; neither this feed nor HTTP status proves settlement.
 
 `observation` provides `BitcoinReader` (Esplora or Electrum), `ArkadeReader`, and
