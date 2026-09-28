@@ -137,7 +137,8 @@ of one `Client`. After a restart, `refresh_swap` and `recover_swaps` treat EVM
 funding as possibly submitted and refuse it. If you know nothing was sent, clear it with
 `update_swap_metadata(id, SwapMetadata { evm_fund_started: Some(false), ..Default::default() })`.
 Deposit recoveries are not deduplicated across restarts on such a store.
-Resuming submitted spends and claims after a restart requires the record methods.
+Resuming submitted spends after a restart requires the record methods, except an
+Arkade claim that arkd still holds (see Arkade execution).
 
 Use `get_stored_swap` and `list_all_swaps` for offline snapshots, `refresh_swap`
 for a persisted API refresh, and `update_swap_metadata` to merge local execution
@@ -273,11 +274,29 @@ default endpoints; the TypeScript SDK defaults to `https://arkade.computer` on
 mainnet and `https://mutinynet.arkade.sh` on signet (Mutinynet).
 
 Offchain progress retains exact PSBTs with condition witnesses removed. Resume
-with the same operation and destination: the SDK re-derives the preimage, queries
+with the same operation and destination (a claim whose submit was attempted
+resumes whatever destination it pays): the SDK re-derives the preimage, queries
 pending transactions after interrupted submission, and resumes checkpoint
 finalization. Cosigner responses must preserve the locally constructed transaction
 and contain valid signatures; receiver signatures survive Arkade's cosigning step.
 Recoverable/expired VTXOs use delegated settlement.
+
+A claim also finishes without its journal, after a lost database, on an index-only
+store, or when another client with the same seed submitted it. When the indexer
+shows VHTLC outputs spent offchain before the refund lock, `claim` asks arkd for
+pending transactions over them and finalizes one that spends only those outputs in
+the standard claim shape and carries a valid signature from the swap's receiver
+key. Before the lock only the claim path spends the VHTLC offchain, so arkd
+already holds the preimage and this query ignores `minimum_remaining_seconds`.
+Past the lock the spend may be the server's refund, and the SDK refuses without
+asking arkd. The receipt's `destination` is the address the claim pays, which may
+differ from the one passed in. `continue_arkade_claim` finishes a persisted or
+pending claim the same way but never submits a new one, like TypeScript's
+`continueArkadeClaimSwap`. TypeScript instead asks arkd before every claim and
+finalizes whatever it returns. The tracker reads a VHTLC spent offchain as
+settled, so it never recommends this continuation; after restoring a lost database,
+call `continue_arkade_claim` for Arkade-target swaps whose server leg shows spent
+before their refund lock.
 
 `settle_arkade` chooses offchain or delegated settlement from VTXO state and
 resumes the persisted path. `delegate_arkade` exposes the batch path explicitly.

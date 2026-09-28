@@ -32,15 +32,78 @@ struct Backend {
     pending: Mutex<Vec<ark_rs::core::server::PendingTx>>,
     fail_submit: AtomicBool,
     pending_queries: AtomicUsize,
+    preimage_hash: ripemd160::Hash,
+    intents: Mutex<Vec<Vec<OutPoint>>>,
+}
+impl Backend {
+    /// The outpoints a GetPendingTx intent proves, checked as arkd would: each
+    /// is a known VHTLC output listed once, and a leaf locked to the hash
+    /// carries the preimage in its condition witness.
+    fn proven_outpoints(&self, intent: &ark_rs::core::intent::Intent) -> Result<Vec<OutPoint>> {
+        let condition_key = psbt::raw::Key {
+            type_value: 222,
+            key: VTXO_CONDITION_KEY.to_vec(),
+        };
+        let proof = &intent.proof;
+        let mut proven = Vec::new();
+        // Input 0 spends the proof's own message commitment, not a VTXO.
+        for (txin, input) in proof.unsigned_tx.input.iter().zip(&proof.inputs).skip(1) {
+            let outpoint = txin.previous_output;
+            let Some(vtxo) = self.vtxos.iter().find(|v| v.outpoint == outpoint) else {
+                return Err(invalid("intent proves an unknown VTXO"));
+            };
+            let prevout = TxOut {
+                value: vtxo.amount,
+                script_pubkey: vtxo.script.clone(),
+            };
+            if proven.contains(&outpoint) || input.witness_utxo.as_ref() != Some(&prevout) {
+                return Err(invalid("intent input repeated or mismatched"));
+            }
+            let (_, (leaf, _)) = input
+                .tap_scripts
+                .first_key_value()
+                .ok_or_else(|| invalid("intent leaf missing"))?;
+            let locked = leaf
+                .as_bytes()
+                .windows(20)
+                .any(|w| w == self.preimage_hash.as_byte_array());
+            let unlocks = input
+                .unknown
+                .get(&condition_key)
+                .filter(|w| w.len() == 34 && w[..2] == [1, 32])
+                .is_some_and(|w| {
+                    hash160::Hash::hash(&w[2..]).as_byte_array()
+                        == self.preimage_hash.as_byte_array()
+                });
+            if locked && !unlocks {
+                return Err(invalid("intent proof lacks the preimage"));
+            }
+            proven.push(outpoint);
+        }
+        Ok(proven)
+    }
 }
 impl ArkadeBackend for Backend {
     fn pending(
         &self,
-        _: ark_rs::core::intent::Intent,
+        intent: ark_rs::core::intent::Intent,
     ) -> ArkadeFuture<'_, Vec<ark_rs::core::server::PendingTx>> {
-        Box::pin(async {
+        Box::pin(async move {
             self.pending_queries.fetch_add(1, Ordering::Relaxed);
-            Ok(self.pending.lock().unwrap().clone())
+            let proven = self.proven_outpoints(&intent)?;
+            self.intents.lock().unwrap().push(proven.clone());
+            Ok(self
+                .pending
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|p| {
+                    p.signed_checkpoint_txs
+                        .iter()
+                        .all(|c| proven.contains(&c.unsigned_tx.input[0].previous_output))
+                })
+                .cloned()
+                .collect())
         })
     }
     fn info(&self) -> ArkadeFuture<'_, Info> {
@@ -249,6 +312,8 @@ fn setup_with_lock(
         pending: Mutex::new(vec![]),
         fail_submit: AtomicBool::new(false),
         pending_queries: AtomicUsize::new(0),
+        preimage_hash: options.preimage_hash,
+        intents: Mutex::new(vec![]),
     };
     let destination = ArkAddress::new(
         Network::Regtest,
@@ -1855,4 +1920,468 @@ async fn auto_claim_retries_a_claim_refused_inside_the_margin_but_not_an_interru
     assert!(auto_claim(&claimer).await.is_err());
     assert_eq!(backend.submit_count.load(Ordering::Relaxed), 1);
     assert_eq!(backend.pending_queries.load(Ordering::Relaxed), queries);
+}
+
+/// Marks the inputs of every transaction arkd holds as spent, as its indexer
+/// reports them once a submit reached it.
+fn mark_submitted_inputs_spent(backend: &mut Backend) {
+    let pending = backend.pending.lock().unwrap().clone();
+    for tx in pending {
+        for checkpoint in &tx.signed_checkpoint_txs {
+            let spent = checkpoint.unsigned_tx.input[0].previous_output;
+            for vtxo in backend.vtxos.iter_mut().filter(|v| v.outpoint == spent) {
+                vtxo.is_spent = true;
+                vtxo.spent_by = Some(checkpoint.unsigned_tx.compute_txid());
+                vtxo.ark_txid = Some(tx.ark_txid);
+            }
+        }
+    }
+}
+
+/// The same swap in a fresh store, as after a lost database and recovery.
+/// `store_swap` merges metadata, so the journal cannot be cleared in place.
+fn without_journal(store: &InMemorySwapStorage) -> (Client, Arc<InMemorySwapStorage>) {
+    let stored = store.get_swap("arkade").unwrap().unwrap();
+    let fresh = Arc::new(InMemorySwapStorage::new());
+    fresh
+        .store_swap(
+            StoredSwap::new(stored.key_index, stored.response, SwapMetadata::default()).unwrap(),
+        )
+        .unwrap();
+    let client = Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(fresh.clone())
+        .build()
+        .unwrap();
+    (client, fresh)
+}
+
+fn spent_offchain_elsewhere(backend: &mut Backend) {
+    for vtxo in &mut backend.vtxos {
+        vtxo.is_spent = true;
+        vtxo.spent_by = Some(Txid::from_byte_array([5; 32]));
+        vtxo.ark_txid = Some(Txid::from_byte_array([6; 32]));
+    }
+}
+
+async fn continue_claim(client: &Client, backend: &Backend) -> Result<ClaimReceipt> {
+    client
+        .spend_arkade_with(
+            "arkade",
+            backend,
+            None,
+            ArkadeSpend::Claim,
+            spend_options(String::new()),
+            true,
+        )
+        .await
+}
+
+#[tokio::test]
+async fn journal_free_claim_finalizes_arkds_pending_transaction() {
+    let (client, mut backend, store, destination) = setup("btc_to_arkade");
+    backend.fail_submit.store(true, Ordering::Relaxed);
+    assert!(
+        client
+            .spend_arkade(
+                "arkade",
+                &backend,
+                None,
+                ArkadeSpend::Claim,
+                spend_options(destination.clone())
+            )
+            .await
+            .is_err()
+    );
+    mark_submitted_inputs_spent(&mut backend);
+    let (restored, store) = without_journal(&store);
+    let receipt = restored
+        .spend_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            spend_options(destination.clone()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        receipt.ark_txid,
+        backend.pending.lock().unwrap()[0].ark_txid
+    );
+    assert_eq!(receipt.claim_amount_sats, 100_000);
+    assert_eq!(receipt.destination, destination);
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 1);
+    assert_eq!(backend.pending_queries.load(Ordering::Relaxed), 1);
+    assert_eq!(backend.finalize_count.load(Ordering::Relaxed), 1);
+    // The mock only answers an intent that proves the preimage over known
+    // outputs; this pins which outputs the proof covers.
+    let mut spent: Vec<_> = backend
+        .vtxos
+        .iter()
+        .filter(|v| v.is_spent)
+        .map(|v| v.outpoint)
+        .collect();
+    spent.sort();
+    let mut intents = backend.intents.lock().unwrap().clone();
+    intents.iter_mut().for_each(|proven| proven.sort());
+    assert_eq!(intents, [spent]);
+    let pending = store
+        .get_swap("arkade")
+        .unwrap()
+        .unwrap()
+        .metadata
+        .arkade_pending
+        .unwrap();
+    assert!(pending.attempted && pending.submitted && pending.completed);
+    let own = restored.arkade_htlc("arkade").unwrap().options.receiver;
+    let condition_key = psbt::raw::Key {
+        type_value: 222,
+        key: VTXO_CONDITION_KEY.to_vec(),
+    };
+    let checkpoints = backend.final_checkpoints.lock().unwrap();
+    assert_eq!(checkpoints.len(), 2);
+    for checkpoint in checkpoints.iter() {
+        let input = &checkpoint.inputs[0];
+        assert!(input.unknown.contains_key(&condition_key));
+        merge_cosigned(checkpoint, checkpoint, own).unwrap();
+        merge_cosigned(checkpoint, checkpoint, backend.server.x_only_public_key().0).unwrap();
+    }
+}
+
+/// Another client may order the claim's inputs differently from the indexer,
+/// and arkd may return the signed checkpoints in any order.
+#[tokio::test]
+async fn journal_free_claim_follows_arkds_input_and_checkpoint_order() {
+    let first_spent_vout =
+        |checkpoints: &[Psbt]| checkpoints[0].unsigned_tx.input[0].previous_output.vout;
+    for (reverse_inputs, reverse_checkpoints) in [(true, false), (false, true)] {
+        let (client, mut backend, store, destination) = setup("btc_to_arkade");
+        if reverse_inputs {
+            backend.vtxos.reverse();
+        }
+        backend.fail_submit.store(true, Ordering::Relaxed);
+        assert!(
+            client
+                .spend_arkade(
+                    "arkade",
+                    &backend,
+                    None,
+                    ArkadeSpend::Claim,
+                    spend_options(destination.clone())
+                )
+                .await
+                .is_err()
+        );
+        if reverse_inputs {
+            backend.vtxos.reverse();
+        }
+        if reverse_checkpoints {
+            backend.pending.lock().unwrap()[0]
+                .signed_checkpoint_txs
+                .reverse();
+        }
+        let lost = backend.pending.lock().unwrap()[0].clone();
+        assert_eq!(first_spent_vout(&lost.signed_checkpoint_txs), 1);
+        assert_eq!(backend.vtxos[0].outpoint.vout, 0);
+        mark_submitted_inputs_spent(&mut backend);
+        let (restored, store) = without_journal(&store);
+        let receipt = restored
+            .spend_arkade(
+                "arkade",
+                &backend,
+                None,
+                ArkadeSpend::Claim,
+                spend_options(destination.clone()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(receipt.ark_txid, lost.ark_txid);
+        assert_eq!(receipt.claim_amount_sats, 100_000);
+        assert_eq!(backend.submit_count.load(Ordering::Relaxed), 1);
+        assert_eq!(backend.finalize_count.load(Ordering::Relaxed), 1);
+        let pending = store
+            .get_swap("arkade")
+            .unwrap()
+            .unwrap()
+            .metadata
+            .arkade_pending
+            .unwrap();
+        assert!(pending.completed);
+        let finalized = backend.final_checkpoints.lock().unwrap();
+        let inputs = &lost.signed_ark_tx.unsigned_tx.input;
+        assert_eq!(finalized.len(), inputs.len());
+        for (checkpoint, input) in finalized.iter().zip(inputs) {
+            assert_eq!(
+                input.previous_output,
+                OutPoint::new(checkpoint.unsigned_tx.compute_txid(), 0)
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn journal_free_continuation_skips_the_margin_before_the_lock_only() {
+    let (client, mut backend, store, destination) = setup_with_lock("btc_to_arkade", now() + 60);
+    backend.fail_submit.store(true, Ordering::Relaxed);
+    let risky = ArkadeSpendOptions {
+        minimum_remaining_seconds: 0,
+        ..spend_options(destination.clone())
+    };
+    assert!(
+        client
+            .spend_arkade("arkade", &backend, None, ArkadeSpend::Claim, risky)
+            .await
+            .is_err()
+    );
+    mark_submitted_inputs_spent(&mut backend);
+    let (restored, _) = without_journal(&store);
+    restored
+        .spend_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            spend_options(destination),
+        )
+        .await
+        .unwrap();
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 1);
+    assert_eq!(backend.finalize_count.load(Ordering::Relaxed), 1);
+
+    // Past the lock the offchain spend may be the server's refund.
+    let (client, mut backend, _, destination) = setup_with_lock("btc_to_arkade", now() - 10);
+    spent_offchain_elsewhere(&mut backend);
+    let error = client
+        .spend_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            spend_options(destination),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("refund lock"), "{error}");
+    assert_eq!(backend.pending_queries.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn journal_free_continuation_finalizes_only_claims_our_key_signed() {
+    let (client, mut backend, store, destination) = setup("evm_to_arkade");
+    let other = ArkAddress::new(
+        Network::Regtest,
+        backend.server.x_only_public_key().0,
+        TweakedPublicKey::dangerous_assume_tweaked(pair(6).x_only_public_key().0),
+    )
+    .encode();
+    backend.fail_submit.store(true, Ordering::Relaxed);
+    assert!(
+        client
+            .spend_arkade(
+                "arkade",
+                &backend,
+                None,
+                ArkadeSpend::Claim,
+                spend_options(other.clone())
+            )
+            .await
+            .is_err()
+    );
+    mark_submitted_inputs_spent(&mut backend);
+    let lost = backend.pending.lock().unwrap()[0].clone();
+    let own = client.arkade_htlc("arkade").unwrap().options.receiver;
+
+    let mut stripped = lost.clone();
+    for input in &mut stripped.signed_ark_tx.inputs {
+        input.tap_script_sigs.retain(|(key, _), _| *key != own);
+    }
+    let mut forged = lost.clone();
+    for input in &mut forged.signed_ark_tx.inputs {
+        let (_, signature) = input
+            .tap_script_sigs
+            .iter_mut()
+            .find(|((key, _), _)| *key == own)
+            .unwrap();
+        signature.signature = Secp256k1::new()
+            .sign_schnorr_no_aux_rand(&secp256k1::Message::from_digest([1; 32]), &pair(9));
+    }
+    for candidate in [stripped, forged] {
+        *backend.pending.lock().unwrap() = vec![candidate];
+        let (restored, _) = without_journal(&store);
+        let error = restored
+            .spend_arkade(
+                "arkade",
+                &backend,
+                None,
+                ArkadeSpend::Claim,
+                spend_options(destination.clone()),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("is a standard claim signed by our receiver key"),
+            "{error}"
+        );
+        let error = continue_claim(&restored, &backend).await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("is a standard claim signed by our receiver key"),
+            "{error}"
+        );
+    }
+    assert_eq!(backend.finalize_count.load(Ordering::Relaxed), 0);
+
+    // Our key chose that destination, so the claim finishes there and says so.
+    *backend.pending.lock().unwrap() = vec![lost.clone()];
+    backend.fail_finalize.store(true, Ordering::Relaxed);
+    let (restored, store) = without_journal(&store);
+    assert!(
+        restored
+            .spend_arkade(
+                "arkade",
+                &backend,
+                None,
+                ArkadeSpend::Claim,
+                spend_options(destination.clone())
+            )
+            .await
+            .is_err()
+    );
+    let pending = store
+        .get_swap("arkade")
+        .unwrap()
+        .unwrap()
+        .metadata
+        .arkade_pending
+        .unwrap();
+    assert_eq!(pending.destination, other);
+    assert!(pending.submitted && !pending.completed);
+    let receipt = restored
+        .spend_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            spend_options(destination),
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt.destination, other);
+    assert_eq!(receipt.ark_txid, lost.ark_txid);
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 1);
+    assert_eq!(backend.finalize_count.load(Ordering::Relaxed), 2);
+}
+
+#[tokio::test]
+async fn untouched_vhtlc_never_queries_arkd_before_the_margin_check() {
+    let (client, backend, _, destination) = setup_with_lock("btc_to_arkade", now() + 60);
+    let error = client
+        .spend_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            spend_options(destination),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("insufficient time"), "{error}");
+    assert_eq!(backend.pending_queries.load(Ordering::Relaxed), 0);
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn spent_without_pending_never_resubmits() {
+    let (client, mut backend, _, destination) = setup("btc_to_arkade");
+    spent_offchain_elsewhere(&mut backend);
+    let error = client
+        .spend_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            spend_options(destination),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("holds no pending claim"),
+        "{error}"
+    );
+    assert_eq!(backend.pending_queries.load(Ordering::Relaxed), 1);
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn refunds_of_an_offchain_spent_vhtlc_never_ask_arkd() {
+    let (client, mut backend, _, destination) = setup("arkade_to_evm");
+    spent_offchain_elsewhere(&mut backend);
+    for (operation, chain) in [
+        (ArkadeSpend::Refund, Some(Chain(144))),
+        (ArkadeSpend::CooperativeRefund, None),
+    ] {
+        let error = client
+            .spend_arkade(
+                "arkade",
+                &backend,
+                chain
+                    .as_ref()
+                    .map(|c| c as &dyn crate::bitcoin::BitcoinBackend),
+                operation,
+                spend_options(destination.clone()),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            invalid("no spendable Arkade HTLC outputs").to_string()
+        );
+    }
+    assert_eq!(backend.pending_queries.load(Ordering::Relaxed), 0);
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn continue_arkade_claim_never_submits() {
+    let (client, mut backend, store, destination) = setup("lightning_to_arkade");
+    let error = continue_claim(&client, &backend).await.unwrap_err();
+    assert!(
+        error.to_string().contains("no pending Arkade claim"),
+        "{error}"
+    );
+    assert_eq!(backend.pending_queries.load(Ordering::Relaxed), 0);
+
+    backend.fail_submit.store(true, Ordering::Relaxed);
+    assert!(
+        client
+            .spend_arkade(
+                "arkade",
+                &backend,
+                None,
+                ArkadeSpend::Claim,
+                spend_options(destination.clone())
+            )
+            .await
+            .is_err()
+    );
+    // An attempted journal whose entry arkd no longer holds is not resubmitted.
+    let lost = std::mem::take(&mut *backend.pending.lock().unwrap());
+    let error = continue_claim(&client, &backend).await.unwrap_err();
+    assert!(
+        error.to_string().contains("no pending Arkade claim"),
+        "{error}"
+    );
+    assert_eq!(backend.pending_queries.load(Ordering::Relaxed), 1);
+
+    *backend.pending.lock().unwrap() = lost;
+    mark_submitted_inputs_spent(&mut backend);
+    let (restored, _) = without_journal(&store);
+    let receipt = continue_claim(&restored, &backend).await.unwrap();
+    assert_eq!(receipt.destination, destination);
+    assert_eq!(backend.finalize_count.load(Ordering::Relaxed), 1);
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 1);
 }

@@ -3,6 +3,7 @@ use super::*;
 use crate::SwapMetadata;
 use crate::types::GetSwapResponse;
 use ark_rs::core::server::Info;
+use ark_rs::core::server::PendingTx;
 use ark_rs::core::server::SubmitOffchainTxResponse;
 use ark_rs::core::server::VirtualTxOutPoint;
 use bitcoin::Psbt;
@@ -355,6 +356,21 @@ impl Client {
         operation: ArkadeSpend,
         options: ArkadeSpendOptions,
     ) -> Result<ClaimReceipt> {
+        self.spend_arkade_with(id, backend, chain, operation, options, false)
+            .await
+    }
+
+    /// With `continue_only`, only a spend arkd already holds is finished; the
+    /// destination in `options` is ignored and nothing is ever submitted.
+    pub(super) async fn spend_arkade_with(
+        &self,
+        id: &str,
+        backend: &dyn ArkadeBackend,
+        chain: Option<&dyn crate::bitcoin::BitcoinBackend>,
+        operation: ArkadeSpend,
+        options: ArkadeSpendOptions,
+        continue_only: bool,
+    ) -> Result<ClaimReceipt> {
         tokio::time::timeout(options.timeout, async {
             let _execution = self.arkade_execution.lock().await;
             let stored = self
@@ -372,15 +388,21 @@ impl Client {
                 .derive_swap_params(stored.key_index)?;
             let htlc = self.arkade_htlc(id)?;
             let script = htlc.spend_script(operation)?;
-            let destination = ArkAddress::decode(&options.destination).map_err(decode)?;
-            if destination.encode() != options.destination
-                || options.destination.starts_with("ark1") != (htlc.network == Network::Bitcoin)
-            {
-                return Err(invalid("Arkade destination network or server mismatch"));
-            }
+            let destination = if continue_only {
+                None
+            } else {
+                let destination = ArkAddress::decode(&options.destination).map_err(decode)?;
+                if destination.encode() != options.destination
+                    || options.destination.starts_with("ark1")
+                        != (htlc.network == Network::Bitcoin)
+                {
+                    return Err(invalid("Arkade destination network or server mismatch"));
+                }
+                Some(destination)
+            };
             let info = backend.info().await?;
             validate_info(&htlc, &info)?;
-            if destination.server() != info.signer_pk.x_only_public_key().0 {
+            if destination.is_some_and(|d| d.server() != info.signer_pk.x_only_public_key().0) {
                 return Err(invalid("Arkade destination must use the active server key"));
             }
             let pair = Keypair::from_secret_key(
@@ -388,20 +410,20 @@ impl Client {
                 &secp256k1::SecretKey::from_slice(&params.secret).map_err(decode)?,
             );
             let preimage = (operation == ArkadeSpend::Claim).then_some(params.preimage);
-            // Once a submit was attempted arkd may already hold the preimage, and
-            // refusing to finish would only strand the claim.
-            if operation == ArkadeSpend::Claim
-                && !stored
-                    .metadata
-                    .arkade_pending
-                    .as_ref()
-                    .is_some_and(|p| p.attempted)
-            {
-                ensure_claim_window(&htlc, chain, options.minimum_remaining_seconds).await?;
-            }
+            let mut recovered = None;
             let mut pending = if let Some(pending) = stored.metadata.arkade_pending {
-                if pending.operation != operation || pending.destination != options.destination {
+                // An attempted claim is fixed and may already sit at arkd, so it
+                // finishes whichever destination it pays.
+                let fixed = operation == ArkadeSpend::Claim && pending.attempted;
+                if pending.operation != operation
+                    || (destination.is_some() && !fixed && pending.destination != options.destination)
+                {
                     return Err(invalid("Arkade pending operation or destination differs"));
+                }
+                // Once a submit was attempted arkd may already hold the preimage, and
+                // refusing to finish would only strand the claim.
+                if operation == ArkadeSpend::Claim && !fixed && !continue_only {
+                    ensure_claim_window(&htlc, chain, options.minimum_remaining_seconds).await?;
                 }
                 pending
             } else {
@@ -425,82 +447,98 @@ impl Client {
                     }
                 }
                 let vtxos = validate_vtxos(&htlc, backend.vtxos(htlc.address()).await?)?;
-                let list = VtxoList::new(info.dust, vtxos);
-                if list.recoverable().next().is_some() {
-                    return Err(invalid(
-                        "recoverable Arkade outputs require delegated settlement; use Client::settle",
-                    ));
-                }
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_err(decode)?
-                    .as_secs();
-                let vtxos: Vec<_> = list
-                    .spendable_offchain_at(&info, i64::try_from(now).map_err(decode)?, |_| {
-                        Some(htlc.options.server)
-                    })
-                    .collect();
-                if vtxos.is_empty() {
-                    return Err(invalid("no spendable Arkade HTLC outputs"));
-                }
-                let amount = vtxos.iter().try_fold(0u64, |sum, v| {
-                    sum.checked_add(v.amount.to_sat())
-                        .filter(|s| *s <= Amount::MAX_MONEY.to_sat())
-                        .ok_or_else(|| invalid("Arkade amount overflow"))
-                })?;
-                if operation == ArkadeSpend::Claim && amount < htlc.expected_amount.to_sat() {
-                    return Err(invalid("Arkade HTLC is underfunded"));
-                }
-                let control = htlc
-                    .script
-                    .taproot_spend_info()
-                    .control_block(&(script.clone(), LeafVersion::TapScript))
-                    .ok_or_else(|| invalid("Arkade control block missing"))?;
-                let inputs: Vec<_> = vtxos
+                let spent: Vec<_> = vtxos
                     .iter()
-                    .map(|v| {
-                        VtxoInput::new(
-                            script.clone(),
-                            (operation == ArkadeSpend::Refund).then(|| {
-                                bitcoin::absolute::LockTime::from_consensus(
-                                    htlc.options.refund_locktime,
-                                )
-                            }),
-                            control.clone(),
-                            htlc.script.tapscripts(),
-                            htlc.script.script_pubkey(),
-                            v.amount,
-                            v.outpoint,
-                            vec![],
-                        )
+                    .filter(|v| {
+                        v.is_spent
+                            && v.ark_txid.is_some()
+                            && v.settled_by.is_none()
+                            && !v.is_unrolled
                     })
                     .collect();
-                let OffchainTransactions {
-                    mut ark_tx,
-                    checkpoint_txs,
-                } = build_offchain_transactions(
-                    &[SendReceiver::bitcoin(destination, Amount::from_sat(amount))],
-                    &destination,
-                    &inputs,
-                    &info,
-                )
-                .map_err(decode)?;
-                sign_psbt(&mut ark_tx, &pair, preimage)?;
-                let mut pending = ArkadePending {
-                    operation,
-                    destination: options.destination.clone(),
-                    amount_sats: amount,
-                    ark_tx: archive(&ark_tx),
-                    checkpoints: checkpoint_txs.iter().map(archive).collect(),
-                    attempted: false,
-                    submitted: false,
-                    completed: false,
+                let continued = if operation == ArkadeSpend::Claim && !spent.is_empty() {
+                    // Before the refund lock the VHTLC spends offchain only through the
+                    // claim path or a refund our receiver key cosigned, which no SDK
+                    // does. So arkd already holds the preimage and asking it for the
+                    // pending claim reveals nothing new, even inside the margin.
+                    if !claim_window_open(&htlc, chain, 0).await? {
+                        return Err(invalid(
+                            "Arkade HTLC spent offchain after its refund lock may have matured; not revealing the preimage to query arkd",
+                        ));
+                    }
+                    pending_claim(&htlc, &info, backend, &pair, params.preimage, &spent).await?
+                } else if continue_only {
+                    Err("no pending Arkade claim to continue")
+                } else {
+                    Err("no spendable Arkade HTLC outputs")
                 };
-                if operation == ArkadeSpend::CooperativeRefund {
-                    self.cosign_arkade_refund(id, &mut pending, &htlc).await?;
+                match continued {
+                    Ok((pending, found)) => {
+                        self.save_arkade_pending(id, pending.clone())?;
+                        recovered = Some(found);
+                        pending
+                    }
+                    Err(unspendable) => {
+                        let Some(destination) = destination else {
+                            return Err(invalid(unspendable));
+                        };
+                        if operation == ArkadeSpend::Claim {
+                            ensure_claim_window(&htlc, chain, options.minimum_remaining_seconds)
+                                .await?;
+                        }
+                        let list = VtxoList::new(info.dust, vtxos);
+                        if list.recoverable().next().is_some() {
+                            return Err(invalid(
+                                "recoverable Arkade outputs require delegated settlement; use Client::settle",
+                            ));
+                        }
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_err(decode)?
+                            .as_secs();
+                        let vtxos: Vec<_> = list
+                            .spendable_offchain_at(&info, i64::try_from(now).map_err(decode)?, |_| {
+                                Some(htlc.options.server)
+                            })
+                            .collect();
+                        if vtxos.is_empty() {
+                            return Err(invalid(unspendable));
+                        }
+                        let amount = sum_sats(&vtxos)?;
+                        if operation == ArkadeSpend::Claim
+                            && amount < htlc.expected_amount.to_sat()
+                        {
+                            return Err(invalid("Arkade HTLC is underfunded"));
+                        }
+                        let inputs = vtxo_inputs(&htlc, operation, &script, &vtxos)?;
+                        let OffchainTransactions {
+                            mut ark_tx,
+                            checkpoint_txs,
+                        } = build_offchain_transactions(
+                            &[SendReceiver::bitcoin(destination, Amount::from_sat(amount))],
+                            &destination,
+                            &inputs,
+                            &info,
+                        )
+                        .map_err(decode)?;
+                        sign_psbt(&mut ark_tx, &pair, preimage)?;
+                        let mut pending = ArkadePending {
+                            operation,
+                            destination: options.destination.clone(),
+                            amount_sats: amount,
+                            ark_tx: archive(&ark_tx),
+                            checkpoints: checkpoint_txs.iter().map(archive).collect(),
+                            attempted: false,
+                            submitted: false,
+                            completed: false,
+                        };
+                        if operation == ArkadeSpend::CooperativeRefund {
+                            self.cosign_arkade_refund(id, &mut pending, &htlc).await?;
+                        }
+                        self.save_arkade_pending(id, pending.clone())?;
+                        pending
+                    }
                 }
-                self.save_arkade_pending(id, pending.clone())?;
-                pending
             };
             let ark = restore(&pending.ark_tx, preimage)?;
             let txid = ark.unsigned_tx.compute_txid();
@@ -508,6 +546,7 @@ impl Client {
                 return Ok(ClaimReceipt {
                     ark_txid: txid,
                     claim_amount_sats: pending.amount_sats,
+                    destination: pending.destination,
                 });
             }
             let mut checkpoints = pending
@@ -517,15 +556,17 @@ impl Client {
                 .collect::<Result<Vec<_>>>()?;
             if !pending.submitted {
                 // The pending query's intent proof carries the preimage too.
-                let recovered = if pending.attempted {
-                    let intent = pending_intent(&htlc, &checkpoints, &pair, preimage)?;
-                    backend
-                        .pending(intent)
-                        .await?
-                        .into_iter()
-                        .find(|p| p.ark_txid == txid)
-                } else {
-                    None
+                let recovered = match recovered {
+                    Some(found) => Some(found),
+                    None if pending.attempted => {
+                        let intent = pending_intent(&htlc, &checkpoints, &pair, preimage)?;
+                        backend
+                            .pending(intent)
+                            .await?
+                            .into_iter()
+                            .find(|p| p.ark_txid == txid)
+                    }
+                    None => None,
                 };
                 let response = match recovered {
                     Some(p) => SubmitOffchainTxResponse {
@@ -533,6 +574,9 @@ impl Client {
                         signed_checkpoint_txs: p.signed_checkpoint_txs,
                     },
                     None => {
+                        if continue_only {
+                            return Err(invalid("no pending Arkade claim to continue"));
+                        }
                         if !pending.attempted {
                             pending.attempted = true;
                             self.save_arkade_pending(id, pending.clone())?;
@@ -566,6 +610,7 @@ impl Client {
             Ok(ClaimReceipt {
                 ark_txid: txid,
                 claim_amount_sats: pending.amount_sats,
+                destination: pending.destination,
             })
         })
         .await
@@ -650,6 +695,19 @@ pub(super) async fn ensure_claim_window(
     chain: Option<&dyn crate::bitcoin::BitcoinBackend>,
     margin_secs: u64,
 ) -> Result<()> {
+    if claim_window_open(htlc, chain, margin_secs).await? {
+        Ok(())
+    } else {
+        Err(invalid(
+            "insufficient time to claim before the Arkade refund window",
+        ))
+    }
+}
+async fn claim_window_open(
+    htlc: &ArkadeHtlc,
+    chain: Option<&dyn crate::bitcoin::BitcoinBackend>,
+    margin_secs: u64,
+) -> Result<bool> {
     let lock = u64::from(htlc.options.refund_locktime);
     let open = if lock < 500_000_000 {
         let chain = chain.ok_or_else(|| {
@@ -671,13 +729,183 @@ pub(super) async fn ensure_claim_window(
             .as_secs();
         now.saturating_add(margin_secs) < lock
     };
-    if open {
-        Ok(())
-    } else {
-        Err(invalid(
-            "insufficient time to claim before the Arkade refund window",
-        ))
+    Ok(open)
+}
+fn sum_sats(vtxos: &[&VirtualTxOutPoint]) -> Result<u64> {
+    vtxos.iter().try_fold(0u64, |sum, v| {
+        sum.checked_add(v.amount.to_sat())
+            .filter(|s| *s <= Amount::MAX_MONEY.to_sat())
+            .ok_or_else(|| invalid("Arkade amount overflow"))
+    })
+}
+fn vtxo_inputs(
+    htlc: &ArkadeHtlc,
+    operation: ArkadeSpend,
+    script: &ScriptBuf,
+    vtxos: &[&VirtualTxOutPoint],
+) -> Result<Vec<VtxoInput>> {
+    let control = htlc
+        .script
+        .taproot_spend_info()
+        .control_block(&(script.clone(), LeafVersion::TapScript))
+        .ok_or_else(|| invalid("Arkade control block missing"))?;
+    Ok(vtxos
+        .iter()
+        .map(|v| {
+            VtxoInput::new(
+                script.clone(),
+                (operation == ArkadeSpend::Refund).then(|| {
+                    bitcoin::absolute::LockTime::from_consensus(htlc.options.refund_locktime)
+                }),
+                control.clone(),
+                htlc.script.tapscripts(),
+                htlc.script.script_pubkey(),
+                v.amount,
+                v.outpoint,
+                vec![],
+            )
+        })
+        .collect())
+}
+
+/// Ask arkd for pending transactions over VHTLC outputs it reports spent offchain
+/// and return the first that is a claim of ours, with the journal to finish it,
+/// or the reason arkd offered none.
+async fn pending_claim(
+    htlc: &ArkadeHtlc,
+    info: &Info,
+    backend: &dyn ArkadeBackend,
+    pair: &Keypair,
+    preimage: [u8; 32],
+    spent: &[&VirtualTxOutPoint],
+) -> Result<std::result::Result<(ArkadePending, PendingTx), &'static str>> {
+    let script = htlc.spend_script(ArkadeSpend::Claim)?;
+    let inputs = vtxo_inputs(htlc, ArkadeSpend::Claim, &script, spent)?;
+    // A checkpoint depends only on its input, so any payee yields the same ones.
+    let placeholder = htlc.address();
+    let checkpoints = build_offchain_transactions(
+        &[SendReceiver::bitcoin(
+            placeholder,
+            Amount::from_sat(sum_sats(spent)?),
+        )],
+        &placeholder,
+        &inputs,
+        info,
+    )
+    .map_err(decode)?
+    .checkpoint_txs;
+    let intent = pending_intent(htlc, &checkpoints, pair, Some(preimage))?;
+    let candidates = backend.pending(intent).await?;
+    if candidates.is_empty() {
+        return Ok(Err(
+            "Arkade HTLC already spent offchain and arkd holds no pending claim for it",
+        ));
     }
+    for candidate in candidates {
+        if let Some(found) =
+            match_pending_claim(htlc, info, pair, preimage, spent, &checkpoints, candidate)?
+        {
+            return Ok(Ok(found));
+        }
+    }
+    Ok(Err(
+        "none of arkd's pending transactions over the spent Arkade HTLC outputs is a standard claim signed by our receiver key",
+    ))
+}
+
+/// Accept `candidate` only if it spends checkpoints of our own VHTLC outputs in
+/// the standard claim shape and our receiver key signed it. That signature means
+/// a client holding our seed chose its destination, so any destination is kept.
+fn match_pending_claim(
+    htlc: &ArkadeHtlc,
+    info: &Info,
+    pair: &Keypair,
+    preimage: [u8; 32],
+    spent: &[&VirtualTxOutPoint],
+    checkpoints: &[Psbt],
+    candidate: PendingTx,
+) -> Result<Option<(ArkadePending, PendingTx)>> {
+    let tx = &candidate.signed_ark_tx.unsigned_tx;
+    if tx.compute_txid() != candidate.ark_txid {
+        return Ok(None);
+    }
+    let mut order = Vec::with_capacity(tx.input.len());
+    for input in &tx.input {
+        let Some(index) = checkpoints
+            .iter()
+            .position(|c| input.previous_output == OutPoint::new(c.unsigned_tx.compute_txid(), 0))
+        else {
+            return Ok(None);
+        };
+        if order.contains(&index) || spent[index].ark_txid != Some(candidate.ark_txid) {
+            return Ok(None);
+        }
+        order.push(index);
+    }
+    let Some(payee) = tx
+        .output
+        .first()
+        .filter(|o| o.script_pubkey.is_p2tr())
+        .and_then(|o| XOnlyPublicKey::from_slice(&o.script_pubkey.as_bytes()[2..]).ok())
+    else {
+        return Ok(None);
+    };
+    let destination = ArkAddress::new(
+        htlc.network,
+        info.signer_pk.x_only_public_key().0,
+        bitcoin::key::TweakedPublicKey::dangerous_assume_tweaked(payee),
+    );
+    let selected: Vec<_> = order.iter().map(|i| spent[*i]).collect();
+    let amount = sum_sats(&selected)?;
+    let script = htlc.spend_script(ArkadeSpend::Claim)?;
+    let inputs = vtxo_inputs(htlc, ArkadeSpend::Claim, &script, &selected)?;
+    let Ok(OffchainTransactions {
+        mut ark_tx,
+        checkpoint_txs,
+    }) = build_offchain_transactions(
+        &[SendReceiver::bitcoin(destination, Amount::from_sat(amount))],
+        &destination,
+        &inputs,
+        info,
+    )
+    else {
+        return Ok(None);
+    };
+    if ark_tx.unsigned_tx != *tx
+        || candidate.signed_checkpoint_txs.len() != checkpoint_txs.len()
+        || verify_cosigned(&ark_tx, &candidate.signed_ark_tx, htlc.options.receiver).is_err()
+    {
+        return Ok(None);
+    }
+    // Later steps pair signed checkpoints with the journal's by position.
+    let mut signed_checkpoints = Vec::with_capacity(checkpoint_txs.len());
+    for checkpoint in &checkpoint_txs {
+        let Some(signed) = candidate
+            .signed_checkpoint_txs
+            .iter()
+            .find(|s| s.unsigned_tx == checkpoint.unsigned_tx)
+        else {
+            return Ok(None);
+        };
+        signed_checkpoints.push(signed.clone());
+    }
+    sign_psbt(&mut ark_tx, pair, Some(preimage))?;
+    Ok(Some((
+        ArkadePending {
+            operation: ArkadeSpend::Claim,
+            destination: destination.encode(),
+            amount_sats: amount,
+            ark_tx: archive(&ark_tx),
+            checkpoints: checkpoint_txs.iter().map(archive).collect(),
+            attempted: true,
+            submitted: false,
+            completed: false,
+        },
+        PendingTx {
+            signed_checkpoint_txs: signed_checkpoints,
+            ..candidate
+        },
+    )))
 }
 pub(super) fn validate_info(htlc: &ArkadeHtlc, info: &Info) -> Result<()> {
     if info.network != htlc.network

@@ -161,6 +161,9 @@ pub struct ClaimReceipt {
     pub ark_txid: Txid,
     /// Amount swept out of the VHTLC, in satoshis.
     pub claim_amount_sats: u64,
+    /// Arkade address the spend pays. A continued claim reports the destination
+    /// it was submitted with, which can differ from the one passed in.
+    pub destination: String,
 }
 
 /// Connected Arkade client wrapper. Construction performs the gRPC
@@ -566,6 +569,38 @@ impl Client {
                 timeout: Duration::from_secs(120),
                 minimum_remaining_seconds: 300,
             },
+        )
+        .await
+    }
+
+    /// Finish a claim arkd already holds, without ever submitting one (TypeScript
+    /// `continueArkadeClaimSwap`). It resumes the persisted journal, or with no
+    /// journal finalizes arkd's pending claim that our receiver key signed.
+    pub async fn continue_arkade_claim(&self, swap_id: &str) -> Result<ClaimReceipt> {
+        if self.get_stored_swap(swap_id)?.is_none() {
+            self.refresh_swap(swap_id).await?;
+        }
+        let htlc = self.arkade_htlc(swap_id)?;
+        let chain = (htlc.options.refund_locktime < 500_000_000)
+            .then(|| {
+                let config = self.arkade_config()?;
+                crate::bitcoin::EsploraBackend::new(&config.esplora_url, config.network)
+            })
+            .transpose()?;
+        let backend = self.arkade_wallet().await?;
+        self.spend_arkade_with(
+            swap_id,
+            backend,
+            chain
+                .as_ref()
+                .map(|c| c as &dyn crate::bitcoin::BitcoinBackend),
+            ArkadeSpend::Claim,
+            ArkadeSpendOptions {
+                destination: String::new(),
+                timeout: Duration::from_secs(120),
+                minimum_remaining_seconds: 300,
+            },
+            true,
         )
         .await
     }
