@@ -2,6 +2,7 @@
 //!
 //! Records preserve the API snapshot and local execution metadata. Private keys
 //! and preimages are derived from the signing seed and never persisted here.
+//! The seed is stored only through the opt-in [`WalletStorage`], in its own file.
 //!
 //! [`SwapStorage`] is what callers implement against their persistence
 //! layer (an embedded DB, a server-side store, …). [`InMemorySwapStorage`]
@@ -18,6 +19,7 @@ use std::sync::atomic::Ordering;
 
 mod record;
 mod sqlite;
+mod wallet;
 pub use record::BridgeOperation;
 pub use record::EvmKeySource;
 pub use record::RelayFundingJournal;
@@ -25,6 +27,9 @@ pub use record::RelayFundingOutcome;
 pub use record::StoredSwap;
 pub use record::SwapMetadata;
 pub use sqlite::SqliteSwapStorage;
+pub use wallet::InMemoryWalletStorage;
+pub use wallet::SqliteWalletStorage;
+pub use wallet::WalletStorage;
 
 // BIP-32 child indices must fit in 31 bits before hardening.
 const KEY_INDEX_LIMIT: u32 = 1 << 31;

@@ -30,7 +30,7 @@ let details = client.get_swap_details(&swap.id).await?;
 ```
 
 `Client::new(base_url)` creates a query-only client. The builder requires a
-mnemonic or xprv. The default URL is `https://api.satora.io`. Amounts are in
+mnemonic, an xprv or wallet storage (see seed storage below). The default URL is `https://api.satora.io`. Amounts are in
 source/target token smallest units; EVM amounts use `u128` inputs and decimal
 strings on the wire, while Bitcoin amounts must be positive and fit in `i64`.
 
@@ -139,6 +139,27 @@ funding as possibly submitted and refuse it. If you know nothing was sent, clear
 Deposit recoveries are not deduplicated across restarts on such a store.
 Resuming submitted spends after a restart requires the record methods, except an
 Arkade claim that arkd still holds (see Arkade execution).
+
+Seed storage is opt-in, as in the TypeScript `WalletStorage`. `wallet_storage_path`
+keeps the mnemonic in plaintext in its own SQLite file, created readable only by
+its owner on Unix. It takes a plain file path: `:memory:` and SQLite `file:` URIs
+are refused. Protect and back up that file like the seed itself.
+`wallet_storage` accepts any `Arc<dyn WalletStorage>`, such as
+`InMemoryWalletStorage`. The builder resolves the seed in this order. An xprv is
+used as given and never stored, so combining it with wallet storage is an error.
+A supplied mnemonic is saved to empty storage and refused if the storage holds a
+different one, because this SDK's records hold no keys to survive an overwrite.
+Otherwise the stored mnemonic is used, or a new 12-word mnemonic is generated and
+saved before `build` returns. Processes that initialise the same file at once
+agree on one mnemonic. With neither a seed nor wallet storage, `build` fails
+instead of using a throwaway seed as TypeScript does. `Client::mnemonic` returns
+the mnemonic, and a blank Arkade `identity_mnemonic` is filled with it. To load a
+different mnemonic, store it with `WalletStorage::set_mnemonic`, build a new
+client and drop the old clients and trackers. The file uses the TypeScript
+`SqliteWalletStorage` table, so a TypeScript wallet file opens directly. Its
+swaps are not in the `storage_path` database yet, so run `recover_all_swaps(None)`
+before creating swaps. The `storage_path` database must be a different file and
+still holds no private keys, preimages or seed.
 
 Use `get_stored_swap` and `list_all_swaps` for offline snapshots, `refresh_swap`
 for a persisted API refresh, and `update_swap_metadata` to merge local execution

@@ -59,10 +59,13 @@ pub use request::PayloadKind;
 pub use signer::Signer;
 pub use storage::EvmKeySource;
 pub use storage::InMemorySwapStorage;
+pub use storage::InMemoryWalletStorage;
 pub use storage::SqliteSwapStorage;
+pub use storage::SqliteWalletStorage;
 pub use storage::StoredSwap;
 pub use storage::SwapMetadata;
 pub use storage::SwapStorage;
+pub use storage::WalletStorage;
 
 #[cfg(feature = "gasless")]
 pub mod evm;

@@ -84,10 +84,10 @@ impl std::fmt::Debug for Signer {
 
 impl Signer {
     /// Build from a BIP-39 mnemonic (12 / 15 / 18 / 21 / 24 words). The
-    /// phrase is trimmed and lowercased before validation.
+    /// phrase is trimmed and lowercased before validation, and
+    /// [`Self::mnemonic`] returns its words separated by single spaces.
     pub fn from_mnemonic(phrase: impl Into<String>) -> Result<Self> {
-        let normalised = phrase.into().trim().to_lowercase();
-        let mnemonic = bip39::Mnemonic::from_str(&normalised)
+        let mnemonic = bip39::Mnemonic::from_str(&phrase.into().trim().to_lowercase())
             .map_err(|e| Error::InvalidSigner(format!("invalid mnemonic: {e}")))?;
         let seed = mnemonic.to_seed("");
         let master = Xpriv::new_master(Network::Bitcoin, &seed).map_err(|e| {
@@ -95,8 +95,27 @@ impl Signer {
         })?;
         Ok(Self {
             master,
-            mnemonic: Some(normalised),
+            // The TypeScript SDK rejects any other spacing, and the phrase may be
+            // written to wallet storage that a TypeScript client also opens.
+            mnemonic: Some(mnemonic.to_string()),
         })
+    }
+
+    /// Generate a signer from a new random mnemonic of `word_count` words
+    /// (12, 15, 18, 21 or 24), like the TypeScript `Signer.generate`.
+    pub fn generate(word_count: usize) -> Result<Self> {
+        use rand::RngCore;
+        if !matches!(word_count, 12 | 15 | 18 | 21 | 24) {
+            return Err(Error::InvalidSigner(format!(
+                "mnemonic word count must be 12, 15, 18, 21 or 24, got {word_count}"
+            )));
+        }
+        let mut entropy = [0u8; 32];
+        let entropy = &mut entropy[..word_count / 3 * 4];
+        rand::rngs::OsRng.fill_bytes(entropy);
+        let mnemonic = bip39::Mnemonic::from_entropy(entropy)
+            .map_err(|e| Error::InvalidSigner(format!("failed to generate mnemonic: {e}")))?;
+        Self::from_mnemonic(mnemonic.to_string())
     }
 
     /// Build from a base58check-encoded BIP-32 extended private key. A testnet
@@ -418,6 +437,44 @@ mod tests {
         assert_eq!(
             signer_tprv.derive_user_id_xpub().unwrap().to_string(),
             expected
+        );
+    }
+
+    #[test]
+    fn generate_word_counts_round_trip() {
+        for words in [12, 15, 18, 21, 24] {
+            let generated = Signer::generate(words).unwrap();
+            let phrase = generated.mnemonic().unwrap();
+            assert_eq!(phrase.split(' ').count(), words);
+            let reloaded = Signer::from_mnemonic(phrase).unwrap();
+            assert_eq!(
+                reloaded.derive_swap_params(0).unwrap(),
+                generated.derive_swap_params(0).unwrap()
+            );
+        }
+        assert_ne!(
+            Signer::generate(12).unwrap().mnemonic(),
+            Signer::generate(12).unwrap().mnemonic()
+        );
+        for words in [0, 11, 13, 25] {
+            assert!(matches!(
+                Signer::generate(words),
+                Err(Error::InvalidSigner(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn mnemonic_is_returned_with_single_spaces() {
+        let spaced = format!("  {}\n", TEST_MNEMONIC.replace(' ', " \t ").to_uppercase());
+        let signer = Signer::from_mnemonic(spaced).unwrap();
+        assert_eq!(signer.mnemonic(), Some(TEST_MNEMONIC));
+        assert_eq!(
+            signer.derive_swap_params(0).unwrap(),
+            Signer::from_mnemonic(TEST_MNEMONIC)
+                .unwrap()
+                .derive_swap_params(0)
+                .unwrap()
         );
     }
 

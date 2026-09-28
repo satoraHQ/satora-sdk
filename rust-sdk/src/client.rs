@@ -21,7 +21,9 @@ use crate::request::Endpoint;
 use crate::request::PayloadKind;
 use crate::signer::Signer;
 use crate::storage::InMemorySwapStorage;
+use crate::storage::SqliteWalletStorage;
 use crate::storage::SwapStorage;
+use crate::storage::WalletStorage;
 use crate::types::Address;
 use crate::types::ErrorResponse;
 use crate::types::EvmToArkadeSwapResponse;
@@ -34,6 +36,7 @@ use crate::types::Version;
 use crate::types::VersionRequest;
 use reqwest::StatusCode;
 use serde::Serialize;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -172,6 +175,13 @@ impl Client {
     /// Start a [`ClientBuilder`] — required when calling [`Self::create_swap`].
     pub fn builder() -> ClientBuilder {
         ClientBuilder::default()
+    }
+
+    /// The mnemonic this client signs with, like the TypeScript `getMnemonic`.
+    /// `None` for an xprv or query-only client. To load a different mnemonic,
+    /// save it with [`WalletStorage::set_mnemonic`] and build a new client.
+    pub fn mnemonic(&self) -> Option<&str> {
+        self.signer.as_ref()?.mnemonic()
     }
 
     /// Attach (or replace) the referral code attached to every
@@ -758,14 +768,18 @@ impl Client {
 
 /// Builder for [`Client`].
 ///
-/// Required: exactly one of `mnemonic` / `xprv` — every other field has a
-/// default. `base_url` defaults to [`DEFAULT_BASE_URL`], `storage` to
+/// Required: a `mnemonic`, an `xprv` or wallet storage. With wallet storage and
+/// no seed, the stored mnemonic is used, or a new one is generated and saved.
+/// A supplied mnemonic is saved to empty wallet storage. Every other field has
+/// a default. `base_url` defaults to [`DEFAULT_BASE_URL`], `storage` to
 /// [`InMemorySwapStorage`], `http` to a fresh `reqwest::Client`.
 #[derive(Default)]
 pub struct ClientBuilder {
     base_url: Option<String>,
     mnemonic: Option<String>,
     xprv: Option<String>,
+    wallet_storage: Option<Arc<dyn WalletStorage>>,
+    wallet_storage_path: Option<PathBuf>,
     storage: Option<Arc<dyn SwapStorage>>,
     storage_path: Option<PathBuf>,
     http: Option<reqwest::Client>,
@@ -790,9 +804,27 @@ impl ClientBuilder {
     }
 
     /// BIP-32 extended private key (base58check). Mutually exclusive with
-    /// [`Self::mnemonic`].
+    /// [`Self::mnemonic`] and wallet storage: an xprv is never persisted.
     pub fn xprv(mut self, xprv: impl Into<String>) -> Self {
         self.xprv = Some(xprv.into());
+        self
+    }
+
+    /// Keep the mnemonic in `storage`, like the TypeScript `withSignerStorage`.
+    /// Without [`Self::mnemonic`], the stored mnemonic is used, or a new one is
+    /// generated and saved. A supplied mnemonic is saved when the storage is
+    /// empty and refused when it holds a different one. Mutually exclusive with
+    /// [`Self::wallet_storage_path`].
+    pub fn wallet_storage(mut self, storage: Arc<dyn WalletStorage>) -> Self {
+        self.wallet_storage = Some(storage);
+        self
+    }
+
+    /// [`Self::wallet_storage`] backed by a [`SqliteWalletStorage`] file, which
+    /// holds the mnemonic in plaintext. It must not be the
+    /// [`Self::storage_path`] database, and its parent directory must exist.
+    pub fn wallet_storage_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.wallet_storage_path = Some(path.into());
         self
     }
 
@@ -832,7 +864,8 @@ impl ClientBuilder {
     /// (`claim`, `arkade_balance_sats`, `arkade_settle`,
     /// `arkade_offchain_address`, and `create_swap` with no
     /// `receive_to`). Omit if the client will only do EVM-side
-    /// operations.
+    /// operations. A blank `identity_mnemonic` is filled with the client's
+    /// mnemonic.
     pub fn arkade_config(mut self, config: crate::arkade::ArkadeConfig) -> Self {
         self.arkade_config = Some(config);
         self
@@ -860,33 +893,74 @@ impl ClientBuilder {
             .base_url
             .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
         let base_url = Url::parse(&base_url)?;
-        let signer = match (self.mnemonic, self.xprv) {
-            (Some(_), Some(_)) => {
-                return Err(Error::InvalidSigner(
-                    "ClientBuilder: mnemonic and xprv are mutually exclusive".to_string(),
-                ));
+        if self.mnemonic.is_some() && self.xprv.is_some() {
+            return Err(Error::InvalidSigner(
+                "ClientBuilder: mnemonic and xprv are mutually exclusive".to_string(),
+            ));
+        }
+        if self.xprv.is_some()
+            && (self.wallet_storage.is_some() || self.wallet_storage_path.is_some())
+        {
+            return Err(Error::InvalidSigner(
+                "ClientBuilder: an xprv is never persisted; remove wallet_storage".to_string(),
+            ));
+        }
+        if self.storage.is_some() && self.storage_path.is_some() {
+            return Err(Error::Storage(
+                "storage and storage_path are mutually exclusive".into(),
+            ));
+        }
+        let wallet_storage: Option<Arc<dyn WalletStorage>> =
+            match (self.wallet_storage, self.wallet_storage_path) {
+                (Some(_), Some(_)) => {
+                    return Err(Error::Storage(
+                        "wallet_storage and wallet_storage_path are mutually exclusive".into(),
+                    ));
+                }
+                (Some(storage), None) => Some(storage),
+                (None, Some(path)) => {
+                    if let Some(swaps) = &self.storage_path
+                        && same_file(&path, swaps)
+                    {
+                        return Err(Error::Storage(
+                            "wallet_storage_path must not be the storage_path database".into(),
+                        ));
+                    }
+                    Some(Arc::new(SqliteWalletStorage::open(path)?))
+                }
+                (None, None) => None,
+            };
+        let signer = match (self.mnemonic, self.xprv, wallet_storage) {
+            (Some(m), _, storage) => {
+                let signer = Signer::from_mnemonic(m)?;
+                match storage {
+                    Some(storage) => stored_signer(storage.as_ref(), Some(&signer))?,
+                    None => signer,
+                }
             }
-            (Some(m), None) => Signer::from_mnemonic(m)?,
-            (None, Some(x)) => Signer::from_xprv(x)?,
-            (None, None) => {
+            (None, Some(x), _) => Signer::from_xprv(x)?,
+            (None, None, Some(storage)) => stored_signer(storage.as_ref(), None)?,
+            (None, None, None) => {
                 return Err(Error::InvalidSigner(
-                    "ClientBuilder: provide one of mnemonic or xprv".to_string(),
+                    "ClientBuilder: provide mnemonic, xprv or wallet_storage".to_string(),
                 ));
             }
         };
         let storage: Arc<dyn SwapStorage> = match (self.storage, self.storage_path) {
-            (Some(_), Some(_)) => {
-                return Err(Error::Storage(
-                    "storage and storage_path are mutually exclusive".into(),
-                ));
-            }
-            (Some(storage), None) => storage,
+            (Some(storage), _) => storage,
             (None, Some(path)) => Arc::new(crate::SqliteSwapStorage::open(
                 path,
                 &signer.derive_user_id_xpub()?.to_string(),
             )?),
             (None, None) => Arc::new(InMemorySwapStorage::new()),
         };
+        let mut arkade_config = self.arkade_config;
+        if let Some(config) = &mut arkade_config
+            && config.identity_mnemonic.trim().is_empty()
+            && let Some(mnemonic) = signer.mnemonic()
+        {
+            config.identity_mnemonic = mnemonic.to_owned();
+        }
         let http = self.http.unwrap_or_else(default_http);
         let log = match self.logger {
             Some(logger) => SdkLogger::new(logger, self.log_level.unwrap_or(LogLevel::Silent)),
@@ -902,7 +976,7 @@ impl ClientBuilder {
             storage,
             process_records: Arc::default(),
             referral_code: self.referral_code,
-            arkade_config: self.arkade_config,
+            arkade_config,
             arkade_wallet: Arc::new(tokio::sync::OnceCell::new()),
             arkade_execution: Arc::default(),
             bitcoin_execution: Arc::default(),
@@ -912,6 +986,52 @@ impl ClientBuilder {
             log,
         })
     }
+}
+
+/// Resolve the mnemonic kept in `storage`. Empty storage saves `supplied`, or
+/// a newly generated mnemonic; another process may save first, and then its
+/// mnemonic is used. A stored mnemonic is never overwritten here: this SDK's
+/// swap records hold no keys, so it is the only key material for its swaps.
+fn stored_signer(storage: &dyn WalletStorage, supplied: Option<&Signer>) -> Result<Signer> {
+    let supplied = supplied.and_then(Signer::mnemonic);
+    let stored = match supplied {
+        Some(mnemonic) => storage.get_or_init_mnemonic(mnemonic)?,
+        None => match storage.get_mnemonic()?.filter(|m| !m.is_empty()) {
+            Some(stored) => stored,
+            None => {
+                let generated = Signer::generate(12)?;
+                let mnemonic = generated.mnemonic().ok_or_else(|| {
+                    Error::InvalidSigner("generated signer has no mnemonic".into())
+                })?;
+                storage.get_or_init_mnemonic(mnemonic)?
+            }
+        },
+    };
+    let signer = Signer::from_mnemonic(stored).map_err(|e| {
+        Error::InvalidSigner(format!("wallet storage holds an invalid mnemonic: {e}"))
+    })?;
+    if supplied.is_some_and(|supplied| Some(supplied) != signer.mnemonic()) {
+        return Err(Error::InvalidSigner(
+            "wallet storage holds a different mnemonic; replace it with \
+             WalletStorage::set_mnemonic"
+                .into(),
+        ));
+    }
+    Ok(signer)
+}
+
+/// Whether two paths name the same file, including a file not created yet.
+fn same_file(a: &Path, b: &Path) -> bool {
+    let resolve = |path: &Path| {
+        std::fs::canonicalize(path).ok().or_else(|| {
+            let parent = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
+            Some(std::fs::canonicalize(parent).ok()?.join(path.file_name()?))
+        })
+    };
+    a == b || resolve(a).is_some_and(|a| resolve(b) == Some(a))
 }
 
 /// Compact, user-facing view of a created swap. Carries the fields a
@@ -1179,4 +1299,52 @@ fn validate_sats(value: u128) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::InMemoryWalletStorage;
+
+    fn arkade_config(identity_mnemonic: &str) -> crate::arkade::ArkadeConfig {
+        crate::arkade::ArkadeConfig {
+            arkade_server_url: "http://127.0.0.1:1".into(),
+            esplora_url: "http://127.0.0.1:1".into(),
+            identity_mnemonic: identity_mnemonic.into(),
+            network: bitcoin::Network::Regtest,
+            contract_db_path: None,
+        }
+    }
+
+    #[test]
+    fn blank_arkade_identity_uses_the_client_mnemonic() {
+        let client = Client::builder()
+            .wallet_storage(InMemoryWalletStorage::shared())
+            .arkade_config(arkade_config(" "))
+            .build()
+            .unwrap();
+        let identity = client
+            .arkade_config
+            .as_ref()
+            .unwrap()
+            .identity_mnemonic
+            .as_str();
+        assert_eq!(Some(identity), client.mnemonic());
+
+        let explicit = Signer::generate(12).unwrap();
+        let explicit = explicit.mnemonic().unwrap();
+        let client = Client::builder()
+            .wallet_storage(InMemoryWalletStorage::shared())
+            .arkade_config(arkade_config(explicit))
+            .build()
+            .unwrap();
+        let identity = client
+            .arkade_config
+            .as_ref()
+            .unwrap()
+            .identity_mnemonic
+            .as_str();
+        assert_eq!(identity, explicit);
+        assert_ne!(Some(identity), client.mnemonic());
+    }
 }
