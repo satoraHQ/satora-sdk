@@ -3363,6 +3363,7 @@ export interface components {
             ethereum: components["schemas"]["ServiceStatus"];
             lightning?: null | components["schemas"]["ServiceStatus"];
             polygon: components["schemas"]["ServiceStatus"];
+            rootstock?: null | components["schemas"]["ServiceStatus"];
         };
         SettleDelegateRequest: {
             /** @description Hex-encoded compressed cosigner public key (must match our static key). */
@@ -4084,7 +4085,7 @@ export interface operations {
     get_evm_tokens: {
         parameters: {
             query?: {
-                /** @description Filter by EVM chain ID (1=Ethereum, 137=Polygon, 42161=Arbitrum, 30=Rootstock). Omit for all chains. */
+                /** @description Filter by EVM chain ID (1=Ethereum, 137=Polygon, 42161=Arbitrum, 30=Rootstock mainnet / 31=Rootstock testnet). Omit for all chains. */
                 chain_id?: number;
             };
             header?: never;

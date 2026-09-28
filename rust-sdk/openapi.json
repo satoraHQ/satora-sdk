@@ -622,7 +622,7 @@
           {
             "name": "chain_id",
             "in": "query",
-            "description": "Filter by EVM chain ID (1=Ethereum, 137=Polygon, 42161=Arbitrum, 30=Rootstock). Omit for all chains.",
+            "description": "Filter by EVM chain ID (1=Ethereum, 137=Polygon, 42161=Arbitrum, 30=Rootstock mainnet / 31=Rootstock testnet). Omit for all chains.",
             "required": false,
             "schema": {
               "type": "integer",
@@ -6692,6 +6692,17 @@
           },
           "polygon": {
             "$ref": "#/components/schemas/ServiceStatus"
+          },
+          "rootstock": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ServiceStatus",
+                "description": "Absent when this deployment does not serve Rootstock."
+              }
+            ]
           }
         }
       },
