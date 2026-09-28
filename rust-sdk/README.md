@@ -401,6 +401,12 @@ actions. Funding is manual; refunds require application confirmation. Missing or
 unknown observations never authorize a claim. Claim safety margins and expiry
 grace periods are configurable through `ActionPolicy`.
 
+A swap paid over Lightning has no client leg. It claims the server leg until the
+claim margin before that leg's refund locktime, then waits on
+`LightningResolution`, and ends as refunded once the chain reaches the locktime:
+the preimage was never revealed, so the hold invoice unwinds on its own. That
+terminal is not at risk, so it drops out of `refresh(true)`.
+
 `tracker::SwapTracker` registers stored swaps with a dedicated `ContractManager`,
 persists references/options/attempts, restores enabled records, and emits changed
 actions through a bounded broadcast channel. Configure one reader per ledger

@@ -320,6 +320,54 @@ fn submitted_claims_bridges_and_lightning_are_not_assumed_complete() {
 }
 
 #[test]
+fn lightning_source_past_the_refund_locktime_ends_refunded() {
+    let contracts = SwapContracts {
+        client: None,
+        server: Some(reference(100)),
+    };
+    let unused = observation(HtlcState::Absent, 0);
+    let derive = |height, claim_submitted, submission_uncertain| {
+        let server = observation(HtlcState::Confirmed, height);
+        let mut data = input(&contracts, &unused, &server);
+        data.claim_submitted = claim_submitted;
+        data.submission_uncertain = submission_uncertain;
+        derive_actions(data, &ActionPolicy::default())
+    };
+    let refunded = ActionKind::Complete {
+        outcome: Outcome::Refunded,
+    };
+    for (height, expected, at_risk) in [
+        (50, ActionKind::Claim, true),
+        (
+            99,
+            ActionKind::Wait {
+                on: WaitingOn::LightningResolution,
+            },
+            true,
+        ),
+        (100, refunded.clone(), false),
+        (150, refunded, false),
+    ] {
+        let actions = derive(height, false, false);
+        assert_eq!(actions.recommended().unwrap().kind, expected, "{height}");
+        assert_eq!(actions.at_risk, at_risk, "{height}");
+        assert_eq!(actions.actions.len(), 1, "{height}");
+    }
+    assert_eq!(
+        derive(100, true, false).recommended().unwrap().kind,
+        ActionKind::Wait {
+            on: WaitingOn::ClaimConfirmation
+        }
+    );
+    assert_eq!(
+        derive(100, false, true).recommended().unwrap().kind,
+        ActionKind::Wait {
+            on: WaitingOn::SubmissionRecovery
+        }
+    );
+}
+
+#[test]
 fn cctp_recovery_follows_expiry_grace_and_verification() {
     use HtlcState::*;
     let contracts = SwapContracts {

@@ -71,12 +71,19 @@ impl ActionExecutor for Executor {
     }
 }
 fn setup(mode: u8, options: TrackerOptions) -> (SwapTracker, Arc<Reader>, Arc<Executor>, String) {
+    setup_fixture("btc_to_arkade", mode, options)
+}
+fn setup_fixture(
+    fixture: &str,
+    mode: u8,
+    options: TrackerOptions,
+) -> (SwapTracker, Arc<Reader>, Arc<Executor>, String) {
     let store = InMemorySwapStorage::shared();
     let fixtures: serde_json::Value =
         serde_json::from_str(include_str!("../../tests/fixtures/swap-responses.json")).unwrap();
     let record = StoredSwap::new(
         0,
-        serde_json::from_value(fixtures["btc_to_arkade"].clone()).unwrap(),
+        serde_json::from_value(fixtures[fixture].clone()).unwrap(),
         SwapMetadata::default(),
     )
     .unwrap();
@@ -296,6 +303,55 @@ async fn terminal_swaps_retire_and_free_capacity() {
     assert!(restarted.restore().await.unwrap().is_empty());
     assert!(restarted.record(&id).await.is_err());
     assert!(restarted.record(&second).await.unwrap().enabled);
+}
+#[tokio::test]
+async fn a_lightning_source_past_its_locktime_retires_without_being_at_risk() {
+    let (tracker, reader, executor, id) = setup_fixture(
+        "lightning_to_arkade",
+        0,
+        TrackerOptions {
+            retire_after: Duration::ZERO,
+            ..Default::default()
+        },
+    );
+    tracker
+        .track(
+            &id,
+            SwapContracts {
+                client: None,
+                server: Some(reference(100)),
+            },
+            TrackingOptions {
+                auto_claim: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    *reader.0.lock().unwrap() = (HtlcState::Absent, HtlcState::Confirmed, 99);
+    let actions = tracker.reconcile(&id).await.unwrap();
+    assert_eq!(
+        actions.recommended().unwrap().kind,
+        ActionKind::Wait {
+            on: WaitingOn::LightningResolution
+        }
+    );
+    assert!(actions.at_risk);
+    assert!(tracker.record(&id).await.unwrap().completed_ms.is_none());
+    *reader.0.lock().unwrap() = (HtlcState::Absent, HtlcState::Confirmed, 100);
+    let actions = tracker.reconcile(&id).await.unwrap();
+    assert_eq!(
+        actions.recommended().unwrap().kind,
+        ActionKind::Complete {
+            outcome: Outcome::Refunded
+        }
+    );
+    assert!(!actions.at_risk);
+    assert!(tracker.record(&id).await.is_err());
+    let journal: TrackingRecord =
+        serde_json::from_value(stored_metadata(&tracker, &id).tracking.unwrap()).unwrap();
+    assert!(!journal.enabled);
+    assert_eq!(executor.calls.load(Ordering::SeqCst), 0);
 }
 #[tokio::test]
 async fn an_expired_swap_with_an_unminted_cctp_burn_is_not_retired() {

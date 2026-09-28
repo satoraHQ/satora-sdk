@@ -28,6 +28,8 @@ pub enum WaitingOn {
     BridgeAttestation,
     BridgeDelivery,
     SubmissionRecovery,
+    /// A swap paid over Lightning, past its claim margin but not yet at the
+    /// server's refund locktime, where it ends as refunded.
     LightningResolution,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -201,9 +203,6 @@ fn past_grace(lock: Timelock, point: &ChainPoint, policy: &ActionPolicy) -> bool
     }
 }
 fn refunds(input: &ActionInput<'_>, waiting: WaitingOn) -> Vec<Action> {
-    if input.contracts.client.is_none() {
-        return wait(WaitingOn::LightningResolution);
-    }
     match expired(input.contracts.client.as_ref(), input.client) {
         Some(true) => vec![action(ActionKind::RefundUnilateral, Automation::Confirm)],
         Some(false) => {
@@ -239,7 +238,7 @@ pub fn derive_actions(input: ActionInput<'_>, policy: &ActionPolicy) -> SwapActi
         .as_ref()
         .map(|_| input.server.map_or(HtlcState::Unknown, |o| o.state));
     let status = derive_status(client, server);
-    let at_risk = client.is_some_and(|state| {
+    let legs_at_risk = client.is_some_and(|state| {
         !matches!(
             state,
             HtlcState::Absent | HtlcState::SpentClaim | HtlcState::SpentRefund
@@ -249,7 +248,8 @@ pub fn derive_actions(input: ActionInput<'_>, policy: &ActionPolicy) -> SwapActi
             state,
             HtlcState::Confirmed | HtlcState::Unknown | HtlcState::SpentUnknown
         )
-    }) || !matches!(input.bridge, BridgeState::None | BridgeState::Delivered);
+    });
+    let bridge_pending = !matches!(input.bridge, BridgeState::None | BridgeState::Delivered);
     let actions = (|| {
         use SwapStatus::*;
         if matches!(
@@ -340,8 +340,14 @@ pub fn derive_actions(input: ActionInput<'_>, policy: &ActionPolicy) -> SwapActi
                 };
                 if before_claim_margin(reference.timelock(), point, policy) {
                     vec![action(ActionKind::Claim, Automation::Automatic)]
-                } else {
+                } else if input.contracts.client.is_some() {
                     refunds(&input, WaitingOn::RefundTimelock)
+                } else if reference.timelock().expired(point) {
+                    // Paid over Lightning: the server reclaims its leg and, with the
+                    // preimage never revealed, the hold invoice unwinds on its own.
+                    complete(Outcome::Refunded)
+                } else {
+                    wait(WaitingOn::LightningResolution)
                 }
             }
             Some(
@@ -353,10 +359,16 @@ pub fn derive_actions(input: ActionInput<'_>, policy: &ActionPolicy) -> SwapActi
             _ => wait(WaitingOn::Verification),
         }
     })();
+    // A server leg left unclaimed past the locktime still reads as Confirmed, but a
+    // finished Lightning-source swap has no deposit of ours to protect.
+    let finished_without_deposit = client.is_none()
+        && actions
+            .iter()
+            .any(|a| a.recommended && matches!(a.kind, ActionKind::Complete { .. }));
     SwapActions {
         status,
         actions,
-        at_risk,
+        at_risk: (legs_at_risk && !finished_without_deposit) || bridge_pending,
     }
 }
 
