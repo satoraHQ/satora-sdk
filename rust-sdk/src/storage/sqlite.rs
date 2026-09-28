@@ -1,3 +1,4 @@
+use super::BridgeOperation;
 use super::KEY_INDEX_LIMIT;
 use super::StoredSwap;
 use super::SwapMetadata;
@@ -51,6 +52,12 @@ impl SqliteSwapStorage {
                 swap_id TEXT NOT NULL,
                 record_json TEXT NOT NULL,
                 PRIMARY KEY(wallet_id, swap_id)
+            );
+            CREATE TABLE IF NOT EXISTS sdk_bridge_journal (
+                wallet_id TEXT NOT NULL,
+                journal_key TEXT NOT NULL,
+                operation_json TEXT NOT NULL,
+                PRIMARY KEY(wallet_id, journal_key)
             );",
         )?;
         connection.execute(
@@ -304,6 +311,37 @@ impl SwapStorage for SqliteSwapStorage {
             )
             .optional()?)
     }
+
+    fn get_bridge_journal(&self, key: &str) -> Result<Option<BridgeOperation>> {
+        let json: Option<String> = self
+            .connection()?
+            .query_row(
+                "SELECT operation_json FROM sdk_bridge_journal WHERE wallet_id = ?1 AND journal_key = ?2",
+                params![self.wallet_id, key],
+                |row| row.get(0),
+            )
+            .optional()?;
+        json.map(|json| serde_json::from_str(&json).map_err(|e| Error::Storage(e.to_string())))
+            .transpose()
+    }
+
+    fn put_bridge_journal(&self, key: &str, operation: BridgeOperation) -> Result<()> {
+        let json = serde_json::to_string(&operation).map_err(|e| Error::Storage(e.to_string()))?;
+        self.connection()?.execute(
+            "INSERT INTO sdk_bridge_journal(wallet_id, journal_key, operation_json) VALUES (?1, ?2, ?3)
+             ON CONFLICT(wallet_id, journal_key) DO UPDATE SET operation_json = excluded.operation_json",
+            params![self.wallet_id, key, json],
+        )?;
+        Ok(())
+    }
+
+    fn remove_bridge_journal(&self, key: &str) -> Result<()> {
+        self.connection()?.execute(
+            "DELETE FROM sdk_bridge_journal WHERE wallet_id = ?1 AND journal_key = ?2",
+            params![self.wallet_id, key],
+        )?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -383,6 +421,39 @@ mod tests {
                 .put_swap_key_index("invalid", KEY_INDEX_LIMIT)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn bridge_journal_round_trips_per_wallet_and_survives_clear() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("swaps.db");
+        let pending = BridgeOperation {
+            intent: serde_json::json!({"burn": 1}),
+            transaction_hash: None,
+            user_operation_hash: Some("0x01".into()),
+            complete: false,
+        };
+        {
+            let storage = SqliteSwapStorage::open(&path, "wallet").unwrap();
+            assert_eq!(storage.get_bridge_journal("key").unwrap(), None);
+            storage.put_bridge_journal("key", pending.clone()).unwrap();
+            storage.clear().unwrap();
+        }
+        let storage = SqliteSwapStorage::open(&path, "wallet").unwrap();
+        assert_eq!(
+            storage.get_bridge_journal("key").unwrap(),
+            Some(pending.clone())
+        );
+        let other = SqliteSwapStorage::open(&path, "other").unwrap();
+        assert_eq!(other.get_bridge_journal("key").unwrap(), None);
+        let complete = BridgeOperation {
+            complete: true,
+            ..pending
+        };
+        storage.put_bridge_journal("key", complete.clone()).unwrap();
+        assert_eq!(storage.get_bridge_journal("key").unwrap(), Some(complete));
+        storage.remove_bridge_journal("key").unwrap();
+        assert_eq!(storage.get_bridge_journal("key").unwrap(), None);
     }
 
     #[test]

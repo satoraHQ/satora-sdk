@@ -51,8 +51,13 @@ pub mod evm {
     use lendaswap_sdk::bridge::BridgeApi;
     use lendaswap_sdk::bridge::BridgeSubmission;
     use lendaswap_sdk::bridge::CctpDestination;
+    use lendaswap_sdk::bridge::CctpInboundRecovered;
+    use lendaswap_sdk::bridge::CctpInboundRecovery;
     use lendaswap_sdk::bridge::CctpMint;
+    use lendaswap_sdk::bridge::CctpRecoveryAccount;
+    use lendaswap_sdk::bridge::CctpSweep;
     use lendaswap_sdk::bridge::cctp::CctpBurn;
+    use lendaswap_sdk::bridge::cctp::CctpSource;
     use lendaswap_sdk::control::PollOptions;
     use lendaswap_sdk::evm::B256;
     use lendaswap_sdk::evm::EvmReceipt;
@@ -100,6 +105,44 @@ pub mod evm {
                 },
                 BridgeSubmission::Wallet,
                 poll,
+            )
+            .await
+    }
+    /// Recover a stalled inbound burn from its source transaction alone, with no
+    /// swap record. The seed key that received the mint signs; only this burn's net
+    /// mint moves to `recipient`. IRIS can take minutes to attest.
+    pub async fn recover_cctp_from_tx(
+        client: &Client,
+        api: &BridgeApi,
+        source_chain_id: u64,
+        source_rpc: url::Url,
+        source_tx: B256,
+        destination_rpc: url::Url,
+        recipient: lendaswap_sdk::evm::Address,
+    ) -> Result<CctpInboundRecovered> {
+        let poll = PollOptions {
+            interval: std::time::Duration::from_secs(10),
+            timeout: std::time::Duration::from_secs(15 * 60),
+            ..Default::default()
+        };
+        client
+            .recover_cctp_inbound(
+                api,
+                CctpInboundRecovery {
+                    source: CctpSource::mainnet(source_chain_id)?,
+                    source_rpc,
+                    source_txid: source_tx,
+                    destination: CctpDestination::mainnet(42161)?,
+                    recipient,
+                    account: CctpRecoveryAccount::Local {
+                        destination_rpc,
+                        key_index: None,
+                    },
+                    submission: BridgeSubmission::Wallet,
+                    sweep: CctpSweep::Minted,
+                    attestation: None,
+                },
+                &poll,
             )
             .await
     }

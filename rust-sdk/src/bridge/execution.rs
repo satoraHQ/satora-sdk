@@ -11,6 +11,7 @@ use crate::control::PollOptions;
 use crate::evm::funding::transaction;
 use crate::evm::funding::word;
 use crate::evm::*;
+use crate::signer::EvmKey;
 use crate::storage::BridgeOperation;
 use alloy::sol_types::SolCall;
 use alloy::sol_types::SolEvent;
@@ -78,6 +79,27 @@ alloy::sol! {
     event Transfer(address indexed from, address indexed to, uint256 value);
 }
 
+/// Where an operation's journal lives.
+#[derive(Clone, Copy)]
+pub(super) enum Journal<'a> {
+    /// `SwapMetadata::bridge_operations[key]`. Sponsored batches sign with the
+    /// swap's key index.
+    Swap { id: &'a str, key: &'a str },
+    /// A storage-level entry for work with no swap record. Sponsored batches sign
+    /// with `signer`.
+    Burn {
+        key: &'a str,
+        signer: Option<&'a EvmKey>,
+    },
+}
+impl Journal<'_> {
+    fn key(&self) -> &str {
+        match self {
+            Self::Swap { key, .. } | Self::Burn { key, .. } => key,
+        }
+    }
+}
+
 fn check_receipt(receipt: &EvmReceipt, hash: B256) -> Result<()> {
     if receipt.transaction_hash != hash || !receipt.success {
         return Err(invalid(
@@ -102,6 +124,29 @@ fn validate_burn_receipt(receipt: &EvmReceipt, burn: &cctp::CctpBurn) -> Result<
         ));
     }
     Ok(())
+}
+/// The destination transmitter's MessageReceived for exactly this attested message.
+pub(super) fn received_message(
+    receipt: &EvmReceipt,
+    transmitter: Address,
+    burn: &cctp::CctpBurn,
+    nonce: B256,
+    message: &[u8],
+) -> bool {
+    receipt
+        .logs
+        .iter()
+        .filter(|log| log.address == transmitter)
+        .any(|log| {
+            cctp::MessageReceived::decode_raw_log_validate(log.topics.iter().copied(), &log.data)
+                .is_ok_and(|event| {
+                    event.nonce == nonce
+                        && event.sourceDomain == burn.source_domain
+                        && event.sender == burn.source_messenger.into_word()
+                        && event.messageBody.as_ref() == &message[148..]
+                        && event.finalityThresholdExecuted >= burn.min_finality
+                })
+        })
 }
 pub(super) fn validate_oft_receipt(
     receipt: &EvmReceipt,
@@ -155,15 +200,26 @@ impl Client {
         )?;
         Ok(())
     }
+    fn load_journal(&self, journal: Journal<'_>) -> Result<Option<BridgeOperation>> {
+        match journal {
+            Journal::Swap { id, key } => self.bridge_operation(id, key),
+            Journal::Burn { key, .. } => self.storage.get_bridge_journal(key),
+        }
+    }
+    fn save_journal(&self, journal: Journal<'_>, operation: BridgeOperation) -> Result<()> {
+        match journal {
+            Journal::Swap { id, key } => self.save_bridge_operation(id, key, operation),
+            Journal::Burn { key, .. } => self.storage.put_bridge_journal(key, operation),
+        }
+    }
     pub(super) async fn bridge_receipt(
         &self,
-        id: &str,
-        key: &str,
+        journal: Journal<'_>,
         intent: &Value,
         wallet: &dyn EvmWallet,
         mode: &BridgeSubmission<'_>,
     ) -> Result<Option<EvmReceipt>> {
-        let Some(mut operation) = self.bridge_operation(id, key)? else {
+        let Some(mut operation) = self.load_journal(journal)? else {
             return Ok(None);
         };
         if operation.intent != *intent {
@@ -199,11 +255,14 @@ impl Client {
                 tx,
             )?;
             operation.transaction_hash = Some(tx.to_string());
-            self.save_bridge_operation(id, key, operation.clone())?;
+            self.save_journal(journal, operation.clone())?;
             verified = Some(mined);
         }
         let hash = crate::evm::parse(operation.transaction_hash.as_deref().ok_or_else(|| {
-            invalid("bridge submission outcome unknown; reconcile its hash before retrying")
+            invalid(format!(
+                "bridge submission outcome unknown; reconcile its hash for {} before retrying",
+                journal.key()
+            ))
         })?)?;
         let receipt = match verified {
             Some(receipt) => receipt,
@@ -234,17 +293,16 @@ impl Client {
         state.transaction_hash = Some(hash.to_string());
         self.save_bridge_operation(id, operation, state)
     }
-    pub(super) fn complete_bridge(&self, id: &str, key: &str) -> Result<()> {
+    pub(super) fn complete_bridge(&self, journal: Journal<'_>) -> Result<()> {
         let mut state = self
-            .bridge_operation(id, key)?
+            .load_journal(journal)?
             .ok_or_else(|| invalid("bridge operation missing"))?;
         state.complete = true;
-        self.save_bridge_operation(id, key, state)
+        self.save_journal(journal, state)
     }
     pub(super) async fn submit_bridge(
         &self,
-        id: &str,
-        key: &str,
+        journal: Journal<'_>,
         intent: Value,
         wallet: &dyn EvmWallet,
         mode: &BridgeSubmission<'_>,
@@ -281,34 +339,46 @@ impl Client {
                     data: last.callData.clone(),
                 };
                 wallet.call(&tx).await?;
-                self.save_bridge_operation(id, key, state.clone())?;
+                self.save_journal(journal, state.clone())?;
                 let hash = wallet.send_transaction(&tx).await?;
                 state.transaction_hash = Some(hash.to_string());
-                self.save_bridge_operation(id, key, state)?;
+                self.save_journal(journal, state)?;
                 let receipt = wallet.wait_for_receipt(hash).await?;
                 check_receipt(&receipt, hash)?;
                 Ok(receipt)
             }
             BridgeSubmission::UserOperation(config) => {
-                let stored = self
-                    .get_stored_swap(id)?
-                    .ok_or_else(|| invalid("swap record missing"))?;
-                let account_key = self
-                    .signer
-                    .as_ref()
-                    .ok_or_else(|| invalid("signer missing"))?
-                    .evm_key_for_address(stored.key_index, &wallet.address().to_string())?;
+                let account = wallet.address().to_string();
+                let account_key = match journal {
+                    Journal::Swap { id, .. } => {
+                        let stored = self
+                            .get_stored_swap(id)?
+                            .ok_or_else(|| invalid("swap record missing"))?;
+                        self.signer
+                            .as_ref()
+                            .ok_or_else(|| invalid("signer missing"))?
+                            .evm_key_for_address(stored.key_index, &account)?
+                    }
+                    Journal::Burn { signer, .. } => signer
+                        .filter(|key| key.address.eq_ignore_ascii_case(&account))
+                        .cloned()
+                        .ok_or_else(|| {
+                            crate::Error::InvalidSigner(
+                                "sponsored submission needs the account's seed key".into(),
+                            )
+                        })?,
+                };
                 let receipt = crate::aa::orchestrate::publish_with_config(
                     account_key.secret_key,
                     wallet.address(),
                     wallet.chain_id(),
                     &calls,
                     config,
-                    &|| self.save_bridge_operation(id, key, state.clone()),
+                    &|| self.save_journal(journal, state.clone()),
                     &|hash| {
                         let mut submitted = state.clone();
                         submitted.user_operation_hash = Some(hash.to_string());
-                        self.save_bridge_operation(id, key, submitted)
+                        self.save_journal(journal, submitted)
                     },
                 )
                 .await?;
@@ -317,7 +387,7 @@ impl Client {
                 })?;
                 state.user_operation_hash = Some(receipt.user_op_hash.to_string());
                 state.transaction_hash = Some(hash.to_string());
-                self.save_bridge_operation(id, key, state)?;
+                self.save_journal(journal, state)?;
                 let receipt = wallet.wait_for_receipt(hash).await?;
                 check_receipt(&receipt, hash)?;
                 Ok(receipt)
@@ -341,10 +411,11 @@ impl Client {
                     return Err(invalid("CCTP source wallet mismatch"));
                 }
                 let intent = json!(burn);
-                let receipt = match self
-                    .bridge_receipt(id, "cctp_burn", &intent, wallet, &mode)
-                    .await?
-                {
+                let journal = Journal::Swap {
+                    id,
+                    key: "cctp_burn",
+                };
+                let receipt = match self.bridge_receipt(journal, &intent, wallet, &mode).await? {
                     Some(receipt) => receipt,
                     None => {
                         let mut calls = approval_calls(
@@ -359,12 +430,12 @@ impl Client {
                             value: U256::ZERO,
                             callData: burn.calldata()?,
                         });
-                        self.submit_bridge(id, "cctp_burn", intent, wallet, &mode, calls)
+                        self.submit_bridge(journal, intent, wallet, &mode, calls)
                             .await?
                     }
                 };
                 validate_burn_receipt(&receipt, burn)?;
-                self.complete_bridge(id, "cctp_burn")?;
+                self.complete_bridge(journal)?;
                 Ok(receipt)
             })
             .await
@@ -392,9 +463,11 @@ impl Client {
                 let message: Bytes = crate::evm::parse(&attestation.message)?;
                 let decoded = burn.validate_message(&message)?;
                 let intent = json!({"burn":burn,"destination":destination,"nonce":decoded.nonce});
-                let existing = self
-                    .bridge_receipt(id, "cctp_mint", &intent, wallet, &mode)
-                    .await?;
+                let journal = Journal::Swap {
+                    id,
+                    key: "cctp_mint",
+                };
+                let existing = self.bridge_receipt(journal, &intent, wallet, &mode).await?;
                 let receipt = match existing {
                     Some(receipt) => receipt,
                     None => {
@@ -417,8 +490,7 @@ impl Client {
                             return Err(invalid("invalid CCTP nonce state"));
                         }
                         self.submit_bridge(
-                            id,
-                            "cctp_mint",
+                            journal,
                             intent,
                             wallet,
                             &mode,
@@ -431,27 +503,16 @@ impl Client {
                         .await?
                     }
                 };
-                let valid = receipt
-                    .logs
-                    .iter()
-                    .filter(|log| log.address == destination.transmitter)
-                    .any(|log| {
-                        cctp::MessageReceived::decode_raw_log_validate(
-                            log.topics.iter().copied(),
-                            &log.data,
-                        )
-                        .is_ok_and(|event| {
-                            event.nonce == decoded.nonce
-                                && event.sourceDomain == burn.source_domain
-                                && event.sender == burn.source_messenger.into_word()
-                                && event.messageBody.as_ref() == &message[148..]
-                                && event.finalityThresholdExecuted >= burn.min_finality
-                        })
-                    });
-                if !valid {
+                if !received_message(
+                    &receipt,
+                    destination.transmitter,
+                    burn,
+                    decoded.nonce,
+                    &message,
+                ) {
                     return Err(invalid("receipt does not contain the approved CCTP mint"));
                 }
-                self.complete_bridge(id, "cctp_mint")?;
+                self.complete_bridge(journal)?;
                 Ok(Some(receipt))
             })
             .await
@@ -473,10 +534,11 @@ impl Client {
                     return Err(invalid("OFT wallet mismatch"));
                 }
                 let intent = json!(transfer);
-                let receipt = match self
-                    .bridge_receipt(id, "usdt0_send", &intent, wallet, &mode)
-                    .await?
-                {
+                let journal = Journal::Swap {
+                    id,
+                    key: "usdt0_send",
+                };
+                let receipt = match self.bridge_receipt(journal, &intent, wallet, &mode).await? {
                     Some(receipt) => receipt,
                     None => {
                         let fee = transfer.quote(wallet).await?;
@@ -488,12 +550,12 @@ impl Client {
                             value: fee,
                             callData: transfer.calldata(fee)?,
                         });
-                        self.submit_bridge(id, "usdt0_send", intent, wallet, &mode, calls)
+                        self.submit_bridge(journal, intent, wallet, &mode, calls)
                             .await?
                     }
                 };
                 let guid = validate_oft_receipt(&receipt, transfer)?;
-                self.complete_bridge(id, "usdt0_send")?;
+                self.complete_bridge(journal)?;
                 Ok((receipt, guid))
             })
             .await
@@ -521,14 +583,17 @@ impl Client {
                     return Err(invalid("invalid bridge recovery"));
                 }
                 let intent = json!({"recovery":recovery,"sender":wallet.address()});
+                let journal = Journal::Swap {
+                    id,
+                    key: "bridge_sweep",
+                };
                 let settled_elsewhere = self
                     .bridge_operation(id, "bridge_sweep")?
                     .is_some_and(|op| op.complete && op.intent != intent);
                 let existing = if settled_elsewhere {
                     None
                 } else {
-                    self.bridge_receipt(id, "bridge_sweep", &intent, wallet, &mode)
-                        .await?
+                    self.bridge_receipt(journal, &intent, wallet, &mode).await?
                 };
                 let receipt = match existing {
                     Some(receipt) => receipt,
@@ -537,8 +602,7 @@ impl Client {
                             return Err(invalid("insufficient bridge recovery balance"));
                         }
                         self.submit_bridge(
-                            id,
-                            "bridge_sweep",
+                            journal,
                             intent,
                             wallet,
                             &mode,
@@ -573,13 +637,13 @@ impl Client {
                         "receipt does not contain the approved bridge recovery transfer",
                     ));
                 }
-                self.complete_bridge(id, "bridge_sweep")?;
+                self.complete_bridge(journal)?;
                 Ok(receipt)
             })
             .await
     }
 }
-async fn token_balance(wallet: &dyn EvmWallet, token: Address) -> Result<U256> {
+pub(super) async fn token_balance(wallet: &dyn EvmWallet, token: Address) -> Result<U256> {
     word(
         &wallet
             .call(&transaction(

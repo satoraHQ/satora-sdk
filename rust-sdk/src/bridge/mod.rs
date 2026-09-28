@@ -3,10 +3,15 @@ pub mod cctp;
 mod execution;
 mod inbound;
 mod outbound;
+mod recover;
 pub use inbound::CctpFunding;
 pub use outbound::OutboundBridge;
 pub use outbound::OutboundClaim;
 pub use outbound::OutboundReceipt;
+pub use recover::CctpInboundRecovered;
+pub use recover::CctpInboundRecovery;
+pub use recover::CctpRecoveryAccount;
+pub use recover::CctpSweep;
 pub mod usdt0;
 use crate::Error;
 use crate::Result;
@@ -67,5 +72,7 @@ async fn pending_json<T: DeserializeOwned>(response: Response) -> Result<Option<
 
 #[cfg(test)]
 mod execution_tests;
+#[cfg(test)]
+mod recover_tests;
 #[cfg(test)]
 pub(crate) mod tests;

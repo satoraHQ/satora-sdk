@@ -109,6 +109,26 @@ pub trait SwapStorage: Send + Sync {
             "this store does not support wallet recovery".into(),
         ))
     }
+
+    /// A bridge journal entry that belongs to no swap record, such as a CCTP
+    /// recovery keyed by its burn. [`Self::clear`] keeps these, since they are
+    /// what stops a second transfer.
+    fn get_bridge_journal(&self, _key: &str) -> Result<Option<BridgeOperation>> {
+        Ok(None)
+    }
+
+    /// Stores that cannot keep the entry refuse, so nothing is submitted unjournaled.
+    fn put_bridge_journal(&self, _key: &str, _operation: BridgeOperation) -> Result<()> {
+        Err(Error::Storage(
+            "this store does not support bridge journals".into(),
+        ))
+    }
+
+    fn remove_bridge_journal(&self, _key: &str) -> Result<()> {
+        Err(Error::Storage(
+            "this store does not support bridge journals".into(),
+        ))
+    }
 }
 
 /// Thread-safe in-memory store. Useful for tests and ephemeral processes;
@@ -123,6 +143,7 @@ pub struct InMemorySwapStorage {
 struct MemoryState {
     indices: HashMap<String, u32>,
     records: HashMap<String, StoredSwap>,
+    journals: HashMap<String, BridgeOperation>,
 }
 
 impl InMemorySwapStorage {
@@ -269,6 +290,34 @@ impl SwapStorage for InMemorySwapStorage {
             .indices
             .get(swap_id)
             .copied())
+    }
+
+    fn get_bridge_journal(&self, key: &str) -> Result<Option<BridgeOperation>> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| Error::Storage("swap storage lock poisoned".into()))?
+            .journals
+            .get(key)
+            .cloned())
+    }
+
+    fn put_bridge_journal(&self, key: &str, operation: BridgeOperation) -> Result<()> {
+        self.state
+            .lock()
+            .map_err(|_| Error::Storage("swap storage lock poisoned".into()))?
+            .journals
+            .insert(key.to_owned(), operation);
+        Ok(())
+    }
+
+    fn remove_bridge_journal(&self, key: &str) -> Result<()> {
+        self.state
+            .lock()
+            .map_err(|_| Error::Storage("swap storage lock poisoned".into()))?
+            .journals
+            .remove(key);
+        Ok(())
     }
 }
 

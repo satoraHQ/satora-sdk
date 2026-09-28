@@ -5,6 +5,7 @@ use super::invalid;
 use super::pending_json;
 use crate::Result;
 use crate::control::PollOptions;
+use crate::evm::EvmReceipt;
 use alloy::primitives::Address;
 use alloy::primitives::B256;
 use alloy::primitives::Bytes;
@@ -12,6 +13,7 @@ use alloy::primitives::U256;
 use alloy::primitives::address;
 use alloy::sol;
 use alloy::sol_types::SolCall;
+use alloy::sol_types::SolEvent;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -49,7 +51,117 @@ sol! {
     function usedNonces(bytes32 nonce) external view returns (uint256);
     event MessageSent(bytes message);
     event MessageReceived(address indexed caller, uint32 sourceDomain, bytes32 indexed nonce, bytes32 sender, uint32 indexed finalityThresholdExecuted, bytes messageBody);
+    // TokenMessengerV2; checked against a mainnet Base burn log.
+    event DepositForBurn(address indexed burnToken, uint256 amount, address indexed depositor, bytes32 mintRecipient, uint32 destinationDomain, bytes32 destinationTokenMessenger, bytes32 destinationCaller, uint256 maxFee, uint32 indexed minFinalityThreshold, bytes hookData);
     function bridgeBalance(uint32 destinationDomain, bytes32 mintRecipient, uint256 maxFee, bytes hookData) external;
+}
+
+/// The source-chain contracts a burn must come from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CctpSource {
+    pub chain_id: u64,
+    pub domain: u32,
+    pub messenger: Address,
+    pub transmitter: Address,
+    pub usdc: Address,
+}
+impl CctpSource {
+    pub fn mainnet(chain_id: u64) -> Result<Self> {
+        let chain = CctpChain::for_chain(chain_id)?;
+        Ok(Self {
+            chain_id,
+            domain: chain.domain,
+            messenger: TOKEN_MESSENGER,
+            transmitter: MESSAGE_TRANSMITTER,
+            usdc: chain.usdc,
+        })
+    }
+}
+
+/// Burn terms rebuilt from a source receipt, for recovery from a transaction hash.
+/// Each `MessageSent` from the transmitter must pair with its own `DepositForBurn`
+/// from the messenger carrying the same terms; anything else is skipped. The
+/// emitted message leaves the nonce zero: Circle assigns it when attesting.
+pub fn burns_from_receipt(receipt: &EvmReceipt, source: &CctpSource) -> Result<Vec<CctpBurn>> {
+    if !receipt.success {
+        return Err(invalid("source transaction failed"));
+    }
+    let mut deposits: Vec<Option<DepositForBurn>> = receipt
+        .logs
+        .iter()
+        .filter(|log| log.address == source.messenger)
+        .filter_map(|log| {
+            DepositForBurn::decode_raw_log_validate(log.topics.iter().copied(), &log.data).ok()
+        })
+        .map(Some)
+        .collect();
+    let mut burns = Vec::new();
+    for log in receipt
+        .logs
+        .iter()
+        .filter(|log| log.address == source.transmitter)
+    {
+        let Ok(sent) = MessageSent::decode_raw_log_validate(log.topics.iter().copied(), &log.data)
+        else {
+            continue;
+        };
+        let Some(burn) = burn_from_message(&sent.message, source) else {
+            continue;
+        };
+        let paired = deposits.iter_mut().find(|deposit| {
+            deposit.as_ref().is_some_and(|d| {
+                d.burnToken == burn.burn_token
+                    && d.amount == burn.amount
+                    && d.depositor == burn.sender
+                    && d.mintRecipient == burn.mint_recipient
+                    && d.destinationDomain == burn.destination_domain
+                    && d.destinationTokenMessenger == burn.destination_messenger
+                    && d.destinationCaller == burn.destination_caller
+                    && d.maxFee == burn.max_fee
+                    && d.minFinalityThreshold == burn.min_finality
+                    && d.hookData == burn.hook
+            })
+        });
+        if let Some(deposit) = paired {
+            *deposit = None;
+            burns.push(burn);
+        }
+    }
+    Ok(burns)
+}
+fn burn_from_message(bytes: &[u8], source: &CctpSource) -> Option<CctpBurn> {
+    let message = CctpMessage::decode(bytes).ok()?;
+    let evm = |word: B256| {
+        word[..12]
+            .iter()
+            .all(|b| *b == 0)
+            .then(|| Address::from_word(word))
+    };
+    if message.sender != source.messenger.into_word()
+        || message.source_domain != source.domain
+        || message.burn_token != source.usdc.into_word()
+    {
+        return None;
+    }
+    evm(message.mint_recipient)?;
+    let burn = CctpBurn {
+        source_chain_id: source.chain_id,
+        source_domain: source.domain,
+        destination_domain: message.destination_domain,
+        source_messenger: source.messenger,
+        destination_messenger: message.recipient,
+        source_transmitter: source.transmitter,
+        burn_token: source.usdc,
+        sender: evm(message.message_sender)?,
+        mint_recipient: message.mint_recipient,
+        destination_caller: message.destination_caller,
+        amount: message.amount,
+        max_fee: message.max_fee,
+        min_finality: message.min_finality,
+        hook: message.hook,
+    };
+    burn.validate_message(bytes).ok()?;
+    Some(burn)
 }
 
 pub fn evm_recipient(address: Address) -> B256 {

@@ -53,7 +53,7 @@ pub(crate) fn message(b: &CctpBurn) -> Vec<u8> {
     result.extend(b.hook.iter());
     result
 }
-fn attested(b: &CctpBurn) -> serde_json::Value {
+pub(crate) fn attested(b: &CctpBurn) -> serde_json::Value {
     json!({"message":format!("0x{}",hex::encode(message(b))),"attestation":"0x1234","status":"complete"})
 }
 #[test]

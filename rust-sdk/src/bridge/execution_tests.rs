@@ -18,16 +18,20 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
-struct Wallet {
-    chain_id: u64,
-    address: Address,
-    calls: Mutex<Vec<EvmTransaction>>,
-    receipt: EvmReceipt,
-    fail_receipt: AtomicBool,
-    lose_submission: AtomicBool,
-    allowance: U256,
-    used_nonce: bool,
-    now: AtomicU64,
+pub(super) struct Wallet {
+    pub(super) chain_id: u64,
+    pub(super) address: Address,
+    pub(super) calls: Mutex<Vec<EvmTransaction>>,
+    pub(super) receipt: EvmReceipt,
+    pub(super) fail_receipt: AtomicBool,
+    pub(super) lose_submission: AtomicBool,
+    pub(super) allowance: U256,
+    pub(super) balance: U256,
+    /// Added to `balance` once a `receiveMessage` transaction has been sent.
+    pub(super) mint_credit: U256,
+    pub(super) minted: AtomicBool,
+    pub(super) used_nonce: bool,
+    pub(super) now: AtomicU64,
 }
 impl EvmWallet for Wallet {
     fn address(&self) -> Address {
@@ -45,7 +49,11 @@ impl EvmWallet for Wallet {
                 .data
                 .starts_with(&crate::aa::abi::IERC20::balanceOfCall::SELECTOR)
             {
-                U256::from(100_000_000)
+                if self.minted.load(Ordering::Relaxed) {
+                    self.balance.saturating_add(self.mint_credit)
+                } else {
+                    self.balance
+                }
             } else if tx
                 .data
                 .starts_with(&execution::Token::allowanceCall::SELECTOR)
@@ -69,6 +77,9 @@ impl EvmWallet for Wallet {
     fn send_transaction<'a>(&'a self, tx: &'a EvmTransaction) -> WalletFuture<'a, B256> {
         Box::pin(async move {
             self.calls.lock().unwrap().push(tx.clone());
+            if tx.data.starts_with(&cctp::receiveMessageCall::SELECTOR) {
+                self.minted.store(true, Ordering::Relaxed);
+            }
             if self.lose_submission.load(Ordering::Relaxed) {
                 return Err(Error::Transport("response lost".into()));
             }
@@ -87,7 +98,7 @@ impl EvmWallet for Wallet {
         Box::pin(async move { Ok(self.now.load(Ordering::Relaxed)) })
     }
 }
-fn log(address: Address, event: impl SolEvent) -> EvmLog {
+pub(super) fn log(address: Address, event: impl SolEvent) -> EvmLog {
     let data = event.encode_log_data();
     EvmLog {
         address,
@@ -95,7 +106,7 @@ fn log(address: Address, event: impl SolEvent) -> EvmLog {
         data: data.data,
     }
 }
-fn wallet(chain_id: u64, address: Address, logs: Vec<EvmLog>) -> Wallet {
+pub(super) fn wallet(chain_id: u64, address: Address, logs: Vec<EvmLog>) -> Wallet {
     Wallet {
         chain_id,
         address,
@@ -109,11 +120,14 @@ fn wallet(chain_id: u64, address: Address, logs: Vec<EvmLog>) -> Wallet {
         fail_receipt: AtomicBool::new(false),
         lose_submission: AtomicBool::new(false),
         allowance: U256::MAX,
+        balance: U256::from(100_000_000),
+        mint_credit: U256::ZERO,
+        minted: AtomicBool::new(false),
         used_nonce: false,
         now: AtomicU64::new(1_900_000_000),
     }
 }
-fn client() -> (Client, String, Arc<InMemorySwapStorage>) {
+pub(super) fn client() -> (Client, String, Arc<InMemorySwapStorage>) {
     let storage = Arc::new(InMemorySwapStorage::new());
     let fixtures: serde_json::Value =
         serde_json::from_str(include_str!("../../tests/fixtures/swap-responses.json")).unwrap();
@@ -657,7 +671,15 @@ async fn bridge_resume_records_only_a_transaction_the_node_shows_executing_the_o
     let foreign = wallet(42161, Address::repeat_byte(1), vec![]);
     assert!(
         client
-            .bridge_receipt(&id, "usdt0_send", &intent, &foreign, &mode)
+            .bridge_receipt(
+                Journal::Swap {
+                    id: &id,
+                    key: "usdt0_send"
+                },
+                &intent,
+                &foreign,
+                &mode
+            )
             .await
             .is_err()
     );
@@ -675,7 +697,15 @@ async fn bridge_resume_records_only_a_transaction_the_node_shows_executing_the_o
         vec![user_operation_log(config.entry_point, operation, true)],
     );
     let receipt = client
-        .bridge_receipt(&id, "usdt0_send", &intent, &ours, &mode)
+        .bridge_receipt(
+            Journal::Swap {
+                id: &id,
+                key: "usdt0_send",
+            },
+            &intent,
+            &ours,
+            &mode,
+        )
         .await
         .unwrap()
         .unwrap();

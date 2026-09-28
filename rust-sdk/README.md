@@ -379,6 +379,31 @@ timelock. It also supports a nonce already consumed by the forwarder,
 provided the account still holds the required USDC. An interrupted `cctp_fund`
 operation blocks other funding paths until its original receipt is reconciled.
 
+`recover_cctp_inbound` recovers a stalled CCTP-inbound burn from its source
+transaction hash, with or without a swap record (TypeScript `recoverCctpInbound`).
+It rebuilds the burn terms from the source receipt, where each `MessageSent` must
+pair with a matching `DepositForBurn`, instead of using IRIS's first message. It
+finds the seed key that controls the mint recipient: a stored swap's key, the
+wallet key, the `key_index` hint, or the first 1000 per-swap and legacy keys. It
+mints if the nonce is unused, then transfers to `recipient`. By default it moves
+only the burn's net minted amount (`CctpSweep::Minted`). `CctpSweep::FullBalance`
+moves the whole USDC balance, as TypeScript does; on an account that several swaps
+share it can take USDC reserved for another swap's funding. Sponsored submission
+batches the mint and transfer in one UserOperation; an external wallet uses Wallet
+submission. Progress is journaled per burn under `cctp_recover:{domain}:{nonce}`
+with `SwapStorage::put_bridge_journal`, and stores without it refuse. A repeat
+returns the recorded result. A lost submission blocks until
+`attach_cctp_recovery_transaction` or `release_cctp_recovery`. Resume in the
+submission mode that started: the other mode refuses once a transfer, or an
+unresolved wallet mint, is journaled. A completed wallet mint does not fix the
+recipient or sweep of a transfer that was never sent. Recovery refuses while a
+stored swap that owns the account, through a seed key or an external wallet, has
+an unfinished `cctp_fund` or `cctp_mint`, or records funding that may have used
+the burn's USDC. On an account one swap owns, that is any funding. On an account
+several swaps share (the wallet key), it is a `cctp_fund` of this burn, or funding
+after a `cctp_mint` of it. `fund_swap_from_cctp` then refuses the recovered burn,
+so untrack a swap whose burn was recovered.
+
 `claim_evm_to_bridge` appends CCTP or USDT0 adapter calls to reviewed DEX calldata
 and returns the actual CCTP burn or LayerZero message query for delivery tracking.
 Use `get_dex_calldata_fund` with the coordinator as sender; the server sets the

@@ -1,6 +1,7 @@
 //! Atomic CCTP mint + Permit2 funding. Also accepts already-forwarded mints.
 use super::BridgeSubmission;
 use super::CctpMint;
+use super::execution::Journal;
 use super::invalid;
 use crate::Client;
 use crate::Result;
@@ -45,6 +46,7 @@ impl Client {
             let receive=attestation.receive_calldata(burn)?;
             let message:Bytes=crate::evm::parse(&attestation.message)?;
             let decoded=burn.validate_message(&message)?;
+            if self.cctp_recovery_recorded(burn.source_domain,decoded.nonce)? {return Err(invalid("this burn has a recovery entry; its USDC was or is being moved to the recovery recipient"));}
             if burn.mint_recipient!=wallet.address().into_word() {return Err(invalid("CCTP mint recipient must be the funding account"));}
             let stored=self.get_stored_swap(id)?.ok_or_else(||invalid("swap record missing"))?;
             let context=EvmContext::from_response(&stored.response)?;
@@ -52,7 +54,8 @@ impl Client {
             if !context.is_source || context.source_token!=destination.usdc {return Err(invalid("CCTP funding requires a USDC-source swap on the destination chain"));}
             let intent=json!({"burn":burn,"destination":destination,"nonce":decoded.nonce,"coordinator":limits.coordinator,"htlc":limits.htlc,"lock_token":limits.lock_token,"max_source_amount":limits.max_source_amount,"allowed_call_targets":limits.allowed_call_targets});
             let mode=BridgeSubmission::UserOperation(account);
-            let receipt=match self.bridge_receipt(id,"cctp_fund",&intent,wallet,&mode).await? {
+            let journal=Journal::Swap {id,key:"cctp_fund"};
+            let receipt=match self.bridge_receipt(journal,&intent,wallet,&mode).await? {
                 Some(receipt)=>receipt,
                 None=>{
                     if stored.metadata.evm_fund_txid.is_some() || stored.metadata.evm_fund_userop_hash.is_some() {
@@ -79,7 +82,7 @@ impl Client {
                         calls:dex,calls_hash:crate::evm::parse(&funding.calls_hash)?,entry_point:account.entry_point,delegation_target:account.delegation_target,
                         secret_key:key.secret_key,eoa_address:context.owner,chain_id:context.chain_id,gas_overrides:account.aa.gas_overrides,
                     })?);
-                    self.submit_bridge(id,"cctp_fund",intent,wallet,&mode,calls).await?
+                    self.submit_bridge(journal,intent,wallet,&mode,calls).await?
                 }
             };
             // Persist the funding identity even if event validation fails, preventing
@@ -89,7 +92,7 @@ impl Client {
                 .ok_or_else(||invalid("atomic CCTP funding has no matching HTLC event"))?;
             let htlc=EvmHtlc {chain_id:context.chain_id,address:context.htlc,hash_lock:context.hash,amount:created.amount,token:limits.lock_token,sender:limits.coordinator,claimer:context.server,timelock:context.timelock};
             if created.amount.is_zero() || created.key!=htlc.key() {return Err(invalid("invalid funded HTLC identity"));}
-            self.complete_bridge(id,"cctp_fund")?;
+            self.complete_bridge(journal)?;
             Ok(receipt)
         }).await
     }
