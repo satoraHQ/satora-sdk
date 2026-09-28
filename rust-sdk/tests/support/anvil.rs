@@ -383,7 +383,7 @@ async fn rpc(
         .ok_or("RPC response missing result")?
         .clone())
 }
-async fn send(http: &reqwest::Client, url: &url::Url, transaction: Value) -> TestResult<Value> {
+pub async fn send(http: &reqwest::Client, url: &url::Url, transaction: Value) -> TestResult<Value> {
     let hash = rpc(http, url, "eth_sendTransaction", json!([transaction])).await?;
     let receipt = tokio::time::timeout(Duration::from_secs(15), async {
         loop {

@@ -149,4 +149,7 @@ impl EvmWallet for RpcWallet {
             Ok(block.header.timestamp)
         })
     }
+    fn code(&self, address: Address) -> WalletFuture<'_, Bytes> {
+        Box::pin(async move { self.provider.get_code_at(address).await.map_err(transport) })
+    }
 }

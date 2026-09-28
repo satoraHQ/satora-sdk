@@ -567,6 +567,7 @@ impl SwapTracker {
                         && metadata.evm_claim_userop_hash.is_none())
                     .then_some(false);
                 } else if matches!(attempt.action, ActionKind::RecoverCctp { .. }) {
+                    let relay_outstanding = metadata.relay_signature_outstanding();
                     let mut operations = metadata.bridge_operations.unwrap_or_default();
                     let before = operations.len();
                     operations.retain(|key, operation| {
@@ -578,6 +579,7 @@ impl SwapTracker {
                     update.evm_fund_started = (metadata.evm_fund_started == Some(true)
                         && metadata.evm_fund_txid.is_none()
                         && metadata.evm_fund_userop_hash.is_none()
+                        && !relay_outstanding
                         && !operations.contains_key("cctp_fund"))
                     .then_some(false);
                     update.bridge_operations = (operations.len() != before).then_some(operations);

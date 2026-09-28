@@ -20,10 +20,14 @@ pub mod htlc;
 pub mod permit;
 pub mod recovery;
 pub mod refund;
+pub mod relay;
 pub use recovery::DepositRecovery;
 pub use recovery::RefundedEvmBalance;
 pub use refund::EvmSubmission;
 pub use refund::RefundOptions;
+pub use relay::RelayFunding;
+pub use relay::RelayFundingOptions;
+pub use relay::RelayFundingState;
 mod wallet;
 pub use funding::FundingOptions;
 pub use funding::Permit2FundingData;
@@ -112,6 +116,11 @@ pub trait EvmWallet: Send + Sync {
     fn block_timestamp(&self) -> WalletFuture<'_, u64> {
         Box::pin(async { Err(invalid("wallet adapter does not expose chain time")) })
     }
+    /// Account code, used to detect an EIP-7702 delegation when the server gives no
+    /// hint. Adapters may omit it.
+    fn code(&self, _address: Address) -> WalletFuture<'_, Bytes> {
+        Box::pin(async { Err(invalid("wallet adapter does not expose account code")) })
+    }
 }
 
 pub(super) fn invalid(message: impl Into<String>) -> Error {
@@ -174,7 +183,7 @@ pub(crate) fn verify_derived_hash_lock(
 
 /// Shared identity fields. Amounts used for refunds are discovered from the
 /// funding receipt, since a DEX's actual locked amount can differ from the quote.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct EvmContext {
     pub chain_id: u64,
     pub owner: Address,

@@ -6,6 +6,7 @@
 #[path = "support/anvil.rs"]
 mod anvil;
 use alloy::primitives::keccak256;
+use alloy::sol_types::SolCall;
 use alloy::sol_types::SolValue;
 use anvil::*;
 use lendaswap_sdk::StoredSwap;
@@ -18,6 +19,7 @@ use lendaswap_sdk::evm::Address;
 use lendaswap_sdk::evm::EvmClaimOptions;
 use lendaswap_sdk::evm::FundingOptions;
 use lendaswap_sdk::evm::RefundOptions;
+use lendaswap_sdk::evm::RelayFundingOptions;
 use lendaswap_sdk::evm::U256;
 use lendaswap_sdk::observation::ContractManager;
 use lendaswap_sdk::observation::ContractReader;
@@ -550,5 +552,205 @@ async fn native_htlc_refund_through_the_coordinator_returns_the_coin() -> TestRe
         reader(&f).await?.observe(&lock).await?.state,
         HtlcState::SpentRefund
     );
+    Ok(())
+}
+
+/// The daemon's relay against the real contracts: submits the posted EIP-2612 permit
+/// and Permit2 funding from the deployer, using the swap's own parameters as the
+/// daemon does from its database.
+#[derive(Clone)]
+struct AnvilRelay {
+    url: url::Url,
+    deployer: Address,
+    coordinator: Address,
+    token: Address,
+    owner: Address,
+    hash: lendaswap_sdk::evm::B256,
+    timelock: u64,
+}
+impl wiremock::Respond for AnvilRelay {
+    fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap_or_default();
+        let relay = self.clone();
+        // Respond is synchronous, and wiremock runs it inside its own runtime.
+        let submitted = std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| e.to_string())?
+                .block_on(relay.submit(body))
+                .map_err(|e| e.to_string())
+        })
+        .join();
+        match submitted {
+            Ok(Ok(hash)) => ResponseTemplate::new(200)
+                .set_body_json(json!({"id": ID, "tx_hash": hash, "message": "funded"})),
+            Ok(Err(error)) => ResponseTemplate::new(400).set_body_json(json!({"error": error})),
+            Err(_) => ResponseTemplate::new(500),
+        }
+    }
+}
+impl AnvilRelay {
+    async fn submit(self, body: serde_json::Value) -> TestResult<lendaswap_sdk::evm::B256> {
+        use lendaswap_sdk::aa::abi::IHTLCCoordinator;
+        use lendaswap_sdk::aa::abi::PermitTransferFrom;
+        use lendaswap_sdk::aa::abi::TokenPermissions;
+        use lendaswap_sdk::aa::permit2::PERMIT2_ADDRESS;
+        use lendaswap_sdk::evm::permit::PermitToken;
+        let http = reqwest::Client::new();
+        let text = |value: &serde_json::Value| -> TestResult<String> {
+            Ok(value.as_str().ok_or("expected a string")?.to_owned())
+        };
+        let send = |to: Address, data: Vec<u8>| {
+            anvil::send(
+                &http,
+                &self.url,
+                json!({"from": self.deployer, "to": to, "data": format!("0x{}", hex::encode(data)), "gas": "0x989680"}),
+            )
+        };
+        if let Some(permit) = body.get("eip2612_permit") {
+            send(
+                self.token,
+                PermitToken::permitCall {
+                    owner: self.owner,
+                    spender: PERMIT2_ADDRESS,
+                    value: U256::from_str_radix(&text(&permit["value"])?, 10)?,
+                    deadline: U256::from(permit["deadline"].as_u64().ok_or("deadline")?),
+                    v: u8::try_from(permit["v"].as_u64().ok_or("v")?)?,
+                    r: text(&permit["r"])?.parse()?,
+                    s: text(&permit["s"])?.parse()?,
+                }
+                .abi_encode(),
+            )
+            .await?;
+        }
+        let signature: alloy::primitives::Bytes = text(&body["permit2_signature"])?.parse()?;
+        let receipt = send(
+            self.coordinator,
+            IHTLCCoordinator::executeAndCreateWithPermit2Call {
+                calls: vec![],
+                preimageHash: self.hash,
+                token: self.token,
+                claimAddress: self.deployer,
+                timelock: U256::from(self.timelock),
+                depositor: self.owner,
+                permit: PermitTransferFrom {
+                    permitted: TokenPermissions {
+                        token: self.token,
+                        amount: U256::from(AMOUNT),
+                    },
+                    nonce: U256::from_str_radix(&text(&body["permit2_nonce"])?, 10)?,
+                    deadline: U256::from(body["permit2_deadline"].as_u64().ok_or("deadline")?),
+                },
+                signature,
+            }
+            .abi_encode(),
+        )
+        .await?;
+        Ok(text(&receipt["transactionHash"])?.parse()?)
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires Anvil and freshly compiled repository contracts; run scripts/e2e/test-rust-sdk-local.sh"]
+async fn relay_funding_signatures_are_accepted_by_real_permit2_and_coordinator() -> TestResult {
+    let f = Fixture::new().await?;
+    // An EIP-2612 token with no Permit2 allowance, locked as is, so the relay needs both
+    // signatures and no DEX.
+    let usdc = f
+        .deploy("HTLCCoordinatorSwapAndLock.t.sol/MockUSDC.json", vec![])
+        .await?;
+    let usdc_balance =
+        |account: Address| f.word(usdc, Token::balanceOfCall { account }.abi_encode());
+    f.save_swap(true, None)?;
+    let mut stored = f.store.get_swap(ID)?.ok_or("stored swap missing")?;
+    let mut response = serde_json::to_value(&stored.response)?;
+    response["gasless"] = json!(true);
+    response["source_token"]["token_id"] = json!(usdc);
+    stored.response = serde_json::from_value(response.clone())?;
+    f.store.store_swap(stored)?;
+    f.transact(
+        f.deployer,
+        usdc,
+        Token::transferCall {
+            to: f.owner,
+            amount: U256::from(AMOUNT),
+        },
+    )
+    .await?;
+    let separator = f
+        .word(
+            usdc,
+            lendaswap_sdk::evm::permit::PermitToken::DOMAIN_SEPARATORCall {}.abi_encode(),
+        )
+        .await?;
+    let calls: Vec<Call> = vec![];
+    let payload = json!({
+        "coordinator_address": f.coordinator,
+        "permit2_address": lendaswap_sdk::aa::permit2::PERMIT2_ADDRESS,
+        "source_token_address": usdc,
+        "source_amount": AMOUNT.to_string(),
+        "lock_token_address": usdc,
+        "preimage_hash": f.hash,
+        "claim_address": f.deployer,
+        "timelock": f.timelock,
+        "calls": [],
+        "calls_hash": keccak256(calls.abi_encode()),
+        "eip2612": {"supported": true, "already_approved": false, "nonce": 0, "domain_separator": lendaswap_sdk::evm::B256::from(separator.to_be_bytes::<32>())},
+        "relay_fee": "0",
+        "depositor_delegation": null
+    });
+    let api = MockServer::start().await;
+    Mock::given(path(format!("/swap/{ID}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+        .mount(&api)
+        .await;
+    Mock::given(path(format!("/swap/{ID}/swap-and-lock-calldata-permit2")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(payload))
+        .mount(&api)
+        .await;
+    Mock::given(path(format!("/swap/{ID}/fund-gasless")))
+        .respond_with(AnvilRelay {
+            url: f.url.clone(),
+            deployer: f.deployer,
+            coordinator: f.coordinator,
+            token: usdc,
+            owner: f.owner,
+            hash: f.hash,
+            timelock: f.timelock,
+        })
+        .expect(1)
+        .mount(&api)
+        .await;
+    let client = f.reopen(&api.uri())?;
+    let mut options = RelayFundingOptions::new(U256::ZERO);
+    options.node_rpc_url = Some(f.url.clone());
+    options.timeout = Duration::from_secs(30);
+    let funded = client.fund_swap_gasless_relay(ID, options).await?;
+    assert!(funded.eip2612_permit);
+    assert_eq!(funded.htlc.amount, U256::from(AMOUNT));
+    assert_eq!(usdc_balance(f.owner).await?, U256::ZERO);
+    assert_eq!(usdc_balance(f.htlc).await?, U256::from(AMOUNT));
+    assert_eq!(
+        client
+            .get_stored_swap(ID)?
+            .ok_or("stored swap missing")?
+            .metadata
+            .evm_fund_txid,
+        Some(funded.tx_hash.to_string())
+    );
+    let refundable = client
+        .get_funded_evm_htlc(
+            ID,
+            &f.wallet,
+            &RefundOptions {
+                htlc: f.htlc,
+                lock_token: usdc,
+                coordinator: Some(f.coordinator),
+                timeout: Duration::from_secs(20),
+            },
+        )
+        .await?;
+    assert_eq!(refundable, funded.htlc);
     Ok(())
 }

@@ -58,6 +58,7 @@ impl Client {
                     if stored.metadata.evm_fund_txid.is_some() || stored.metadata.evm_fund_userop_hash.is_some() {
                         return Err(invalid("swap funding already submitted"));
                     }
+                    if stored.metadata.relay_signature_outstanding() {return Err(invalid(crate::evm::funding::UNRESOLVED_RELAY_FUNDING));}
                     if stored.metadata.evm_fund_started == Some(true) {return Err(invalid(crate::evm::funding::UNRESOLVED_FUNDING));}
                     crate::evm::verify_derived_hash_lock(self,&stored,&context)?;
                     if wallet.block_timestamp().await? >= context.timelock {return Err(invalid("swap timelock has expired on chain"));}

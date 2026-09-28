@@ -918,6 +918,66 @@ async fn proven_not_submitted_releases_only_the_attempted_claim_rail() {
 }
 
 #[tokio::test]
+async fn proven_not_submitted_keeps_the_funding_flag_while_a_relay_signature_can_land() {
+    use crate::storage::RelayFundingOutcome;
+    for (outcome, released) in [
+        (RelayFundingOutcome::Rejected, false),
+        (RelayFundingOutcome::Uncertain, false),
+        (RelayFundingOutcome::Expired, true),
+    ] {
+        let (tracker, _, _, id) = setup(1, TrackerOptions::default());
+        track(&tracker, &id).await;
+        tracker
+            .update_options(
+                &id,
+                TrackingOptions {
+                    auto_claim: true,
+                    auto_cctp: true,
+                    bridge: BridgeState::CctpBurn {
+                        source_transaction: "burn".into(),
+                        attestation_available: true,
+                    },
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        tracker.reconcile(&id).await.unwrap();
+        tracker
+            .0
+            .client
+            .update_swap_metadata(
+                &id,
+                SwapMetadata {
+                    evm_fund_started: Some(true),
+                    evm_fund_relay: Some(crate::storage::RelayFundingJournal {
+                        permit2_nonce: "7".into(),
+                        permit2_deadline: 2_000_000_000,
+                        depositor: "0x01".into(),
+                        coordinator: "0x02".into(),
+                        lock_token: "0x03".into(),
+                        eip2612_permit: false,
+                        tx_hash: None,
+                        outcome,
+                    }),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        tracker
+            .resolve_attempt(&id, AttemptResolution::ProvenNotSubmitted)
+            .await
+            .unwrap();
+        let metadata = stored_metadata(&tracker, &id);
+        assert_eq!(
+            metadata.evm_fund_started,
+            Some(!released),
+            "{outcome:?}: proof about a CCTP attempt says nothing about a relay signature"
+        );
+    }
+}
+
+#[tokio::test]
 async fn proven_not_submitted_recover_cctp_drops_only_hashless_cctp_operations() {
     for sent in [false, true] {
         let (tracker, _, _, id) = setup(1, TrackerOptions::default());

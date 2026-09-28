@@ -48,6 +48,13 @@ struct Wallet {
     /// Receipts a lagging node serves only after a few seconds.
     slow_receipts: Mutex<Vec<B256>>,
     reverted_receipts: Mutex<Vec<B256>>,
+    permit2_allowance: AtomicU64,
+    permit_domain: Mutex<B256>,
+    permit_nonce: AtomicU64,
+    /// Permit2 nonces spent on chain.
+    spent_nonces: Arc<Mutex<Vec<U256>>>,
+    /// `None` fails the lookup.
+    code: Mutex<Option<Bytes>>,
 }
 fn secp256k1_order() -> U256 {
     U256::from_str_radix(
@@ -124,6 +131,32 @@ impl EvmWallet for Wallet {
                 } else {
                     U256::from_be_slice(self.owner.as_slice())
                 }
+            } else if tx
+                .data
+                .starts_with(&super::funding::TokenAllowance::allowanceCall::SELECTOR)
+            {
+                U256::from(self.permit2_allowance.load(Ordering::Relaxed))
+            } else if tx
+                .data
+                .starts_with(&super::permit::PermitToken::DOMAIN_SEPARATORCall::SELECTOR)
+            {
+                U256::from_be_bytes(self.permit_domain.lock().unwrap().0)
+            } else if tx
+                .data
+                .starts_with(&super::permit::PermitToken::noncesCall::SELECTOR)
+            {
+                U256::from(self.permit_nonce.load(Ordering::Relaxed))
+            } else if let Ok(query) =
+                super::relay::Permit2Nonces::nonceBitmapCall::abi_decode(&tx.data)
+            {
+                self.spent_nonces
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|nonce| **nonce >> 8_usize == query.wordPosition)
+                    .fold(U256::ZERO, |bitmap, nonce| {
+                        bitmap | U256::ONE << usize::from(nonce.byte(0))
+                    })
             } else {
                 U256::ZERO
             };
@@ -211,6 +244,15 @@ impl EvmWallet for Wallet {
     }
     fn block_timestamp(&self) -> WalletFuture<'_, u64> {
         Box::pin(async { Ok(self.now.load(Ordering::Relaxed)) })
+    }
+    fn code(&self, _: Address) -> WalletFuture<'_, Bytes> {
+        Box::pin(async {
+            self.code
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or_else(|| Error::Transport("code lookup failed".into()))
+        })
     }
 }
 
@@ -318,6 +360,11 @@ fn setup_fixture(
         hanging_receipts: Mutex::new(vec![]),
         slow_receipts: Mutex::new(vec![]),
         reverted_receipts: Mutex::new(vec![]),
+        permit2_allowance: AtomicU64::new(0),
+        permit_domain: Mutex::new(B256::ZERO),
+        permit_nonce: AtomicU64::new(0),
+        spent_nonces: Arc::default(),
+        code: Mutex::new(None),
     };
     (client, wallet, store)
 }
@@ -2709,4 +2756,1133 @@ async fn auto_claim_refuses_server_calls_on_a_direct_relay_payout() {
     };
     assert!(error.to_string().contains("server calls"), "{error}");
     assert_eq!(wallet.signatures.load(Ordering::Relaxed), 0);
+}
+
+fn relay_source() -> Address {
+    Address::repeat_byte(0x11)
+}
+fn relay_dex() -> Address {
+    Address::repeat_byte(0x0d)
+}
+fn relay_domain() -> B256 {
+    B256::repeat_byte(0xd0)
+}
+fn relay_calls(fee: u64, spender: Address) -> Vec<crate::aa::abi::Call> {
+    use crate::aa::abi::Call;
+    let mut calls = vec![];
+    if fee > 0 {
+        calls.push(Call {
+            target: relay_source(),
+            value: U256::ZERO,
+            callData: super::recovery::RecoveryToken::transferCall {
+                to: Address::repeat_byte(3),
+                amount: U256::from(fee),
+            }
+            .abi_encode()
+            .into(),
+        });
+    }
+    calls.push(Call {
+        target: relay_source(),
+        value: U256::ZERO,
+        callData: crate::aa::abi::IERC20::approveCall {
+            spender,
+            amount: U256::from(100_000 - fee),
+        }
+        .abi_encode()
+        .into(),
+    });
+    calls.push(Call {
+        target: relay_dex(),
+        value: U256::ZERO,
+        callData: Bytes::from_static(&[0x12, 0x34]),
+    });
+    calls
+}
+fn set_relay_calls(payload: &mut Value, calls: &[crate::aa::abi::Call]) {
+    use alloy::sol_types::SolValue;
+    payload["calls"] = calls
+        .iter()
+        .map(|c| json!({"target": c.target, "value": c.value.to_string(), "call_data": c.callData}))
+        .collect();
+    payload["calls_hash"] = json!(alloy::primitives::keccak256(calls.abi_encode()));
+}
+fn relay_payload(wallet: &Wallet) -> Value {
+    let mut payload = json!({
+        "coordinator_address": wallet.coordinator,
+        "permit2_address": crate::aa::permit2::PERMIT2_ADDRESS,
+        "source_token_address": relay_source(),
+        "source_amount": "100000",
+        "lock_token_address": wallet.htlc.token,
+        "preimage_hash": wallet.htlc.hash_lock,
+        "claim_address": wallet.htlc.claimer,
+        "timelock": wallet.htlc.timelock,
+        "eip2612": {"supported": true, "already_approved": false, "nonce": 0, "domain_separator": relay_domain()},
+        "relay_fee": "300",
+        "depositor_delegation": null,
+    });
+    set_relay_calls(&mut payload, &relay_calls(300, relay_dex()));
+    payload
+}
+fn relay_pinned(max_source_amount: u64, allowed_call_targets: Vec<Address>) -> FundingOptions {
+    FundingOptions {
+        coordinator: Address::repeat_byte(4),
+        htlc: Address::repeat_byte(5),
+        lock_token: Address::repeat_byte(6),
+        max_source_amount: U256::from(max_source_amount),
+        allowed_call_targets,
+        timeout: Duration::from_secs(10),
+    }
+}
+fn relay_deadline() -> tokio::time::Instant {
+    tokio::time::Instant::now() + Duration::from_secs(10)
+}
+
+type SeenJournal = (
+    Option<crate::storage::RelayFundingOutcome>,
+    Option<String>,
+    Option<bool>,
+);
+
+/// Stands in for the daemon's relay: records each request with the journal it found,
+/// and on success spends the posted Permit2 nonce as the funding transaction would.
+#[derive(Clone)]
+struct RelayServer {
+    store: Arc<InMemorySwapStorage>,
+    spent: Arc<Mutex<Vec<U256>>>,
+    bodies: Arc<Mutex<Vec<Value>>>,
+    seen: Arc<Mutex<Vec<SeenJournal>>>,
+    statuses: Arc<Mutex<Vec<u16>>>,
+    /// Shared, so that it can change after the responder is mounted.
+    delay: Arc<Mutex<Duration>>,
+    /// The body of a 200.
+    answer: Value,
+}
+impl wiremock::Respond for RelayServer {
+    fn respond(&self, request: &wiremock::Request) -> wiremock::ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+        let metadata = self.store.get_swap("test").unwrap().unwrap().metadata;
+        let journal = metadata.evm_fund_relay;
+        self.seen.lock().unwrap().push((
+            journal.as_ref().map(|journal| journal.outcome),
+            journal.map(|journal| journal.permit2_nonce),
+            metadata.evm_fund_started,
+        ));
+        self.bodies.lock().unwrap().push(body.clone());
+        let status = {
+            let mut statuses = self.statuses.lock().unwrap();
+            if statuses.is_empty() {
+                200
+            } else {
+                statuses.remove(0)
+            }
+        };
+        let response = if status == 200 {
+            if let Some(nonce) = body["permit2_nonce"].as_str() {
+                self.spent
+                    .lock()
+                    .unwrap()
+                    .push(U256::from_str_radix(nonce, 10).unwrap());
+            }
+            wiremock::ResponseTemplate::new(200).set_body_json(&self.answer)
+        } else {
+            wiremock::ResponseTemplate::new(status).set_body_json(json!({"error": "refused"}))
+        };
+        response.set_delay(*self.delay.lock().unwrap())
+    }
+}
+
+struct RelayCase {
+    client: Client,
+    wallet: Wallet,
+    store: Arc<InMemorySwapStorage>,
+    server: wiremock::MockServer,
+    relay: RelayServer,
+    payload: Value,
+}
+impl RelayCase {
+    async fn new(
+        edit_response: impl FnOnce(&mut Value),
+        edit_payload: impl FnOnce(&mut Value),
+    ) -> Self {
+        Self::for_direction("evm_to_arkade", edit_response, edit_payload).await
+    }
+    async fn for_direction(
+        direction: &str,
+        edit_response: impl FnOnce(&mut Value),
+        edit_payload: impl FnOnce(&mut Value),
+    ) -> Self {
+        use wiremock::Mock;
+        use wiremock::ResponseTemplate;
+        use wiremock::matchers::method;
+        use wiremock::matchers::path;
+        let (_, wallet, fixture) = setup_direction(direction, EvmHtlcKind::Erc20);
+        *wallet.permit_domain.lock().unwrap() = relay_domain();
+        let mut response =
+            serde_json::to_value(fixture.get_swap("test").unwrap().unwrap().response).unwrap();
+        response["gasless"] = json!(true);
+        response["source_token"]["token_id"] = json!(relay_source());
+        edit_response(&mut response);
+        let mut payload = relay_payload(&wallet);
+        edit_payload(&mut payload);
+        let store = Arc::new(InMemorySwapStorage::new());
+        store
+            .store_swap(
+                StoredSwap::new(
+                    0,
+                    serde_json::from_value(response.clone()).unwrap(),
+                    SwapMetadata {
+                        evm_coordinator_address: Some(wallet.coordinator.to_string()),
+                        ..Default::default()
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let server = wiremock::MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/swap/test"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/swap/test/swap-and-lock-calldata-permit2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&payload))
+            .mount(&server)
+            .await;
+        let client = Client::builder()
+            .base_url(server.uri())
+            .mnemonic(MNEMONIC)
+            .storage(store.clone())
+            .build()
+            .unwrap();
+        let relay = RelayServer {
+            store: store.clone(),
+            spent: wallet.spent_nonces.clone(),
+            bodies: Arc::default(),
+            seen: Arc::default(),
+            statuses: Arc::default(),
+            delay: Arc::default(),
+            answer: json!({"id": "test", "tx_hash": B256::repeat_byte(42), "message": "funded"}),
+        };
+        Self {
+            client,
+            wallet,
+            store,
+            server,
+            relay,
+            payload,
+        }
+    }
+    async fn mount_relay(&self, expected: u64) {
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/swap/test/fund-gasless"))
+            .respond_with(self.relay.clone())
+            .expect(expected)
+            .mount(&self.server)
+            .await;
+    }
+    async fn fund(&self, options: &RelayFundingOptions) -> crate::Result<RelayFunding> {
+        self.client
+            .fund_relay("test", Some(&self.wallet), options, relay_deadline())
+            .await
+    }
+    /// Through the operation timeout, as `fund_swap_gasless_relay` runs it.
+    async fn fund_within(&self, options: &RelayFundingOptions) -> crate::Result<RelayFunding> {
+        self.client
+            .fund_relay_within("test", Some(&self.wallet), options)
+            .await
+    }
+    /// Asserts a refusal before anything was reserved or posted.
+    async fn assert_refused(&self, options: &RelayFundingOptions, expected: &str, name: &str) {
+        self.mount_relay(0).await;
+        let result = self.fund(options).await;
+        assert!(
+            matches!(&result, Err(Error::InvalidSwap(message)) if message.contains(expected)),
+            "{name}: {result:?}"
+        );
+        let metadata = self.metadata();
+        assert_eq!(metadata.evm_fund_relay, None, "{name}");
+        assert_eq!(metadata.evm_fund_started, None, "{name}");
+        self.server.verify().await;
+    }
+    /// Serves `GET /swap/test` from an edited copy of the stored response.
+    async fn serve_swap(&self, edit: impl FnOnce(&mut Value)) {
+        let mut response =
+            serde_json::to_value(self.store.get_swap("test").unwrap().unwrap().response).unwrap();
+        edit(&mut response);
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/swap/test"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(&response))
+            .with_priority(1)
+            .mount(&self.server)
+            .await;
+    }
+    async fn reconcile(&self) -> crate::Result<RelayFundingState> {
+        self.client
+            .reconcile_relay(
+                "test",
+                Some(&self.wallet),
+                &RelayFundingOptions::new(U256::ZERO),
+            )
+            .await
+    }
+    fn metadata(&self) -> SwapMetadata {
+        self.store.get_swap("test").unwrap().unwrap().metadata
+    }
+    fn journal(&self) -> crate::storage::RelayFundingJournal {
+        self.metadata().evm_fund_relay.unwrap()
+    }
+    fn body(&self, index: usize) -> Value {
+        self.relay.bodies.lock().unwrap()[index].clone()
+    }
+    fn permit2_digest(&self, body: &Value) -> B256 {
+        let funding: Permit2FundingData = serde_json::from_value(self.payload.clone()).unwrap();
+        funding
+            .typed_data(
+                137,
+                U256::from_str_radix(body["permit2_nonce"].as_str().unwrap(), 10).unwrap(),
+                U256::from(body["permit2_deadline"].as_u64().unwrap()),
+            )
+            .unwrap()
+            .digest
+    }
+    fn permit_digest(&self, body: &Value) -> B256 {
+        super::permit::permit_digest(
+            relay_domain(),
+            self.wallet.owner,
+            crate::aa::permit2::PERMIT2_ADDRESS,
+            U256::MAX,
+            U256::ZERO,
+            U256::from(body["eip2612_permit"]["deadline"].as_u64().unwrap()),
+        )
+    }
+}
+fn signature_bytes(value: &Value) -> Bytes {
+    value.as_str().unwrap().parse().unwrap()
+}
+fn recovers(signature: &[u8], digest: B256) -> Address {
+    Signature::try_from(signature)
+        .unwrap()
+        .recover_address_from_prehash(&digest)
+        .unwrap()
+}
+
+#[tokio::test]
+async fn relay_rejects_substituted_payload_without_posting() {
+    type Case = (
+        &'static str,
+        &'static str,
+        fn(&mut Value),
+        fn(&mut Value),
+        fn(&mut RelayFundingOptions),
+    );
+    fn keep(_: &mut Value) {}
+    fn defaults(_: &mut RelayFundingOptions) {}
+    let control = RelayCase::new(keep, keep).await;
+    control.mount_relay(1).await;
+    control
+        .fund(&RelayFundingOptions::new(U256::from(300)))
+        .await
+        .unwrap();
+    let cases: Vec<Case> = vec![
+        (
+            "coordinator",
+            "does not match the swap",
+            keep,
+            |p| p["coordinator_address"] = json!(Address::repeat_byte(0x44)),
+            defaults,
+        ),
+        (
+            "hash lock",
+            "does not match the swap",
+            keep,
+            |p| p["preimage_hash"] = json!(B256::repeat_byte(1)),
+            defaults,
+        ),
+        (
+            "claim address",
+            "does not match the swap",
+            keep,
+            |p| p["claim_address"] = json!(Address::repeat_byte(0x33)),
+            defaults,
+        ),
+        (
+            "Permit2 address",
+            "does not match the swap",
+            keep,
+            |p| p["permit2_address"] = json!(Address::repeat_byte(0x22)),
+            defaults,
+        ),
+        (
+            "calls hash",
+            "calls hash mismatch",
+            keep,
+            |p| p["calls_hash"] = json!(B256::ZERO),
+            defaults,
+        ),
+        (
+            "amount over the stored swap",
+            "exceeds the approved limit",
+            keep,
+            |p| p["source_amount"] = json!("100001"),
+            defaults,
+        ),
+        (
+            "amount over the pinned cap",
+            "exceeds the approved limit",
+            keep,
+            keep,
+            |o| {
+                o.funding = Some(relay_pinned(99_999, vec![relay_dex()]));
+            },
+        ),
+        (
+            "fee to another address",
+            "relay fee",
+            keep,
+            |p| {
+                let mut calls = relay_calls(300, relay_dex());
+                calls[0].callData = super::recovery::RecoveryToken::transferCall {
+                    to: Address::repeat_byte(0x77),
+                    amount: U256::from(300),
+                }
+                .abi_encode()
+                .into();
+                set_relay_calls(p, &calls);
+            },
+            defaults,
+        ),
+        ("fee over the maximum", "relay fee", keep, keep, |o| {
+            o.max_relay_fee = U256::from(299)
+        }),
+        (
+            "fee differs from the quote",
+            "relay fee",
+            keep,
+            |p| p["relay_fee"] = json!("200"),
+            defaults,
+        ),
+        (
+            "unlisted approve spender",
+            "unapproved spender",
+            keep,
+            |p| {
+                set_relay_calls(p, &relay_calls(300, Address::repeat_byte(0x66)));
+            },
+            |o| o.funding = Some(relay_pinned(100_000, vec![relay_dex()])),
+        ),
+        (
+            "unlisted call target",
+            "unapproved call target",
+            keep,
+            |p| {
+                set_relay_calls(p, &relay_calls(300, Address::repeat_byte(0x66)));
+            },
+            |o| o.funding = Some(relay_pinned(100_000, vec![Address::repeat_byte(0x66)])),
+        ),
+        (
+            "approval above the input",
+            "more than the input",
+            keep,
+            |p| {
+                let mut calls = relay_calls(300, relay_dex());
+                calls[1].callData = crate::aa::abi::IERC20::approveCall {
+                    spender: relay_dex(),
+                    amount: U256::from(100_001),
+                }
+                .abi_encode()
+                .into();
+                set_relay_calls(p, &calls);
+            },
+            defaults,
+        ),
+        (
+            "source-token transfer after the fee",
+            "more than the fee and an approval",
+            keep,
+            |p| {
+                let mut calls = relay_calls(300, relay_dex());
+                calls.swap(0, 1);
+                set_relay_calls(p, &calls);
+            },
+            defaults,
+        ),
+        (
+            "native value in a call",
+            "native-token transfer",
+            keep,
+            |p| {
+                let mut calls = relay_calls(300, relay_dex());
+                calls[2].value = U256::ONE;
+                set_relay_calls(p, &calls);
+            },
+            defaults,
+        ),
+        (
+            "swap not gasless",
+            "created as gasless",
+            |r| r["gasless"] = json!(false),
+            keep,
+            defaults,
+        ),
+        (
+            "native lock",
+            "native lock",
+            |r| r["evm_htlc_kind"] = json!(EvmHtlcKind::Native),
+            keep,
+            defaults,
+        ),
+        (
+            "server domain separator",
+            "differs from the chain",
+            keep,
+            |p| {
+                p["eip2612"]["domain_separator"] = json!(B256::repeat_byte(0xee));
+            },
+            defaults,
+        ),
+        (
+            "server permit nonce",
+            "differs from the chain",
+            keep,
+            |p| p["eip2612"]["nonce"] = json!(7),
+            defaults,
+        ),
+        (
+            "no allowance and no permit support",
+            "no EIP-2612 permit",
+            keep,
+            |p| {
+                p["eip2612"]["supported"] = json!(false);
+            },
+            defaults,
+        ),
+        (
+            "unknown delegation target",
+            "cannot sign for",
+            keep,
+            |p| {
+                p["depositor_delegation"] = json!(Address::repeat_byte(0x99));
+            },
+            defaults,
+        ),
+        (
+            "signatures outliving the timelock",
+            "past the refund timelock",
+            |r| {
+                r["evm_refund_locktime"] = json!(super::funding::now().unwrap() + 600);
+            },
+            |p| p["timelock"] = json!(super::funding::now().unwrap() + 600),
+            defaults,
+        ),
+    ];
+    for (name, expected, edit_response, edit_payload, edit_options) in cases {
+        let case = RelayCase::new(edit_response, edit_payload).await;
+        let mut options = RelayFundingOptions::new(U256::from(300));
+        edit_options(&mut options);
+        case.assert_refused(&options, expected, name).await;
+    }
+
+    let pinned = RelayCase::new(keep, keep).await;
+    pinned.mount_relay(1).await;
+    let mut options = RelayFundingOptions::new(U256::from(300));
+    options.funding = Some(relay_pinned(100_000, vec![relay_dex()]));
+    pinned.fund(&options).await.unwrap();
+
+    let unhinted: fn(&mut Value) = |p| {
+        p.as_object_mut().unwrap().remove("depositor_delegation");
+    };
+    type ChainCase = (&'static str, &'static str, fn(&mut Value), fn(&Wallet));
+    let chain_cases: Vec<ChainCase> = vec![
+        (
+            "insufficient balance",
+            "insufficient token balance",
+            keep,
+            |w| w.token_balance.store(99_999, Ordering::Relaxed),
+        ),
+        (
+            "probed code that is not a delegation",
+            "not a delegation",
+            unhinted,
+            |w| *w.code.lock().unwrap() = Some(Bytes::from_static(&[0x60, 0x80, 0x60, 0x40])),
+        ),
+        (
+            "probed delegation to unknown code",
+            "cannot sign for",
+            unhinted,
+            |w| {
+                let mut code = vec![0xef, 0x01, 0x00];
+                code.extend_from_slice(Address::repeat_byte(0x99).as_slice());
+                *w.code.lock().unwrap() = Some(code.into());
+            },
+        ),
+    ];
+    for (name, expected, edit_payload, edit_wallet) in chain_cases {
+        let case = RelayCase::new(keep, edit_payload).await;
+        edit_wallet(&case.wallet);
+        case.assert_refused(&RelayFundingOptions::new(U256::from(300)), expected, name)
+            .await;
+    }
+}
+
+#[tokio::test]
+async fn relay_checks_the_server_and_persisted_copies_of_the_swap() {
+    let options = RelayFundingOptions::new(U256::from(300));
+    let coordinator: fn(&mut Value) =
+        |r| r["evm_coordinator_address"] = json!(Address::repeat_byte(0x44));
+    let htlc: fn(&mut Value) = |r| r["evm_htlc_address"] = json!(Address::repeat_byte(0x55));
+    for (name, edit) in [("served coordinator", coordinator), ("served HTLC", htlc)] {
+        let case = RelayCase::new(|_| {}, |_| {}).await;
+        case.serve_swap(edit).await;
+        case.assert_refused(&options, "differ from the stored swap", name)
+            .await;
+    }
+    let case = RelayCase::new(|_| {}, |_| {}).await;
+    case.client
+        .update_swap_metadata(
+            "test",
+            SwapMetadata {
+                evm_coordinator_address: Some(Address::repeat_byte(0x44).to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    case.assert_refused(&options, "persisted for this swap", "persisted coordinator")
+        .await;
+}
+
+#[tokio::test]
+async fn relay_binds_the_stored_lock_token() {
+    let other = Address::repeat_byte(0x77);
+    let substituted = move |p: &mut Value| p["lock_token_address"] = json!(other);
+    let options = RelayFundingOptions::new(U256::from(300));
+    for direction in ["evm_to_bitcoin", "evm_to_lightning"] {
+        let control = RelayCase::for_direction(direction, |_| {}, |_| {}).await;
+        control.mount_relay(1).await;
+        control.fund(&options).await.unwrap();
+        assert_eq!(
+            control.journal().lock_token,
+            control.wallet.htlc.token.to_string()
+        );
+
+        let case = RelayCase::for_direction(direction, |_| {}, substituted).await;
+        let name = format!("{direction}: substituted payload token");
+        case.assert_refused(&options, "does not match the swap", &name)
+            .await;
+
+        // A pinned token cannot stand in for the stored one, even when the payload agrees.
+        let case = RelayCase::for_direction(direction, |_| {}, substituted).await;
+        let mut pinned = relay_pinned(100_000, vec![relay_dex()]);
+        pinned.lock_token = other;
+        let mut pinned_options = options.clone();
+        pinned_options.funding = Some(pinned);
+        let name = format!("{direction}: pinned token");
+        case.assert_refused(&pinned_options, "does not match the swap", &name)
+            .await;
+
+        let case = RelayCase::for_direction(direction, |_| {}, |_| {}).await;
+        case.serve_swap(|r| r["wbtc_address"] = json!(other)).await;
+        let name = format!("{direction}: served token");
+        case.assert_refused(&options, "differ from the stored swap", &name)
+            .await;
+    }
+}
+
+#[tokio::test]
+async fn relay_persists_intent_before_posting_and_verifies_receipt() {
+    use crate::storage::RelayFundingOutcome;
+    for allowance in [0, 100_000] {
+        let mut case = RelayCase::new(|_| {}, |_| {}).await;
+        case.wallet
+            .permit2_allowance
+            .store(allowance, Ordering::Relaxed);
+        // The relay answers only after its receipt, so the request must outlive the
+        // client-wide timeout.
+        case.client = Client::builder()
+            .base_url(case.server.uri())
+            .mnemonic(MNEMONIC)
+            .storage(case.store.clone())
+            .http(
+                reqwest::Client::builder()
+                    .timeout(Duration::from_secs(1))
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap();
+        *case.relay.delay.lock().unwrap() = Duration::from_millis(1500);
+        case.mount_relay(1).await;
+        let funded = case
+            .fund(&RelayFundingOptions::new(U256::from(300)))
+            .await
+            .unwrap();
+        let body = case.body(0);
+        let nonce = body["permit2_nonce"].as_str().unwrap().to_owned();
+        assert_eq!(
+            case.relay.seen.lock().unwrap()[0],
+            (Some(RelayFundingOutcome::Sending), Some(nonce), Some(true))
+        );
+        assert_eq!(body["calls"], case.payload["calls"]);
+        let signature = signature_bytes(&body["permit2_signature"]);
+        assert_eq!(signature.len(), 65);
+        assert_eq!(
+            recovers(&signature, case.permit2_digest(&body)),
+            case.wallet.owner
+        );
+        if allowance == 0 {
+            let permit = &body["eip2612_permit"];
+            assert_eq!(permit["value"], json!(U256::MAX.to_string()));
+            assert_eq!(permit["deadline"], body["permit2_deadline"]);
+            let parse = |field: &str| {
+                U256::from_str_radix(permit[field].as_str().unwrap().trim_start_matches("0x"), 16)
+                    .unwrap()
+            };
+            let signature = Signature::new(parse("r"), parse("s"), permit["v"] == json!(28));
+            assert_eq!(
+                signature
+                    .recover_address_from_prehash(&case.permit_digest(&body))
+                    .unwrap(),
+                case.wallet.owner
+            );
+        } else {
+            assert!(body.get("eip2612_permit").is_none());
+        }
+        assert_eq!(funded.tx_hash, B256::repeat_byte(42));
+        assert_eq!(funded.htlc, case.wallet.htlc);
+        assert_eq!(funded.eip2612_permit, allowance == 0);
+        let metadata = case.metadata();
+        assert_eq!(
+            metadata.evm_fund_txid,
+            Some(B256::repeat_byte(42).to_string())
+        );
+        let journal = metadata.evm_fund_relay.unwrap();
+        assert_eq!(journal.outcome, RelayFundingOutcome::Funded);
+        assert_eq!(journal.tx_hash, metadata.evm_fund_txid);
+    }
+}
+
+#[tokio::test]
+async fn relay_lost_response_is_reconciled_not_resent() {
+    use crate::storage::RelayFundingOutcome;
+    // A 502, then a relay that holds the request past the operation deadline. Its
+    // late 400 would count as a refusal, so only the deadline leaves it uncertain.
+    for (status, delay, budget) in [
+        (502, Duration::ZERO, Duration::from_secs(10)),
+        (400, Duration::from_secs(20), Duration::from_secs(3)),
+    ] {
+        let case = RelayCase::new(|_| {}, |_| {}).await;
+        case.relay.statuses.lock().unwrap().push(status);
+        *case.relay.delay.lock().unwrap() = delay;
+        case.mount_relay(2).await;
+        let options = RelayFundingOptions::new(U256::from(300));
+        let lost = case
+            .client
+            .fund_relay(
+                "test",
+                Some(&case.wallet),
+                &options,
+                tokio::time::Instant::now() + budget,
+            )
+            .await;
+        assert!(lost.is_err());
+        *case.relay.delay.lock().unwrap() = Duration::ZERO;
+        let journal = case.journal();
+        assert_eq!(journal.outcome, RelayFundingOutcome::Uncertain);
+        assert_eq!(case.metadata().evm_fund_started, Some(true));
+        assert!(case.fund(&options).await.is_err());
+        assert_eq!(case.relay.bodies.lock().unwrap().len(), 1);
+
+        case.wallet
+            .now
+            .store(journal.permit2_deadline, Ordering::Relaxed);
+        assert!(matches!(
+            case.reconcile().await.unwrap(),
+            RelayFundingState::Pending { nonce_consumed: false, deadline } if deadline == journal.permit2_deadline
+        ));
+        assert_eq!(case.metadata().evm_fund_started, Some(true));
+        // A lagging node may still be behind a block that spends the nonce.
+        case.wallet
+            .now
+            .store(journal.permit2_deadline + 120, Ordering::Relaxed);
+        assert!(matches!(
+            case.reconcile().await.unwrap(),
+            RelayFundingState::Pending {
+                nonce_consumed: false,
+                ..
+            }
+        ));
+        case.wallet
+            .now
+            .store(journal.permit2_deadline + 121, Ordering::Relaxed);
+        assert!(matches!(
+            case.reconcile().await.unwrap(),
+            RelayFundingState::Expired
+        ));
+        let metadata = case.metadata();
+        assert_eq!(metadata.evm_fund_started, Some(false));
+        assert_eq!(
+            metadata.evm_fund_relay.unwrap().outcome,
+            RelayFundingOutcome::Expired
+        );
+
+        // Nothing can land any more, and a new attempt still signs the same nonce.
+        case.fund(&options).await.unwrap();
+        assert_eq!(case.body(0)["permit2_nonce"], case.body(1)["permit2_nonce"]);
+    }
+}
+
+#[tokio::test]
+async fn relay_lost_response_is_funded_from_the_server_hash() {
+    use crate::storage::RelayFundingOutcome;
+    use wiremock::Mock;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+    let case = RelayCase::new(|_| {}, |_| {}).await;
+    case.relay.statuses.lock().unwrap().push(502);
+    case.mount_relay(1).await;
+    assert!(
+        case.fund(&RelayFundingOptions::new(U256::from(300)))
+            .await
+            .is_err()
+    );
+    let journal = case.journal();
+    // The relay funded the swap but its answer was lost.
+    case.wallet
+        .spent_nonces
+        .lock()
+        .unwrap()
+        .push(U256::from_str_radix(&journal.permit2_nonce, 10).unwrap());
+    case.wallet.now.store(u64::MAX / 2, Ordering::Relaxed);
+    assert!(matches!(
+        case.reconcile().await.unwrap(),
+        RelayFundingState::Pending {
+            nonce_consumed: true,
+            ..
+        }
+    ));
+    assert_eq!(case.metadata().evm_fund_started, Some(true));
+    let mut response =
+        serde_json::to_value(case.store.get_swap("test").unwrap().unwrap().response).unwrap();
+    response["evm_fund_txid"] = json!(B256::repeat_byte(42));
+    Mock::given(method("GET"))
+        .and(path("/swap/test"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+        .with_priority(1)
+        .mount(&case.server)
+        .await;
+    // A matching receipt alone is not enough while the nonce reads unspent.
+    let spent = case.wallet.spent_nonces.lock().unwrap().split_off(0);
+    case.wallet
+        .now
+        .store(journal.permit2_deadline, Ordering::Relaxed);
+    assert!(matches!(
+        case.reconcile().await.unwrap(),
+        RelayFundingState::Pending {
+            nonce_consumed: false,
+            ..
+        }
+    ));
+    case.wallet.spent_nonces.lock().unwrap().extend(spent);
+    let RelayFundingState::Funded(funded) = case.reconcile().await.unwrap() else {
+        panic!("expected the server's hash to prove the funding")
+    };
+    assert_eq!(funded.tx_hash, B256::repeat_byte(42));
+    let metadata = case.metadata();
+    assert_eq!(
+        metadata.evm_fund_txid,
+        Some(B256::repeat_byte(42).to_string())
+    );
+    assert_eq!(
+        metadata.evm_fund_relay.unwrap().outcome,
+        RelayFundingOutcome::Funded
+    );
+}
+
+#[tokio::test]
+async fn relay_rejection_resigns_with_the_same_nonce() {
+    use crate::storage::RelayFundingOutcome;
+    let case = RelayCase::new(|_| {}, |_| {}).await;
+    case.relay.statuses.lock().unwrap().push(400);
+    case.mount_relay(2).await;
+    let rejected = case.fund(&RelayFundingOptions::new(U256::from(300))).await;
+    assert!(
+        matches!(rejected, Err(Error::Api { status: 400, .. })),
+        "{rejected:?}"
+    );
+    assert_eq!(case.journal().outcome, RelayFundingOutcome::Rejected);
+    // The refused signature stays valid until its deadline, so other funding paths wait.
+    assert_eq!(case.metadata().evm_fund_started, Some(true));
+    assert!(
+        case.client
+            .fund_swap_with_wallet("test", &case.wallet, relay_pinned(100_000, vec![]))
+            .await
+            .is_err()
+    );
+    let mut shorter = RelayFundingOptions::new(U256::from(300));
+    shorter.permit_deadline = Duration::from_secs(600);
+    case.fund(&shorter).await.unwrap();
+    let (first, second) = (case.body(0), case.body(1));
+    assert_eq!(first["permit2_nonce"], second["permit2_nonce"]);
+    let first_deadline = first["permit2_deadline"].as_u64().unwrap();
+    assert!(second["permit2_deadline"].as_u64().unwrap() < first_deadline);
+    let seen = case.relay.seen.lock().unwrap().clone();
+    assert_eq!(seen[1].0, Some(RelayFundingOutcome::Sending));
+    let journal = case.journal();
+    assert_eq!(journal.outcome, RelayFundingOutcome::Funded);
+    assert_eq!(journal.permit2_deadline, first_deadline);
+}
+
+#[tokio::test]
+async fn relay_unproven_answers_block_another_attempt() {
+    use crate::storage::RelayFundingOutcome;
+    let options = RelayFundingOptions::new(U256::from(300));
+    fn reconcile_first(result: &crate::Result<RelayFunding>) -> bool {
+        matches!(result, Err(Error::InvalidSwap(message)) if message.contains("reconcile"))
+    }
+    // The mock serves any other hash a receipt without this HTLC's creation.
+    let unproven = B256::repeat_byte(43);
+    for (answer, outcome, tx_hash) in [
+        (
+            json!({"id": "test", "tx_hash": unproven, "message": "funded"}),
+            RelayFundingOutcome::Accepted,
+            Some(unproven.to_string()),
+        ),
+        (
+            json!({"id": "other", "tx_hash": B256::repeat_byte(42), "message": "funded"}),
+            RelayFundingOutcome::Uncertain,
+            None,
+        ),
+        (
+            json!({"id": "test", "tx_hash": "queued", "message": "funded"}),
+            RelayFundingOutcome::Uncertain,
+            None,
+        ),
+    ] {
+        let mut case = RelayCase::new(|_| {}, |_| {}).await;
+        case.relay.answer = answer;
+        case.mount_relay(1).await;
+        assert!(case.fund(&options).await.is_err());
+        let metadata = case.metadata();
+        assert_eq!(metadata.evm_fund_txid, None);
+        let journal = metadata.evm_fund_relay.unwrap();
+        assert_eq!((journal.outcome, journal.tx_hash), (outcome, tx_hash));
+        let again = case.fund(&options).await;
+        assert!(reconcile_first(&again), "{outcome:?}: {again:?}");
+        case.server.verify().await;
+    }
+
+    // A process that stopped while sending leaves the journal at Sending.
+    let case = RelayCase::new(|_| {}, |_| {}).await;
+    case.client
+        .update_swap_metadata(
+            "test",
+            SwapMetadata {
+                evm_fund_relay: Some(crate::storage::RelayFundingJournal {
+                    permit2_nonce: "7".into(),
+                    permit2_deadline: case.wallet.now.load(Ordering::Relaxed) + 1800,
+                    depositor: case.wallet.owner.to_string(),
+                    coordinator: case.wallet.coordinator.to_string(),
+                    lock_token: case.wallet.htlc.token.to_string(),
+                    eip2612_permit: true,
+                    tx_hash: None,
+                    outcome: RelayFundingOutcome::Sending,
+                }),
+                evm_fund_started: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    case.mount_relay(0).await;
+    let refused = case.fund(&options).await;
+    assert!(reconcile_first(&refused), "{refused:?}");
+    case.server.verify().await;
+}
+
+#[tokio::test]
+async fn an_unsettled_relay_signature_blocks_other_funding_after_a_release() {
+    use crate::storage::RelayFundingOutcome;
+    fn relay_blocked<T: std::fmt::Debug>(result: &crate::Result<T>) -> bool {
+        matches!(result, Err(Error::InvalidSwap(message)) if message.contains("reconcile_gasless_relay_funding"))
+    }
+    let case = RelayCase::new(|_| {}, |_| {}).await;
+    for outcome in [
+        RelayFundingOutcome::Sending,
+        RelayFundingOutcome::Rejected,
+        RelayFundingOutcome::Reverted,
+        RelayFundingOutcome::Accepted,
+        RelayFundingOutcome::Uncertain,
+        RelayFundingOutcome::Expired,
+    ] {
+        // The flag was released by hand, as the generic unresolved-funding error suggests.
+        case.client
+            .update_swap_metadata(
+                "test",
+                SwapMetadata {
+                    evm_fund_relay: Some(crate::storage::RelayFundingJournal {
+                        permit2_nonce: "7".into(),
+                        permit2_deadline: case.wallet.now.load(Ordering::Relaxed) + 1800,
+                        depositor: case.wallet.owner.to_string(),
+                        coordinator: case.wallet.coordinator.to_string(),
+                        lock_token: case.wallet.htlc.token.to_string(),
+                        eip2612_permit: true,
+                        tx_hash: None,
+                        outcome,
+                    }),
+                    evm_fund_started: Some(false),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let unsettled = outcome != RelayFundingOutcome::Expired;
+        let gasless = case
+            .client
+            .fund_swap_gasless(
+                "test",
+                crate::aa::GaslessOpts::new(case.server.uri().parse().unwrap()),
+            )
+            .await;
+        assert_eq!(
+            relay_blocked(&gasless),
+            unsettled,
+            "{outcome:?}: {gasless:?}"
+        );
+        let wallet = case
+            .client
+            .fund_swap_with_wallet("test", &case.wallet, relay_pinned(100_000, vec![]))
+            .await;
+        assert_eq!(relay_blocked(&wallet), unsettled, "{outcome:?}: {wallet:?}");
+    }
+}
+
+#[tokio::test]
+async fn relay_revert_resigns_with_the_same_nonce() {
+    use crate::storage::RelayFundingOutcome;
+    let case = RelayCase::new(|_| {}, |_| {}).await;
+    case.mount_relay(2).await;
+    case.wallet
+        .reverted_receipts
+        .lock()
+        .unwrap()
+        .push(B256::repeat_byte(42));
+    let options = RelayFundingOptions::new(U256::from(300));
+    let reverted = case.fund(&options).await;
+    assert!(
+        matches!(&reverted, Err(Error::InvalidSwap(message)) if message.contains("reverted")),
+        "{reverted:?}"
+    );
+    let metadata = case.metadata();
+    assert_eq!(metadata.evm_fund_txid, None);
+    assert_eq!(
+        metadata.evm_fund_relay.unwrap().outcome,
+        RelayFundingOutcome::Reverted
+    );
+    case.wallet.reverted_receipts.lock().unwrap().clear();
+    case.fund(&options).await.unwrap();
+    assert_eq!(case.body(0)["permit2_nonce"], case.body(1)["permit2_nonce"]);
+    assert_eq!(case.journal().outcome, RelayFundingOutcome::Funded);
+}
+
+#[tokio::test]
+async fn relay_timeout_says_whether_the_request_may_have_been_sent() {
+    use crate::storage::RelayFundingOutcome;
+    use wiremock::Mock;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+    fn timed_out(result: &crate::Result<RelayFunding>, advice: &str) -> bool {
+        matches!(result, Err(Error::Timeout(message)) if message.contains(advice))
+    }
+    let mut options = RelayFundingOptions::new(U256::from(300));
+    options.timeout = Duration::from_secs(1);
+
+    // Held before anything is persisted: the call can be repeated as it is.
+    let case = RelayCase::new(|_| {}, |_| {}).await;
+    case.mount_relay(1).await;
+    Mock::given(method("GET"))
+        .and(path("/swap/test/swap-and-lock-calldata-permit2"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(&case.payload)
+                .set_delay(Duration::from_secs(30)),
+        )
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&case.server)
+        .await;
+    let result = case.fund_within(&options).await;
+    assert!(timed_out(&result, "can be repeated"), "{result:?}");
+    assert_eq!(case.metadata().evm_fund_relay, None);
+    // No limit, as with `tokio::time::timeout`.
+    options.timeout = Duration::MAX;
+    case.fund_within(&options).await.unwrap();
+
+    // Held waiting for the receipt of an accepted request.
+    let case = RelayCase::new(|_| {}, |_| {}).await;
+    case.wallet
+        .hanging_receipts
+        .lock()
+        .unwrap()
+        .push(B256::repeat_byte(42));
+    case.mount_relay(1).await;
+    options.timeout = Duration::from_secs(3);
+    let result = case.fund_within(&options).await;
+    assert!(timed_out(&result, "reconcile"), "{result:?}");
+    assert_eq!(case.journal().outcome, RelayFundingOutcome::Accepted);
+}
+
+#[tokio::test]
+async fn relay_kernel_delegate_uses_erc1271_envelope() {
+    let kernel = crate::aa::kernel::KERNEL_DELEGATION_TARGET;
+    let mut designator = vec![0xef, 0x01, 0x00];
+    designator.extend_from_slice(kernel.as_slice());
+    // (server hint, probed code, whether the envelope is expected)
+    let hinted: fn(&mut Value) =
+        |p| p["depositor_delegation"] = json!(crate::aa::kernel::KERNEL_DELEGATION_TARGET);
+    let unhinted: fn(&mut Value) = |p| {
+        p.as_object_mut().unwrap().remove("depositor_delegation");
+    };
+    for (edit, code, envelope) in [
+        (hinted, None, true),
+        (unhinted, Some(Bytes::from(designator.clone())), true),
+        (unhinted, Some(Bytes::new()), false),
+        (unhinted, None, false),
+    ] {
+        let case = RelayCase::new(|_| {}, edit).await;
+        *case.wallet.code.lock().unwrap() = code;
+        case.mount_relay(1).await;
+        case.fund(&RelayFundingOptions::new(U256::from(300)))
+            .await
+            .unwrap();
+        let body = case.body(0);
+        let signature = signature_bytes(&body["permit2_signature"]);
+        let permit = &body["eip2612_permit"];
+        if !envelope {
+            assert_eq!(signature.len(), 65);
+            assert!(permit.get("v").is_some());
+            continue;
+        }
+        let owner = case.wallet.owner;
+        let wrapped = |digest| crate::aa::kernel::erc1271_wrapped_digest(digest, owner, 137);
+        assert_eq!((signature.len(), signature[0]), (66, 0x00));
+        assert_eq!(
+            recovers(&signature[1..], wrapped(case.permit2_digest(&body))),
+            owner
+        );
+        assert!(permit.get("v").is_none());
+        let permit_signature = signature_bytes(&permit["signature"]);
+        assert_eq!((permit_signature.len(), permit_signature[0]), (66, 0x00));
+        assert_eq!(
+            recovers(&permit_signature[1..], wrapped(case.permit_digest(&body))),
+            owner
+        );
+    }
+}
+
+fn setup_direction(
+    direction: &str,
+    kind: EvmHtlcKind,
+) -> (Client, Wallet, Arc<InMemorySwapStorage>) {
+    setup_fixture(direction, direction.ends_with("_to_evm"), kind)
 }

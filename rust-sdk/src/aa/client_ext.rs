@@ -256,6 +256,11 @@ impl Client {
                 "funding already submitted; inspect its receipt before another attempt".into(),
             ));
         }
+        if stored.metadata.relay_signature_outstanding() {
+            return Err(Error::InvalidSwap(
+                crate::evm::funding::UNRESOLVED_RELAY_FUNDING.into(),
+            ));
+        }
         if stored.metadata.evm_fund_started == Some(true) {
             return Err(Error::InvalidSwap(
                 crate::evm::funding::UNRESOLVED_FUNDING.into(),

@@ -42,10 +42,62 @@ const SERVER_FUNDING_HEDGE: Duration = Duration::from_secs(2);
 
 /// A failed funding check: whether the receipt was unavailable (so the server may
 /// know a different hash that mined), and why.
-type Unverified = (bool, Error);
+pub(super) type Unverified = (bool, Error);
+
+/// Checks a mined funding receipt: success, the single matching HTLC creation by
+/// `sender`, and with `depositor_at`, that the coordinator's deposit belongs to the
+/// swap owner. Like the TypeScript client, a reverted receipt or one without a
+/// matching creation counts as unavailable; a proof that fails does not.
+pub(super) async fn verify_funding_receipt(
+    wallet: &dyn EvmWallet,
+    context: &EvmContext,
+    receipt: &EvmReceipt,
+    sender: Address,
+    lock_token: Address,
+    depositor_at: Option<Address>,
+) -> std::result::Result<EvmHtlc, Unverified> {
+    let unavailable = |error| (true, error);
+    let rejected = |error| (false, error);
+    if !receipt.success {
+        return Err(unavailable(invalid("funding transaction reverted")));
+    }
+    let created = matching_creation(&receipt.logs, context, sender, lock_token)
+        .map_err(rejected)?
+        .ok_or_else(|| unavailable(invalid("funding receipt does not contain this HTLC")))?;
+    let htlc = EvmHtlc {
+        chain_id: context.chain_id,
+        address: context.htlc,
+        hash_lock: context.hash,
+        amount: created.amount,
+        token: lock_token,
+        sender,
+        claimer: context.server,
+        timelock: context.timelock,
+    };
+    if htlc.key() != created.key {
+        return Err(rejected(invalid("funding event HTLC key mismatch")));
+    }
+    if let Some(coordinator) = depositor_at {
+        let depositor = wallet
+            .call(&transaction(
+                wallet,
+                coordinator,
+                Coordinator::depositsCall { key: htlc.key() }.abi_encode(),
+            ))
+            .await
+            .map_err(rejected)?;
+        let bytes = word(&depositor).map_err(rejected)?.to_be_bytes::<32>();
+        if bytes[..12] != [0u8; 12] || Address::from_slice(&bytes[12..]) != context.owner {
+            return Err(rejected(invalid(
+                "coordinator depositor does not match this swap",
+            )));
+        }
+    }
+    Ok(htlc)
+}
 
 /// Whichever result verifies first; if neither does, the error from `first`.
-async fn first_verified<T>(
+pub(super) async fn first_verified<T>(
     first: impl std::future::Future<Output = std::result::Result<T, Unverified>>,
     second: impl std::future::Future<Output = std::result::Result<T, Unverified>>,
 ) -> std::result::Result<T, Unverified> {
@@ -111,11 +163,8 @@ impl Client {
         // mined one. The server hash only identifies the transaction to verify.
         let server = value["evm_fund_txid"].as_str();
         let context = &context;
-        // Like the TypeScript client, a receipt that cannot be read, reverted or holds
-        // no matching creation counts as unavailable; a proof that fails does not.
         let verify = |hash: String| async move {
             let unavailable = |error| (true, error);
-            let rejected = |error| (false, error);
             let expected = parse::<B256>(&hash).map_err(unavailable)?;
             let receipt = wallet
                 .wait_for_receipt(expected)
@@ -126,44 +175,15 @@ impl Client {
                     "funding receipt transaction hash mismatch",
                 )));
             }
-            if !receipt.success {
-                return Err(unavailable(invalid("funding transaction reverted")));
-            }
-            let sender = options.coordinator.unwrap_or(context.owner);
-            let created = matching_creation(&receipt.logs, context, sender, options.lock_token)
-                .map_err(rejected)?
-                .ok_or_else(|| {
-                    unavailable(invalid("funding receipt does not contain this HTLC"))
-                })?;
-            let htlc = EvmHtlc {
-                chain_id: context.chain_id,
-                address: context.htlc,
-                hash_lock: context.hash,
-                amount: created.amount,
-                token: options.lock_token,
-                sender,
-                claimer: context.server,
-                timelock: context.timelock,
-            };
-            if htlc.key() != created.key {
-                return Err(rejected(invalid("funding event HTLC key mismatch")));
-            }
-            if let Some(coordinator) = options.coordinator.filter(|_| require_depositor) {
-                let depositor = wallet
-                    .call(&transaction(
-                        wallet,
-                        coordinator,
-                        Coordinator::depositsCall { key: htlc.key() }.abi_encode(),
-                    ))
-                    .await
-                    .map_err(rejected)?;
-                let bytes = word(&depositor).map_err(rejected)?.to_be_bytes::<32>();
-                if bytes[..12] != [0u8; 12] || Address::from_slice(&bytes[12..]) != context.owner {
-                    return Err(rejected(invalid(
-                        "coordinator depositor does not match this swap",
-                    )));
-                }
-            }
+            let htlc = verify_funding_receipt(
+                wallet,
+                context,
+                &receipt,
+                options.coordinator.unwrap_or(context.owner),
+                options.lock_token,
+                options.coordinator.filter(|_| require_depositor),
+            )
+            .await?;
             Ok((htlc, hash))
         };
         let reason = |(_, error): Unverified| error;
@@ -242,7 +262,7 @@ impl Client {
         Ok(htlc)
     }
 
-    async fn server_funding_hash(&self, id: &str) -> Option<String> {
+    pub(super) async fn server_funding_hash(&self, id: &str) -> Option<String> {
         let response = self.get_swap_details(id).await.ok()?;
         serde_json::to_value(&response).ok()?["evm_fund_txid"]
             .as_str()

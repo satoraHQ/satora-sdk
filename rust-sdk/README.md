@@ -40,7 +40,7 @@ strings on the wire, while Bitcoin amounts must be positive and fit in `i64`.
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Discovery and quotes      | Health, tokens, pairs, chain/AA configuration, fees, MTP, referral/support data, typed DEX calls, exact local quote composition                  |
 | Creation and recovery     | All nine swap directions, paginated recovery, SQLite snapshots and execution journals                                                            |
-| EVM execution (`gasless`) | External/local wallets, Permit2 and EIP-2612, ERC-4337 funding/claims, server claims, timeout refunds, deposit recovery and refund continuation  |
+| EVM execution (`gasless`) | External and local wallets, Permit2 and EIP-2612, ERC-4337 and server funding/claims, timeout refunds, deposit recovery and refund continuation  |
 | Bitcoin execution         | Strict version 1 Taproot claims/refunds, multiple outputs, Esplora and optional Electrum                                                         |
 | Arkade execution          | All supported directions, offchain claims/refunds, cooperative refunds, delegated settlement, interrupted-batch recovery                         |
 | Bridges (`gasless`)       | CCTP v2 and USDT0 fees/messages, wallet/sponsored transfers, atomic inbound funding, outbound claims, delivery tracking and recovery             |
@@ -176,6 +176,33 @@ proves nothing was sent, release the reservation by merging `Some(false)` into
 refund verifies the receipt even after the coordinator deletes its deposit entry.
 Execution calls through cloned clients are serialized. Separate processes must
 coordinate exclusive ownership of a swap before executing it.
+
+`fund_swap_gasless_relay` funds a swap created with `gasless` through the server,
+as the TypeScript `fundSwapGasless` does. The swap's EVM key signs a Permit2
+transfer and, when the source token has no Permit2 allowance, an unlimited
+EIP-2612 approval of Permit2; the server submits both and pays the gas. The
+server's current copy of the swap must match the stored one, and the payload must
+name the stored coordinator, which must also be the persisted one. For EVM to
+Bitcoin and EVM to Lightning the payload must lock the stored `wbtc_address`; EVM
+to Arkade responses name no lock token, so the payload's is signed unless one is
+pinned. A pinned `FundingOptions` applies on top of these checks, never instead
+of them: its contracts must equal the stored swap's, and it adds a call-target
+allowlist and an input limit. Calls on the source token may only pay the relay
+fee, capped by `RelayFundingOptions::max_relay_fee`, to the server or approve at
+most the input, and the permit domain and nonce are read from the chain. The node
+for these reads defaults to the chain's public RPC. A Kernel-delegated depositor
+signs in Kernel's ERC-1271 envelope. The attempt is persisted in `evm_fund_relay`
+before the request is sent, and every attempt for a swap signs the same Permit2
+nonce, so at most one can fund it. After an error, the journal's outcome says what
+to do. With no journal, or one at `Rejected`, `Reverted` or `Expired`, the call
+can be repeated. At `Sending`, `Accepted` or `Uncertain` the server may have the
+request: `reconcile_gasless_relay_funding` reports the swap funded, pending or
+expired without sending anything, and expiry releases `evm_fund_started`. The
+funding is recorded only once its receipt shows this swap's HTLC creation and
+spends the nonce. A refused signature stays valid until its deadline, so until the
+journal is `Funded` or `Expired` the wallet, sponsored and CCTP funding paths
+refuse even if `evm_fund_started` is released, and the tracker's
+`ProvenNotSubmitted` keeps it set.
 
 `RpcWallet::connect` adapts a locally derived EVM key and checks the RPC chain.
 `claim_evm_with_wallet` and `claim_evm_gasless` verify the funded HTLC, preimage,

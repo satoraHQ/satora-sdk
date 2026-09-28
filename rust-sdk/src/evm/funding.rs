@@ -22,6 +22,7 @@ use std::time::UNIX_EPOCH;
 
 /// A funding reserved with no recorded hash: sent or not, only the caller can tell.
 pub(crate) const UNRESOLVED_FUNDING: &str = "funding may already be submitted; attach its transaction, or release evm_fund_started once nothing was sent";
+pub(crate) const UNRESOLVED_RELAY_FUNDING: &str = "a relay funding signature may still be used; run reconcile_gasless_relay_funding until it reports Funded or Expired";
 
 sol! {
     interface TokenAllowance {
@@ -75,16 +76,16 @@ impl Permit2FundingData {
             })
             .collect()
     }
-    pub(crate) fn validate(
+    pub(crate) fn validate_identity(
         &self,
         context: &EvmContext,
-        policy: &FundingOptions,
-    ) -> Result<Vec<Call>> {
+        coordinator: Address,
+        lock_token: Address,
+    ) -> Result<()> {
         if !context.is_source
-            || context.htlc != policy.htlc
             || parse::<Address>(&self.permit2_address)? != PERMIT2_ADDRESS
-            || parse::<Address>(&self.coordinator_address)? != policy.coordinator
-            || parse::<Address>(&self.lock_token_address)? != policy.lock_token
+            || parse::<Address>(&self.coordinator_address)? != coordinator
+            || parse::<Address>(&self.lock_token_address)? != lock_token
             || parse::<Address>(&self.source_token_address)? != context.source_token
             || parse::<B256>(&self.preimage_hash)? != context.hash
             || parse::<Address>(&self.claim_address)? != context.server
@@ -94,6 +95,19 @@ impl Permit2FundingData {
                 "funding payload does not match the swap and configured contracts",
             ));
         }
+        Ok(())
+    }
+    pub(crate) fn validate(
+        &self,
+        context: &EvmContext,
+        policy: &FundingOptions,
+    ) -> Result<Vec<Call>> {
+        if context.htlc != policy.htlc {
+            return Err(invalid(
+                "funding payload does not match the swap and configured contracts",
+            ));
+        }
+        self.validate_identity(context, policy.coordinator, policy.lock_token)?;
         let amount = decimal(&self.source_amount)?;
         if amount.is_zero() || amount > policy.max_source_amount {
             return Err(invalid("funding amount exceeds the approved limit"));
@@ -233,6 +247,9 @@ impl Client {
             return Err(invalid(
                 "funding already submitted; inspect its receipt before another attempt",
             ));
+        }
+        if stored.metadata.relay_signature_outstanding() {
+            return Err(invalid(UNRESOLVED_RELAY_FUNDING));
         }
         if stored.metadata.evm_fund_started == Some(true) {
             return Err(invalid(UNRESOLVED_FUNDING));

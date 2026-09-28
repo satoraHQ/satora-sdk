@@ -293,3 +293,26 @@ chains; no production payments are part of this work.
   Strict SDK/driver Clippy, driver restart tests, formatting, TypeScript checking
   and scenario Biome passed. EVM→Lightning timeout and Arkade→EVM cooperative
   E2Es both passed again with the updated driver.
+
+## Relayed gasless funding follow-up
+
+- Added `fund_swap_gasless_relay`, the counterpart of TypeScript `fundSwapGasless`
+  (`POST /swap/{id}/fund-gasless`), next to the ERC-4337 `fund_swap_gasless`. It
+  signs with the swap's own EVM key, sends an unlimited EIP-2612 approval of Permit2
+  when there is no allowance, and uses Kernel's ERC-1271 envelope for a delegated
+  depositor, as TypeScript on main does.
+- Differences from TypeScript: the payload is checked against the stored swap and
+  its persisted coordinator, plus a pinned `FundingOptions` when one is given;
+  source-token calls are decoded, the relay fee is capped and the permit domain
+  and nonce are read from the chain before signing. EVM to Arkade responses carry
+  no lock token, so there the payload's is signed unless one is pinned. Each
+  attempt is journaled before it is sent and reuses one Permit2 nonce per swap. A
+  failure that leaves the journal at `Sending`, `Accepted` or `Uncertain` is
+  resolved with `reconcile_gasless_relay_funding` instead of a second request; any
+  other failure can be repeated. The funding is recorded only after its receipt
+  verifies.
+- Unit tests cover payload substitution, the stored lock token and coordinator,
+  the journal at request time, lost, refused, reverted and unproven answers,
+  timeouts before and after the request, reconciliation and the Kernel envelope. A
+  new Anvil test runs the posted signatures through the real Permit2 and
+  coordinator.

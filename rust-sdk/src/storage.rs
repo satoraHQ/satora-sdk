@@ -20,6 +20,8 @@ mod record;
 mod sqlite;
 pub use record::BridgeOperation;
 pub use record::EvmKeySource;
+pub use record::RelayFundingJournal;
+pub use record::RelayFundingOutcome;
 pub use record::StoredSwap;
 pub use record::SwapMetadata;
 pub use sqlite::SqliteSwapStorage;
