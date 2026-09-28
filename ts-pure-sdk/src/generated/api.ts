@@ -1619,6 +1619,12 @@ export interface components {
             /** @enum {string} */
             router: "cctp";
         } | {
+            /**
+             * @description LayerZero messaging fee in sats: the live `quoteSend` fee converted
+             *     from ETH at the current rate. The SDK adds it to the quote's network
+             *     fee. Stringified `u64`.
+             */
+            native_fee_sats: string;
             /** @enum {string} */
             router: "layerzero";
         };

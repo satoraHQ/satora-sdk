@@ -29,6 +29,7 @@
 import type {
   Chain,
   ChainConfigResponse,
+  DexQuoteResponse,
   NetworkFeesResponse,
   QuoteResponse,
   SwapPairsResponse,
@@ -263,7 +264,13 @@ function directBtcToPeggedPivot(
       "composeQuote: no amount pinned (unreachable)",
     );
   }
-  return { btcSats, evmSmallest, evmDecimals: pivot.decimals, bridgeFee: 0n };
+  return {
+    btcSats,
+    evmSmallest,
+    evmDecimals: pivot.decimals,
+    bridgeFee: 0n,
+    bridgeNativeFeeSats: 0,
+  };
 }
 
 /**
@@ -356,6 +363,8 @@ export interface ComposeQuoteDeps {
     estimated_amount_out: { raw: string; decimals: number };
     /** Bridge fee deducted (bridged-token smallest units); absent if no bridge. */
     bridge_fee?: string;
+    /** Bridge fee model; a `layerzero` leg carries a sats fee for the network fee. */
+    bridge_rate?: DexQuoteResponse["bridge_rate"];
   }>;
 }
 
@@ -425,7 +434,7 @@ async function composeBtcToEvm(
     params.sourceChain,
     hubChain,
   );
-  const networkFeeSats =
+  const baseNetworkFeeSats =
     feeEntry.fees.source_sats +
     feeEntry.fees.target_sats +
     pair.network_fee_sats;
@@ -477,6 +486,7 @@ async function composeBtcToEvm(
   }
 
   const { btcSats, evmSmallest, evmDecimals, bridgeFee } = pivot;
+  const networkFeeSats = baseNetworkFeeSats + pivot.bridgeNativeFeeSats;
 
   // Protocol fee in sats: floor(btc_sats × fee_percentage). The server
   // uses `rust_decimal` arithmetic on a `Decimal`; we use `BigInt`
@@ -542,6 +552,11 @@ interface BtcEvmPivot {
   evmDecimals: number;
   /** Bridge fee deducted (target-token smallest units); `0n` if no bridge. */
   bridgeFee: bigint;
+  /**
+   * Bridge cost the server pays in native gas and charges in sats (the
+   * LayerZero messaging fee for USDT0); `0` if none.
+   */
+  bridgeNativeFeeSats: number;
 }
 
 /**
@@ -572,6 +587,7 @@ async function dexSourcePinned(
     evmSmallest: BigInt(dexQuote.estimated_amount_out.raw),
     evmDecimals: dexQuote.estimated_amount_out.decimals,
     bridgeFee: BigInt(dexQuote.bridge_fee ?? "0"),
+    bridgeNativeFeeSats: bridgeNativeFeeSats(dexQuote),
   };
 }
 
@@ -608,7 +624,21 @@ async function dexTargetPinned(
     evmSmallest,
     evmDecimals: dexQuote.estimated_amount_out.decimals,
     bridgeFee: BigInt(dexQuote.bridge_fee ?? "0"),
+    bridgeNativeFeeSats: bridgeNativeFeeSats(dexQuote),
   };
+}
+
+/**
+ * Sats the server charges for a bridge it pays in native gas: the LayerZero
+ * messaging fee on a USDT0 bridge leg. `0` for CCTP (whose fee comes off the
+ * bridged USDC) and for unbridged legs.
+ */
+function bridgeNativeFeeSats(dexQuote: {
+  bridge_rate?: DexQuoteResponse["bridge_rate"];
+}): number {
+  return dexQuote.bridge_rate?.router === "layerzero"
+    ? Number(dexQuote.bridge_rate.native_fee_sats)
+    : 0;
 }
 
 function lookupPair(

@@ -52,9 +52,9 @@ export type BridgeRouter = "cctp" | "layerzero";
  * - **`cctp`**: Circle's Forwarding Service deducts a percentage
  *   (`proportional_fee_millionths`) + a flat fee (`flat` / `flat_with_setup`) from the
  *   bridged USDC.
- * - **`layerzero`**: no token-denominated deduction — the messaging fee is ETH
- *   the user pays via their own (Alchemy) publish, never taken from the USDT0.
- *   Nothing to subtract today.
+ * - **`layerzero`**: no token-denominated deduction — the bridged USDT0
+ *   arrives in full. The messaging fee is ETH the server pays on the claim and
+ *   charges in sats (`native_fee_sats`), added to the quote's network fee.
  */
 export type BridgeRate =
   | {
@@ -80,7 +80,11 @@ export type BridgeRate =
       /** Flat-fee variant including a fresh non-EVM recipient's ATA rent (Solana). Equals `flat` otherwise; same units. Stringified u64. */
       flat_with_setup: string;
     }
-  | { router: "layerzero" };
+  | {
+      router: "layerzero";
+      /** LayerZero messaging fee in sats (the live ETH fee converted at the current rate); add it to the network fee. Stringified u64. */
+      native_fee_sats: string;
+    };
 
 export interface DexQuoteResponse {
   /** End-to-end input amount the user sends (incl. any bridge gross-up for exact-out). */
@@ -95,7 +99,7 @@ export interface DexQuoteResponse {
   /**
    * Cross-chain bridge fee model, tagged by protocol. Present for any bridged
    * quote — `{ router: "cctp", … }` (a USDC deduction) or
-   * `{ router: "layerzero" }` (no deduction); `undefined` only for plain
+   * `{ router: "layerzero", … }` (a sats fee, no deduction); `undefined` only for plain
    * same-chain quotes.
    */
   bridge_rate?: BridgeRate;
@@ -128,7 +132,7 @@ export type WireBridgeRate =
       flat: string;
       flat_with_setup: string;
     }
-  | { router: "layerzero" };
+  | { router: "layerzero"; native_fee_sats: string };
 
 export interface WireDexQuoteResponse {
   expected_amount_in: WireTokenAmount;
@@ -174,5 +178,5 @@ function fromWireBridgeRate(wire: WireBridgeRate): BridgeRate {
       flat_with_setup: wire.flat_with_setup,
     };
   }
-  return { router: "layerzero" };
+  return { router: "layerzero", native_fee_sats: wire.native_fee_sats };
 }

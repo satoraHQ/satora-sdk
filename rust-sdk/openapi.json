@@ -3439,11 +3439,16 @@
           },
           {
             "type": "object",
-            "description": "LayerZero OFT (USDT0). No token-denominated deduction: the only cost is\nthe messaging `msg.value`, paid in native ETH on the source chain by\nthe user's own (Alchemy) publish — it never reduces the delivered\nUSDT0. So nothing to subtract today. When we want to *show* that ETH\ncost, it becomes a field on this variant (e.g. `native_fee_wei`).",
+            "description": "LayerZero OFT (USDT0). No token-denominated deduction: the bridged\nUSDT0 arrives in full. The only cost is the messaging `msg.value`,\nwhich the server pays in ETH on the claim and charges in sats.",
             "required": [
+              "native_fee_sats",
               "router"
             ],
             "properties": {
+              "native_fee_sats": {
+                "type": "string",
+                "description": "LayerZero messaging fee in sats: the live `quoteSend` fee converted\nfrom ETH at the current rate. The SDK adds it to the quote's network\nfee. Stringified `u64`."
+              },
               "router": {
                 "type": "string",
                 "enum": [
@@ -4416,7 +4421,7 @@
               },
               {
                 "$ref": "#/components/schemas/BridgeRate",
-                "description": "Cross-chain bridge fee model, tagged by protocol. Present for any\nbridged quote — `Cctp { … }` (a USDC deduction) or `LayerZero {}` (no\ndeduction) — and absent (`None`) only for plain same-chain quotes. The\nSDK folds it into the end-to-end quote; see [`BridgeRate`]."
+                "description": "Cross-chain bridge fee model, tagged by protocol. Present for any\nbridged quote — `Cctp { … }` (a USDC deduction) or `LayerZero { … }`\n(a sats fee, no token deduction) — and absent (`None`) only for plain same-chain quotes. The\nSDK folds it into the end-to-end quote; see [`BridgeRate`]."
               }
             ]
           },
