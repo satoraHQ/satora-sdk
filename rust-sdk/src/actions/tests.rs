@@ -19,7 +19,7 @@ pub(crate) fn reference(locktime: u32) -> ContractRef {
             script_version: 1,
         },
         expected_sats: 1000,
-        confirmations: 1,
+        confirmations: Some(1),
     }
 }
 pub(crate) fn observation(state: HtlcState, height: u64) -> Observation {

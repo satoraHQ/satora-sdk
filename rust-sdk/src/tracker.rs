@@ -41,6 +41,14 @@ pub use auto_claim::EvmAutoClaimChain;
 #[cfg(feature = "gasless")]
 pub use auto_claim::EvmDeployment;
 
+/// Version 2 lets a server-funded Bitcoin reference follow the client's depth.
+const TRACKING_VERSION: u32 = 2;
+/// The at-risk refresh interval while the client's Bitcoin depth is above one, as
+/// in TypeScript. A depth only moves on a chain read and nothing pushes a new
+/// block, so a deeper policy would otherwise sit out a slow interval after the
+/// block that satisfied it.
+const DEEP_AT_RISK_INTERVAL: Duration = Duration::from_secs(15);
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct TrackingOptions {
     pub auto_claim: bool,
@@ -82,11 +90,28 @@ pub struct TrackingRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server_status: Option<crate::types::SwapStatus>,
 }
+impl TrackingRecord {
+    /// Version 1 journals pin the server-funded Bitcoin leg, because zero-depth
+    /// claims used to be refused. That leg now follows the client's depth, as in
+    /// TypeScript; the client-funded leg keeps its persisted depth.
+    fn upgrade(&mut self) {
+        if self.version == 1 {
+            if let Some(crate::observation::ContractRef::Bitcoin { confirmations, .. }) =
+                &mut self.contracts.server
+            {
+                *confirmations = None;
+            }
+            self.version = TRACKING_VERSION;
+        }
+    }
+}
 #[derive(Clone, Debug)]
 pub struct TrackerOptions {
     pub max_swaps: usize,
     pub concurrency: usize,
     pub event_capacity: usize,
+    /// Capped at 15 seconds while `Client::bitcoin_min_confirmations` is above one.
+    /// The worker checks the depth before every at-risk refresh and on each change.
     pub at_risk_interval: Duration,
     pub full_interval: Duration,
     pub execution_timeout: Duration,
@@ -224,6 +249,7 @@ impl SwapTracker {
                 "executor timeout must be shorter than the tracker's execution timeout",
             ));
         }
+        manager.follow_bitcoin_min_confirmations(&client)?;
         let (events, _) = broadcast::channel(options.event_capacity);
         Ok(Self(Arc::new(Inner {
             client,
@@ -297,7 +323,7 @@ impl SwapTracker {
         self.install(
             id,
             TrackingRecord {
-                version: 1,
+                version: TRACKING_VERSION,
                 enabled: true,
                 contracts,
                 options,
@@ -308,8 +334,9 @@ impl SwapTracker {
         )
         .await
     }
-    async fn install(&self, id: &str, record: TrackingRecord) -> Result<()> {
-        if record.version != 1
+    async fn install(&self, id: &str, mut record: TrackingRecord) -> Result<()> {
+        record.upgrade();
+        if record.version != TRACKING_VERSION
             || (record.contracts.client.is_none() && record.contracts.server.is_none())
         {
             return Err(invalid("unsupported or empty tracking record"));
@@ -981,6 +1008,14 @@ impl SwapTracker {
             }
         }
     }
+    fn at_risk_interval(&self) -> Duration {
+        let interval = self.0.options.at_risk_interval;
+        if self.0.client.bitcoin_min_confirmations().unwrap_or(0) > 1 {
+            interval.min(DEEP_AT_RISK_INTERVAL)
+        } else {
+            interval
+        }
+    }
     pub async fn refresh(&self, at_risk_only: bool) -> Result<()> {
         let ids = self
             .0
@@ -1006,19 +1041,29 @@ impl SwapTracker {
         let stop = cancellation.clone();
         let tracker = self.clone();
         let task = tokio::spawn(async move {
-            let mut risk = tokio::time::interval(tracker.0.options.at_risk_interval);
             let mut full = tokio::time::interval(tracker.0.options.full_interval);
-            risk.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             full.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // A depth change ends the pass, so the next deadline uses the new interval
+            // even while a longer wait is under way.
+            let mut depth = tracker.0.client.bitcoin_depth.subscribe();
+            let mut last_risk: Option<tokio::time::Instant> = None;
             loop {
+                let risk_due = last_risk.map_or_else(tokio::time::Instant::now, |at| {
+                    at.checked_add(tracker.at_risk_interval())
+                        .unwrap_or_else(|| at + Duration::from_secs(86_400 * 365))
+                });
                 let work = async {
                     tokio::select! {
                         _ = full.tick() => tracker.refresh(false).await,
-                        _ = risk.tick() => tracker.refresh(true).await,
+                        _ = tokio::time::sleep_until(risk_due) => {
+                            last_risk = Some(tokio::time::Instant::now());
+                            tracker.refresh(true).await
+                        }
                         _ = tracker.0.wake.notified() => {
                             let ids = tracker.0.pending.lock().map_err(|_| invalid("tracker queue poisoned"))?.drain().collect();
                             tracker.refresh_ids(ids).await
                         }
+                        Ok(()) = depth.changed() => Ok(()),
                     }
                 };
                 tokio::select! { biased; _ = stop.cancelled() => break, result = work => {

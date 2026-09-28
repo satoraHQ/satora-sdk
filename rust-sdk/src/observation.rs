@@ -28,13 +28,43 @@ mod evm_reader;
 pub use evm_reader::EvmRpcReader;
 
 pub type ObservationFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
+
+/// A client's Bitcoin confirmation depth, shared by its clones and by the
+/// managers of trackers built from it, so a change reaches the next read.
+#[derive(Clone)]
+pub(crate) struct BitcoinDepth(std::sync::Arc<tokio::sync::watch::Sender<Option<u32>>>);
+impl BitcoinDepth {
+    pub(crate) fn new(confirmations: Option<u32>) -> Self {
+        Self(std::sync::Arc::new(
+            tokio::sync::watch::channel(confirmations).0,
+        ))
+    }
+    pub(crate) fn get(&self) -> Option<u32> {
+        *self.0.borrow()
+    }
+    pub(crate) fn set(&self, confirmations: Option<u32>) {
+        self.0.send_replace(confirmations);
+    }
+    pub(crate) fn subscribe(&self) -> tokio::sync::watch::Receiver<Option<u32>> {
+        self.0.subscribe()
+    }
+    fn same(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "ledger", rename_all = "snake_case")]
 pub enum ContractRef {
     Bitcoin {
         htlc: crate::bitcoin::BitcoinHtlc,
         expected_sats: u64,
-        confirmations: u32,
+        /// Confirmations the funding needs before it reads as confirmed; a spend
+        /// counts at any depth. None follows `Client::bitcoin_min_confirmations`,
+        /// resolved on every read by a manager that follows that client (see
+        /// `ContractManager::follow_bitcoin_min_confirmations`), and reads as 0
+        /// anywhere else.
+        confirmations: Option<u32>,
     },
     Arkade {
         options: crate::arkade::StrictVhtlcOptions,

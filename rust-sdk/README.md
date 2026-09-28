@@ -270,8 +270,9 @@ reject observations spanning a tip change. The injectable `BitcoinBackend` trait
 also supports private chain readers and offline integration tests.
 
 `BitcoinSpendOptions` requires a destination, confirmation policy, maximum fee,
-and timeout. Refunds check chain height or median time past, never local wall
-clock. Claims check the full expected amount before revealing the preimage.
+and timeout. A `minimum_confirmations` of 0 claims against a mempool funding.
+Refunds check chain height or median time past, never local wall clock. Claims
+check the full expected amount before revealing the preimage.
 Scripts must match the API address and the locally derived key/hash. The builder
 supports multiple HTLC outputs, checks dust, and uses exact transaction weight.
 With a store that keeps records, submitted IDs and fees survive restarts. Retries
@@ -476,8 +477,14 @@ are preserved as hints; neither this feed nor HTTP status proves settlement.
 include the HTLC's full identity and expected funding. `contract_references`
 reconstructs them from stored swaps; configure the source coordinator and locked
 EVM token when older API responses omit them. Specify an EVM starting block at
-or before creation to bound historical scans. Confirmation requirements default
-to one on both legs; accepting zero-confirmation Bitcoin funding is explicit.
+or before creation to bound historical scans. A server-funded Bitcoin leg has no
+depth of its own. A manager bound with
+`ContractManager::follow_bitcoin_min_confirmations` reads it at the client's
+confirmation depth (see below), and `SwapTracker::new` binds its manager this
+way; any other manager reads it at 0, like a TypeScript reader built without a
+policy. Other legs take theirs from `ReferenceOptions`, which defaults to one:
+the server does not act on a client funding until it is in a block. A reference
+built by hand may carry its own Bitcoin depth, which wins over the client's.
 Swaps with an EVM leg need the `gasless` feature for both the EVM reference and
 `EvmRpcReader`. Without it `contract_references` rejects them instead of
 returning a partial reference, because a missing leg reads as a Lightning leg.
@@ -570,6 +577,23 @@ worker.shutdown().await?;
 # }
 ```
 
+`ClientBuilder::bitcoin_min_confirmations` sets the confirmations a server-funded
+Bitcoin HTLC needs before it is claimable, like the TypeScript
+`withBitcoinMinConfirmations`. The default is 0: the claim goes out as soon as the
+funding reaches the mempool, which trusts the funder not to double-spend it
+(claiming publishes the preimage, so a funder that then replaced its funding could
+take both legs). Set 1 or more for a block-depth policy that does not rely on the
+funder's good behaviour. `Client::set_bitcoin_min_confirmations` changes it later,
+with `None` reading as 0. Every clone of the client shares it and the tracker reads
+it on every chain read, so a change applies to swaps already tracked. The depth
+gates the funding only: a claim or refund of the HTLC counts as soon as it is
+seen, as in TypeScript. Nothing pushes a new block, so while the depth is above
+one the at-risk refresh runs at least every 15 seconds and the claim follows the
+block that satisfied it. Journals written by earlier versions load unchanged,
+except that their server-funded Bitcoin leg now follows the client's depth. One
+`ContractManager` serves the trackers of one client; `SwapTracker::new` refuses a
+manager that already follows another.
+
 `adopt_untracked` skips a swap whose last stored server status is settled, as the
 TypeScript client does. Refresh the swap first, or track it directly, to watch it
 regardless.
@@ -600,21 +624,21 @@ never automated.
 `tracker::AutoClaimer` is the stock claim executor, the counterpart of the
 TypeScript `withAutoClaim`. It claims Arkade targets through the client's Arkade
 config (offchain, or delegated when outputs are recoverable), EVM to Bitcoin swaps
-with `AutoClaimConfig::bitcoin` (at the backend's fee estimate capped by
-`maximum_fee`), and EVM targets with `AutoClaimConfig::evm`. The
-destination is the one recorded when the swap was created and must match the
-server's; a swap created elsewhere needs `AutoClaimConfig::destination`. An EVM
-claim signs only for an (HTLC, coordinator) pair in its chain's `deployments`. The
-server does not publish these, so the application supplies its current and legacy
-deployments. A direct payout uses a sponsored UserOperation when the chain has
-`user_op`, and the server relay otherwise, or when that operation sent nothing. A
-payout through the relay, and a DEX payout, must reach `target_amount` less the
-daemon's slippage (1%, or 2% for Bitcoin to EVM), and a direct one through the
-relay must come with no server calls. A DEX payout on Arbitrum needs `user_op`.
-Bridged payouts are refused, because the daemon builds their calls with no minimum
-output; claim them with a reviewed plan through `claim_evm_to_bridge`. Keep
-`AutoClaimConfig::timeout` (90 seconds) below `TrackerOptions::execution_timeout`;
-`SwapTracker::new` checks it.
+with `AutoClaimConfig::bitcoin` (at the confirmation depth the tracker waited for,
+at the backend's fee estimate capped by `maximum_fee`), and EVM targets with
+`AutoClaimConfig::evm`. The destination is the one recorded when the swap was
+created and must match the server's; a swap created elsewhere needs
+`AutoClaimConfig::destination`. An EVM claim signs only for an (HTLC, coordinator)
+pair in its chain's `deployments`. The server does not publish these, so the
+application supplies its current and legacy deployments. A direct payout uses a
+sponsored UserOperation when the chain has `user_op`, and the server relay
+otherwise, or when that operation sent nothing. A payout through the relay, and a
+DEX payout, must reach `target_amount` less the daemon's slippage (1%, or 2% for
+Bitcoin to EVM), and a direct one through the relay must come with no server
+calls. A DEX payout on Arbitrum needs `user_op`. Bridged payouts are refused,
+because the daemon builds their calls with no minimum output; claim them with a
+reviewed plan through `claim_evm_to_bridge`. Keep `AutoClaimConfig::timeout` (90
+seconds) below `TrackerOptions::execution_timeout`; `SwapTracker::new` checks it.
 
 Other executors should call the SDK's durable execution methods with
 application-approved addresses, limits and bridge plans. Supply bridge state from

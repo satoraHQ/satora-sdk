@@ -35,7 +35,7 @@ impl ContractReader for BitcoinReader {
                 return Err(invalid("Bitcoin reader network mismatch"));
             }
             let history = self.backend.history(&htlc.address()?).await?;
-            classify(htlc, *expected_sats, *confirmations, &history)
+            classify(htlc, *expected_sats, confirmations.unwrap_or(0), &history)
         })
     }
 }
@@ -84,9 +84,7 @@ pub(super) fn classify(
             );
         }
         for input in &entry.transaction.input {
-            if spends
-                .insert(input.previous_output, (input, entry.confirmed_height))
-                .is_some()
+            if spends.insert(input.previous_output, input).is_some()
                 && !input.previous_output.is_null()
             {
                 return Err(invalid("conflicting Bitcoin spends in history"));
@@ -104,7 +102,7 @@ pub(super) fn classify(
     }
     let unspent: HashSet<_> = point.utxos.iter().map(|utxo| utxo.outpoint).collect();
     let (mut total, mut remaining, mut ready) = (0u64, 0u64, 0u64);
-    let (mut claims, mut refunds, mut unknown, mut pending) = (0, 0, 0, false);
+    let (mut claims, mut refunds, mut unknown) = (0, 0, 0);
     let mut preimage = None;
     for (outpoint, (amount, height)) in &funding {
         total = total
@@ -124,13 +122,13 @@ pub(super) fn classify(
                 .ok_or_else(|| invalid("Bitcoin amount overflow"))?;
             continue;
         }
-        let Some((input, spend_height)) = spends.get(outpoint) else {
+        // A spend counts at any depth, as in TypeScript: the depth gates funding only.
+        // A replaced or reorged spend revives the leg, and the tracker keeps reading
+        // a terminal swap for `retire_after`.
+        let Some(input) = spends.get(outpoint) else {
             unknown += 1;
             continue;
         };
-        if !confirmed(*spend_height, point.height, confirmations) {
-            pending = true;
-        }
         let mut witness: Vec<_> = input.witness.iter().collect();
         if witness
             .last()
@@ -176,7 +174,7 @@ pub(super) fn classify(
     } else if claims + refunds + unknown > 0 {
         // Anyone can pay the address but only the swap parties can spend it, so
         // outputs left after a spend are surplus and must not revive the leg.
-        if pending || unknown > 0 || (claims > 0 && refunds > 0) {
+        if unknown > 0 || (claims > 0 && refunds > 0) {
             HtlcState::SpentUnknown
         } else if claims > 0 {
             HtlcState::SpentClaim

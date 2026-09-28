@@ -1421,3 +1421,364 @@ async fn an_executor_must_time_out_before_the_tracker_does() {
     assert!(tracker_with(claimer(Duration::from_secs(90))).is_ok());
     assert!(tracker_with(claimer(Duration::from_secs(120))).is_err());
 }
+
+/// Each leg's address history: the client leg funded two blocks deep, the
+/// server leg funded at `server_height` and, once `claimed` is set, spent by a
+/// claim in the mempool.
+struct Chain {
+    server: ContractRef,
+    server_height: Option<u32>,
+    claimed: AtomicBool,
+}
+fn funded(
+    reference: &ContractRef,
+    confirmed_height: Option<u32>,
+) -> crate::bitcoin::BitcoinHistory {
+    use crate::bitcoin::BitcoinHistoryTransaction;
+    use crate::bitcoin::BitcoinObservation;
+    use crate::bitcoin::BitcoinUtxo;
+    use bitcoin::hashes::Hash;
+    let ContractRef::Bitcoin { htlc, .. } = reference else {
+        panic!("expected a Bitcoin reference");
+    };
+    let transaction = bitcoin::Transaction {
+        version: bitcoin::transaction::Version::TWO,
+        lock_time: bitcoin::absolute::LockTime::ZERO,
+        input: vec![],
+        output: vec![bitcoin::TxOut {
+            value: bitcoin::Amount::from_sat(1000),
+            script_pubkey: htlc.address().unwrap().script_pubkey(),
+        }],
+    };
+    crate::bitcoin::BitcoinHistory {
+        observation: BitcoinObservation {
+            tip: bitcoin::BlockHash::all_zeros(),
+            height: 50,
+            median_time_past: 600_000_000,
+            utxos: vec![BitcoinUtxo {
+                outpoint: bitcoin::OutPoint {
+                    txid: transaction.compute_txid(),
+                    vout: 0,
+                },
+                output: transaction.output[0].clone(),
+                confirmed_height,
+            }],
+        },
+        transactions: vec![BitcoinHistoryTransaction {
+            transaction,
+            confirmed_height,
+        }],
+    }
+}
+impl crate::bitcoin::BitcoinBackend for Chain {
+    fn network(&self) -> bitcoin::Network {
+        bitcoin::Network::Regtest
+    }
+    fn history<'a>(
+        &'a self,
+        address: &'a bitcoin::Address,
+    ) -> crate::bitcoin::ChainFuture<'a, crate::bitcoin::BitcoinHistory> {
+        Box::pin(async move {
+            let ContractRef::Bitcoin { htlc, .. } = &self.server else {
+                unreachable!()
+            };
+            if *address != htlc.address()? {
+                return Ok(funded(&reference(200), Some(49)));
+            }
+            let mut history = funded(&self.server, self.server_height);
+            if self.claimed.load(Ordering::SeqCst) {
+                let scripts = htlc.scripts()?;
+                let control = scripts
+                    .spend_info
+                    .control_block(&(
+                        scripts.claim.clone(),
+                        bitcoin::taproot::LeafVersion::TapScript,
+                    ))
+                    .unwrap();
+                let funding = history.observation.utxos.remove(0).outpoint;
+                history
+                    .transactions
+                    .push(crate::bitcoin::BitcoinHistoryTransaction {
+                        transaction: bitcoin::Transaction {
+                            version: bitcoin::transaction::Version::TWO,
+                            lock_time: bitcoin::absolute::LockTime::ZERO,
+                            input: vec![bitcoin::TxIn {
+                                previous_output: funding,
+                                witness: bitcoin::Witness::from_slice(&[
+                                    vec![1; 64],
+                                    vec![42; 32],
+                                    scripts.claim.as_bytes().to_vec(),
+                                    control.serialize(),
+                                ]),
+                                ..Default::default()
+                            }],
+                            output: vec![],
+                        },
+                        confirmed_height: None,
+                    });
+            }
+            Ok(history)
+        })
+    }
+    fn observe<'a>(
+        &'a self,
+        address: &'a bitcoin::Address,
+    ) -> crate::bitcoin::ChainFuture<'a, crate::bitcoin::BitcoinObservation> {
+        Box::pin(async move { Ok(self.history(address).await?.observation) })
+    }
+    fn transaction(
+        &self,
+        _: bitcoin::Txid,
+    ) -> crate::bitcoin::ChainFuture<'_, Option<bitcoin::Transaction>> {
+        Box::pin(async { Err(Error::Transport("unused".into())) })
+    }
+    fn fee_rate(&self, _: u16) -> crate::bitcoin::ChainFuture<'_, bitcoin::FeeRate> {
+        Box::pin(async { Err(Error::Transport("unused".into())) })
+    }
+    fn broadcast<'a>(
+        &'a self,
+        _: &'a bitcoin::Transaction,
+    ) -> crate::bitcoin::ChainFuture<'a, bitcoin::Txid> {
+        Box::pin(async { Err(Error::Transport("unused".into())) })
+    }
+}
+/// The server leg as `contract_references` builds it, with no depth of its own.
+fn following() -> ContractRef {
+    let mut server = reference(100);
+    if let ContractRef::Bitcoin { confirmations, .. } = &mut server {
+        *confirmations = None;
+    }
+    server
+}
+fn chain_tracker() -> (SwapTracker, Client, String) {
+    chain_tracker_over(Arc::new(Chain {
+        server: following(),
+        server_height: None,
+        claimed: AtomicBool::new(false),
+    }))
+}
+fn chain_tracker_over(chain: Arc<Chain>) -> (SwapTracker, Client, String) {
+    let (tracker, _, _, id) = setup(0, TrackerOptions::default());
+    let client = tracker.0.client.clone();
+    let reader = crate::observation::BitcoinReader::new(chain);
+    let tracker = SwapTracker::new(
+        client.clone(),
+        ContractManager::new(Arc::new(reader), ManagerOptions::default()).unwrap(),
+        TrackerOptions::default(),
+        None,
+    )
+    .unwrap();
+    (tracker, client, id)
+}
+#[tokio::test]
+async fn the_default_depth_claims_a_mempool_funding_and_a_new_depth_reaches_tracked_swaps() {
+    let (tracker, client, id) = chain_tracker();
+    tracker
+        .track(
+            &id,
+            SwapContracts {
+                client: Some(reference(200)),
+                server: Some(following()),
+            },
+            TrackingOptions::default(),
+        )
+        .await
+        .unwrap();
+    let next = || async { recommended(&tracker.reconcile(&id).await.unwrap()) };
+    assert_eq!(next().await, ActionKind::Claim);
+    client.set_bitcoin_min_confirmations(Some(1));
+    assert_eq!(
+        next().await,
+        ActionKind::Wait {
+            on: WaitingOn::ServerFunding
+        }
+    );
+    client.set_bitcoin_min_confirmations(None);
+    assert_eq!(next().await, ActionKind::Claim);
+}
+#[tokio::test]
+async fn an_old_journal_loads_and_its_server_bitcoin_leg_follows_the_client() {
+    let (tracker, client, id) = chain_tracker();
+    let pinned = TrackingRecord {
+        version: 1,
+        enabled: true,
+        contracts: SwapContracts {
+            client: Some(reference(200)),
+            server: Some(reference(100)),
+        },
+        options: TrackingOptions::default(),
+        attempt: None,
+        completed_ms: None,
+        server_status: None,
+    };
+    let journal = serde_json::to_value(&pinned).unwrap();
+    assert_eq!(journal["contracts"]["server"]["confirmations"], 1);
+    client
+        .update_swap_metadata(
+            &id,
+            SwapMetadata {
+                tracking: Some(journal),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(tracker.restore().await.unwrap().is_empty());
+    let record = tracker.record(&id).await.unwrap();
+    assert_eq!(record.version, 2);
+    assert_eq!(record.contracts.server, Some(following()));
+    assert_eq!(record.contracts.client, Some(reference(200)));
+    let stored: TrackingRecord =
+        serde_json::from_value(stored_metadata(&tracker, &id).tracking.unwrap()).unwrap();
+    assert_eq!(stored.contracts.server, Some(following()));
+    assert_eq!(
+        recommended(&tracker.reconcile(&id).await.unwrap()),
+        ActionKind::Claim
+    );
+}
+/// Counts reads of a swap whose client leg is funded and so at risk.
+struct AtRisk(AtomicUsize);
+impl ContractReader for AtRisk {
+    fn can_observe(&self, _: &ContractRef) -> bool {
+        true
+    }
+    fn observe<'a>(&'a self, reference: &'a ContractRef) -> ObservationFuture<'a, Observation> {
+        Box::pin(async move {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            let client = reference.timelock() == crate::observation::Timelock::Height(200);
+            Ok(observation(
+                if client {
+                    HtlcState::Confirmed
+                } else {
+                    HtlcState::Absent
+                },
+                50,
+            ))
+        })
+    }
+}
+#[tokio::test(start_paused = true)]
+async fn the_at_risk_interval_follows_the_depth_on_every_tick() {
+    let (tracker, _, _, id) = setup(0, TrackerOptions::default());
+    let client = tracker.0.client.clone();
+    let reader = Arc::new(AtRisk(AtomicUsize::new(0)));
+    let tracker = SwapTracker::new(
+        client.clone(),
+        ContractManager::new(reader.clone(), ManagerOptions::default()).unwrap(),
+        TrackerOptions {
+            at_risk_interval: Duration::from_secs(60),
+            full_interval: Duration::from_secs(3600),
+            ..Default::default()
+        },
+        None,
+    )
+    .unwrap();
+    track(&tracker, &id).await;
+    let worker = tracker.start().unwrap();
+    let reads = || reader.0.load(Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let settled = reads();
+    assert!(tracker.actions(&id).unwrap().unwrap().at_risk);
+    tokio::time::sleep(Duration::from_secs(19)).await;
+    assert_eq!(reads(), settled, "the configured 60 s at depth 0");
+    client.set_bitcoin_min_confirmations(Some(3));
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(
+        reads(),
+        settled + 2,
+        "15 s above depth 1, and 21 s have passed"
+    );
+    client.set_bitcoin_min_confirmations(Some(1));
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    assert_eq!(
+        reads(),
+        settled + 2,
+        "back to the configured 60 s at depth 1"
+    );
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    assert_eq!(reads(), settled + 4);
+    worker.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn a_claim_in_the_mempool_completes_the_swap_whatever_the_depth() {
+    use bitcoin::hashes::Hash;
+    let mut server = following();
+    if let ContractRef::Bitcoin { htlc, .. } = &mut server {
+        htlc.hash_lock = bitcoin::hashes::hash160::Hash::hash(&[42; 32]).to_byte_array();
+    }
+    let chain = Arc::new(Chain {
+        server: server.clone(),
+        server_height: Some(49),
+        claimed: AtomicBool::new(false),
+    });
+    let (tracker, client, id) = chain_tracker_over(chain.clone());
+    client.set_bitcoin_min_confirmations(Some(2));
+    tracker
+        .track(
+            &id,
+            SwapContracts {
+                client: Some(reference(200)),
+                server: Some(server),
+            },
+            TrackingOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        recommended(&tracker.reconcile(&id).await.unwrap()),
+        ActionKind::Claim
+    );
+    // What `claim_bitcoin` journals before it broadcasts.
+    client
+        .update_swap_metadata(
+            &id,
+            SwapMetadata {
+                btc_spend_txid: Some("claim".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    chain.claimed.store(true, Ordering::SeqCst);
+    let actions = tracker.reconcile(&id).await.unwrap();
+    assert_eq!(
+        recommended(&actions),
+        ActionKind::Complete {
+            outcome: Outcome::Completed
+        }
+    );
+    assert!(!actions.needs_user());
+}
+#[test]
+fn the_at_risk_interval_drops_to_15_seconds_above_depth_one_and_never_rises() {
+    let interval = |configured, depth| {
+        let (tracker, _, _, _) = setup(
+            0,
+            TrackerOptions {
+                at_risk_interval: Duration::from_secs(configured),
+                ..Default::default()
+            },
+        );
+        tracker.0.client.set_bitcoin_min_confirmations(depth);
+        tracker.at_risk_interval()
+    };
+    assert_eq!(interval(60, Some(1)), Duration::from_secs(60));
+    assert_eq!(interval(60, Some(2)), Duration::from_secs(15));
+    assert_eq!(interval(5, Some(3)), Duration::from_secs(5));
+}
+#[tokio::test]
+async fn a_manager_serves_the_trackers_of_one_client() {
+    let (tracker, _, _, _) = setup(0, TrackerOptions::default());
+    let tracker_for = |client| {
+        SwapTracker::new(
+            client,
+            tracker.0.manager.clone(),
+            TrackerOptions::default(),
+            None,
+        )
+    };
+    assert!(tracker_for(tracker.0.client.clone()).is_ok());
+    let other = Client::new("http://127.0.0.1:1").unwrap();
+    assert!(matches!(
+        tracker_for(other),
+        Err(error) if error.to_string().contains("another client")
+    ));
+}

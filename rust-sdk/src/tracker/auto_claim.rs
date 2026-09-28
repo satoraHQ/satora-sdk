@@ -56,8 +56,6 @@ pub struct BitcoinAutoClaim {
     pub backend: Arc<dyn BitcoinBackend>,
     /// The fee rate is the backend's estimate for `confirmation_target`.
     pub maximum_fee: Amount,
-    /// Confirmations the funding needs before it is claimed.
-    pub minimum_confirmations: u32,
     pub minimum_remaining_blocks: u32,
     pub confirmation_target: u16,
 }
@@ -66,7 +64,6 @@ impl BitcoinAutoClaim {
         Self {
             backend,
             maximum_fee,
-            minimum_confirmations: 1,
             minimum_remaining_blocks: 1,
             confirmation_target: 6,
         }
@@ -227,7 +224,7 @@ impl AutoClaimer {
             BtcToArkade(_) | EvmToArkade(_) | LightningToArkade(_) => {
                 self.claim_arkade(id, destination).await.map(Some)
             }
-            EvmToBitcoin(_) => self.claim_bitcoin(id, destination).await.map(Some),
+            EvmToBitcoin(_) => self.claim_bitcoin(id, stored, destination).await.map(Some),
             BitcoinToEvm(_) | ArkadeToEvm(_) | LightningToEvm(_) => {
                 self.claim_evm(id, stored, &destination).await
             }
@@ -258,12 +255,35 @@ impl AutoClaimer {
         })
     }
 
-    async fn claim_bitcoin(&self, id: &str, destination: String) -> Result<String> {
+    async fn claim_bitcoin(
+        &self,
+        id: &str,
+        stored: &StoredSwap,
+        destination: String,
+    ) -> Result<String> {
         let config = self
             .config
             .bitcoin
             .as_ref()
             .ok_or_else(|| invalid("automatic Bitcoin claims are not configured"))?;
+        // The depth the tracker read the funding at, so the claim it recommended
+        // spends the outputs it saw.
+        let minimum_confirmations = stored
+            .metadata
+            .tracking
+            .clone()
+            .and_then(|value| serde_json::from_value::<super::TrackingRecord>(value).ok())
+            .and_then(|mut record| {
+                record.upgrade();
+                match record.contracts.server {
+                    Some(crate::observation::ContractRef::Bitcoin { confirmations, .. }) => {
+                        confirmations
+                    }
+                    _ => None,
+                }
+            })
+            .or_else(|| self.client.bitcoin_min_confirmations())
+            .unwrap_or(0);
         let receipt = self
             .client
             .claim_bitcoin(
@@ -274,7 +294,7 @@ impl AutoClaimer {
                     // A set rate lets a replacement broadcast before it is journaled.
                     fee_rate: None,
                     maximum_fee: config.maximum_fee,
-                    minimum_confirmations: config.minimum_confirmations,
+                    minimum_confirmations,
                     minimum_remaining_blocks: config.minimum_remaining_blocks,
                     confirmation_target: config.confirmation_target,
                     timeout: self.config.timeout,

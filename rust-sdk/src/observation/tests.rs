@@ -121,11 +121,12 @@ fn bitcoin_confirmations_preimages_spend_paths_and_reorgs() {
     let observation = bitcoin_reader::classify(&h, 10000, 1, &history).unwrap();
     assert_eq!(observation.state, HtlcState::SpentClaim);
     assert_eq!(observation.preimage.unwrap().expose(), &[42; 32]);
+    // The depth gates the funding only, so a shallower spend still counts.
     assert_eq!(
         bitcoin_reader::classify(&h, 10000, 2, &history)
             .unwrap()
             .state,
-        HtlcState::SpentUnknown
+        HtlcState::SpentClaim
     );
     history.transactions[1].transaction.input[0].witness = Witness::from_slice(&[
         vec![1; 64],
@@ -224,7 +225,7 @@ fn bitcoin_surplus_after_a_spend_keeps_the_spent_verdict() {
         bitcoin_reader::classify(&h, 10000, 1, &history)
             .unwrap()
             .state,
-        HtlcState::SpentUnknown
+        HtlcState::SpentClaim
     );
 }
 #[test]
@@ -342,7 +343,7 @@ async fn manager_invalidates_stale_and_failed_reads_and_allows_reorg_regression(
     let reference = ContractRef::Bitcoin {
         htlc: htlc(),
         expected_sats: 10000,
-        confirmations: 1,
+        confirmations: Some(1),
     };
     let key = reference.key().unwrap();
     manager.register(reference).await.unwrap();
@@ -411,7 +412,7 @@ async fn manager_lock_wait_does_not_consume_read_budget() {
     let reference = ContractRef::Bitcoin {
         htlc: htlc(),
         expected_sats: 10000,
-        confirmations: 1,
+        confirmations: Some(1),
     };
     let key = reference.key().unwrap();
     manager.register_unread(reference).unwrap();
@@ -446,6 +447,102 @@ fn timelocks_use_chain_height_and_mtp_and_preimages_are_redacted() {
     let secret = lock.preimage(&[42; 32]).unwrap();
     assert!(!format!("{secret:?}").contains("42"));
     assert!(lock.preimage(&[42; 31]).is_none());
+}
+/// Serves one fixed address history.
+struct History(BitcoinHistory);
+impl crate::bitcoin::BitcoinBackend for History {
+    fn network(&self) -> Network {
+        Network::Regtest
+    }
+    fn history<'a>(
+        &'a self,
+        _: &'a bitcoin::Address,
+    ) -> crate::bitcoin::ChainFuture<'a, BitcoinHistory> {
+        Box::pin(async { Ok(self.0.clone()) })
+    }
+    fn observe<'a>(
+        &'a self,
+        _: &'a bitcoin::Address,
+    ) -> crate::bitcoin::ChainFuture<'a, BitcoinObservation> {
+        Box::pin(async { Ok(self.0.observation.clone()) })
+    }
+    fn transaction(
+        &self,
+        _: bitcoin::Txid,
+    ) -> crate::bitcoin::ChainFuture<'_, Option<Transaction>> {
+        Box::pin(async { Err(Error::Transport("unused".into())) })
+    }
+    fn fee_rate(&self, _: u16) -> crate::bitcoin::ChainFuture<'_, bitcoin::FeeRate> {
+        Box::pin(async { Err(Error::Transport("unused".into())) })
+    }
+    fn broadcast<'a>(
+        &'a self,
+        _: &'a Transaction,
+    ) -> crate::bitcoin::ChainFuture<'a, bitcoin::Txid> {
+        Box::pin(async { Err(Error::Transport("unused".into())) })
+    }
+}
+#[tokio::test]
+async fn a_bitcoin_reference_without_a_depth_follows_the_client_on_every_read() {
+    let h = htlc();
+    let mut history = funding(&h);
+    history.transactions[0].confirmed_height = None;
+    history.observation.utxos[0].confirmed_height = None;
+    let manager = ContractManager::new(
+        Arc::new(BitcoinReader::new(Arc::new(History(history)))),
+        ManagerOptions::default(),
+    )
+    .unwrap();
+    let client = crate::Client::new("http://127.0.0.1:1").unwrap();
+    let state = |confirmations| {
+        let manager = manager.clone();
+        async move {
+            let reference = ContractRef::Bitcoin {
+                htlc: htlc(),
+                expected_sats: 10000,
+                confirmations,
+            };
+            let key = reference.key().unwrap();
+            manager.unregister(&key).unwrap();
+            manager.register(reference).await.unwrap();
+            manager.get(&key).unwrap().unwrap().state
+        }
+    };
+    client.set_bitcoin_min_confirmations(Some(1));
+    assert_eq!(state(None).await, HtlcState::Confirmed, "not yet following");
+    manager.follow_bitcoin_min_confirmations(&client).unwrap();
+    assert_eq!(state(None).await, HtlcState::Mempool);
+    client.set_bitcoin_min_confirmations(None);
+    assert_eq!(state(None).await, HtlcState::Confirmed);
+    // A reference's own depth overrides the client's.
+    assert_eq!(state(Some(1)).await, HtlcState::Mempool);
+    client.set_bitcoin_min_confirmations(Some(2));
+    assert_eq!(state(Some(0)).await, HtlcState::Confirmed);
+    // One manager cannot serve two clients' depths.
+    assert!(
+        manager
+            .follow_bitcoin_min_confirmations(&client.clone())
+            .is_ok()
+    );
+    let other = crate::Client::new("http://127.0.0.1:1").unwrap();
+    assert!(manager.follow_bitcoin_min_confirmations(&other).is_err());
+}
+#[tokio::test]
+async fn a_bitcoin_reference_without_a_depth_reads_at_zero_without_a_client() {
+    let h = htlc();
+    let mut history = funding(&h);
+    history.transactions[0].confirmed_height = None;
+    history.observation.utxos[0].confirmed_height = None;
+    let reader = BitcoinReader::new(Arc::new(History(history)));
+    let reference = ContractRef::Bitcoin {
+        htlc: h,
+        expected_sats: 10000,
+        confirmations: None,
+    };
+    assert_eq!(
+        reader.observe(&reference).await.unwrap().state,
+        HtlcState::Confirmed
+    );
 }
 
 #[test]

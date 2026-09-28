@@ -13,7 +13,13 @@ pub struct SwapContracts {
 }
 #[derive(Clone, Debug)]
 pub struct ReferenceOptions {
+    /// Confirmations a client-funded leg needs before it reads as funded. The
+    /// server does not act on a client funding until it is in a block, so reading
+    /// it sooner would show the swap funded while the server still waits.
     pub client_confirmations: u32,
+    /// Confirmations a server-funded EVM leg needs. A server-funded Bitcoin leg
+    /// has none of its own: a manager that follows the client reads it at
+    /// `Client::bitcoin_min_confirmations`, any other manager at 0.
     pub server_confirmations: u32,
     #[cfg(feature = "gasless")]
     pub evm_from_block: u64,
@@ -86,11 +92,7 @@ impl Client {
             Ok(ContractRef::Bitcoin {
                 htlc: self.bitcoin_htlc(id)?,
                 expected_sats: amount,
-                confirmations: if client {
-                    options.client_confirmations
-                } else {
-                    options.server_confirmations
-                },
+                confirmations: client.then_some(options.client_confirmations),
             })
         };
         let arkade = || -> Result<ContractRef> {

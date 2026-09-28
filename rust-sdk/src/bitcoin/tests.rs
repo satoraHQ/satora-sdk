@@ -1239,7 +1239,6 @@ fn claim_config(
         bitcoin: Some(crate::tracker::BitcoinAutoClaim {
             backend,
             maximum_fee: options.maximum_fee,
-            minimum_confirmations: options.minimum_confirmations,
             minimum_remaining_blocks: options.minimum_remaining_blocks,
             confirmation_target: options.confirmation_target,
         }),
@@ -1357,4 +1356,148 @@ async fn auto_claim_retries_a_refused_bitcoin_spend_but_not_a_failed_broadcast()
         .store(false, std::sync::atomic::Ordering::Relaxed);
     assert!(auto_claim(&claimer).await.is_err());
     assert_eq!(backend.submissions(), 0);
+}
+
+/// The claim fixture with its only funding still in the mempool.
+fn mempool_claim_setup() -> (
+    Client,
+    std::sync::Arc<crate::InMemorySwapStorage>,
+    std::sync::Arc<Backend>,
+    BitcoinSpendOptions,
+) {
+    let (client, storage, backend, options) = claim_setup(true);
+    backend.fundings.lock().unwrap().clear();
+    backend.fund(100_000, None);
+    (client, storage, std::sync::Arc::new(backend), options)
+}
+
+#[tokio::test]
+async fn a_claim_at_zero_confirmations_spends_a_mempool_funding() {
+    let (client, _, backend, mut options) = mempool_claim_setup();
+    options.minimum_confirmations = 1;
+    assert!(
+        client
+            .claim_bitcoin("bitcoin", backend.as_ref(), options.clone())
+            .await
+            .is_err()
+    );
+    assert_eq!(backend.submissions(), 0);
+    options.minimum_confirmations = 0;
+    let receipt = client
+        .claim_bitcoin("bitcoin", backend.as_ref(), options)
+        .await
+        .unwrap();
+    assert_eq!(
+        receipt.transaction.input[0].previous_output.txid,
+        backend.fundings.lock().unwrap()[0]
+            .transaction
+            .compute_txid()
+    );
+    assert_eq!(backend.submissions(), 1);
+}
+
+#[tokio::test]
+async fn auto_claim_follows_the_client_depth_and_claims_a_mempool_funding_by_default() {
+    use crate::tracker::ExecutionResult;
+    let (client, storage, backend, options) = mempool_claim_setup();
+    record_claim_destination(&storage, Some(&options.destination), &options.destination);
+    let claimer = auto_claimer(client.clone(), backend.clone(), &options);
+    client.set_bitcoin_min_confirmations(Some(1));
+    let Ok(ExecutionResult::NotSent(_)) = auto_claim(&claimer).await else {
+        panic!("a funding below the client's depth is not claimed");
+    };
+    assert_eq!(backend.submissions(), 0);
+    client.set_bitcoin_min_confirmations(None);
+    let Ok(ExecutionResult::Submitted { .. }) = auto_claim(&claimer).await else {
+        panic!("the default depth of 0 claims the mempool funding");
+    };
+    assert_eq!(backend.submissions(), 1);
+}
+
+#[tokio::test]
+async fn auto_claim_uses_the_depth_the_tracker_read_the_server_leg_at() {
+    use crate::SwapStorage;
+    use crate::observation::ContractRef;
+    use crate::observation::SwapContracts;
+    use crate::tracker::ExecutionResult;
+    use crate::tracker::TrackingRecord;
+    let (client, storage, backend, options) = mempool_claim_setup();
+    record_claim_destination(&storage, Some(&options.destination), &options.destination);
+    client.set_bitcoin_min_confirmations(Some(3));
+    let journal = |version| {
+        let record = TrackingRecord {
+            version,
+            enabled: true,
+            contracts: SwapContracts {
+                client: None,
+                server: Some(ContractRef::Bitcoin {
+                    htlc: client.bitcoin_htlc("bitcoin").unwrap(),
+                    expected_sats: 100_000,
+                    confirmations: Some(0),
+                }),
+            },
+            options: Default::default(),
+            attempt: None,
+            completed_ms: None,
+            server_status: None,
+        };
+        storage
+            .update_metadata(
+                "bitcoin",
+                SwapMetadata {
+                    tracking: Some(serde_json::to_value(record).unwrap()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    };
+    let claimer = auto_claimer(client.clone(), backend.clone(), &options);
+    // A version 1 journal pinned every server leg, so its depth is not the tracker's.
+    journal(1);
+    let Ok(ExecutionResult::NotSent(_)) = auto_claim(&claimer).await else {
+        panic!("an old journal's server leg follows the client's depth");
+    };
+    assert_eq!(backend.submissions(), 0);
+    journal(2);
+    let Ok(ExecutionResult::Submitted { .. }) = auto_claim(&claimer).await else {
+        panic!("the depth the reference carries is the one the tracker read at");
+    };
+    assert_eq!(backend.submissions(), 1);
+}
+
+#[cfg(feature = "gasless")]
+#[test]
+fn contract_references_leave_the_server_bitcoin_depth_to_the_client() {
+    use crate::observation::ContractRef;
+    use crate::observation::ReferenceOptions;
+    let options = ReferenceOptions {
+        client_confirmations: 3,
+        server_confirmations: 0,
+        evm_source_sender: Some(crate::evm::Address::repeat_byte(1)),
+        evm_lock_token: Some(crate::evm::Address::repeat_byte(2)),
+        ..Default::default()
+    };
+    let bitcoin_depth = |client_funds: bool| {
+        use crate::SwapStorage;
+        let (client, storage, _, _) = spend_setup(true, client_funds, 100_000);
+        let mut stored = storage.get_swap("bitcoin").unwrap().unwrap();
+        let mut response = serde_json::to_value(&stored.response).unwrap();
+        for field in ["server_evm_address", "evm_htlc_address", "wbtc_address"] {
+            response[field] = format!("{:#x}", crate::evm::Address::repeat_byte(3)).into();
+        }
+        stored.response = serde_json::from_value(response).unwrap();
+        storage.store_swap(stored).unwrap();
+        let contracts = client.contract_references("bitcoin", &options).unwrap();
+        let leg = if client_funds {
+            contracts.client
+        } else {
+            contracts.server
+        };
+        let Some(ContractRef::Bitcoin { confirmations, .. }) = leg else {
+            panic!("expected a Bitcoin leg");
+        };
+        confirmations
+    };
+    assert_eq!(bitcoin_depth(false), None);
+    assert_eq!(bitcoin_depth(true), Some(3));
 }

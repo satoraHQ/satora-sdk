@@ -1,8 +1,10 @@
 use super::*;
 use crate::control::Cancellation;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
@@ -46,6 +48,7 @@ struct Inner {
     options: ManagerOptions,
     entries: Mutex<HashMap<String, Arc<Entry>>>,
     events: broadcast::Sender<ObservationEvent>,
+    bitcoin_depth: OnceLock<BitcoinDepth>,
 }
 #[derive(Clone)]
 pub struct ContractManager(Arc<Inner>);
@@ -69,7 +72,49 @@ impl ContractManager {
             options,
             entries: Mutex::new(HashMap::new()),
             events,
+            bitcoin_depth: OnceLock::new(),
         })))
+    }
+    /// Read Bitcoin references without a depth of their own, such as the
+    /// server-funded leg from `contract_references`, at the client's
+    /// [`Client::bitcoin_min_confirmations`](crate::Client::bitcoin_min_confirmations),
+    /// resolved on every read by any caller, like a TypeScript reader built with
+    /// `minConfirmations: () => client.getBitcoinMinConfirmations()`. Without it
+    /// they read at 0. `SwapTracker::new` does this for its manager. A manager
+    /// follows one client and its clones; another client is refused.
+    pub fn follow_bitcoin_min_confirmations(&self, client: &crate::Client) -> Result<()> {
+        let depth = &client.bitcoin_depth;
+        if !self
+            .0
+            .bitcoin_depth
+            .get_or_init(|| depth.clone())
+            .same(depth)
+        {
+            return Err(invalid(
+                "contract manager already follows another client's Bitcoin confirmation depth",
+            ));
+        }
+        Ok(())
+    }
+    fn resolve<'a>(&self, reference: &'a ContractRef) -> Cow<'a, ContractRef> {
+        match reference {
+            ContractRef::Bitcoin {
+                htlc,
+                expected_sats,
+                confirmations: None,
+            } => Cow::Owned(ContractRef::Bitcoin {
+                htlc: htlc.clone(),
+                expected_sats: *expected_sats,
+                confirmations: Some(
+                    self.0
+                        .bitcoin_depth
+                        .get()
+                        .and_then(BitcoinDepth::get)
+                        .unwrap_or(0),
+                ),
+            }),
+            _ => Cow::Borrowed(reference),
+        }
     }
     pub fn can_observe(&self, reference: &ContractRef) -> bool {
         self.0.reader.can_observe(reference)
@@ -158,9 +203,10 @@ impl ContractManager {
         // Held through the store below, so results are written in the order their
         // reads started. Time spent queued here is not charged to read_timeout.
         let _guard = entry.read.lock().await;
+        let reference = self.resolve(&entry.reference);
         let result = tokio::time::timeout(
             self.0.options.read_timeout,
-            self.0.reader.observe(&entry.reference),
+            self.0.reader.observe(&reference),
         )
         .await
         .map_err(|_| Error::Timeout("contract observation".into()))

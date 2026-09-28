@@ -135,6 +135,7 @@ pub struct Client {
     /// just funded.
     pub(crate) arkade_wallet: Arc<tokio::sync::OnceCell<crate::arkade::ArkadeWallet>>,
     pub(crate) log: SdkLogger,
+    pub(crate) bitcoin_depth: crate::observation::BitcoinDepth,
 }
 
 impl std::fmt::Debug for Client {
@@ -169,6 +170,7 @@ impl Client {
             #[cfg(feature = "gasless")]
             evm_execution: Arc::default(),
             log: SdkLogger::tracing(),
+            bitcoin_depth: crate::observation::BitcoinDepth::new(None),
         })
     }
 
@@ -196,6 +198,20 @@ impl Client {
     /// [`ClientBuilder::log_level`] do. Useful after [`Self::new`].
     pub fn set_logger(&mut self, logger: Arc<dyn Logger>, level: LogLevel) {
         self.log = SdkLogger::new(logger, level);
+    }
+
+    /// Confirmations a server-funded Bitcoin HTLC needs before it is claimable,
+    /// like the TypeScript `getBitcoinMinConfirmations`. `None` reads as 0.
+    pub fn bitcoin_min_confirmations(&self) -> Option<u32> {
+        self.bitcoin_depth.get()
+    }
+
+    /// At 0 the claim goes out against a mempool funding, trusting the funder not
+    /// to replace it once the claim reveals the preimage. Every clone of this
+    /// client shares the setting, so it takes effect on the next chain read of
+    /// every swap its trackers watch, including swaps already tracked.
+    pub fn set_bitcoin_min_confirmations(&self, confirmations: Option<u32>) {
+        self.bitcoin_depth.set(confirmations);
     }
 
     /// Internal dispatch chokepoint for every endpoint described by
@@ -787,6 +803,7 @@ pub struct ClientBuilder {
     arkade_config: Option<crate::arkade::ArkadeConfig>,
     logger: Option<Arc<dyn Logger>>,
     log_level: Option<LogLevel>,
+    bitcoin_min_confirmations: Option<u32>,
 }
 
 impl ClientBuilder {
@@ -887,6 +904,18 @@ impl ClientBuilder {
         self
     }
 
+    /// Confirmations a server-funded Bitcoin HTLC needs before it is claimable,
+    /// like the TypeScript `withBitcoinMinConfirmations`. Default 0: claim as
+    /// soon as the funding reaches the mempool, which trusts the funder not to
+    /// double-spend it (claiming publishes the preimage, so a funder that then
+    /// replaced its funding could take both legs). Set 1 or more for a
+    /// block-depth policy that does not rely on the funder's good behaviour.
+    /// Change it later with [`Client::set_bitcoin_min_confirmations`].
+    pub fn bitcoin_min_confirmations(mut self, confirmations: u32) -> Self {
+        self.bitcoin_min_confirmations = Some(confirmations);
+        self
+    }
+
     pub fn build(self) -> Result<Client> {
         crate::crypto_init::ensure_default_provider_installed();
         let base_url = self
@@ -984,6 +1013,7 @@ impl ClientBuilder {
             #[cfg(feature = "gasless")]
             evm_execution: Arc::default(),
             log,
+            bitcoin_depth: crate::observation::BitcoinDepth::new(self.bitcoin_min_confirmations),
         })
     }
 }
@@ -1346,5 +1376,26 @@ mod tests {
             .as_str();
         assert_eq!(identity, explicit);
         assert_ne!(Some(identity), client.mnemonic());
+    }
+
+    #[test]
+    fn the_bitcoin_depth_is_seeded_by_the_builder_and_shared_by_every_clone() {
+        assert_eq!(
+            Client::new("http://127.0.0.1:1")
+                .unwrap()
+                .bitcoin_min_confirmations(),
+            None
+        );
+        let client = Client::builder()
+            .wallet_storage(InMemoryWalletStorage::shared())
+            .bitcoin_min_confirmations(1)
+            .build()
+            .unwrap();
+        assert_eq!(client.bitcoin_min_confirmations(), Some(1));
+        let held_by_a_tracker = client.clone();
+        client.set_bitcoin_min_confirmations(Some(0));
+        assert_eq!(held_by_a_tracker.bitcoin_min_confirmations(), Some(0));
+        held_by_a_tracker.set_bitcoin_min_confirmations(None);
+        assert_eq!(client.bitcoin_min_confirmations(), None);
     }
 }

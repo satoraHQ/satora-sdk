@@ -206,7 +206,9 @@ pub struct BitcoinSpendOptions {
     /// replaces it over the same outputs; None never does.
     pub fee_rate: Option<FeeRate>,
     pub maximum_fee: Amount,
-    /// Confirmations each funding output needs before it is spent.
+    /// Confirmations an HTLC output needs before it is spent. At 0 a claim goes
+    /// out against a mempool funding, trusting the funder not to replace it once
+    /// the claim reveals the preimage.
     pub minimum_confirmations: u32,
     /// Refuse to reveal the preimage this close to the server's refund window,
     /// counted in blocks (ten minutes each for time-based locktimes). Test networks

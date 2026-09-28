@@ -79,8 +79,10 @@ pub async fn track_stored(
     Ok((tracker, worker))
 }
 /// Claims EVM to Bitcoin swaps, and Arkade swaps through the client's Arkade
-/// config, to the destinations recorded when they were created. EVM claims also
-/// need `AutoClaimConfig::evm` with the allowed contracts per chain.
+/// config, to the destinations recorded when they were created. A Bitcoin claim
+/// waits for `Client::bitcoin_min_confirmations`, which is 0 unless set, so by
+/// default it spends a mempool funding. EVM claims also need
+/// `AutoClaimConfig::evm` with the allowed contracts per chain.
 pub fn bitcoin_claimer(
     client: Client,
     backend: Arc<dyn BitcoinBackend>,
