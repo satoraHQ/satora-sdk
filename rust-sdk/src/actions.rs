@@ -1,5 +1,7 @@
 //! Pure action derivation from chain observations. All clocks and capabilities
-//! are explicit inputs; server status never authorizes a payment or claim.
+//! are explicit inputs. Server status never authorizes a payment, claim or refund;
+//! it can only end a swap paid over Lightning whose server leg the chain does not
+//! show as claimable.
 use crate::observation::ChainPoint;
 use crate::observation::HtlcState;
 use crate::observation::Observation;
@@ -114,6 +116,9 @@ pub struct ActionInput<'a> {
     /// Application-verified Arkade capability; ignored for other client rails.
     pub collaborative_refund_available: bool,
     pub bridge: &'a BridgeState,
+    /// Last server-reported status. Consulted only for a swap with no client leg,
+    /// to end it when the chain shows no claimable server leg.
+    pub server_status: Option<&'a SwapStatus>,
 }
 
 pub fn derive_status(client: Option<HtlcState>, server: Option<HtlcState>) -> Option<SwapStatus> {
@@ -202,6 +207,29 @@ fn past_grace(lock: Timelock, point: &ChainPoint, policy: &ActionPolicy) -> bool
         }
     }
 }
+/// The server sets these on a swap paid over Lightning before funding its leg,
+/// or after reclaiming it, and never funds afterwards.
+fn lightning_source_failure(status: Option<&SwapStatus>) -> Option<Outcome> {
+    use SwapStatus::*;
+    match status? {
+        ClientFundedServerRefunded | ServerWontFund | ClientFundedTooLate | ClientInvalidFunded => {
+            Some(Outcome::Refunded)
+        }
+        Expired => Some(Outcome::Expired),
+        Pending
+        | ClientFundingSeen
+        | ClientFunded
+        | ClientRefunded
+        | ServerFunded
+        | ClientRedeeming
+        | ClientRedeemed
+        | ServerRedeemed
+        | ClientRefundedServerFunded
+        | ClientRefundedServerRefunded
+        | ClientRedeemedAndClientRefunded
+        | Other(_) => None,
+    }
+}
 fn refunds(input: &ActionInput<'_>, waiting: WaitingOn) -> Vec<Action> {
     match expired(input.contracts.client.as_ref(), input.client) {
         Some(true) => vec![action(ActionKind::RefundUnilateral, Automation::Confirm)],
@@ -287,7 +315,17 @@ pub fn derive_actions(input: ActionInput<'_>, policy: &ActionPolicy) -> SwapActi
                     return wait(WaitingOn::SubmissionRecovery);
                 }
                 if input.contracts.client.is_none() {
-                    return wait(WaitingOn::ClientPayment);
+                    // A server leg in the mempool contradicts a failure status.
+                    if server != Some(HtlcState::Mempool)
+                        && let Some(outcome) = lightning_source_failure(input.server_status)
+                    {
+                        return complete(outcome);
+                    }
+                    return wait(if input.server_status == Some(&ClientFunded) {
+                        WaitingOn::ServerFunding
+                    } else {
+                        WaitingOn::ClientPayment
+                    });
                 }
                 if input.funding_submitted {
                     return wait(WaitingOn::FundingConfirmation);
@@ -342,7 +380,9 @@ pub fn derive_actions(input: ActionInput<'_>, policy: &ActionPolicy) -> SwapActi
                     vec![action(ActionKind::Claim, Automation::Automatic)]
                 } else if input.contracts.client.is_some() {
                     refunds(&input, WaitingOn::RefundTimelock)
-                } else if reference.timelock().expired(point) {
+                } else if reference.timelock().expired(point)
+                    || lightning_source_failure(input.server_status) == Some(Outcome::Refunded)
+                {
                     // Paid over Lightning: the server reclaims its leg and, with the
                     // preimage never revealed, the hold invoice unwinds on its own.
                     complete(Outcome::Refunded)

@@ -304,19 +304,10 @@ async fn terminal_swaps_retire_and_free_capacity() {
     assert!(restarted.record(&id).await.is_err());
     assert!(restarted.record(&second).await.unwrap().enabled);
 }
-#[tokio::test]
-async fn a_lightning_source_past_its_locktime_retires_without_being_at_risk() {
-    let (tracker, reader, executor, id) = setup_fixture(
-        "lightning_to_arkade",
-        0,
-        TrackerOptions {
-            retire_after: Duration::ZERO,
-            ..Default::default()
-        },
-    );
+async fn track_lightning(tracker: &SwapTracker, id: &str) {
     tracker
         .track(
-            &id,
+            id,
             SwapContracts {
                 client: None,
                 server: Some(reference(100)),
@@ -328,6 +319,35 @@ async fn a_lightning_source_past_its_locktime_retires_without_being_at_risk() {
         )
         .await
         .unwrap();
+}
+fn set_stored_status(tracker: &SwapTracker, id: &str, status: crate::types::SwapStatus) {
+    let mut stored = tracker.0.client.get_stored_swap(id).unwrap().unwrap();
+    let crate::types::GetSwapResponse::LightningToArkade(response) = &mut stored.response else {
+        panic!("expected a Lightning to Arkade swap");
+    };
+    response.status = status;
+    tracker.0.client.storage.store_swap(stored).unwrap();
+}
+fn recommended(actions: &SwapActions) -> ActionKind {
+    actions.recommended().unwrap().kind.clone()
+}
+const REFUNDED: ActionKind = ActionKind::Complete {
+    outcome: Outcome::Refunded,
+};
+const CLIENT_PAYMENT: ActionKind = ActionKind::Wait {
+    on: WaitingOn::ClientPayment,
+};
+#[tokio::test]
+async fn a_lightning_source_past_its_locktime_retires_without_being_at_risk() {
+    let (tracker, reader, executor, id) = setup_fixture(
+        "lightning_to_arkade",
+        0,
+        TrackerOptions {
+            retire_after: Duration::ZERO,
+            ..Default::default()
+        },
+    );
+    track_lightning(&tracker, &id).await;
     *reader.0.lock().unwrap() = (HtlcState::Absent, HtlcState::Confirmed, 99);
     let actions = tracker.reconcile(&id).await.unwrap();
     assert_eq!(
@@ -352,6 +372,189 @@ async fn a_lightning_source_past_its_locktime_retires_without_being_at_risk() {
         serde_json::from_value(stored_metadata(&tracker, &id).tracking.unwrap()).unwrap();
     assert!(!journal.enabled);
     assert_eq!(executor.calls.load(Ordering::SeqCst), 0);
+}
+#[tokio::test]
+async fn a_lightning_source_status_hint_ends_and_retires_tracking() {
+    let (tracker, _, executor, id) = setup_fixture(
+        "lightning_to_arkade",
+        0,
+        TrackerOptions {
+            retire_after: Duration::ZERO,
+            ..Default::default()
+        },
+    );
+    tracker
+        .hint_status("untracked", crate::types::SwapStatus::ServerWontFund)
+        .unwrap();
+    assert!(tracker.0.pending.lock().unwrap().is_empty());
+    track_lightning(&tracker, &id).await;
+    assert_eq!(
+        recommended(&tracker.reconcile(&id).await.unwrap()),
+        CLIENT_PAYMENT
+    );
+    tracker.0.pending.lock().unwrap().clear();
+    tracker
+        .hint_status(&id, crate::types::SwapStatus::ServerWontFund)
+        .unwrap();
+    assert!(tracker.0.pending.lock().unwrap().contains(&id));
+    let actions = tracker.reconcile(&id).await.unwrap();
+    assert_eq!(recommended(&actions), REFUNDED);
+    assert!(!actions.at_risk);
+    assert!(tracker.record(&id).await.is_err());
+    let journal: TrackingRecord =
+        serde_json::from_value(stored_metadata(&tracker, &id).tracking.unwrap()).unwrap();
+    assert!(!journal.enabled);
+    assert_eq!(executor.calls.load(Ordering::SeqCst), 0);
+    // A retired swap is untracked, so a later hint is ignored.
+    tracker
+        .hint_status(&id, crate::types::SwapStatus::ServerWontFund)
+        .unwrap();
+    assert!(tracker.0.pending.lock().unwrap().is_empty());
+}
+#[cfg(feature = "websocket")]
+#[tokio::test]
+async fn a_pushed_lightning_source_status_ends_tracking() {
+    use crate::subscription::StatusEvent;
+    use crate::subscription::StatusSource;
+    let (tracker, _, _, id) = setup_fixture("lightning_to_arkade", 0, TrackerOptions::default());
+    track_lightning(&tracker, &id).await;
+    assert_eq!(
+        recommended(&tracker.reconcile(&id).await.unwrap()),
+        CLIENT_PAYMENT
+    );
+    tracker
+        .status_hint(&StatusEvent::Update {
+            swap_id: id.clone(),
+            status: crate::types::SwapStatus::Expired,
+            source: StatusSource::WebSocket,
+        })
+        .unwrap();
+    assert_eq!(
+        recommended(&tracker.reconcile(&id).await.unwrap()),
+        ActionKind::Complete {
+            outcome: Outcome::Expired
+        }
+    );
+}
+async fn restart(
+    tracker: &SwapTracker,
+    reader: &Arc<Reader>,
+    executor: &Arc<Executor>,
+) -> SwapTracker {
+    let restarted = SwapTracker::new(
+        tracker.0.client.clone(),
+        ContractManager::new(reader.clone(), ManagerOptions::default()).unwrap(),
+        TrackerOptions::default(),
+        Some(executor.clone()),
+    )
+    .unwrap();
+    assert!(restarted.restore().await.unwrap().is_empty());
+    restarted
+}
+#[tokio::test]
+async fn a_stored_failure_status_ends_a_lightning_source_swap_until_a_newer_hint() {
+    let (tracker, reader, executor, id) =
+        setup_fixture("lightning_to_arkade", 0, TrackerOptions::default());
+    set_stored_status(&tracker, &id, crate::types::SwapStatus::ClientFundedTooLate);
+    track_lightning(&tracker, &id).await;
+    assert_eq!(
+        recommended(&tracker.reconcile(&id).await.unwrap()),
+        REFUNDED
+    );
+    let restarted = restart(&tracker, &reader, &executor).await;
+    assert_eq!(
+        recommended(&restarted.reconcile(&id).await.unwrap()),
+        REFUNDED
+    );
+    assert!(restarted.record(&id).await.unwrap().completed_ms.is_some());
+    restarted
+        .hint_status(&id, crate::types::SwapStatus::Pending)
+        .unwrap();
+    assert_eq!(
+        recommended(&restarted.reconcile(&id).await.unwrap()),
+        CLIENT_PAYMENT
+    );
+    assert!(restarted.record(&id).await.unwrap().completed_ms.is_none());
+}
+#[tokio::test]
+async fn hinted_statuses_survive_a_restart_without_restarting_retirement() {
+    let (tracker, reader, executor, id) =
+        setup_fixture("lightning_to_arkade", 0, TrackerOptions::default());
+    track_lightning(&tracker, &id).await;
+    tracker
+        .hint_status(&id, crate::types::SwapStatus::ClientFunded)
+        .unwrap();
+    let server_funding = ActionKind::Wait {
+        on: WaitingOn::ServerFunding,
+    };
+    assert_eq!(
+        recommended(&tracker.reconcile(&id).await.unwrap()),
+        server_funding
+    );
+    let tracker = restart(&tracker, &reader, &executor).await;
+    assert_eq!(
+        recommended(&tracker.reconcile(&id).await.unwrap()),
+        server_funding
+    );
+    tracker
+        .hint_status(&id, crate::types::SwapStatus::ServerWontFund)
+        .unwrap();
+    assert_eq!(
+        recommended(&tracker.reconcile(&id).await.unwrap()),
+        REFUNDED
+    );
+    let completed_ms = tracker.record(&id).await.unwrap().completed_ms;
+    assert!(completed_ms.is_some());
+    // Nothing refreshed the stored response, so it still says pending.
+    assert_eq!(
+        tracker
+            .0
+            .client
+            .get_stored_swap(&id)
+            .unwrap()
+            .unwrap()
+            .response
+            .status(),
+        &crate::types::SwapStatus::Pending
+    );
+    let tracker = restart(&tracker, &reader, &executor).await;
+    let mut events = tracker.events();
+    assert_eq!(
+        recommended(&tracker.reconcile(&id).await.unwrap()),
+        REFUNDED
+    );
+    assert_eq!(
+        tracker.record(&id).await.unwrap().completed_ms,
+        completed_ms
+    );
+    let event = events.try_recv().unwrap();
+    assert_eq!(recommended(&event.actions.unwrap()), REFUNDED);
+    assert!(events.try_recv().is_err());
+    assert_eq!(executor.calls.load(Ordering::SeqCst), 0);
+}
+#[tokio::test]
+async fn chain_funding_overrides_a_failure_status_and_cancels_retirement() {
+    let (tracker, reader, executor, id) =
+        setup_fixture("lightning_to_arkade", 0, TrackerOptions::default());
+    track_lightning(&tracker, &id).await;
+    tracker
+        .hint_status(&id, crate::types::SwapStatus::ServerWontFund)
+        .unwrap();
+    assert_eq!(
+        recommended(&tracker.reconcile(&id).await.unwrap()),
+        REFUNDED
+    );
+    assert!(tracker.record(&id).await.unwrap().completed_ms.is_some());
+    *reader.0.lock().unwrap() = (HtlcState::Absent, HtlcState::Confirmed, 50);
+    assert_eq!(
+        recommended(&tracker.reconcile(&id).await.unwrap()),
+        ActionKind::Wait {
+            on: WaitingOn::ClaimConfirmation
+        }
+    );
+    assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
+    let record = tracker.record(&id).await.unwrap();
+    assert!(record.enabled && record.completed_ms.is_none());
 }
 #[tokio::test]
 async fn an_expired_swap_with_an_unminted_cctp_burn_is_not_retired() {

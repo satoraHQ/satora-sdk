@@ -407,6 +407,15 @@ claim margin before that leg's refund locktime, then waits on
 the preimage was never revealed, so the hold invoice unwinds on its own. That
 terminal is not at risk, so it drops out of `refresh(true)`.
 
+Such a swap also ends on the server status passed as `ActionInput::server_status`,
+since the server never funds after setting one of these: `serverwontfund`,
+`clientfundedtoolate`, `clientfundedserverrefunded` and `clientinvalidfunded` end
+it as refunded, and `expired` ends it as expired. The chain still wins: a server
+leg in the mempool keeps it waiting, a claimable one is claimed, and inside the
+claim margin only the four refunded statuses end it before the locktime.
+`clientfunded` only turns the wait into `ServerFunding`. Swaps with a client leg
+ignore the status, and it never yields a fund, claim or refund action.
+
 `tracker::SwapTracker` registers stored swaps with a dedicated `ContractManager`,
 persists references/options/attempts, restores enabled records, and emits changed
 actions through a bounded broadcast channel. Configure one reader per ledger
@@ -463,8 +472,12 @@ worker.shutdown().await?;
 TypeScript client does. Refresh the swap first, or track it directly, to watch it
 regardless.
 
-Use `status_hint` to feed WebSocket events into the tracker; status values only
-trigger chain reads. `hint` coalesces IDs, `refresh(true)` reconciles at-risk
+Use `status_hint` to feed WebSocket events into the tracker, or `hint_status` for
+a status obtained another way. Both trigger chain reads, and the last hinted
+status, or else the stored response status, becomes `server_status` for the
+Lightning terminals above. The journal keeps the last hinted status, so a terminal
+it produced survives a restart and still retires on schedule instead of starting
+over. `hint` coalesces IDs, `refresh(true)` reconciles at-risk
 swaps, and periodic full refreshes also revisit apparently completed swaps after
 reorgs. `actions` returns the last published snapshot; use `reconcile` for a fresh
 read before acting. `untrack` disables a record without deleting its journal;

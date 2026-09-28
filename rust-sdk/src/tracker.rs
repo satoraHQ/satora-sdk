@@ -64,6 +64,12 @@ pub struct TrackingRecord {
     /// derive a terminal outcome clears it, including one whose read failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_ms: Option<u64>,
+    /// Last status passed to `hint_status`, which outranks the stored response
+    /// status. A pushed status never reaches the stored response, so without this
+    /// a restart would derive from the stale stored status and undo a terminal the
+    /// hint produced, restarting its retirement clock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_status: Option<crate::types::SwapStatus>,
 }
 #[derive(Clone, Debug)]
 pub struct TrackerOptions {
@@ -130,6 +136,8 @@ pub enum AttemptResolution {
 struct Entry {
     record: tokio::sync::Mutex<TrackingRecord>,
     actions: Mutex<Option<SwapActions>>,
+    /// Seeded from the journal and set by `hint_status`; `reconcile` persists it.
+    server_status: Mutex<Option<crate::types::SwapStatus>>,
 }
 struct Inner {
     client: Client,
@@ -256,6 +264,7 @@ impl SwapTracker {
                 options,
                 attempt: None,
                 completed_ms: None,
+                server_status: None,
             },
         )
         .await
@@ -313,6 +322,7 @@ impl SwapTracker {
             }
             return Err(error);
         }
+        let server_status = record.server_status.clone();
         self.0
             .entries
             .lock()
@@ -322,6 +332,7 @@ impl SwapTracker {
                 Arc::new(Entry {
                     record: tokio::sync::Mutex::new(record),
                     actions: Mutex::new(None),
+                    server_status: Mutex::new(server_status),
                 }),
             );
         self.hint(id)
@@ -548,7 +559,7 @@ impl SwapTracker {
         *record = next;
         self.hint(id)
     }
-    /// Coalesced, bounded hints; API status values are deliberately ignored.
+    /// Coalesced, bounded hints.
     pub fn hint(&self, id: &str) -> Result<()> {
         let entries = self
             .0
@@ -579,11 +590,34 @@ impl SwapTracker {
         self.0.wake.notify_one();
         Ok(())
     }
+    /// Record a server-reported status and schedule a reconcile. It only ends a swap
+    /// paid over Lightning whose server leg the chain does not show as claimable, and
+    /// never authorizes a payment, claim or refund. Untracked IDs are ignored.
+    pub fn hint_status(&self, id: &str, status: crate::types::SwapStatus) -> Result<()> {
+        let entry = self
+            .0
+            .entries
+            .lock()
+            .map_err(|_| invalid("tracker lock poisoned"))?
+            .get(id)
+            .cloned();
+        let Some(entry) = entry else {
+            return Ok(());
+        };
+        *entry
+            .server_status
+            .lock()
+            .map_err(|_| invalid("tracker state poisoned"))? = Some(status);
+        self.hint(id)
+    }
     #[cfg(feature = "websocket")]
     pub fn status_hint(&self, event: &crate::subscription::StatusEvent) -> Result<()> {
         use crate::subscription::StatusEvent::*;
         match event {
-            Update { swap_id, .. } | Missing { swap_id } => self.hint(swap_id),
+            Update {
+                swap_id, status, ..
+            } => self.hint_status(swap_id, status.clone()),
+            Missing { swap_id } => self.hint(swap_id),
             Connected { .. } | Lagged { .. } | Reconciled => self.hint_all(),
             _ => Ok(()),
         }
@@ -595,7 +629,12 @@ impl SwapTracker {
             error,
         });
     }
-    async fn derive(&self, id: &str, record: &TrackingRecord) -> Result<SwapActions> {
+    async fn derive(
+        &self,
+        id: &str,
+        record: &TrackingRecord,
+        hinted: Option<&crate::types::SwapStatus>,
+    ) -> Result<SwapActions> {
         for reference in record
             .contracts
             .client
@@ -622,12 +661,13 @@ impl SwapTracker {
             .map(read)
             .transpose()?
             .flatten();
-        let metadata = self
+        let stored = self
             .0
             .client
             .get_stored_swap(id)?
-            .ok_or_else(|| invalid("swap record missing"))?
-            .metadata;
+            .ok_or_else(|| invalid("swap record missing"))?;
+        let server_status = hinted.unwrap_or_else(|| stored.response.status());
+        let metadata = stored.metadata;
         let attempt = record.attempt.as_ref();
         let submitted = attempt.filter(|a| matches!(a.state, AttemptState::Submitted { .. }));
         let uncertain = attempt.is_some_and(|a| {
@@ -660,6 +700,7 @@ impl SwapTracker {
                         && metadata.evm_claim_userop_hash.is_none()),
                 collaborative_refund_available: record.options.collaborative_refund_available,
                 bridge: &record.options.bridge,
+                server_status: Some(server_status),
             },
             &self.0.options.policy,
         );
@@ -673,7 +714,14 @@ impl SwapTracker {
         if !record.enabled {
             return Err(invalid("tracking disabled"));
         }
-        let mut actions = self.derive(id, &record).await?;
+        // One snapshot for both derivations and the journal; a hint arriving later
+        // has already scheduled another reconcile.
+        let server_status = entry
+            .server_status
+            .lock()
+            .map_err(|_| invalid("tracker state poisoned"))?
+            .clone();
+        let mut actions = self.derive(id, &record, server_status.as_ref()).await?;
         if let Some(executor) = &self.0.executor {
             let kind = actions
                 .recommended()
@@ -776,7 +824,7 @@ impl SwapTracker {
                     self.save(id, &next)?;
                     *record = next;
                     // A callback result alone never establishes completion.
-                    actions = self.derive(id, &record).await?;
+                    actions = self.derive(id, &record, server_status.as_ref()).await?;
                 }
             }
         }
@@ -793,9 +841,10 @@ impl SwapTracker {
         } else {
             None
         };
-        if completed_ms != record.completed_ms {
+        if completed_ms != record.completed_ms || server_status != record.server_status {
             let mut next = record.clone();
             next.completed_ms = completed_ms;
+            next.server_status = server_status;
             self.save(id, &next)?;
             *record = next;
         }
