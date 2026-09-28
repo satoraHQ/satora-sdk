@@ -31,7 +31,7 @@ pub enum QuoteAmount {
     Target(u128),
 }
 
-/// Parameters for `GET /quote`.
+/// Parameters for `Client::get_quote` and `GET /quote`.
 ///
 /// Serializes to the spec's flat query-parameter shape via the private
 /// `QuoteRequestWire` (the `#[serde(into = …)]` attribute below). Callers
@@ -55,6 +55,13 @@ pub struct QuoteRequest {
     pub referral_code: Option<String>,
     /// Per-swap referral surcharge, in basis points.
     pub extra_fees_bps: Option<u16>,
+    /// BOLT11 invoice, Lightning address or LNURL the swap will pay. For a
+    /// Lightning target paid from Arkade, an EVM hub or native RBTC,
+    /// `Client::get_quote` first asks `/quote/lightning-send` for the provider's
+    /// fee on this destination.
+    /// An invoice carries its own amount, so `amount` is ignored for it. Never
+    /// sent to `/quote`.
+    pub lightning_destination: Option<String>,
 }
 
 impl QuoteRequest {
@@ -78,7 +85,13 @@ impl QuoteRequest {
             bridge_recipient_setup: false,
             referral_code: None,
             extra_fees_bps: None,
+            lightning_destination: None,
         }
+    }
+
+    pub fn with_lightning_destination(mut self, destination: impl Into<String>) -> Self {
+        self.lightning_destination = Some(destination.into());
+        self
     }
 }
 

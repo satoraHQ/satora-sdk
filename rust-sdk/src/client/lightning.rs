@@ -69,6 +69,24 @@ impl Client {
         destination: LightningDestination,
         extra_fees_bps: Option<u16>,
     ) -> Result<LightningSendQuoteResponse> {
+        self.lightning_send_quote_with_referral(
+            source_chain,
+            source_token,
+            destination,
+            self.referral_code.as_deref(),
+            extra_fees_bps,
+        )
+        .await
+    }
+
+    pub(super) async fn lightning_send_quote_with_referral(
+        &self,
+        source_chain: KnownChain,
+        source_token: TokenId,
+        destination: LightningDestination,
+        referral_code: Option<&str>,
+        extra_fees_bps: Option<u16>,
+    ) -> Result<LightningSendQuoteResponse> {
         let is_arkade = source_chain == KnownChain::Arkade && source_token == TokenId::Btc;
         if !is_arkade
             && (source_chain.evm_chain_id().is_none()
@@ -93,7 +111,7 @@ impl Client {
         if !is_arkade {
             query["source_token"] = json!(source_token.as_wire_str());
         }
-        if let Some(code) = &self.referral_code {
+        if let Some(code) = referral_code {
             query["ref"] = json!(code);
         }
         if let Some(fees) = extra_fees_bps {

@@ -193,7 +193,7 @@ async fn matrix_btc_sources_to_usdc_on_evm_chains() {
                 usdc,
             );
             let resp = client
-                .get_quote(req.clone())
+                .get_server_quote(req.clone())
                 .await
                 .unwrap_or_else(|e| panic!("quote {source:?} -> USDC@{target_chain:?}: {e:?}"));
             assert_quote_invariants(&req, &resp);
@@ -228,7 +228,7 @@ async fn matrix_btc_sources_to_usdt_on_evm_chains() {
                 usdt,
             );
             let resp = client
-                .get_quote(req.clone())
+                .get_server_quote(req.clone())
                 .await
                 .unwrap_or_else(|e| panic!("quote {source:?} -> USDT@{target_chain:?}: {e:?}"));
             assert_quote_invariants(&req, &resp);
@@ -263,7 +263,7 @@ async fn matrix_usdc_on_evm_chains_to_btc_targets() {
                 Chain::Known(target.clone()),
             );
             let resp = client
-                .get_quote(req.clone())
+                .get_server_quote(req.clone())
                 .await
                 .unwrap_or_else(|e| panic!("quote USDC@{source_chain:?} -> {target:?}: {e:?}"));
             assert_quote_invariants(&req, &resp);
@@ -298,7 +298,7 @@ async fn matrix_usdt_on_evm_chains_to_btc_targets() {
                 Chain::Known(target.clone()),
             );
             let resp = client
-                .get_quote(req.clone())
+                .get_server_quote(req.clone())
                 .await
                 .unwrap_or_else(|e| panic!("quote USDT@{source_chain:?} -> {target:?}: {e:?}"));
             assert_quote_invariants(&req, &resp);
@@ -338,7 +338,7 @@ async fn matrix_lightning_arkade_cross_quotes() {
             TokenId::Btc,
         );
         let resp = client
-            .get_quote(req.clone())
+            .get_server_quote(req.clone())
             .await
             .unwrap_or_else(|e| panic!("quote BTC@{source:?} -> BTC@{target:?}: {e:?}"));
         assert_quote_invariants(&req, &resp);

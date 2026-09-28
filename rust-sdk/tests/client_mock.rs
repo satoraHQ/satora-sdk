@@ -91,7 +91,7 @@ async fn invalid_base_url_returns_typed_error() {
 }
 
 #[tokio::test]
-async fn get_quote_builds_expected_query_and_parses_response() {
+async fn get_server_quote_builds_expected_query_and_parses_response() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/quote"))
@@ -119,7 +119,10 @@ async fn get_quote_builds_expected_query_and_parses_response() {
         TokenId::UsdcPolygon,
         QuoteAmount::Source(100_000),
     );
-    let quote = client.get_quote(req).await.expect("get_quote succeeds");
+    let quote = client
+        .get_server_quote(req)
+        .await
+        .expect("get_server_quote succeeds");
     assert_eq!(quote.exchange_rate, "30000.00");
     assert_eq!(quote.protocol_fee, 250);
     assert!(quote.bridge_fee.is_none());
@@ -140,7 +143,7 @@ async fn get_quote_builds_expected_query_and_parses_response() {
 }
 
 #[tokio::test]
-async fn get_quote_with_target_amount_omits_source_amount() {
+async fn get_server_quote_with_target_amount_omits_source_amount() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/quote"))
@@ -168,7 +171,10 @@ async fn get_quote_with_target_amount_omits_source_amount() {
         TokenId::UsdcPolygon,
         QuoteAmount::Target(30_000_000_000),
     );
-    client.get_quote(req).await.expect("get_quote succeeds");
+    client
+        .get_server_quote(req)
+        .await
+        .expect("get_server_quote succeeds");
 
     let received = server.received_requests().await.expect("requests recorded");
     let req = received.last().expect("at least one request");
@@ -178,7 +184,7 @@ async fn get_quote_with_target_amount_omits_source_amount() {
 }
 
 #[tokio::test]
-async fn get_quote_sends_amount_over_u64_as_string() {
+async fn get_server_quote_sends_amount_over_u64_as_string() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/quote"))
@@ -206,7 +212,10 @@ async fn get_quote_sends_amount_over_u64_as_string() {
         TokenId::Other("0x6c84a8f1c29108f47a79964b5fe888d4f4d0de40".to_string()),
         QuoteAmount::Target(u128::from(u64::MAX) + 1),
     );
-    client.get_quote(req).await.expect("get_quote succeeds");
+    client
+        .get_server_quote(req)
+        .await
+        .expect("get_server_quote succeeds");
 
     let received = server.received_requests().await.expect("requests recorded");
     let req = received.last().expect("at least one request");
@@ -218,7 +227,7 @@ async fn get_quote_sends_amount_over_u64_as_string() {
 }
 
 #[tokio::test]
-async fn get_quote_sends_optional_bridge_and_referral() {
+async fn get_server_quote_sends_optional_bridge_and_referral() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/quote"))
@@ -251,7 +260,10 @@ async fn get_quote_sends_optional_bridge_and_referral() {
     req.bridge_recipient_setup = true;
     req.referral_code = Some("FOO123".to_string());
 
-    let quote = client.get_quote(req).await.expect("get_quote succeeds");
+    let quote = client
+        .get_server_quote(req)
+        .await
+        .expect("get_server_quote succeeds");
     assert_eq!(quote.bridge_fee, Some(5_000));
 
     let received = server.received_requests().await.expect("requests recorded");

@@ -25,8 +25,6 @@ use crate::types::EvmToArkadeSwapResponse;
 use crate::types::GetSwapResponse;
 use crate::types::KnownChain;
 use crate::types::QuoteAmount;
-use crate::types::QuoteRequest;
-use crate::types::QuoteResponse;
 use crate::types::SwapStatus;
 use crate::types::TokenId;
 use crate::types::Version;
@@ -43,6 +41,8 @@ mod creation;
 mod lightning;
 mod quotes;
 mod storage;
+
+pub use quotes::DEFAULT_COMPOSE_SLIPPAGE_BPS;
 
 /// Production Lendaswap API endpoint. Used by [`ClientBuilder`] when no
 /// `.base_url(…)` override is set, and by callers who don't care to spell
@@ -220,14 +220,6 @@ impl Client {
     /// `GET /version`.
     pub async fn version(&self) -> Result<Version> {
         self.send(VersionRequest).await
-    }
-
-    /// `GET /quote` — fetch an exchange quote.
-    pub async fn get_quote(&self, mut req: QuoteRequest) -> Result<QuoteResponse> {
-        if req.referral_code.is_none() {
-            req.referral_code = self.referral_code.clone();
-        }
-        self.send(req).await
     }
 
     /// Create a swap. Thin dispatcher: validates the direction

@@ -95,11 +95,23 @@ before allocating an index. Explicit reused-preimage errors retry at most ten
 times, skipping ten additional indices per collision, matching TypeScript.
 Invoice-owned locks never retry.
 
+`get_quote` routes like the TypeScript `getQuote`. With `lightning_destination`
+set, a Lightning payout from Arkade, Ethereum, Polygon, Arbitrum or native RBTC
+is quoted by `/quote/lightning-send` with the provider's fee for that
+destination. Otherwise a BTC to EVM route in either direction, or BTC to Solana,
+is composed locally at 100 bps slippage. Other routes, and failures of either
+step, go to the server's `/quote`, and its error is the one returned. Both
+fallbacks log a `tracing` warning, except for routes composition reports as
+unsupported. `get_server_quote` sends only the `/quote` request. Without
+explicit bridge fields it quotes a bridge-only chain (Base, Solana, USDT0
+chains) on Arbitrum and names the real chain in `bridge_target_chain` or
+`bridge_source_chain`. A request that sets either bridge field is sent as given.
+
 `compose_quote(request, slippage_bps)` combines pair rates, network fees, pivot
 configuration, referral fees and a live DEX quote. Its amount arithmetic uses
 arbitrary-precision integers, including bridge-fee and peg-rate rounding.
-`compose_quote_with_data` accepts pre-fetched discovery data. Unsupported paths
-can use `get_quote`; automatic fallback is left to the caller. Pair/config/referral
+`compose_quote_with_data` accepts pre-fetched discovery data. Routes it does not
+cover return `Error::UnsupportedQuotePath`. Pair/config/referral
 data caches for 60 seconds; `clear_quote_cache` invalidates it immediately.
 DEX and network-fee requests always use fresh data. `get_dex_calldata` returns
 unsigned calls that pay the output to `sender`, for caller review and execution.

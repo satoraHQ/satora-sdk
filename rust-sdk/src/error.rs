@@ -30,6 +30,11 @@ pub enum Error {
     #[error("invalid swap arguments: {0}")]
     InvalidSwap(String),
 
+    /// Client-side quote composition does not cover this route; the server's
+    /// `/quote` may still price it.
+    #[error("quote path not supported by composition: {0}")]
+    UnsupportedQuotePath(String),
+
     #[error("operation timed out: {0}")]
     Timeout(String),
 
