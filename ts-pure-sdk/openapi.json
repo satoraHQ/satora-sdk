@@ -5147,6 +5147,23 @@
                 }
               }
             ]
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/LightningToBitcoinSwapResponse"
+              },
+              {
+                "type": "object",
+                "required": ["direction"],
+                "properties": {
+                  "direction": {
+                    "type": "string",
+                    "enum": ["lightning_to_bitcoin"]
+                  }
+                }
+              }
+            ]
           }
         ]
       },
@@ -5406,6 +5423,131 @@
             "type": "integer",
             "format": "int64",
             "description": "VHTLC refund locktime (unix timestamp)"
+          }
+        }
+      },
+      "LightningToBitcoinSwapResponse": {
+        "type": "object",
+        "description": "Lightning → Bitcoin on-chain swap response.",
+        "required": [
+          "id",
+          "status",
+          "bolt11_invoice",
+          "invoice_expires_at",
+          "fee_sats",
+          "network_fee_sats",
+          "hash_lock",
+          "btc_hash_lock",
+          "btc_htlc_address",
+          "btc_user_claim_pk",
+          "btc_server_refund_pk",
+          "btc_refund_locktime",
+          "btc_htlc_script_version",
+          "target_btc_address",
+          "network",
+          "created_at",
+          "source_token",
+          "target_token",
+          "source_amount",
+          "target_amount"
+        ],
+        "properties": {
+          "bolt11_invoice": {
+            "type": "string",
+            "description": "BOLT11 hold invoice the user must pay"
+          },
+          "btc_claim_txid": {
+            "type": ["string", "null"],
+            "description": "Claim transaction ID (user claim), or the server's refund of an\nunclaimed HTLC"
+          },
+          "btc_fund_txid": {
+            "type": ["string", "null"],
+            "description": "Funding transaction ID (server funding)"
+          },
+          "btc_fund_vout": {
+            "type": ["integer", "null"],
+            "format": "int64"
+          },
+          "btc_hash_lock": {
+            "type": "string",
+            "description": "HASH160 the HTLC script locks on (hex): ripemd160 of the hash lock"
+          },
+          "btc_htlc_address": {
+            "type": "string",
+            "description": "On-chain HTLC address the server funds"
+          },
+          "btc_htlc_script_version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "btc_refund_locktime": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Absolute refund locktime of the HTLC (unix timestamp)"
+          },
+          "btc_server_refund_pk": {
+            "type": "string",
+            "description": "Server's refund public key in the HTLC (x-only hex)"
+          },
+          "btc_user_claim_pk": {
+            "type": "string",
+            "description": "User's claim public key in the HTLC (x-only hex)"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Timestamp of when the swap was created"
+          },
+          "fee_sats": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Protocol fee in satoshis"
+          },
+          "hash_lock": {
+            "type": "string",
+            "description": "Hash lock (0x-prefixed 32-byte hex; sha256 of the client's secret)"
+          },
+          "id": {
+            "type": "string",
+            "description": "Unique swap identifier"
+          },
+          "invoice_expires_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix timestamp after which the invoice can no longer be paid"
+          },
+          "network": {
+            "type": "string",
+            "description": "Bitcoin network"
+          },
+          "network_fee_sats": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Network fee in satoshis: the route's flat fee plus the mining fee\nof the transaction the server funds the HTLC with. The user's own\nclaim fee comes out of the HTLC output when they sweep it."
+          },
+          "source_amount": {
+            "type": "string",
+            "description": "Amount the user must pay via Lightning in satoshis"
+          },
+          "source_token": {
+            "$ref": "#/components/schemas/TokenInfo",
+            "description": "Source token info"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SwapStatus",
+            "description": "Current status of the swap"
+          },
+          "target_amount": {
+            "type": "string",
+            "description": "Amount locked in the on-chain HTLC for the user in satoshis"
+          },
+          "target_btc_address": {
+            "type": "string",
+            "description": "Bitcoin address the user's claim pays out to"
+          },
+          "target_token": {
+            "$ref": "#/components/schemas/TokenInfo",
+            "description": "Target token info"
           }
         }
       },

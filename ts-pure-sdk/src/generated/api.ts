@@ -2800,6 +2800,9 @@ export interface components {
         }) | (components["schemas"]["BitcoinToLightningSwapResponse"] & {
             /** @enum {string} */
             direction: "bitcoin_to_lightning";
+        }) | (components["schemas"]["LightningToBitcoinSwapResponse"] & {
+            /** @enum {string} */
+            direction: "lightning_to_bitcoin";
         });
         LightningSendQuoteResponse: {
             /**
@@ -2964,6 +2967,75 @@ export interface components {
              * @description VHTLC refund locktime (unix timestamp)
              */
             vhtlc_refund_locktime: number;
+        };
+        /** @description Lightning → Bitcoin on-chain swap response. */
+        LightningToBitcoinSwapResponse: {
+            /** @description BOLT11 hold invoice the user must pay */
+            bolt11_invoice: string;
+            /**
+             * @description Claim transaction ID (user claim), or the server's refund of an
+             *     unclaimed HTLC
+             */
+            btc_claim_txid?: string | null;
+            /** @description Funding transaction ID (server funding) */
+            btc_fund_txid?: string | null;
+            /** Format: int64 */
+            btc_fund_vout?: number | null;
+            /** @description HASH160 the HTLC script locks on (hex): ripemd160 of the hash lock */
+            btc_hash_lock: string;
+            /** @description On-chain HTLC address the server funds */
+            btc_htlc_address: string;
+            /** Format: int64 */
+            btc_htlc_script_version: number;
+            /**
+             * Format: int64
+             * @description Absolute refund locktime of the HTLC (unix timestamp)
+             */
+            btc_refund_locktime: number;
+            /** @description Server's refund public key in the HTLC (x-only hex) */
+            btc_server_refund_pk: string;
+            /** @description User's claim public key in the HTLC (x-only hex) */
+            btc_user_claim_pk: string;
+            /**
+             * Format: date-time
+             * @description Timestamp of when the swap was created
+             */
+            created_at: string;
+            /**
+             * Format: int64
+             * @description Protocol fee in satoshis
+             */
+            fee_sats: number;
+            /** @description Hash lock (0x-prefixed 32-byte hex; sha256 of the client's secret) */
+            hash_lock: string;
+            /** @description Unique swap identifier */
+            id: string;
+            /**
+             * Format: int64
+             * @description Unix timestamp after which the invoice can no longer be paid
+             */
+            invoice_expires_at: number;
+            /** @description Bitcoin network */
+            network: string;
+            /**
+             * Format: int64
+             * @description Network fee in satoshis: the route's flat fee plus the mining fee
+             *     of the transaction the server funds the HTLC with. The user's own
+             *     claim fee comes out of the HTLC output when they sweep it.
+             */
+            network_fee_sats: number;
+            /** @description Amount the user must pay via Lightning in satoshis */
+            source_amount: string;
+            /** @description Source token info */
+            source_token: components["schemas"]["TokenInfo"];
+            /** @description Current status of the swap */
+            status: components["schemas"]["SwapStatus"];
+            /** @description Amount locked in the on-chain HTLC for the user in satoshis */
+            target_amount: string;
+            /** @description Bitcoin address the user's claim pays out to */
+            target_btc_address: string;
+            /** @description Target token info */
+            target_token: components["schemas"]["TokenInfo"];
         };
         /** @description Chain-agnostic request for Lightning-to-EVM swaps. */
         LightningToEvmSwapRequest: {
