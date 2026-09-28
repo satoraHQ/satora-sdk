@@ -1297,12 +1297,24 @@ async fn one_call_settle_fetches_the_cosigner_for_a_recoverable_claim() {
     assert!(error.contains("Client::settle"), "{error}");
     assert!(
         client
-            .settle_with("arkade", &backend, ArkadeSpend::Claim, destination.clone())
+            .settle_with(
+                "arkade",
+                &backend,
+                ArkadeSpend::Claim,
+                destination.clone(),
+                Duration::from_secs(5),
+            )
             .await
             .is_err()
     );
     let result = client
-        .settle_with("arkade", &backend, ArkadeSpend::Claim, destination)
+        .settle_with(
+            "arkade",
+            &backend,
+            ArkadeSpend::Claim,
+            destination,
+            Duration::from_secs(5),
+        )
         .await
         .unwrap();
     assert!(matches!(
@@ -1579,7 +1591,13 @@ async fn one_call_settle_spends_spendable_outputs_offchain_without_the_cosigner(
         .build()
         .unwrap();
     let result = client
-        .settle_with("arkade", &backend, ArkadeSpend::Claim, destination)
+        .settle_with(
+            "arkade",
+            &backend,
+            ArkadeSpend::Claim,
+            destination,
+            Duration::from_secs(5),
+        )
         .await
         .unwrap();
     assert!(matches!(
@@ -1746,4 +1764,95 @@ async fn asset_vtxos_at_the_vhtlc_do_not_block_reads_or_spends() {
             .await
             .is_err()
     );
+}
+
+fn auto_claimer(
+    client: Client,
+    backend: &Arc<Backend>,
+    store: &InMemorySwapStorage,
+    destination: &str,
+) -> crate::tracker::AutoClaimer {
+    let mut stored = store.get_swap("arkade").unwrap().unwrap();
+    let mut response = serde_json::to_value(&stored.response).unwrap();
+    response["target_arkade_address"] = json!(destination);
+    stored.response = serde_json::from_value(response).unwrap();
+    stored.metadata.target_address = Some(destination.into());
+    store.store_swap(stored).unwrap();
+    let mut claimer = crate::tracker::AutoClaimer::new(
+        client,
+        crate::tracker::AutoClaimConfig {
+            timeout: Duration::from_secs(5),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    claimer.arkade = Some(backend.clone());
+    claimer
+}
+
+async fn auto_claim(
+    claimer: &crate::tracker::AutoClaimer,
+) -> Result<crate::tracker::ExecutionResult> {
+    use crate::tracker::ActionExecutor;
+    claimer
+        .execute("arkade", &crate::actions::ActionKind::Claim)
+        .await
+}
+
+#[tokio::test]
+async fn auto_claim_settles_to_the_recorded_arkade_destination() {
+    let (client, backend, store, destination) = setup("lightning_to_arkade");
+    let backend = Arc::new(backend);
+    let claimer = auto_claimer(client, &backend, &store, &destination);
+    let Ok(crate::tracker::ExecutionResult::Submitted { reference }) = auto_claim(&claimer).await
+    else {
+        panic!("the claim is submitted");
+    };
+    let pending = store
+        .get_swap("arkade")
+        .unwrap()
+        .unwrap()
+        .metadata
+        .arkade_pending
+        .unwrap();
+    assert!(pending.completed && pending.destination == destination);
+    assert_eq!(
+        reference,
+        restore(&pending.ark_tx, None)
+            .unwrap()
+            .unsigned_tx
+            .compute_txid()
+            .to_string()
+    );
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn auto_claim_retries_a_claim_refused_inside_the_margin_but_not_an_interrupted_submit() {
+    let (client, backend, store, destination) = setup_with_lock("btc_to_arkade", now() + 60);
+    let backend = Arc::new(backend);
+    let claimer = auto_claimer(client, &backend, &store, &destination);
+    let Ok(crate::tracker::ExecutionResult::NotSent(error)) = auto_claim(&claimer).await else {
+        panic!("a claim inside the refund margin is refused before submission");
+    };
+    assert!(error.to_string().contains("insufficient time"), "{error}");
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 0);
+
+    let (client, backend, store, destination) = setup("evm_to_arkade");
+    let backend = Arc::new(backend);
+    backend.fail_submit.store(true, Ordering::Relaxed);
+    let claimer = auto_claimer(client, &backend, &store, &destination);
+    assert!(auto_claim(&claimer).await.is_err());
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 1);
+    let metadata = store.get_swap("arkade").unwrap().unwrap().metadata;
+    assert!(
+        metadata
+            .arkade_pending
+            .is_some_and(|p| p.attempted && !p.submitted)
+    );
+    // Resuming the journal could resubmit, so it is left to reconciliation.
+    let queries = backend.pending_queries.load(Ordering::Relaxed);
+    assert!(auto_claim(&claimer).await.is_err());
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 1);
+    assert_eq!(backend.pending_queries.load(Ordering::Relaxed), queries);
 }

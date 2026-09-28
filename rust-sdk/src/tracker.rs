@@ -30,6 +30,17 @@ use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use tokio::task::JoinSet;
 
+mod auto_claim;
+pub use auto_claim::AutoClaimConfig;
+pub use auto_claim::AutoClaimer;
+pub use auto_claim::BitcoinAutoClaim;
+#[cfg(feature = "gasless")]
+pub use auto_claim::EvmAutoClaim;
+#[cfg(feature = "gasless")]
+pub use auto_claim::EvmAutoClaimChain;
+#[cfg(feature = "gasless")]
+pub use auto_claim::EvmDeployment;
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct TrackingOptions {
     pub auto_claim: bool,
@@ -79,7 +90,13 @@ pub struct TrackerOptions {
     pub at_risk_interval: Duration,
     pub full_interval: Duration,
     pub execution_timeout: Duration,
+    /// Delay before the second run of an attempt that provably sent nothing. It
+    /// doubles for each further run up to `retry_delay_max`.
     pub retry_delay: Duration,
+    pub retry_delay_max: Duration,
+    /// Runs of an action that each sent nothing before it turns `Manual`.
+    /// `AttemptResolution::ProvenNotSubmitted`, or a different recommended action,
+    /// starts a fresh count.
     pub max_attempts: u32,
     pub policy: ActionPolicy,
     /// How long a terminal outcome must hold before the swap is untracked. It
@@ -95,8 +112,9 @@ impl Default for TrackerOptions {
             at_risk_interval: Duration::from_secs(5),
             full_interval: Duration::from_secs(60),
             execution_timeout: Duration::from_secs(120),
-            retry_delay: Duration::from_secs(30),
-            max_attempts: 3,
+            retry_delay: Duration::from_secs(2),
+            retry_delay_max: Duration::from_secs(30),
+            max_attempts: 6,
             policy: ActionPolicy::default(),
             retire_after: Duration::from_secs(86_400),
         }
@@ -108,16 +126,27 @@ pub struct TrackerEvent {
     pub actions: Option<SwapActions>,
     pub error: Option<String>,
 }
-/// Returning `Retryable` asserts that no transaction or user operation escaped.
-/// All ordinary errors are treated as uncertain, including transport failures.
+/// Returning `Retryable` or `NotSent` asserts that no transaction, user operation
+/// or relayed claim escaped; both are retried with backoff. All ordinary errors
+/// are treated as uncertain, including transport failures.
 pub enum ExecutionResult {
-    Submitted { reference: String },
+    Submitted {
+        reference: String,
+    },
     Retryable,
+    /// `Retryable`, with the reason emitted as an error event.
+    NotSent(Error),
     Uncertain,
 }
 pub type ExecutionFuture<'a> = Pin<Box<dyn Future<Output = Result<ExecutionResult>> + Send + 'a>>;
 pub trait ActionExecutor: Send + Sync {
     fn execute<'a>(&'a self, swap_id: &'a str, action: &'a ActionKind) -> ExecutionFuture<'a>;
+    /// Longest one execution runs. `SwapTracker::new` requires it to be shorter than
+    /// `TrackerOptions::execution_timeout`: the tracker's own timeout records the
+    /// attempt as uncertain, even when the executor could have shown nothing was sent.
+    fn timeout(&self) -> Option<Duration> {
+        None
+    }
 }
 /// Application evidence obtained by inspecting receipts, account nonces, and the
 /// underlying execution journal.
@@ -181,9 +210,19 @@ impl SwapTracker {
             || options.full_interval.is_zero()
             || options.execution_timeout.is_zero()
             || options.retry_delay.is_zero()
+            || options.retry_delay_max < options.retry_delay
             || options.max_attempts == 0
         {
             return Err(invalid("invalid tracker bounds"));
+        }
+        if executor
+            .as_ref()
+            .and_then(|e| e.timeout())
+            .is_some_and(|timeout| timeout >= options.execution_timeout)
+        {
+            return Err(invalid(
+                "executor timeout must be shorter than the tracker's execution timeout",
+            ));
         }
         let (events, _) = broadcast::channel(options.event_capacity);
         Ok(Self(Arc::new(Inner {
@@ -576,6 +615,20 @@ impl SwapTracker {
         }
         Ok(())
     }
+    /// Weak, so a pending retry does not keep a dropped tracker alive.
+    fn hint_after(&self, id: &str, delay: Duration) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let tracker = Arc::downgrade(&self.0);
+        let id = id.to_owned();
+        runtime.spawn(async move {
+            tokio::time::sleep(delay).await;
+            if let Some(inner) = tracker.upgrade() {
+                let _ = SwapTracker(inner).hint(&id);
+            }
+        });
+    }
     pub fn hint_all(&self) -> Result<()> {
         let entries = self
             .0
@@ -670,12 +723,13 @@ impl SwapTracker {
         let metadata = stored.metadata;
         let attempt = record.attempt.as_ref();
         let submitted = attempt.filter(|a| matches!(a.state, AttemptState::Submitted { .. }));
-        let uncertain = attempt.is_some_and(|a| {
-            (matches!(a.state, AttemptState::Running | AttemptState::Uncertain)
-                || matches!(a.state, AttemptState::Retryable { .. })
-                    && a.count >= self.0.options.max_attempts)
+        let uncertain = attempt
+            .is_some_and(|a| matches!(a.state, AttemptState::Running | AttemptState::Uncertain));
+        let exhausted = attempt.filter(|a| {
+            matches!(a.state, AttemptState::Retryable { .. })
+                && a.count >= self.0.options.max_attempts
         });
-        let actions = derive_actions(
+        let mut actions = derive_actions(
             ActionInput {
                 contracts: &record.contracts,
                 client: client.as_ref(),
@@ -704,6 +758,17 @@ impl SwapTracker {
             },
             &self.0.options.policy,
         );
+        // Every run provably sent nothing, so the action is still open, but it is
+        // the user's now.
+        if let Some(attempt) = exhausted {
+            for action in actions
+                .actions
+                .iter_mut()
+                .filter(|a| a.recommended && a.kind == attempt.action)
+            {
+                action.automation = Automation::Manual;
+            }
+        }
         Ok(actions)
     }
     /// Refresh both legs immediately, then optionally execute the derived action.
@@ -754,6 +819,14 @@ impl SwapTracker {
                     {
                         Some(1)
                     }
+                    // Every run of the previous action sent nothing, so a new
+                    // recommendation gets its own budget, as in the TypeScript worker.
+                    Some(attempt)
+                        if attempt.action != kind
+                            && matches!(attempt.state, AttemptState::Retryable { .. }) =>
+                    {
+                        Some(1)
+                    }
                     _ => None,
                 };
                 if let Some(count) = count {
@@ -793,18 +866,32 @@ impl SwapTracker {
                     });
                     let result =
                         tokio::time::timeout(self.0.options.execution_timeout, guarded).await;
+                    let retry = || {
+                        let delay = self
+                            .0
+                            .options
+                            .retry_delay
+                            .saturating_mul(1u32.checked_shl(count - 1).unwrap_or(u32::MAX))
+                            .min(self.0.options.retry_delay_max);
+                        let after_ms = now_ms()?
+                            .saturating_add(u64::try_from(delay.as_millis()).unwrap_or(u64::MAX));
+                        // Wake at the deadline rather than on the next tick.
+                        if count < self.0.options.max_attempts {
+                            self.hint_after(id, delay);
+                        }
+                        Ok::<_, Error>(AttemptState::Retryable { after_ms })
+                    };
                     let state = match result {
                         Ok(Ok(ExecutionResult::Submitted { reference }))
                             if !reference.is_empty() =>
                         {
                             AttemptState::Submitted { reference }
                         }
-                        Ok(Ok(ExecutionResult::Retryable)) => AttemptState::Retryable {
-                            after_ms: now_ms()?.saturating_add(
-                                u64::try_from(self.0.options.retry_delay.as_millis())
-                                    .unwrap_or(u64::MAX),
-                            ),
-                        },
+                        Ok(Ok(ExecutionResult::Retryable)) => retry()?,
+                        Ok(Ok(ExecutionResult::NotSent(error))) => {
+                            self.emit(id, None, Some(error.to_string()));
+                            retry()?
+                        }
                         Ok(Err(error)) => {
                             self.emit(id, None, Some(error.to_string()));
                             AttemptState::Uncertain

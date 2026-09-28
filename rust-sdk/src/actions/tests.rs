@@ -818,3 +818,33 @@ fn arkade_still_offers_verified_cooperative_refunds() {
         ActionKind::RefundCollaborative
     );
 }
+#[test]
+fn only_confirmations_manual_steps_and_submission_recovery_need_the_user() {
+    use HtlcState::*;
+    let contracts = SwapContracts {
+        client: Some(reference(200)),
+        server: Some(reference(100)),
+    };
+    let policy = ActionPolicy::default();
+    let derive = |client, server, height, uncertain| {
+        let (client, server) = (observation(client, height), observation(server, height));
+        derive_actions(
+            ActionInput {
+                submission_uncertain: uncertain,
+                ..input(&contracts, &client, &server)
+            },
+            &policy,
+        )
+    };
+    for (client, server, height, uncertain, needs_user) in [
+        (Absent, Absent, 50, false, true),
+        (Confirmed, Absent, 50, false, false),
+        (Confirmed, Confirmed, 50, false, false),
+        (Confirmed, Confirmed, 50, true, true),
+        (Confirmed, SpentRefund, 200, false, true),
+        (Confirmed, SpentClaim, 50, false, false),
+    ] {
+        let actions = derive(client, server, height, uncertain);
+        assert_eq!(actions.needs_user(), needs_user, "{actions:?}");
+    }
+}

@@ -218,6 +218,21 @@ fn setup(claim: bool) -> (Client, Wallet, Arc<InMemorySwapStorage>) {
     setup_kind(claim, EvmHtlcKind::Erc20)
 }
 fn setup_kind(claim: bool, kind: EvmHtlcKind) -> (Client, Wallet, Arc<InMemorySwapStorage>) {
+    setup_fixture(
+        if claim {
+            "arkade_to_evm"
+        } else {
+            "evm_to_arkade"
+        },
+        claim,
+        kind,
+    )
+}
+fn setup_fixture(
+    name: &str,
+    claim: bool,
+    kind: EvmHtlcKind,
+) -> (Client, Wallet, Arc<InMemorySwapStorage>) {
     let (token, version) = match kind {
         EvmHtlcKind::Erc20 => (Address::repeat_byte(6), 6),
         EvmHtlcKind::Native => (Address::ZERO, 1),
@@ -240,17 +255,18 @@ fn setup_kind(claim: bool, kind: EvmHtlcKind) -> (Client, Wallet, Arc<InMemorySw
     };
     let mut fixture: Value =
         serde_json::from_str(include_str!("../../tests/fixtures/swap-responses.json")).unwrap();
-    let r = &mut fixture[if claim {
-        "arkade_to_evm"
-    } else {
-        "evm_to_arkade"
-    }];
+    let r = &mut fixture[name];
     r["id"] = json!("test");
     r["evm_chain_id"] = json!(137);
     r["evm_htlc_address"] = json!(htlc.address);
     r["client_evm_address"] = json!(owner);
     r["server_evm_address"] = json!(server);
-    r["hash_lock"] = json!(htlc.hash_lock);
+    let hash_field = if r.get("evm_hash_lock").is_some() {
+        "evm_hash_lock"
+    } else {
+        "hash_lock"
+    };
+    r[hash_field] = json!(htlc.hash_lock);
     r["evm_refund_locktime"] = json!(htlc.timelock);
     r["evm_htlc_version"] = json!(version);
     r["evm_htlc_kind"] = json!(kind);
@@ -2399,4 +2415,298 @@ fn native_source_references_track_the_zero_asset_word() {
         };
         assert_eq!(htlc, wallet.htlc);
     }
+}
+
+fn record_claim_destination(store: &InMemorySwapStorage, destination: Address) {
+    rewrite_response(store, |r| r["target_evm_address"] = json!(destination));
+    store
+        .update_metadata(
+            "test",
+            SwapMetadata {
+                target_address: Some(destination.to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+}
+fn auto_claimer(
+    client: Client,
+    wallet: &Arc<Wallet>,
+    deployments: Vec<crate::tracker::EvmDeployment>,
+    user_op: Option<crate::aa::UserOpConfig>,
+) -> crate::tracker::AutoClaimer {
+    let mut claimer = crate::tracker::AutoClaimer::new(
+        client,
+        crate::tracker::AutoClaimConfig {
+            evm: Some(crate::tracker::EvmAutoClaim {
+                chains: [(
+                    137,
+                    crate::tracker::EvmAutoClaimChain {
+                        rpc_url: "http://127.0.0.1:1".parse().unwrap(),
+                        deployments,
+                        user_op,
+                    },
+                )]
+                .into(),
+                ..Default::default()
+            }),
+            timeout: Duration::from_secs(10),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    claimer.evm_wallet = Some(wallet.clone());
+    claimer
+}
+fn deployment(wallet: &Wallet) -> crate::tracker::EvmDeployment {
+    crate::tracker::EvmDeployment {
+        htlc: wallet.htlc.address,
+        coordinator: wallet.coordinator,
+    }
+}
+async fn auto_claim(claimer: &crate::tracker::AutoClaimer) -> crate::tracker::ExecutionResult {
+    use crate::tracker::ActionExecutor;
+    claimer
+        .execute("test", &crate::actions::ActionKind::Claim)
+        .await
+        .unwrap_or_else(|error| panic!("uncertain claim: {error}"))
+}
+/// The daemon's answer for the fixture's direct 100000 payout: its target less 1%,
+/// with no calls.
+async fn mount_calldata(server: &wiremock::MockServer, status: u16) {
+    use alloy::primitives::keccak256;
+    use alloy::sol_types::SolValue;
+    let calls: Vec<crate::aa::abi::Call> = vec![];
+    wiremock::Mock::given(wiremock::matchers::path("/swap/test/redeem-and-swap-calldata"))
+        .respond_with(wiremock::ResponseTemplate::new(status).set_body_json(json!({"min_amount_out":"99000","gasless_fee_sats":0,"calls_hash":keccak256(calls.abi_encode()),"dex_calldata":null})))
+        .mount(server)
+        .await;
+}
+async fn mount_relay(server: &wiremock::MockServer, status: u16, expected: u64) {
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/swap/test/claim-gasless"))
+        .respond_with(wiremock::ResponseTemplate::new(status).set_body_json(
+            json!({"id":"test","tx_hash":B256::repeat_byte(9),"message":"submitted"}),
+        ))
+        .expect(expected)
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn auto_claim_refuses_unlisted_contracts_other_destinations_and_bridged_payouts() {
+    use crate::tracker::ExecutionResult::NotSent;
+    let (_, wallet, store) = setup(true);
+    let wallet = Arc::new(wallet);
+    let server = wiremock::MockServer::start().await;
+    mount_calldata(&server, 200).await;
+    mount_relay(&server, 200, 0).await;
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .build()
+        .unwrap();
+    record_claim_destination(&store, wallet.owner);
+    let listed = deployment(&wallet);
+    for unlisted in [
+        crate::tracker::EvmDeployment {
+            coordinator: Address::repeat_byte(44),
+            ..listed
+        },
+        crate::tracker::EvmDeployment {
+            htlc: Address::repeat_byte(55),
+            ..listed
+        },
+    ] {
+        let claimer = auto_claimer(client.clone(), &wallet, vec![unlisted], None);
+        let NotSent(error) = auto_claim(&claimer).await else {
+            panic!("an unlisted deployment is refused before anything is sent");
+        };
+        assert!(error.to_string().contains("allowed deployment"), "{error}");
+    }
+    let claimer = auto_claimer(client.clone(), &wallet, vec![listed], None);
+    rewrite_response(&store, |r| {
+        r["target_evm_address"] = json!(Address::repeat_byte(66))
+    });
+    let NotSent(error) = auto_claim(&claimer).await else {
+        panic!("a server destination other than the recorded one is refused");
+    };
+    assert!(error.to_string().contains("destination"), "{error}");
+    record_claim_destination(&store, wallet.owner);
+    rewrite_response(&store, |r| {
+        r["bridge_target_chain"] = json!("Solana");
+        r["bridge_target_token_address"] = json!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
+    });
+    let NotSent(error) = auto_claim(&claimer).await else {
+        panic!("a bridged payout is refused");
+    };
+    assert!(error.to_string().contains("bridge"), "{error}");
+    assert_eq!(wallet.signatures.load(Ordering::Relaxed), 0);
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn auto_claim_retries_a_relay_claim_only_while_nothing_was_sent() {
+    use crate::tracker::ActionExecutor;
+    use crate::tracker::ExecutionResult;
+    let (_, wallet, store) = setup(true);
+    let wallet = Arc::new(wallet);
+    record_claim_destination(&store, wallet.owner);
+    let client = |server: &wiremock::MockServer| {
+        Client::builder()
+            .base_url(server.uri())
+            .mnemonic(MNEMONIC)
+            .storage(store.clone())
+            .build()
+            .unwrap()
+    };
+    let unavailable = wiremock::MockServer::start().await;
+    mount_calldata(&unavailable, 500).await;
+    mount_relay(&unavailable, 200, 0).await;
+    let claimer = auto_claimer(
+        client(&unavailable),
+        &wallet,
+        vec![deployment(&wallet)],
+        None,
+    );
+    assert!(matches!(
+        auto_claim(&claimer).await,
+        ExecutionResult::NotSent(_)
+    ));
+    let failing = wiremock::MockServer::start().await;
+    mount_calldata(&failing, 200).await;
+    mount_relay(&failing, 500, 1).await;
+    let claimer = auto_claimer(client(&failing), &wallet, vec![deployment(&wallet)], None);
+    assert!(
+        claimer
+            .execute("test", &crate::actions::ActionKind::Claim)
+            .await
+            .is_err()
+    );
+    let metadata = store.get_swap("test").unwrap().unwrap().metadata;
+    assert_eq!(metadata.evm_claim_started, Some(true));
+    // A recorded reservation is never run again.
+    assert!(
+        claimer
+            .execute("test", &crate::actions::ActionKind::Claim)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn auto_claim_falls_back_to_the_relay_when_the_sponsored_claim_sent_nothing() {
+    let (_, wallet, store) = setup(true);
+    let wallet = Arc::new(wallet);
+    record_claim_destination(&store, wallet.owner);
+    let server = wiremock::MockServer::start().await;
+    mount_calldata(&server, 200).await;
+    mount_relay(&server, 200, 1).await;
+    let node = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::any())
+        .respond_with(wiremock::ResponseTemplate::new(500))
+        .mount(&node)
+        .await;
+    let user_op = crate::aa::UserOpConfig {
+        entry_point: Address::repeat_byte(12),
+        delegation_target: Address::repeat_byte(13),
+        aa: crate::aa::AaConfig {
+            node_rpc_url: node.uri().parse().unwrap(),
+            bundler_url: node.uri().parse().unwrap(),
+            paymaster: None,
+            bundler_casing: Default::default(),
+            gas_overrides: None,
+        },
+    };
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .build()
+        .unwrap();
+    let claimer = auto_claimer(client, &wallet, vec![deployment(&wallet)], Some(user_op));
+    let crate::tracker::ExecutionResult::Submitted { reference } = auto_claim(&claimer).await
+    else {
+        panic!("the relay claim is submitted");
+    };
+    assert_eq!(reference, B256::repeat_byte(9).to_string());
+    assert!(!node.received_requests().await.unwrap().is_empty());
+    let metadata = store.get_swap("test").unwrap().unwrap().metadata;
+    assert_eq!(metadata.evm_claim_txid, Some(reference));
+    assert_eq!(metadata.evm_claim_userop_hash, None);
+}
+
+/// Auto-claims a `fixture` swap with target 100000 through a relay whose calldata
+/// answers with `minimum` and `calls_hash`, expecting `relayed` claim requests.
+async fn relay_auto_claim(
+    fixture: &str,
+    dex: bool,
+    minimum: u64,
+    calls_hash: B256,
+    relayed: bool,
+) -> (crate::tracker::ExecutionResult, Arc<Wallet>) {
+    let (_, wallet, store) = setup_fixture(fixture, true, EvmHtlcKind::Erc20);
+    let wallet = Arc::new(wallet);
+    record_claim_destination(&store, wallet.owner);
+    rewrite_response(&store, |r| {
+        r["target_amount"] = json!("100000");
+        if dex {
+            r["target_token"]["token_id"] = json!(Address::repeat_byte(77));
+        }
+    });
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::path("/swap/test/redeem-and-swap-calldata"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({"min_amount_out":minimum.to_string(),"gasless_fee_sats":0,"calls_hash":calls_hash,"dex_calldata":null})))
+        .mount(&server)
+        .await;
+    mount_relay(&server, 200, u64::from(relayed)).await;
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .build()
+        .unwrap();
+    let claimer = auto_claimer(client, &wallet, vec![deployment(&wallet)], None);
+    (auto_claim(&claimer).await, wallet)
+}
+
+#[tokio::test]
+async fn auto_claim_relays_a_payout_at_the_daemon_slippage_floor_below_its_target() {
+    use crate::tracker::ExecutionResult;
+    use alloy::primitives::keccak256;
+    use alloy::sol_types::SolValue;
+    let no_calls = keccak256(Vec::<crate::aa::abi::Call>::new().abi_encode());
+    for (fixture, floor) in [("arkade_to_evm", 99_000), ("bitcoin_to_evm", 98_000)] {
+        for dex in [false, true] {
+            let calls_hash = if dex { B256::repeat_byte(1) } else { no_calls };
+            for (minimum, submitted) in [(floor - 1, false), (floor, true)] {
+                let (result, _) =
+                    relay_auto_claim(fixture, dex, minimum, calls_hash, submitted).await;
+                let case = format!("{fixture}, dex {dex}, minimum {minimum}");
+                if submitted {
+                    assert!(
+                        matches!(result, ExecutionResult::Submitted { .. }),
+                        "{case}"
+                    );
+                } else {
+                    let ExecutionResult::NotSent(error) = result else {
+                        panic!("{case}: a minimum below the floor is refused");
+                    };
+                    assert!(error.to_string().contains("minimum"), "{case}: {error}");
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn auto_claim_refuses_server_calls_on_a_direct_relay_payout() {
+    let (result, wallet) =
+        relay_auto_claim("arkade_to_evm", false, 99_000, B256::repeat_byte(1), false).await;
+    let crate::tracker::ExecutionResult::NotSent(error) = result else {
+        panic!("calls that could divert part of the locked token are refused");
+    };
+    assert!(error.to_string().contains("server calls"), "{error}");
+    assert_eq!(wallet.signatures.load(Ordering::Relaxed), 0);
 }

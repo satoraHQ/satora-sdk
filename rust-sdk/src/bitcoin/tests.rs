@@ -1215,3 +1215,146 @@ async fn electrum_reconnects_after_the_socket_drops() {
     drop(backend);
     server.join().unwrap();
 }
+
+fn record_claim_destination(
+    storage: &crate::InMemorySwapStorage,
+    local: Option<&str>,
+    server: &str,
+) {
+    use crate::SwapStorage;
+    let mut stored = storage.get_swap("bitcoin").unwrap().unwrap();
+    let GetSwapResponse::EvmToBitcoin(response) = &mut stored.response else {
+        panic!("expected an EVM to Bitcoin swap");
+    };
+    response.target_btc_address = Some(server.into());
+    stored.metadata.target_address = local.map(str::to_owned);
+    storage.store_swap(stored).unwrap();
+}
+
+fn claim_config(
+    backend: std::sync::Arc<Backend>,
+    options: &BitcoinSpendOptions,
+) -> crate::tracker::AutoClaimConfig {
+    crate::tracker::AutoClaimConfig {
+        bitcoin: Some(crate::tracker::BitcoinAutoClaim {
+            backend,
+            maximum_fee: options.maximum_fee,
+            minimum_confirmations: options.minimum_confirmations,
+            minimum_remaining_blocks: options.minimum_remaining_blocks,
+            confirmation_target: options.confirmation_target,
+        }),
+        ..Default::default()
+    }
+}
+
+fn auto_claimer(
+    client: Client,
+    backend: std::sync::Arc<Backend>,
+    options: &BitcoinSpendOptions,
+) -> crate::tracker::AutoClaimer {
+    crate::tracker::AutoClaimer::new(client, claim_config(backend, options)).unwrap()
+}
+
+async fn auto_claim(
+    claimer: &crate::tracker::AutoClaimer,
+) -> Result<crate::tracker::ExecutionResult> {
+    use crate::tracker::ActionExecutor;
+    claimer
+        .execute("bitcoin", &crate::actions::ActionKind::Claim)
+        .await
+}
+
+#[tokio::test]
+async fn auto_claim_pays_only_the_recorded_bitcoin_destination() {
+    use crate::tracker::ExecutionResult;
+    let (client, storage, backend, options) = claim_setup(true);
+    let backend = std::sync::Arc::new(backend);
+    let claimer = auto_claimer(client, backend.clone(), &options);
+    // The server's address alone is not enough.
+    record_claim_destination(&storage, None, &options.destination);
+    let Ok(ExecutionResult::NotSent(error)) = auto_claim(&claimer).await else {
+        panic!("a claim without a recorded destination is refused");
+    };
+    assert!(error.to_string().contains("destination"), "{error}");
+    assert_eq!(backend.submissions(), 0);
+    record_claim_destination(&storage, Some(&options.destination), &options.destination);
+    let Ok(ExecutionResult::Submitted { reference }) = auto_claim(&claimer).await else {
+        panic!("the claim is broadcast");
+    };
+    assert_eq!(
+        reference,
+        backend.broadcasts.lock().unwrap()[0]
+            .compute_txid()
+            .to_string()
+    );
+    assert_eq!(journaled(&storage).0, Some(reference));
+}
+
+#[tokio::test]
+async fn auto_claim_asks_for_a_destination_only_when_none_was_recorded() {
+    use crate::tracker::ExecutionResult;
+    let secp = Secp256k1::new();
+    let key = Keypair::from_secret_key(&secp, &SecretKey::from_slice(&[7; 32]).unwrap());
+    let other = Address::p2tr(&secp, key.x_only_public_key().0, None, Network::Regtest);
+    for recorded in [false, true] {
+        let (client, storage, backend, options) = claim_setup(true);
+        let backend = std::sync::Arc::new(backend);
+        let destination = Address::from_str(&options.destination)
+            .unwrap()
+            .assume_checked();
+        let answer = if recorded {
+            record_claim_destination(&storage, Some(&options.destination), &options.destination);
+            other.to_string()
+        } else {
+            record_claim_destination(&storage, None, &other.to_string());
+            options.destination.clone()
+        };
+        let claimer = crate::tracker::AutoClaimer::new(
+            client,
+            crate::tracker::AutoClaimConfig {
+                destination: Some(std::sync::Arc::new(move |_: &crate::StoredSwap| {
+                    Some(answer.clone())
+                })),
+                ..claim_config(backend.clone(), &options)
+            },
+        )
+        .unwrap();
+        let Ok(ExecutionResult::Submitted { .. }) = auto_claim(&claimer).await else {
+            panic!("recorded {recorded}: the claim is broadcast");
+        };
+        assert_eq!(
+            backend.broadcasts.lock().unwrap()[0].output[0].script_pubkey,
+            destination.script_pubkey(),
+            "recorded {recorded}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn auto_claim_retries_a_refused_bitcoin_spend_but_not_a_failed_broadcast() {
+    use crate::tracker::ExecutionResult;
+    let (client, storage, backend, mut options) = claim_setup(true);
+    let backend = std::sync::Arc::new(backend);
+    record_claim_destination(&storage, Some(&options.destination), &options.destination);
+    let generous = options.maximum_fee;
+    options.maximum_fee = Amount::from_sat(1);
+    let claimer = auto_claimer(client.clone(), backend.clone(), &options);
+    let Ok(ExecutionResult::NotSent(error)) = auto_claim(&claimer).await else {
+        panic!("a spend over the fee cap is refused before it is journaled");
+    };
+    assert!(error.to_string().contains("fee"), "{error}");
+    assert_eq!(journaled(&storage).0, None);
+    options.maximum_fee = generous;
+    backend
+        .reject
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let claimer = auto_claimer(client, backend.clone(), &options);
+    assert!(auto_claim(&claimer).await.is_err());
+    assert!(journaled(&storage).0.is_some());
+    // The journaled spend may have reached the network, so it is not rebuilt.
+    backend
+        .reject
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    assert!(auto_claim(&claimer).await.is_err());
+    assert_eq!(backend.submissions(), 0);
+}

@@ -621,16 +621,23 @@ impl Client {
             self.refresh_swap(swap_id).await?;
         }
         let backend = self.arkade_wallet().await?;
-        self.settle_with(swap_id, backend, operation, destination)
-            .await
+        self.settle_with(
+            swap_id,
+            backend,
+            operation,
+            destination,
+            Duration::from_secs(120),
+        )
+        .await
     }
 
-    async fn settle_with(
+    pub(crate) async fn settle_with(
         &self,
         swap_id: &str,
         backend: &dyn ArkadeBackend,
         operation: ArkadeSpend,
         destination: String,
+        timeout: Duration,
     ) -> Result<ArkadeSettlement> {
         let htlc = self.arkade_htlc(swap_id)?;
         let chain = match operation {
@@ -646,7 +653,6 @@ impl Client {
         let stored = self
             .get_stored_swap(swap_id)?
             .ok_or_else(|| Error::InvalidSwap("swap record missing".into()))?;
-        let timeout = Duration::from_secs(120);
         // Mirrors the routing in settle_arkade, so the key is only fetched when used.
         // A persisted delegation must resume with the key it was signed for.
         let cosigner = tokio::time::timeout(timeout, async {

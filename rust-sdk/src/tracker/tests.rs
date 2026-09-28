@@ -65,6 +65,9 @@ impl ActionExecutor for Executor {
                         reference: "claim-tx".into(),
                     })
                 }
+                6 => Ok(ExecutionResult::NotSent(Error::Transport(
+                    "connection refused".into(),
+                ))),
                 _ => std::future::pending().await,
             }
         })
@@ -1184,4 +1187,177 @@ async fn swaps_stored_without_a_journal_are_adopted_after_restore() {
         let record = tracker.record(id).await.unwrap();
         assert!(record.enabled && record.contracts.server.is_some());
     }
+}
+fn claim_automation(actions: &SwapActions) -> Automation {
+    let action = actions.recommended().unwrap();
+    assert_eq!(action.kind, ActionKind::Claim);
+    action.automation
+}
+#[tokio::test]
+async fn unsent_claims_back_off_to_the_cap_then_turn_manual_until_reconciled() {
+    let (tracker, reader, executor, id) = setup(
+        6,
+        TrackerOptions {
+            retry_delay: Duration::from_millis(20),
+            retry_delay_max: Duration::from_millis(50),
+            max_attempts: 4,
+            ..Default::default()
+        },
+    );
+    track(&tracker, &id).await;
+    *reader.0.lock().unwrap() = (HtlcState::Confirmed, HtlcState::Confirmed, 50);
+    let mut events = tracker.events();
+    for (run, delay) in [20, 40, 50].into_iter().enumerate() {
+        let start = now_ms().unwrap();
+        let actions = tracker.reconcile(&id).await.unwrap();
+        let end = now_ms().unwrap();
+        assert_eq!(executor.calls.load(Ordering::SeqCst), run + 1);
+        let AttemptState::Retryable { after_ms } =
+            tracker.record(&id).await.unwrap().attempt.unwrap().state
+        else {
+            panic!("an unsent claim is retryable");
+        };
+        assert!(
+            (start + delay..=end + delay).contains(&after_ms),
+            "run {run}: retry at {after_ms}, expected {delay} ms after {start}..={end}"
+        );
+        assert_eq!(claim_automation(&actions), Automation::Automatic);
+        assert!(!actions.needs_user());
+        tokio::time::sleep(Duration::from_millis(delay + 5)).await;
+    }
+    let actions = tracker.reconcile(&id).await.unwrap();
+    assert_eq!(executor.calls.load(Ordering::SeqCst), 4);
+    assert_eq!(claim_automation(&actions), Automation::Manual);
+    assert!(actions.needs_user());
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    tracker.reconcile(&id).await.unwrap();
+    assert_eq!(executor.calls.load(Ordering::SeqCst), 4);
+    let mut reported = 0;
+    while let Ok(event) = events.try_recv() {
+        reported += usize::from(
+            event
+                .error
+                .is_some_and(|error| error.contains("connection refused")),
+        );
+    }
+    assert_eq!(reported, 4);
+    tracker
+        .resolve_attempt(&id, AttemptResolution::ProvenNotSubmitted)
+        .await
+        .unwrap();
+    tracker.reconcile(&id).await.unwrap();
+    assert_eq!(executor.calls.load(Ordering::SeqCst), 5);
+}
+#[tokio::test]
+async fn an_unsent_claim_is_not_run_again_before_its_deadline() {
+    let (tracker, reader, executor, id) = setup(
+        6,
+        TrackerOptions {
+            retry_delay: Duration::from_secs(60),
+            retry_delay_max: Duration::from_secs(60),
+            ..Default::default()
+        },
+    );
+    track(&tracker, &id).await;
+    *reader.0.lock().unwrap() = (HtlcState::Confirmed, HtlcState::Confirmed, 50);
+    tracker.reconcile(&id).await.unwrap();
+    tracker.reconcile(&id).await.unwrap();
+    assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
+}
+#[tokio::test]
+async fn a_changed_recommendation_gets_a_fresh_attempt_budget() {
+    let (tracker, reader, executor, id) = setup(
+        6,
+        TrackerOptions {
+            retry_delay: Duration::from_millis(10),
+            max_attempts: 2,
+            ..Default::default()
+        },
+    );
+    track(&tracker, &id).await;
+    tracker
+        .update_options(
+            &id,
+            TrackingOptions {
+                auto_claim: true,
+                auto_cctp: true,
+                bridge: BridgeState::CctpBurn {
+                    source_transaction: "burn".into(),
+                    attestation_available: true,
+                },
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    tracker.reconcile(&id).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let actions = tracker.reconcile(&id).await.unwrap();
+    assert_eq!(executor.calls.load(Ordering::SeqCst), 2);
+    let recovery = actions.recommended().unwrap();
+    assert!(matches!(recovery.kind, ActionKind::RecoverCctp { .. }));
+    assert_eq!(recovery.automation, Automation::Manual);
+    // The user mints by hand, and the server funds.
+    *reader.0.lock().unwrap() = (HtlcState::Confirmed, HtlcState::Confirmed, 50);
+    tracker.reconcile(&id).await.unwrap();
+    assert_eq!(executor.calls.load(Ordering::SeqCst), 3);
+    let attempt = tracker.record(&id).await.unwrap().attempt.unwrap();
+    assert_eq!((attempt.action, attempt.count), (ActionKind::Claim, 1));
+}
+#[tokio::test]
+async fn a_retry_runs_at_its_deadline_without_waiting_for_a_tick() {
+    let (tracker, reader, executor, id) = setup(
+        6,
+        TrackerOptions {
+            at_risk_interval: Duration::from_secs(3600),
+            full_interval: Duration::from_secs(3600),
+            retry_delay: Duration::from_millis(200),
+            retry_delay_max: Duration::from_secs(1),
+            max_attempts: 3,
+            ..Default::default()
+        },
+    );
+    track(&tracker, &id).await;
+    *reader.0.lock().unwrap() = (HtlcState::Confirmed, HtlcState::Confirmed, 50);
+    let worker = tracker.start().unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while executor.calls.load(Ordering::SeqCst) < 3 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("each retry ran at its deadline");
+    worker.shutdown().await.unwrap();
+    assert!(
+        tracker
+            .actions(&id)
+            .unwrap()
+            .is_some_and(|actions| actions.needs_user())
+    );
+}
+#[tokio::test]
+async fn an_executor_must_time_out_before_the_tracker_does() {
+    let (tracker, reader, _, _) = setup(0, TrackerOptions::default());
+    let claimer = |timeout| {
+        Arc::new(
+            AutoClaimer::new(
+                tracker.0.client.clone(),
+                AutoClaimConfig {
+                    timeout,
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+        ) as Arc<dyn ActionExecutor>
+    };
+    let tracker_with = |executor| {
+        SwapTracker::new(
+            tracker.0.client.clone(),
+            ContractManager::new(reader.clone(), ManagerOptions::default()).unwrap(),
+            TrackerOptions::default(),
+            Some(executor),
+        )
+    };
+    assert!(tracker_with(claimer(Duration::from_secs(90))).is_ok());
+    assert!(tracker_with(claimer(Duration::from_secs(120))).is_err());
 }

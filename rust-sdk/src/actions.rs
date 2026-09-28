@@ -72,6 +72,18 @@ impl SwapActions {
     pub fn recommended(&self) -> Option<&Action> {
         self.actions.iter().find(|action| action.recommended)
     }
+    /// Whether the recommended action waits on the user: a confirmation, a manual
+    /// step, or recovery of a submission that may have left the process. Filtering
+    /// tracker events on this stands in for the TypeScript `onActionRequired`.
+    pub fn needs_user(&self) -> bool {
+        self.recommended().is_some_and(|action| {
+            matches!(action.automation, Automation::Confirm | Automation::Manual)
+                || action.kind
+                    == (ActionKind::Wait {
+                        on: WaitingOn::SubmissionRecovery,
+                    })
+        })
+    }
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

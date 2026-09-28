@@ -360,8 +360,10 @@ impl Client {
 
     /// Authorize a server-submitted claim after verifying funding and the signing
     /// domain on chain. The destination, sweep token, minimum output, and exact
-    /// server call hash are bound into the EIP-712 signature. An empty `tx_hash`
-    /// means the server accepted the claim without a transaction to name yet.
+    /// server call hash are bound into the EIP-712 signature. A claim that sweeps the
+    /// locked token is refused unless the server's call list is empty. An empty
+    /// `tx_hash` means the server accepted the claim without a transaction to name
+    /// yet.
     pub async fn claim_evm_gasless(
         &self,
         id: &str,
@@ -385,8 +387,14 @@ impl Client {
                     let calldata = self.get_redeem_calldata(id,options.destination).await?;
                     let server_min = decimal(&calldata.min_amount_out)?;
                     if server_min < options.min_amount_out { return Err(invalid("server claim output is below the requested minimum")); }
+                    let calls_hash = parse(&calldata.calls_hash)?;
+                    // On a direct payout any server call could divert the locked amount above
+                    // the minimum.
+                    if options.sweep_token == material.htlc.token && calls_hash != keccak256(Vec::<Call>::new().abi_encode()) {
+                        return Err(invalid("server calls on a direct claim"));
+                    }
                     options.min_amount_out = server_min;
-                    (parse(&calldata.calls_hash)?, calldata.dex_calldata)
+                    (calls_hash, calldata.dex_calldata)
                 }
             };
             let typed = material.typed_data(&options,calls_hash)?;

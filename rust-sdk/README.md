@@ -36,17 +36,17 @@ strings on the wire, while Bitcoin amounts must be positive and fit in `i64`.
 
 ## Current coverage
 
-| Operation                 | Rust support                                                                                                                                    |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| Discovery and quotes      | Health, tokens, pairs, chain/AA configuration, fees, MTP, referral/support data, typed DEX calls, exact local quote composition                 |
-| Creation and recovery     | All nine swap directions, paginated recovery, SQLite snapshots and execution journals                                                           |
-| EVM execution (`gasless`) | External/local wallets, Permit2 and EIP-2612, ERC-4337 funding/claims, server claims, timeout refunds, deposit recovery and refund continuation |
-| Bitcoin execution         | Strict version 1 Taproot claims/refunds, multiple outputs, Esplora and optional Electrum                                                        |
-| Arkade execution          | All supported directions, offchain claims/refunds, cooperative refunds, delegated settlement, interrupted-batch recovery                        |
-| Bridges (`gasless`)       | CCTP v2 and USDT0 fees/messages, wallet/sponsored transfers, atomic inbound funding, outbound claims, delivery tracking and recovery            |
-| Status feed (`websocket`) | Reconnect/resubscribe, bounded queues, HTTP reconciliation, cancellation                                                                        |
-| Observations              | Bitcoin/Arkade/EVM HTLC readers, confirmation policy, verified preimages, reorg-aware bounded managers                                          |
-| Actions and automation    | Chain-derived actions, persisted tracking, bounded workers, opt-in automatic claims/CCTP recovery, conservative retry journals                  |
+| Operation                 | Rust support                                                                                                                                     |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Discovery and quotes      | Health, tokens, pairs, chain/AA configuration, fees, MTP, referral/support data, typed DEX calls, exact local quote composition                  |
+| Creation and recovery     | All nine swap directions, paginated recovery, SQLite snapshots and execution journals                                                            |
+| EVM execution (`gasless`) | External/local wallets, Permit2 and EIP-2612, ERC-4337 funding/claims, server claims, timeout refunds, deposit recovery and refund continuation  |
+| Bitcoin execution         | Strict version 1 Taproot claims/refunds, multiple outputs, Esplora and optional Electrum                                                         |
+| Arkade execution          | All supported directions, offchain claims/refunds, cooperative refunds, delegated settlement, interrupted-batch recovery                         |
+| Bridges (`gasless`)       | CCTP v2 and USDT0 fees/messages, wallet/sponsored transfers, atomic inbound funding, outbound claims, delivery tracking and recovery             |
+| Status feed (`websocket`) | Reconnect/resubscribe, bounded queues, HTTP reconciliation, cancellation                                                                         |
+| Observations              | Bitcoin/Arkade/EVM HTLC readers, confirmation policy, verified preimages, reorg-aware bounded managers                                           |
+| Actions and automation    | Chain-derived actions, persisted tracking, bounded workers, a stock auto-claimer, opt-in CCTP recovery, retries only of provably unsent attempts |
 
 The reference implementations are `../ts-sdk/packages/swap` and
 `../ts-pure-sdk`. The completed implementation checkpoints and scope decisions
@@ -491,22 +491,53 @@ no longer watched, so a reorg deeper than the window, or a deposit made after an
 unfunded swap expired, goes unnoticed until it is resumed. Dropping the worker
 cancels local work.
 
-Automatic execution needs both an `ActionExecutor` adapter and per-swap
-`auto_claim` or `auto_cctp` opt-in. Adapters should call the SDK's durable execution
-methods with application-approved addresses, limits and bridge plans. Supply
-bridge state from verified receipts, attestations and delivery queries via
-`update_options`; server swap status does not establish bridge delivery. No
-executor is configured by default, and funding/refunds are never automated.
+Automatic execution needs both an `ActionExecutor` and per-swap `auto_claim` or
+`auto_cctp` opt-in. No executor is configured by default, and funding/refunds are
+never automated.
 
-An attempt is persisted before invoking the adapter. A callback must explicitly
-return `Retryable` only if nothing was submitted; retries have backoff and a cap.
+`tracker::AutoClaimer` is the stock claim executor, the counterpart of the
+TypeScript `withAutoClaim`. It claims Arkade targets through the client's Arkade
+config (offchain, or delegated when outputs are recoverable), EVM to Bitcoin swaps
+with `AutoClaimConfig::bitcoin` (at the backend's fee estimate capped by
+`maximum_fee`), and EVM targets with `AutoClaimConfig::evm`. The
+destination is the one recorded when the swap was created and must match the
+server's; a swap created elsewhere needs `AutoClaimConfig::destination`. An EVM
+claim signs only for an (HTLC, coordinator) pair in its chain's `deployments`. The
+server does not publish these, so the application supplies its current and legacy
+deployments. A direct payout uses a sponsored UserOperation when the chain has
+`user_op`, and the server relay otherwise, or when that operation sent nothing. A
+payout through the relay, and a DEX payout, must reach `target_amount` less the
+daemon's slippage (1%, or 2% for Bitcoin to EVM), and a direct one through the
+relay must come with no server calls. A DEX payout on Arbitrum needs `user_op`.
+Bridged payouts are refused, because the daemon builds their calls with no minimum
+output; claim them with a reviewed plan through `claim_evm_to_bridge`. Keep
+`AutoClaimConfig::timeout` (90 seconds) below `TrackerOptions::execution_timeout`;
+`SwapTracker::new` checks it.
+
+Other executors should call the SDK's durable execution methods with
+application-approved addresses, limits and bridge plans. Supply bridge state from
+verified receipts, attestations and delivery queries via `update_options`; server
+swap status does not establish bridge delivery.
+
+An attempt is persisted before invoking the executor. It may return `Retryable`, or
+`NotSent` with a reason that is emitted as an error event, only if nothing was
+submitted. `AutoClaimer` does so only while the rail's submission journal is still
+clear, since every rail writes it just before a submission can leave the process.
+Such an attempt runs again, after a fresh chain read, once `retry_delay` (2
+seconds) has passed, with the delay doubling up to `retry_delay_max` (30 seconds).
+After `max_attempts` (6) runs the action turns `Manual`; a different recommended
+action starts its own count. `SwapActions::needs_user` is true for a confirmation,
+a manual step or `SubmissionRecovery`; filter tracker events on it where the
+TypeScript client uses `onActionRequired`. Unchanged actions are not emitted
+again, so after a lagged receiver read `actions` for each tracked swap.
 Errors, timeouts, cancellation and lost responses remain unresolved until the
 application reconciles the rail journal/chain and calls `resolve_attempt`.
 `Submitted` waits for observed settlement; it never declares success by itself.
-`ProvenNotSubmitted` releases only the attempted action's unsent reservations
-(the claim flag; for CCTP recovery, hashless `cctp_fund`/`cctp_mint` entries and a
-hashless funding flag). Recorded transactions are always kept. The proof must also
-cover any funding sent outside the tracker since the attempt started.
+`ProvenNotSubmitted` gives the action a fresh attempt budget and releases only the
+attempted action's unsent reservations (the claim flag; for CCTP recovery,
+hashless `cctp_fund`/`cctp_mint` entries and a hashless funding flag). Recorded
+transactions are always kept. The proof must also cover any funding sent outside
+the tracker since the attempt started.
 Use one tracker and exclusive execution ownership per store across processes.
 
 ## Compatibility and validation limits

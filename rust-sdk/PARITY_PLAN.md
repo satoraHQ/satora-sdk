@@ -106,9 +106,10 @@ state the actual change and validation, without tool attribution.
         subscriptions; reconcile at-risk swaps; optional auto-claim with bounded
         concurrency and failure recovery. Port action-state tests and exercise full
         mocked funding→claim/refund→terminal lifecycles alongside the existing
-        creation tests. Executors are application adapters; automation is opt-in,
-        reserves attempts durably, and never retries ambiguous submissions. Bridge
-        inputs must come from verified bridge execution/tracking results.
+        creation tests. `AutoClaimer` is the stock claim executor and other
+        executors are application adapters; automation is opt-in, reserves
+        attempts durably, and never retries ambiguous submissions. Bridge inputs
+        must come from verified bridge execution/tracking results.
 
 11. [x] **Finish public API/documentation and integration verification.** Export
         supported entry points; provide examples for each route and recovery path;
