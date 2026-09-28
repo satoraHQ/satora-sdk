@@ -742,3 +742,54 @@ async fn sweep_can_run_again_after_completion() {
     }
     assert_eq!(wallet.calls.lock().unwrap().len(), 3);
 }
+#[test]
+fn message_query_from_receipt_needs_one_oft_sent_on_the_route() {
+    let route = usdt0::OftRoute::arbitrum_adapter(30111);
+    let sent = |guid: u8, dst_eid: u32, from: Address| usdt0::OFTSent {
+        guid: B256::repeat_byte(guid),
+        dstEid: dst_eid,
+        fromAddress: from,
+        amountSentLD: U256::from(10),
+        amountReceivedLD: U256::from(10),
+    };
+    let receipt = |logs: Vec<EvmLog>| EvmReceipt {
+        transaction_hash: B256::repeat_byte(8),
+        success: true,
+        block_number: 2,
+        logs,
+    };
+    let ours = log(route.oft, sent(4, 30111, route.from));
+    let unrelated = log(route.oft, sent(5, 30101, route.from));
+    assert_eq!(
+        usdt0::MessageQuery::from_receipt(&receipt(vec![unrelated.clone(), ours.clone()]), &route)
+            .unwrap(),
+        usdt0::MessageQuery {
+            source_txid: B256::repeat_byte(8),
+            source_eid: 30110,
+            destination_eid: 30111,
+            guid: B256::repeat_byte(4),
+        }
+    );
+    let mut failed = receipt(vec![ours.clone()]);
+    failed.success = false;
+    for rejected in [
+        receipt(vec![]),
+        receipt(vec![unrelated]),
+        receipt(vec![
+            ours.clone(),
+            log(route.oft, sent(6, 30111, route.from)),
+        ]),
+        receipt(vec![log(
+            Address::repeat_byte(1),
+            sent(4, 30111, route.from),
+        )]),
+        receipt(vec![log(
+            route.oft,
+            sent(4, 30111, Address::repeat_byte(1)),
+        )]),
+        receipt(vec![log(route.oft, sent(0, 30111, route.from))]),
+        failed,
+    ] {
+        assert!(usdt0::MessageQuery::from_receipt(&rejected, &route).is_err());
+    }
+}

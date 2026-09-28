@@ -392,6 +392,16 @@ cap; excess passed to the deployed adapter stays with that adapter, as its
 contract specifies. Outbound adapters currently use the repository's Arbitrum
 deployments.
 
+`usdt0_status_by_tx` and `wait_usdt0_by_tx` look a LayerZero message up by source
+transaction hash alone (TypeScript `getLzMessageStatus` and `trackLzMessage`).
+Unlike TypeScript they never pick the first of several messages: pass the GUID or
+the destination EID. When only a claim's transaction hash is known,
+`MessageQuery::from_receipt(&receipt, &OftRoute::arbitrum_adapter(eid))` recovers
+the GUID from its receipt. Waiting retries read errors until the deadline and stops on statuses
+that waiting cannot resolve, including `PAYLOAD_STORED`, which is delivered only
+after someone retries `lzReceive` on the destination. `explorer_url` links to
+LayerZero Scan.
+
 A claim is reserved before its submission can leave the process, including
 server-submitted and sponsored claims. A lost response prevents another claim
 submission. Reconcile the original transaction with `attach_evm_claim_transaction`.

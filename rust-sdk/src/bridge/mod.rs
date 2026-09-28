@@ -30,6 +30,8 @@ pub struct BridgeApi {
     layerzero: Url,
 }
 impl BridgeApi {
+    /// `layerzero` is the LayerZero Scan API base (testnet:
+    /// `https://scan-testnet.layerzero-api.com`). A path on it is kept.
     pub fn new(iris: &str, layerzero: &str) -> Result<Self> {
         Ok(Self {
             http: Client::new(),
@@ -43,6 +45,15 @@ impl BridgeApi {
             "https://scan.layerzero-api.com",
         )
     }
+}
+/// Appends to the base path, where `Url::join("/...")` would drop it.
+fn endpoint(base: &Url, segments: &[&str]) -> Result<Url> {
+    let mut url = base.clone();
+    url.path_segments_mut()
+        .map_err(|()| Error::InvalidBaseUrl(base.to_string()))?
+        .pop_if_empty()
+        .extend(segments);
+    Ok(url)
 }
 async fn pending_json<T: DeserializeOwned>(response: Response) -> Result<Option<T>> {
     let status = response.status();

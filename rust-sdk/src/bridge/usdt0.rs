@@ -1,9 +1,9 @@
 //! USDT0 OFT encoding and LayerZero delivery tracking.
 use super::BridgeApi;
 use super::invalid;
-use super::pending_json;
 use crate::Result;
 use crate::control::PollOptions;
+use crate::evm::EvmReceipt;
 use crate::evm::EvmWallet;
 use crate::evm::funding::transaction;
 use alloy::primitives::Address;
@@ -13,6 +13,7 @@ use alloy::primitives::U256;
 use alloy::primitives::address;
 use alloy::sol;
 use alloy::sol_types::SolCall;
+use alloy::sol_types::SolEvent;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -117,7 +118,38 @@ impl OftTransfer {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+/// OFTSent events emitted by `oft`. Other logs are skipped.
+pub(super) fn oft_sent(receipt: &EvmReceipt, oft: Address) -> impl Iterator<Item = OFTSent> + '_ {
+    receipt
+        .logs
+        .iter()
+        .filter(move |log| log.address == oft)
+        .filter_map(|log| {
+            OFTSent::decode_raw_log_validate(log.topics.iter().copied(), &log.data).ok()
+        })
+}
+
+/// The contract that emits OFTSent and the address the send debits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OftRoute {
+    pub oft: Address,
+    pub from: Address,
+    pub source_eid: u32,
+    pub destination_eid: u32,
+}
+impl OftRoute {
+    /// The adapter route a coordinator claim into USDT0 uses.
+    pub fn arbitrum_adapter(destination_eid: u32) -> Self {
+        Self {
+            oft: ARBITRUM_OFT,
+            from: ARBITRUM_ADAPTER,
+            source_eid: 30110,
+            destination_eid,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum DeliveryStatus {
     Inflight,
@@ -125,18 +157,49 @@ pub enum DeliveryStatus {
     Delivered,
     Failed,
     Blocked,
+    /// Verified on the destination, but execution reverted. It is delivered only
+    /// after someone retries `lzReceive` on the destination endpoint.
     PayloadStored,
+    ApplicationBurned,
+    ApplicationSkipped,
+    UnresolvableCommand,
+    MalformedCommand,
+    /// A status LayerZero Scan added after this SDK; treated as pending.
+    #[serde(other)]
+    Unknown,
+}
+impl DeliveryStatus {
+    pub fn is_pending(&self) -> bool {
+        matches!(self, Self::Inflight | Self::Confirming | Self::Unknown)
+    }
+    /// Waiting alone will not deliver the message.
+    pub fn needs_intervention(&self) -> bool {
+        matches!(
+            self,
+            Self::Failed
+                | Self::Blocked
+                | Self::PayloadStored
+                | Self::ApplicationBurned
+                | Self::ApplicationSkipped
+                | Self::UnresolvableCommand
+                | Self::MalformedCommand
+        )
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Delivery {
     pub guid: B256,
     pub status: DeliveryStatus,
     pub source_txid: B256,
+    /// Can be missing even once delivered.
     pub destination_txid: Option<B256>,
     pub source_eid: u32,
     pub destination_eid: u32,
+    /// LayerZero Scan's chain names (e.g. "arbitrum"), not the daemon's.
+    pub source_chain: Option<String>,
+    pub destination_chain: Option<String>,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MessageQuery {
     pub source_txid: B256,
     pub source_eid: u32,
@@ -145,8 +208,76 @@ pub struct MessageQuery {
     /// multiple transfers in a single transaction.
     pub guid: B256,
 }
+impl MessageQuery {
+    /// Identifies the one OFT send on `route` in a successful receipt, for a claim
+    /// that returned only its transaction hash (such as `claim_evm_gasless`).
+    pub fn from_receipt(receipt: &EvmReceipt, route: &OftRoute) -> Result<Self> {
+        if !receipt.success {
+            return Err(invalid("OFT send transaction failed"));
+        }
+        let guids: Vec<B256> = oft_sent(receipt, route.oft)
+            .filter(|event| {
+                event.dstEid == route.destination_eid
+                    && event.fromAddress == route.from
+                    && !event.guid.is_zero()
+            })
+            .map(|event| event.guid)
+            .collect();
+        let [guid] = guids[..] else {
+            return Err(invalid(
+                "receipt must contain exactly one OFT send on the route",
+            ));
+        };
+        Ok(Self {
+            source_txid: receipt.transaction_hash,
+            source_eid: route.source_eid,
+            destination_eid: route.destination_eid,
+            guid,
+        })
+    }
+}
+/// A lookup by source transaction. Every field that is set must match.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MessageLookup {
+    pub source_txid: B256,
+    pub guid: Option<B256>,
+    pub source_eid: Option<u32>,
+    pub destination_eid: Option<u32>,
+}
+impl MessageLookup {
+    pub fn tx(source_txid: B256) -> Self {
+        Self {
+            source_txid,
+            ..Self::default()
+        }
+    }
+}
+impl From<&MessageQuery> for MessageLookup {
+    fn from(query: &MessageQuery) -> Self {
+        Self {
+            source_txid: query.source_txid,
+            guid: Some(query.guid),
+            source_eid: Some(query.source_eid),
+            destination_eid: Some(query.destination_eid),
+        }
+    }
+}
+
+#[doc(alias = "getLzExplorerUrl")]
+pub fn explorer_url(source_txid: B256) -> String {
+    format!("https://layerzeroscan.com/tx/{source_txid}")
+}
+
 impl BridgeApi {
     pub async fn usdt0_status(&self, query: &MessageQuery) -> Result<Option<Delivery>> {
+        self.usdt0_status_by_tx(&query.into()).await
+    }
+    /// `Ok(None)` until LayerZero Scan indexes the message. Without a GUID, several
+    /// matching messages are an error rather than a guess. Scan may have indexed
+    /// only some of them yet, so pass the GUID from [`MessageQuery::from_receipt`]
+    /// when the transaction can carry more than one send.
+    #[doc(alias = "getLzMessageStatus")]
+    pub async fn usdt0_status_by_tx(&self, lookup: &MessageLookup) -> Result<Option<Delivery>> {
         #[derive(Deserialize)]
         struct Response {
             data: Vec<Message>,
@@ -156,7 +287,9 @@ impl BridgeApi {
             guid: B256,
             status: Status,
             pathway: Pathway,
+            #[serde(default)]
             source: Side,
+            #[serde(default)]
             destination: Side,
         }
         #[derive(Deserialize)]
@@ -168,47 +301,76 @@ impl BridgeApi {
         struct Pathway {
             src_eid: u32,
             dst_eid: u32,
+            #[serde(default)]
+            sender: Party,
+            #[serde(default)]
+            receiver: Party,
         }
-        #[derive(Deserialize)]
+        #[derive(Default, Deserialize)]
+        struct Party {
+            chain: Option<String>,
+        }
+        #[derive(Default, Deserialize)]
         struct Side {
             tx: Option<Tx>,
         }
+        // A string, not B256: non-EVM chains (Solana) use other hash formats.
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct Tx {
-            tx_hash: B256,
+            tx_hash: String,
         }
-        let url = self
-            .layerzero
-            .join(&format!("/v1/messages/tx/{}", query.source_txid))?;
-        let Some(response) = pending_json::<Response>(self.http.get(url).send().await?).await?
-        else {
+        fn hash(side: &Side) -> Option<B256> {
+            side.tx.as_ref()?.tx_hash.parse().ok()
+        }
+        let txid = lookup.source_txid.to_string();
+        let url = super::endpoint(&self.layerzero, &["v1", "messages", "tx", &txid])?;
+        let response = self.http.get(url).send().await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let response: Response = crate::client::check_status(response).await?.json().await?;
+        // The endpoint also lists messages this transaction delivered on a destination.
+        let identity = |m: &Message| {
+            hash(&m.source) == Some(lookup.source_txid)
+                && lookup.source_eid.is_none_or(|eid| eid == m.pathway.src_eid)
+                && lookup
+                    .destination_eid
+                    .is_none_or(|eid| eid == m.pathway.dst_eid)
+        };
+        let mut matching: Vec<Message> = response
+            .data
+            .into_iter()
+            .filter(|m| {
+                lookup
+                    .guid
+                    .map_or_else(|| identity(m), |guid| m.guid == guid)
+            })
+            .collect();
+        if matching.len() > 1 {
+            return Err(invalid(match lookup.guid {
+                Some(_) => "LayerZero message identity mismatch".to_string(),
+                None => format!(
+                    "{} LayerZero messages match {txid}; pass the GUID (MessageQuery::from_receipt) or the destination EID",
+                    matching.len()
+                ),
+            }));
+        }
+        let Some(message) = matching.pop() else {
             return Ok(None);
         };
-        let mut matching = response.data.into_iter().filter(|m| m.guid == query.guid);
-        let Some(message) = matching.next() else {
-            return Ok(None);
-        };
-        if matching.next().is_some()
-            || message.pathway.src_eid != query.source_eid
-            || message.pathway.dst_eid != query.destination_eid
-            || message.source.tx.as_ref().map(|tx| tx.tx_hash) != Some(query.source_txid)
-        {
+        if !identity(&message) {
             return Err(invalid("LayerZero message identity mismatch"));
-        }
-        let destination_txid = message.destination.tx.map(|tx| tx.tx_hash);
-        if message.status.name == DeliveryStatus::Delivered && destination_txid.is_none() {
-            return Err(invalid(
-                "delivered LayerZero message has no destination transaction",
-            ));
         }
         Ok(Some(Delivery {
             guid: message.guid,
             status: message.status.name,
-            source_txid: query.source_txid,
-            destination_txid,
-            source_eid: query.source_eid,
-            destination_eid: query.destination_eid,
+            source_txid: lookup.source_txid,
+            destination_txid: hash(&message.destination),
+            source_eid: message.pathway.src_eid,
+            destination_eid: message.pathway.dst_eid,
+            source_chain: message.pathway.sender.chain,
+            destination_chain: message.pathway.receiver.chain,
         }))
     }
     pub async fn wait_usdt0(
@@ -216,30 +378,77 @@ impl BridgeApi {
         query: &MessageQuery,
         options: &PollOptions,
     ) -> Result<Delivery> {
-        options
+        self.wait_usdt0_by_tx(&query.into(), options, |_| {}).await
+    }
+    /// Polls until the message is delivered. `on_status` sees each status change.
+    /// Read errors are retried until the deadline; a status that waiting cannot
+    /// resolve ([`DeliveryStatus::needs_intervention`]) stops the wait.
+    #[doc(alias = "trackLzMessage")]
+    pub async fn wait_usdt0_by_tx(
+        &self,
+        lookup: &MessageLookup,
+        options: &PollOptions,
+        mut on_status: impl FnMut(&Delivery) + Send,
+    ) -> Result<Delivery> {
+        let mut last_status = None;
+        let mut last_error = None;
+        let result = options
             .run(async {
                 loop {
-                    match self.usdt0_status(query).await {
-                        Ok(Some(delivery)) => match delivery.status {
-                            DeliveryStatus::Delivered => return Ok(delivery),
-                            DeliveryStatus::Failed
-                            | DeliveryStatus::Blocked
-                            | DeliveryStatus::PayloadStored => {
+                    match self.usdt0_status_by_tx(lookup).await {
+                        Ok(Some(delivery)) => {
+                            if last_status != Some(delivery.status) {
+                                last_status = Some(delivery.status);
+                                on_status(&delivery);
+                            }
+                            if delivery.status == DeliveryStatus::Delivered {
+                                return Ok(delivery);
+                            }
+                            if delivery.status.needs_intervention() {
+                                let retry = if delivery.status == DeliveryStatus::PayloadStored {
+                                    "; anyone can retry lzReceive on the destination endpoint"
+                                } else {
+                                    ""
+                                };
                                 return Err(invalid(format!(
-                                    "LayerZero delivery requires recovery: {:?}",
-                                    delivery.status
+                                    "LayerZero message {} is {:?}{retry}: {}",
+                                    delivery.guid,
+                                    delivery.status,
+                                    explorer_url(lookup.source_txid)
                                 )));
                             }
-                            _ => {}
-                        },
-                        Ok(None) | Err(crate::Error::Transport(_)) => {}
+                        }
+                        Ok(None) => {}
+                        Err(
+                            error @ (crate::Error::Transport(_)
+                            | crate::Error::Api { .. }
+                            | crate::Error::Decode(_)),
+                        ) => last_error = Some(error.to_string()),
                         Err(error) => return Err(error),
                     }
                     tokio::time::sleep(options.interval).await;
                 }
             })
-            .await
+            .await;
+        match result {
+            Err(crate::Error::Timeout(_)) => Err(crate::Error::Timeout(format!(
+                "LayerZero message for {} not delivered (last status {}, last read error {})",
+                lookup.source_txid,
+                last_status.map_or_else(|| "not indexed".to_string(), |s| format!("{s:?}")),
+                last_error.as_deref().unwrap_or("none")
+            ))),
+            other => other,
+        }
     }
+}
+
+/// Exact names, as the daemon's `bridge_target_chain` spells them.
+#[doc(alias = "getEid")]
+pub fn chain_by_name(name: &str) -> Option<Usdt0Chain> {
+    CHAINS.iter().find(|chain| chain.name == name).copied()
+}
+pub fn chain_by_eid(eid: u32) -> Option<Usdt0Chain> {
+    CHAINS.iter().find(|chain| chain.eid == eid).copied()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

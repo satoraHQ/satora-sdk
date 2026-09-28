@@ -107,13 +107,7 @@ pub(super) fn validate_oft_receipt(
     receipt: &EvmReceipt,
     transfer: &usdt0::OftTransfer,
 ) -> Result<B256> {
-    let matching: Vec<_> = receipt
-        .logs
-        .iter()
-        .filter(|log| log.address == transfer.oft)
-        .filter_map(|log| {
-            usdt0::OFTSent::decode_raw_log_validate(log.topics.iter().copied(), &log.data).ok()
-        })
+    let matching: Vec<_> = usdt0::oft_sent(receipt, transfer.oft)
         .filter(|event| {
             event.dstEid == transfer.destination_eid
                 && event.fromAddress == transfer.sender

@@ -155,8 +155,31 @@ async fn attestation_selection_timeout_and_cancellation() {
         Err(Error::Cancelled)
     ));
 }
+fn lz_entry(
+    guid: B256,
+    source: impl serde::Serialize,
+    status: &str,
+    destination_eid: u32,
+    destination: serde_json::Value,
+) -> serde_json::Value {
+    json!({"guid":guid,"status":{"name":status,"message":"from Scan"},"pathway":{"srcEid":30110,"dstEid":destination_eid,"sender":{"chain":"arbitrum"},"receiver":{"chain":"optimism"}},"source":{"tx":{"txHash":source}},"destination":destination})
+}
+async fn lz_respond(server: &MockServer, body: serde_json::Value) {
+    server.reset().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(server)
+        .await;
+}
+fn quick(timeout: u64) -> PollOptions {
+    PollOptions {
+        timeout: Duration::from_millis(timeout),
+        interval: Duration::from_millis(1),
+        ..Default::default()
+    }
+}
 #[tokio::test]
-async fn layerzero_requires_matching_guid_route_and_delivered_transaction() {
+async fn layerzero_query_selects_by_guid_and_checks_identity() {
     let server = MockServer::start().await;
     let api = BridgeApi::new(&server.uri(), &server.uri()).unwrap();
     let query = usdt0::MessageQuery {
@@ -165,8 +188,12 @@ async fn layerzero_requires_matching_guid_route_and_delivered_transaction() {
         destination_eid: 30111,
         guid: B256::repeat_byte(4),
     };
-    let entry = |guid, status: &str, dst| json!({"guid":guid,"status":{"name":status},"pathway":{"srcEid":30110,"dstEid":30111},"source":{"tx":{"txHash":query.source_txid}},"destination":{"tx":dst}});
-    Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_json(json!({"data":[entry(B256::repeat_byte(9),"DELIVERED",json!({"txHash":B256::repeat_byte(7)})),entry(query.guid,"DELIVERED",json!({"txHash":B256::repeat_byte(8)}))]}))).mount(&server).await;
+    let tx = |hash: u8| json!({"tx":{"txHash":B256::repeat_byte(hash)}});
+    lz_respond(
+        &server,
+        json!({"data":[lz_entry(B256::repeat_byte(9),query.source_txid,"DELIVERED",30111,tx(7)),lz_entry(query.guid,query.source_txid,"DELIVERED",30111,tx(8))]}),
+    )
+    .await;
     assert_eq!(
         api.usdt0_status(&query)
             .await
@@ -175,27 +202,309 @@ async fn layerzero_requires_matching_guid_route_and_delivered_transaction() {
             .destination_txid,
         Some(B256::repeat_byte(8))
     );
-    server.reset().await;
+    lz_respond(
+        &server,
+        json!({"data":[lz_entry(query.guid,query.source_txid,"INFLIGHT",30101,json!({}))]}),
+    )
+    .await;
+    assert!(
+        matches!(api.usdt0_status(&query).await, Err(Error::InvalidSwap(m)) if m.contains("identity"))
+    );
+    lz_respond(
+        &server,
+        json!({"data":[lz_entry(query.guid,query.source_txid,"BLOCKED",30111,json!({}))]}),
+    )
+    .await;
+    assert!(matches!(
+        api.wait_usdt0(&query, &quick(2000)).await,
+        Err(Error::InvalidSwap(_))
+    ));
+}
+#[tokio::test]
+async fn layerzero_tx_lookup_returns_chain_names() {
+    let server = MockServer::start().await;
+    let api = BridgeApi::new(&server.uri(), &format!("{}/scan/", server.uri())).unwrap();
+    let txid = B256::repeat_byte(3);
+    Mock::given(path(format!("/scan/v1/messages/tx/{txid}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"data":[lz_entry(B256::repeat_byte(4),txid,"DELIVERED",30111,json!({"status":"SUCCEEDED"}))]}),
+        ))
+        .mount(&server)
+        .await;
+    let delivery = api
+        .usdt0_status_by_tx(&usdt0::MessageLookup::tx(txid))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        delivery,
+        usdt0::Delivery {
+            guid: B256::repeat_byte(4),
+            status: usdt0::DeliveryStatus::Delivered,
+            source_txid: txid,
+            destination_txid: None,
+            source_eid: 30110,
+            destination_eid: 30111,
+            source_chain: Some("arbitrum".into()),
+            destination_chain: Some("optimism".into()),
+        }
+    );
+    assert_eq!(
+        api.usdt0_status_by_tx(&usdt0::MessageLookup::tx(B256::repeat_byte(5)))
+            .await
+            .unwrap(),
+        None
+    );
+}
+#[tokio::test]
+async fn layerzero_tx_lookup_never_guesses() {
+    let server = MockServer::start().await;
+    let api = BridgeApi::new(&server.uri(), &server.uri()).unwrap();
+    let txid = B256::repeat_byte(3);
+    let (first, second) = (B256::repeat_byte(4), B256::repeat_byte(5));
+    // Scan also lists messages this transaction delivered, from any source chain.
+    let from_solana = lz_entry(
+        B256::repeat_byte(6),
+        "29zT7SLdFZkKsolana",
+        "DELIVERED",
+        30110,
+        json!({"tx":{"txHash":txid}}),
+    );
+    let foreign = B256::repeat_byte(7);
+    let mut from_ethereum = lz_entry(
+        foreign,
+        B256::repeat_byte(9),
+        "DELIVERED",
+        30110,
+        json!({"tx":{"txHash":txid}}),
+    );
+    from_ethereum["pathway"]["srcEid"] = json!(30101);
+    lz_respond(
+        &server,
+        json!({"data":[from_solana,from_ethereum.clone(),lz_entry(first,txid,"INFLIGHT",30111,json!({})),lz_entry(second,txid,"INFLIGHT",30101,json!({}))]}),
+    )
+    .await;
+    let lookup = usdt0::MessageLookup::tx(txid);
+    assert!(
+        matches!(api.usdt0_status_by_tx(&lookup).await, Err(Error::InvalidSwap(m)) if m.starts_with("2 LayerZero messages"))
+    );
+    let narrowed = usdt0::MessageLookup {
+        destination_eid: Some(30101),
+        ..lookup.clone()
+    };
+    assert_eq!(
+        api.usdt0_status_by_tx(&narrowed)
+            .await
+            .unwrap()
+            .unwrap()
+            .guid,
+        second
+    );
+    let by_guid = usdt0::MessageLookup {
+        guid: Some(second),
+        ..lookup.clone()
+    };
+    assert_eq!(
+        api.usdt0_status_by_tx(&by_guid)
+            .await
+            .unwrap()
+            .unwrap()
+            .destination_eid,
+        30101
+    );
+    let wrong_source = usdt0::MessageLookup {
+        source_eid: Some(30101),
+        ..lookup.clone()
+    };
+    assert_eq!(api.usdt0_status_by_tx(&wrong_source).await.unwrap(), None);
+    // Before Scan indexes our own message, another transfer's delivery must not stand in for it.
+    lz_respond(&server, json!({"data":[from_ethereum]})).await;
+    assert_eq!(api.usdt0_status_by_tx(&lookup).await.unwrap(), None);
+    let foreign_guid = usdt0::MessageLookup {
+        guid: Some(foreign),
+        ..lookup
+    };
+    assert!(
+        matches!(api.usdt0_status_by_tx(&foreign_guid).await, Err(Error::InvalidSwap(m)) if m.contains("identity"))
+    );
+}
+#[tokio::test]
+async fn layerzero_wait_stops_when_the_message_cannot_be_identified() {
+    let server = MockServer::start().await;
+    let api = BridgeApi::new(&server.uri(), &server.uri()).unwrap();
+    let txid = B256::repeat_byte(3);
+    let (first, second) = (B256::repeat_byte(4), B256::repeat_byte(5));
+    let lookup = usdt0::MessageLookup::tx(txid);
+    let on_the_route = usdt0::MessageLookup {
+        guid: Some(second),
+        destination_eid: Some(30111),
+        ..lookup.clone()
+    };
+    for (lookup, error) in [
+        (lookup, "2 LayerZero messages match"),
+        (on_the_route, "identity mismatch"),
+    ] {
+        server.reset().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                json!({"data":[lz_entry(first,txid,"INFLIGHT",30111,json!({})),lz_entry(second,txid,"INFLIGHT",30101,json!({}))]}),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let result = api
+            .wait_usdt0_by_tx(&lookup, &quick(2000), |d| panic!("reported {d:?}"))
+            .await;
+        assert!(
+            matches!(&result, Err(Error::InvalidSwap(m)) if m.contains(error)),
+            "{error}: {result:?}"
+        );
+        server.verify().await;
+    }
+}
+#[tokio::test]
+async fn layerzero_wait_stops_on_statuses_waiting_cannot_resolve() {
+    let server = MockServer::start().await;
+    let api = BridgeApi::new(&server.uri(), &server.uri()).unwrap();
+    let txid = B256::repeat_byte(3);
+    for (status, hint) in [
+        ("PAYLOAD_STORED", "lzReceive"),
+        ("APPLICATION_SKIPPED", "layerzeroscan.com/tx/"),
+    ] {
+        server.reset().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                json!({"data":[lz_entry(B256::repeat_byte(4),txid,status,30111,json!({}))]}),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut seen = Vec::new();
+        let result = api
+            .wait_usdt0_by_tx(&usdt0::MessageLookup::tx(txid), &quick(2000), |d| {
+                seen.push(d.status)
+            })
+            .await;
+        assert!(
+            matches!(&result, Err(Error::InvalidSwap(m)) if m.contains(hint)),
+            "{status}: {result:?}"
+        );
+        assert_eq!(seen.len(), 1);
+        server.verify().await;
+    }
+}
+#[tokio::test]
+async fn layerzero_unknown_status_keeps_polling() {
+    let server = MockServer::start().await;
+    let api = BridgeApi::new(&server.uri(), &server.uri()).unwrap();
+    let lookup = usdt0::MessageLookup::tx(B256::repeat_byte(3));
+    lz_respond(
+        &server,
+        json!({"data":[lz_entry(B256::repeat_byte(4),lookup.source_txid,"SOMETHING_NEW",30111,json!({}))]}),
+    )
+    .await;
+    let status = api
+        .usdt0_status_by_tx(&lookup)
+        .await
+        .unwrap()
+        .unwrap()
+        .status;
+    assert!(status.is_pending() && !status.needs_intervention());
+    assert!(matches!(
+        api.wait_usdt0_by_tx(&lookup, &quick(100), |_| {}).await,
+        Err(Error::Timeout(m)) if m.contains("last status Unknown")
+    ));
+}
+#[tokio::test]
+async fn layerzero_wait_reports_each_status_once() {
+    let server = MockServer::start().await;
+    let api = BridgeApi::new(&server.uri(), &server.uri()).unwrap();
+    let txid = B256::repeat_byte(3);
+    for (status, times) in [("INFLIGHT", 2), ("CONFIRMING", 1), ("DELIVERED", 1)] {
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                json!({"data":[lz_entry(B256::repeat_byte(4),txid,status,30111,json!({"tx":{"txHash":B256::repeat_byte(8)}}))]}),
+            ))
+            .up_to_n_times(times)
+            .expect(times)
+            .mount(&server)
+            .await;
+    }
+    let mut seen = Vec::new();
+    let delivery = api
+        .wait_usdt0_by_tx(&usdt0::MessageLookup::tx(txid), &quick(2000), |d| {
+            seen.push(d.status)
+        })
+        .await
+        .unwrap();
+    assert_eq!(delivery.destination_txid, Some(B256::repeat_byte(8)));
+    assert_eq!(
+        seen,
+        [
+            usdt0::DeliveryStatus::Inflight,
+            usdt0::DeliveryStatus::Confirming,
+            usdt0::DeliveryStatus::Delivered
+        ]
+    );
+}
+#[tokio::test]
+async fn layerzero_wait_retries_read_errors() {
+    let server = MockServer::start().await;
+    let api = BridgeApi::new(&server.uri(), &server.uri()).unwrap();
+    let lookup = usdt0::MessageLookup::tx(B256::repeat_byte(3));
     Mock::given(method("GET"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(
-                json!({"data":[entry(query.guid,"BLOCKED",serde_json::Value::Null)]}),
-            ),
-        )
+        .respond_with(ResponseTemplate::new(429))
+        .up_to_n_times(1)
         .mount(&server)
         .await;
     assert!(matches!(
-        api.wait_usdt0(&query, &PollOptions::default()).await,
-        Err(Error::InvalidSwap(_))
+        api.usdt0_status_by_tx(&lookup).await,
+        Err(Error::Api { status: 429, .. })
     ));
+    for status in [400, 500] {
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(status))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"data":[lz_entry(B256::repeat_byte(4),lookup.source_txid,"DELIVERED",30111,json!({}))]}),
+        ))
+        .mount(&server)
+        .await;
+    assert_eq!(
+        api.wait_usdt0_by_tx(&lookup, &quick(2000), |_| {})
+            .await
+            .unwrap()
+            .guid,
+        B256::repeat_byte(4)
+    );
     server.reset().await;
     Mock::given(method("GET"))
         .respond_with(ResponseTemplate::new(400))
-        .expect(1)
         .mount(&server)
         .await;
     assert!(matches!(
-        api.wait_usdt0(&query, &PollOptions::default()).await,
-        Err(Error::Api { status: 400, .. })
+        api.wait_usdt0_by_tx(&lookup, &quick(100), |_| {}).await,
+        Err(Error::Timeout(m)) if m.contains("not indexed") && m.contains("HTTP 400")
     ));
+}
+#[test]
+fn explorer_url_and_chain_lookups_match_the_reference() {
+    assert_eq!(
+        usdt0::explorer_url(B256::repeat_byte(0xab)),
+        format!("https://layerzeroscan.com/tx/0x{}", "ab".repeat(32))
+    );
+    assert_eq!(usdt0::chain_by_name("Arbitrum").unwrap().eid, 30110);
+    assert_eq!(usdt0::chain_by_name("Conflux eSpace").unwrap().eid, 30212);
+    assert_eq!(usdt0::chain_by_name("arbitrum"), None);
+    assert_eq!(usdt0::chain_by_eid(30111).unwrap().name, "Optimism");
+    assert_eq!(usdt0::chain_by_eid(30184), None);
 }
