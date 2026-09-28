@@ -841,12 +841,13 @@ async fn cooperative_refund_preserves_receiver_signatures_through_server_cosigni
     .expect(1)
     .mount(&server)
     .await;
-    let client = Client::builder()
+    let mut client = Client::builder()
         .mnemonic(MNEMONIC)
         .storage(store)
         .base_url(server.uri())
         .build()
         .unwrap();
+    let logger = record(&mut client);
     client
         .spend_arkade(
             "arkade",
@@ -857,6 +858,21 @@ async fn cooperative_refund_preserves_receiver_signatures_through_server_cosigni
         )
         .await
         .unwrap();
+    assert_eq!(
+        logger.events(),
+        [
+            "arkade.refund.start",
+            "arkade.refund.vtxos_found",
+            "arkade.refund.checkpoints_signed",
+            "arkade.refund.finalized",
+        ]
+    );
+    assert!(
+        logger
+            .records()
+            .iter()
+            .all(|r| r.operation.as_deref() == Some("arkade.refund.collab"))
+    );
     for cp in backend.final_checkpoints.lock().unwrap().iter() {
         assert!(
             cp.inputs[0]
@@ -2384,4 +2400,443 @@ async fn continue_arkade_claim_never_submits() {
     assert_eq!(receipt.destination, destination);
     assert_eq!(backend.finalize_count.load(Ordering::Relaxed), 1);
     assert_eq!(backend.submit_count.load(Ordering::Relaxed), 1);
+}
+
+fn record(client: &mut Client) -> Arc<crate::logging::RecordingLogger> {
+    let logger = Arc::new(crate::logging::RecordingLogger::default());
+    client.set_logger(logger.clone(), crate::logging::LogLevel::Trace);
+    logger
+}
+
+#[tokio::test]
+async fn claims_log_the_typescript_events_without_secrets() {
+    let (mut client, backend, _, destination) = setup("btc_to_arkade");
+    let logger = record(&mut client);
+    let receipt = client
+        .spend_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            spend_options(destination.clone()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        logger.events(),
+        [
+            "arkade.claim.start",
+            "arkade.claim.vtxos_found",
+            "arkade.claim.checkpoints_signed",
+            "arkade.claim.finalized",
+        ]
+    );
+    let htlc = client.arkade_htlc("arkade").unwrap();
+    let start = logger.find("arkade.claim.start").unwrap();
+    assert_eq!(start.level, crate::logging::LogLevel::Info);
+    assert_eq!(start.module.as_deref(), Some("redeem/arkade"));
+    assert_eq!(start.operation.as_deref(), Some("arkade.claim"));
+    assert_eq!(start.swap_id.as_deref(), Some("arkade"));
+    assert_eq!(
+        Value::Object(start.data),
+        json!({
+            "vhtlcAddress": htlc.address().encode(),
+            "network": "regtest",
+            "destinationAddress": destination,
+        })
+    );
+    let found = logger.find("arkade.claim.vtxos_found").unwrap().data;
+    assert_eq!(found["totalAmount"], json!("100000"));
+    assert_eq!(found["vtxoCount"], json!(2));
+    let finalized = logger.find("arkade.claim.finalized").unwrap();
+    assert_eq!(
+        finalized.data["arkTxid"],
+        json!(receipt.ark_txid.to_string())
+    );
+    let params = Signer::from_mnemonic(MNEMONIC)
+        .unwrap()
+        .derive_swap_params(0)
+        .unwrap();
+    let logged = format!("{:?}", logger.records());
+    assert!(!logged.contains(&hex::encode(params.preimage)));
+    assert!(!logged.contains(&hex::encode(params.secret)));
+}
+
+#[tokio::test]
+async fn resumed_claims_log_the_continue_events() {
+    let (mut client, backend, _, destination) = setup("evm_to_arkade");
+    let logger = record(&mut client);
+    backend.fail_finalize.store(true, Ordering::Relaxed);
+    assert!(
+        client
+            .spend_arkade(
+                "arkade",
+                &backend,
+                None,
+                ArkadeSpend::Claim,
+                spend_options(destination.clone())
+            )
+            .await
+            .is_err()
+    );
+    let failed = logger.find("arkade.claim.finalize_failed").unwrap();
+    assert_eq!(failed.level, crate::logging::LogLevel::Error);
+    assert!(
+        failed
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("interrupted finalize")
+    );
+    assert_eq!(
+        logger.events().last().unwrap(),
+        "arkade.claim.finalize_failed"
+    );
+    for (fail, last) in [
+        (true, "arkade.claim.continue_finalize_failed"),
+        (false, "arkade.claim.finalized"),
+    ] {
+        backend.fail_finalize.store(fail, Ordering::Relaxed);
+        let before = logger.records().len();
+        let result = client
+            .spend_arkade(
+                "arkade",
+                &backend,
+                None,
+                ArkadeSpend::Claim,
+                spend_options(destination.clone()),
+            )
+            .await;
+        assert_eq!(result.is_err(), fail);
+        assert_eq!(
+            logger.events()[before..],
+            [
+                "arkade.claim.start",
+                "arkade.claim.continue_start",
+                "arkade.claim.continue_vtxos_found",
+                last,
+            ]
+        );
+        let resumed = &logger.records()[before + 1..];
+        assert!(resumed.iter().all(|record| {
+            record.operation.as_deref() == Some("arkade.claim.continue")
+                && !record.data.contains_key("destinationAddress")
+        }));
+        assert_eq!(resumed[1].data["totalAmount"], json!("100000"));
+        assert_eq!(resumed[1].data["vtxoCount"], json!(2));
+    }
+    let failed = logger
+        .find("arkade.claim.continue_finalize_failed")
+        .unwrap();
+    assert_eq!(failed.level, crate::logging::LogLevel::Error);
+    assert!(
+        failed
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("interrupted finalize")
+    );
+
+    let (mut client, backend, _, destination) = setup("lightning_to_arkade");
+    backend.fail_submit.store(true, Ordering::Relaxed);
+    let logger = record(&mut client);
+    for _ in 0..2 {
+        let _ = client
+            .spend_arkade(
+                "arkade",
+                &backend,
+                None,
+                ArkadeSpend::Claim,
+                spend_options(destination.clone()),
+            )
+            .await;
+    }
+    assert_eq!(backend.finalize_count.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        logger.events(),
+        [
+            "arkade.claim.start",
+            "arkade.claim.vtxos_found",
+            "arkade.claim.start",
+            "arkade.claim.continue_start",
+            "arkade.claim.continue_vtxos_found",
+            "arkade.claim.pending_txs_found",
+            "arkade.claim.checkpoints_signed",
+            "arkade.claim.finalized",
+        ]
+    );
+    assert_eq!(
+        logger.find("arkade.claim.pending_txs_found").unwrap().data["pendingTxCount"],
+        json!(1)
+    );
+}
+
+#[tokio::test]
+async fn continue_arkade_claim_logs_only_the_continue_events() {
+    let only_continue = |records: Vec<crate::logging::LogRecord>| {
+        records.iter().all(|record| {
+            record.module.as_deref() == Some("redeem/arkade")
+                && record.operation.as_deref() == Some("arkade.claim.continue")
+                && !record.data.contains_key("destinationAddress")
+        })
+    };
+
+    let (mut client, backend, _, destination) = setup("btc_to_arkade");
+    backend.fail_finalize.store(true, Ordering::Relaxed);
+    assert!(
+        client
+            .spend_arkade(
+                "arkade",
+                &backend,
+                None,
+                ArkadeSpend::Claim,
+                spend_options(destination)
+            )
+            .await
+            .is_err()
+    );
+    let logger = record(&mut client);
+    backend.fail_finalize.store(true, Ordering::Relaxed);
+    assert!(continue_claim(&client, &backend).await.is_err());
+    continue_claim(&client, &backend).await.unwrap();
+    assert_eq!(
+        logger.events(),
+        [
+            "arkade.claim.continue_start",
+            "arkade.claim.continue_vtxos_found",
+            "arkade.claim.continue_finalize_failed",
+            "arkade.claim.continue_start",
+            "arkade.claim.continue_vtxos_found",
+            "arkade.claim.finalized",
+        ]
+    );
+    assert!(only_continue(logger.records()));
+
+    let (client, mut backend, store, destination) = setup("lightning_to_arkade");
+    backend.fail_submit.store(true, Ordering::Relaxed);
+    assert!(
+        client
+            .spend_arkade(
+                "arkade",
+                &backend,
+                None,
+                ArkadeSpend::Claim,
+                spend_options(destination)
+            )
+            .await
+            .is_err()
+    );
+    mark_submitted_inputs_spent(&mut backend);
+    let (mut restored, _) = without_journal(&store);
+    let logger = record(&mut restored);
+    continue_claim(&restored, &backend).await.unwrap();
+    assert_eq!(
+        logger.events(),
+        [
+            "arkade.claim.continue_start",
+            "arkade.claim.continue_vtxos_found",
+            "arkade.claim.pending_txs_found",
+            "arkade.claim.checkpoints_signed",
+            "arkade.claim.finalized",
+        ]
+    );
+    assert!(only_continue(logger.records()));
+}
+
+#[tokio::test]
+async fn journal_free_claims_log_the_pending_claim_or_its_absence() {
+    let (client, mut backend, store, destination) = setup("btc_to_arkade");
+    backend.fail_submit.store(true, Ordering::Relaxed);
+    assert!(
+        client
+            .spend_arkade(
+                "arkade",
+                &backend,
+                None,
+                ArkadeSpend::Claim,
+                spend_options(destination.clone())
+            )
+            .await
+            .is_err()
+    );
+    mark_submitted_inputs_spent(&mut backend);
+    let (mut restored, _) = without_journal(&store);
+    let logger = record(&mut restored);
+    restored
+        .spend_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            spend_options(destination.clone()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        logger.events(),
+        [
+            "arkade.claim.start",
+            "arkade.claim.continue_start",
+            "arkade.claim.continue_vtxos_found",
+            "arkade.claim.pending_txs_found",
+            "arkade.claim.checkpoints_signed",
+            "arkade.claim.finalized",
+        ]
+    );
+    assert_eq!(
+        logger.records()[5].operation.as_deref(),
+        Some("arkade.claim.continue")
+    );
+
+    let (mut client, mut backend, _, destination) = setup("btc_to_arkade");
+    spent_offchain_elsewhere(&mut backend);
+    let logger = record(&mut client);
+    assert!(
+        client
+            .spend_arkade(
+                "arkade",
+                &backend,
+                None,
+                ArkadeSpend::Claim,
+                spend_options(destination)
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        logger.events(),
+        [
+            "arkade.claim.start",
+            "arkade.claim.continue_start",
+            "arkade.claim.continue_vtxos_found",
+            "arkade.claim.no_pending",
+            "arkade.claim.no_spendable_vtxos",
+        ]
+    );
+    let vtxos = &logger.find("arkade.claim.no_spendable_vtxos").unwrap().data["vtxos"];
+    assert_eq!(vtxos.as_array().unwrap().len(), 2);
+    assert_eq!(vtxos[0]["isSpent"], json!(true));
+}
+
+#[tokio::test]
+async fn refunds_log_the_typescript_refund_events() {
+    let (mut client, backend, _, destination) = setup("arkade_to_lightning");
+    let logger = record(&mut client);
+    let receipt = client
+        .spend_arkade(
+            "arkade",
+            &backend,
+            Some(&Chain(144)),
+            ArkadeSpend::Refund,
+            spend_options(destination.clone()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        logger.events(),
+        [
+            "arkade.refund.start",
+            "arkade.refund.vtxos_found",
+            "arkade.refund.checkpoints_signed",
+            "arkade.refund.finalized",
+        ]
+    );
+    let records = logger.records();
+    assert!(records.iter().all(|record| {
+        record.module.as_deref() == Some("refund/arkade")
+            && record.operation.as_deref() == Some("arkade.refund")
+            && record.data["destinationAddress"] == json!(destination)
+    }));
+    let script = ArkAddress::decode(&destination)
+        .unwrap()
+        .to_p2tr_script_pubkey()
+        .to_hex_string();
+    assert_eq!(
+        records[1].data["destinationAddressPPkScript"],
+        json!(script)
+    );
+    assert_eq!(records[1].data["totalAmount"], json!("100000"));
+    assert_eq!(
+        records[3].data["arkTxid"],
+        json!(receipt.ark_txid.to_string())
+    );
+}
+
+#[tokio::test]
+async fn delegated_settlement_logs_its_outputs_and_a_cosigner_key_fallback() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    let (_, mut backend, store, destination) = setup("btc_to_arkade");
+    backend.vtxos.truncate(1);
+    backend.vtxos[0].amount = Amount::from_sat(100_000);
+    backend.vtxos[0].is_swept = true;
+    backend.vtxos[0].expires_at = 0;
+    let server = MockServer::start().await;
+    let commitment = Txid::from_byte_array([18; 32]);
+    let posts = Arc::new(AtomicUsize::new(0));
+    let seen = posts.clone();
+    Mock::given(wiremock::matchers::path("/api/delegate/settle"))
+        .respond_with(move |_: &wiremock::Request| {
+            if seen.fetch_add(1, Ordering::Relaxed) == 0 {
+                return ResponseTemplate::new(500);
+            }
+            ResponseTemplate::new(200).set_body_json(json!({"commitment_txid":commitment}))
+        })
+        .mount(&server)
+        .await;
+    Mock::given(wiremock::matchers::path("/api/delegate/cosigner-pk"))
+        .respond_with(ResponseTemplate::new(503))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mut client = Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .base_url(server.uri())
+        .build()
+        .unwrap();
+    let logger = record(&mut client);
+    assert!(
+        delegate_claim(&client, &backend, &destination)
+            .await
+            .is_err()
+    );
+    let found = logger.find("delegate.settle.vtxos_found").unwrap();
+    assert_eq!(found.module.as_deref(), Some("delegate"));
+    assert_eq!(found.operation.as_deref(), Some("delegate.settle"));
+    assert_eq!(found.swap_id.as_deref(), Some("arkade"));
+    assert_eq!(
+        Value::Object(found.data),
+        json!({
+            "destinationAddress": destination,
+            "networkName": "regtest",
+            "vtxoCount": 1,
+            "totalAmount": "100000",
+        })
+    );
+    age_delegation(
+        &store,
+        super::super::delegate::INTENT_REPLACEMENT_GRACE_SECS + 1,
+    );
+    let settled = client
+        .settle_with(
+            "arkade",
+            &backend,
+            ArkadeSpend::Claim,
+            destination,
+            Duration::from_secs(120),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        settled,
+        super::super::ArkadeSettlement::Delegated { commitment_txid } if commitment_txid == commitment
+    ));
+    let fallback = logger.find("arkade.settle.cosignerKeyFallback").unwrap();
+    assert_eq!(fallback.level, crate::logging::LogLevel::Warn);
+    assert!(
+        fallback.data["error"].as_str().unwrap().contains("503"),
+        "{fallback:?}"
+    );
 }

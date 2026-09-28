@@ -7,6 +7,7 @@ use super::htlc::Htlc;
 use super::*;
 use crate::Client;
 use crate::SwapMetadata;
+use crate::logging::sdk_log;
 use crate::types::EvmHtlcKind;
 use alloy::sol_types::SolCall;
 use std::time::Duration;
@@ -212,7 +213,7 @@ impl Client {
                     () = tokio::time::sleep(SERVER_FUNDING_HEDGE) => None,
                 };
                 let lookup = || async {
-                    self.server_funding_hash(id)
+                    self.server_funding_hash(id, "client.refundSwap.serverLookupFailed")
                         .await
                         .filter(|server| !server.eq_ignore_ascii_case(local))
                 };
@@ -262,8 +263,24 @@ impl Client {
         Ok(htlc)
     }
 
-    pub(super) async fn server_funding_hash(&self, id: &str) -> Option<String> {
-        let response = self.get_swap_details(id).await.ok()?;
+    pub(super) async fn server_funding_hash(
+        &self,
+        id: &str,
+        event: &'static str,
+    ) -> Option<String> {
+        let response = match self.get_swap_details(id).await {
+            Ok(response) => response,
+            Err(error) => {
+                sdk_log!(
+                    self.log.clone().swap_id(id),
+                    Debug,
+                    event,
+                    "Server lookup of the funding transaction failed",
+                    "error" => error.to_string()
+                );
+                return None;
+            }
+        };
         serde_json::to_value(&response).ok()?["evm_fund_txid"]
             .as_str()
             .map(str::to_owned)

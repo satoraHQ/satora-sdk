@@ -52,7 +52,8 @@ sha2 = "0.10"
 thiserror = "1"
 tiny-keccak = { version = "2", features = ["keccak"] }
 tokio-tungstenite = { version = "0.28", optional = true, features = ["native-tls"] }
-tracing = "0.1"
+# `log` forwards SDK events to a `log` crate logger when no tracing subscriber is set.
+tracing = { version = "0.1", features = ["log"] }
 url = "2"
 uuid = { version = "1", optional = true }
 
@@ -99,6 +100,7 @@ serde_json = "1"
 
 [dev-dependencies]
 jsonschema = { version = "0.46.4", default-features = false }
+log = "0.4"
 tempfile = "3"
 tokio = { version = "1", features = ["rt", "macros", "rt-multi-thread"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

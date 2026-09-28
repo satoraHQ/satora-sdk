@@ -2,6 +2,7 @@ use super::Client;
 use super::check_status;
 use crate::Error;
 use crate::Result;
+use crate::logging::sdk_log;
 use crate::types::*;
 use num_bigint::BigUint;
 use num_traits::ToPrimitive;
@@ -279,10 +280,12 @@ impl Client {
                 .await
             {
                 Ok(quote) => return Ok(quote),
-                Err(error) => tracing::warn!(
-                    event = "client.getQuote.lightningSendFallback",
-                    %error,
-                    "exact lightning send quote failed; falling back to estimate"
+                Err(error) => sdk_log!(
+                    self.log,
+                    Warn,
+                    "client.getQuote.lightningSendFallback",
+                    "exact lightning send quote failed; falling back to estimate",
+                    "error" => error.to_string()
                 ),
             }
         }
@@ -293,10 +296,12 @@ impl Client {
             {
                 Ok(quote) => return Ok(quote),
                 Err(Error::UnsupportedQuotePath(_)) => {}
-                Err(error) => tracing::warn!(
-                    event = "client.getQuote.composeFallback",
-                    %error,
-                    "composeQuote failed; falling back to server /quote"
+                Err(error) => sdk_log!(
+                    self.log,
+                    Warn,
+                    "client.getQuote.composeFallback",
+                    "composeQuote failed; falling back to server /quote",
+                    "error" => error.to_string()
                 ),
             }
         }

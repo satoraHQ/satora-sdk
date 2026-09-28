@@ -8,6 +8,7 @@ use super::validate_sats;
 use crate::Error;
 use crate::Result;
 use crate::SwapMetadata;
+use crate::logging::sdk_log;
 use crate::types::EvmAsset;
 use crate::types::GetSwapResponse;
 use crate::types::QuoteAmount;
@@ -296,66 +297,83 @@ impl Client {
         } else {
             route.replace('/', "_to_")
         };
-        for _ in 0..MAX_KEY_INDEX_GRIND_ATTEMPTS {
+        let log = self
+            .log
+            .child("create/retry", "create.retry_on_hash_collision");
+        for attempt in 1..=MAX_KEY_INDEX_GRIND_ATTEMPTS {
             let index = self.storage.next_key_index()?;
-            let params = signer.derive_swap_params(index)?;
-            let pk = json!(hex::encode(params.public_key));
-            body["user_id"] = json!(hex::encode(params.user_id));
-            if !invoice_owned {
-                body["hash_lock"] = if matches!(request, BitcoinToArkade { .. }) {
-                    json!(hash160::Hash::hash(&params.preimage).to_string())
-                } else {
-                    json!(format!("0x{}", hex::encode(params.hash_lock)))
-                };
-            }
-            match &request {
-                BitcoinToArkade { .. } => {
-                    body["claim_pk"] = pk.clone();
-                    body["refund_pk"] = pk;
+            let result = async {
+                let params = signer.derive_swap_params(index)?;
+                let pk = json!(hex::encode(params.public_key));
+                body["user_id"] = json!(hex::encode(params.user_id));
+                if !invoice_owned {
+                    body["hash_lock"] = if matches!(request, BitcoinToArkade { .. }) {
+                        json!(hash160::Hash::hash(&params.preimage).to_string())
+                    } else {
+                        json!(format!("0x{}", hex::encode(params.hash_lock)))
+                    };
                 }
-                LightningToArkade { .. } | EvmToBitcoin { .. } => body["claim_pk"] = pk,
-                EvmToArkade { .. } => body["receiver_pk"] = pk,
-                BitcoinToEvm { .. } | ArkadeToEvm { .. } | ArkadeToLightning { .. } => {
-                    body["refund_pk"] = pk
-                }
-                _ => {}
-            }
-            if evm_source || evm_target {
-                let address = match &options.evm_address {
-                    Some(a) => a.clone(),
-                    None => signer.derive_evm_key(index)?.address,
-                };
-                body[if evm_source {
-                    "user_address"
-                } else {
-                    "claiming_address"
-                }] = json!(address);
-            }
-            let response = self
-                .api_request(Method::POST, self.url(&format!("swap/{route}"))?)
-                .json(&body)
-                .send()
-                .await?;
-            let response = match check_status(response).await {
-                Ok(response) => response,
-                Err(error) if !invoice_owned && is_preimage_collision(&error) => {
-                    // TypeScript skips ten additional indices after a collision.
-                    for _ in 0..10 {
-                        self.storage.next_key_index()?;
+                match &request {
+                    BitcoinToArkade { .. } => {
+                        body["claim_pk"] = pk.clone();
+                        body["refund_pk"] = pk;
                     }
-                    continue;
+                    LightningToArkade { .. } | EvmToBitcoin { .. } => body["claim_pk"] = pk,
+                    EvmToArkade { .. } => body["receiver_pk"] = pk,
+                    BitcoinToEvm { .. } | ArkadeToEvm { .. } | ArkadeToLightning { .. } => {
+                        body["refund_pk"] = pk
+                    }
+                    _ => {}
                 }
-                Err(error) => return Err(error),
+                if evm_source || evm_target {
+                    let address = match &options.evm_address {
+                        Some(a) => a.clone(),
+                        None => signer.derive_evm_key(index)?.address,
+                    };
+                    body[if evm_source {
+                        "user_address"
+                    } else {
+                        "claiming_address"
+                    }] = json!(address);
+                }
+                let response = self
+                    .api_request(Method::POST, self.url(&format!("swap/{route}"))?)
+                    .json(&body)
+                    .send()
+                    .await?;
+                let mut response: Value = check_status(response).await?.json().await?;
+                response
+                    .as_object_mut()
+                    .ok_or_else(|| {
+                        Error::Decode("swap creation response is not a JSON object".into())
+                    })?
+                    .insert("direction".into(), json!(direction));
+                let response: GetSwapResponse =
+                    serde_json::from_value(response).map_err(|e| Error::Decode(e.to_string()))?;
+                self.persist_swap_with_metadata(index, response.clone(), metadata.clone())?;
+                Ok::<_, Error>(Swap::from_response(response))
+            }
+            .await;
+            let error = match result {
+                Ok(swap) => return Ok(swap),
+                Err(error) => error,
             };
-            let mut response: Value = response.json().await?;
-            response
-                .as_object_mut()
-                .ok_or_else(|| Error::Decode("swap creation response is not a JSON object".into()))?
-                .insert("direction".into(), json!(direction));
-            let response: GetSwapResponse =
-                serde_json::from_value(response).map_err(|e| Error::Decode(e.to_string()))?;
-            self.persist_swap_with_metadata(index, response.clone(), metadata)?;
-            return Ok(Swap::from_response(response));
+            sdk_log!(
+                log,
+                Debug,
+                "create.retry.attempt_failed",
+                "Swap creation attempt failed",
+                "attempt" => attempt,
+                "keyIndex" => index;
+                error = error
+            );
+            if invoice_owned || !is_preimage_collision(&error) {
+                return Err(error);
+            }
+            // TypeScript skips ten additional indices after a collision.
+            for _ in 0..10 {
+                self.storage.next_key_index()?;
+            }
         }
         Err(Error::InvalidSwap(
             "exhausted unused swap key attempts; recover the wallet before retrying".into(),

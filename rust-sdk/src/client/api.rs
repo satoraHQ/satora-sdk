@@ -2,6 +2,7 @@ use super::Client;
 use super::check_status;
 use crate::Error;
 use crate::Result;
+use crate::logging::sdk_log;
 use crate::types::BulkStatusResponse;
 use crate::types::ChainConfigResponse;
 use crate::types::GetSwapResponse;
@@ -132,14 +133,34 @@ impl Client {
             .signer
             .as_ref()
             .ok_or_else(|| Error::InvalidSigner("recovery requires a signer".into()))?;
+        let xpub = signer.derive_user_id_xpub()?.to_string();
+        // Logged at info as in TypeScript: the xpub identifies the wallet but
+        // cannot spend from it.
+        sdk_log!(
+            self.log,
+            Info,
+            "client.recover.start",
+            "Recovering swaps for wallet",
+            "xpub" => xpub,
+            "startIndex" => start_index
+        );
         let response = self
             .api_request(Method::POST, self.url("swap/recover")?)
-            .json(
-                &json!({ "xpub": signer.derive_user_id_xpub()?.to_string(), "start_index": start }),
-            )
+            .json(&json!({ "xpub": xpub, "start_index": start }))
             .send()
             .await?;
         let recovery: RecoveryResponse = check_status(response).await?.json().await?;
+        sdk_log!(
+            self.log,
+            Debug,
+            "client.recover.response",
+            "Recovered swap data from server",
+            "recoveredSwapCount" => recovery.swaps.len(),
+            "highestIndex" => recovery.highest_index,
+            "nextIndex" => recovery.next_index,
+            "scannedUntil" => recovery.scanned_until,
+            "complete" => recovery.complete
+        );
         if recovery.scanned_until < start
             || recovery.scanned_until >= 1 << 31
             || recovery.next_index < start

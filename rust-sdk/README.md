@@ -101,8 +101,8 @@ is quoted by `/quote/lightning-send` with the provider's fee for that
 destination. Otherwise a BTC to EVM route in either direction, or BTC to Solana,
 is composed locally at 100 bps slippage. Other routes, and failures of either
 step, go to the server's `/quote`, and its error is the one returned. Both
-fallbacks log a `tracing` warning, except for routes composition reports as
-unsupported. `get_server_quote` sends only the `/quote` request. Without
+fallbacks log a warning through the client logger (see Logging), except for
+routes composition reports as unsupported. `get_server_quote` sends only the `/quote` request. Without
 explicit bridge fields it quotes a bridge-only chain (Base, Solana, USDT0
 chains) on Arbitrum and names the real chain in `bridge_target_chain` or
 `bridge_source_chain`. A request that sets either bridge field is sent as given.
@@ -595,6 +595,37 @@ hashless `cctp_fund`/`cctp_mint` entries and a hashless funding flag). Recorded
 transactions are always kept. The proof must also cover any funding sent outside
 the tracker since the attempt started.
 Use one tracker and exclusive execution ownership per store across processes.
+
+## Logging
+
+The SDK emits the TypeScript SDK's structured events for Arkade claims, refunds
+and delegated settlement, failed creation attempts, recovery requests, the two
+`get_quote` fallbacks and the relay's depositor code lookup, with TypeScript's
+event names, modules, operations and levels. The `continue_*` claim
+events appear only when a claim resumes or finishes one arkd already holds, since
+Rust does not query arkd before every claim. `arkade.settle.cosignerKeyFallback`,
+`client.refundSwap.serverLookupFailed`,
+`client.reconcileGaslessRelay.serverLookupFailed` and
+`client.claim.sponsoredFallback` are Rust-only. Without a custom logger
+they go to `tracing` under the `lendaswap_sdk` target, so a subscriber filtering
+on `lendaswap_sdk=debug` shows them. With no subscriber they reach a `log` crate
+logger such as `env_logger` through tracing's `log` fallback, like the SDK's other
+`tracing` events, and with neither there is no output.
+`ClientBuilder::logger` replaces that sink with any `Logger`, including a closure
+taking `&LogRecord`, and like TypeScript stays silent until `log_level` is set.
+`Client::set_logger` does the same after `Client::new`.
+
+A `LogRecord` carries the event, module, operation, swap ID, error text and a
+`data` map with TypeScript's camelCase keys and decimal-string amounts. Values
+under secret-named keys (`preimage`, `userSecretKey`, `mnemonic`, `signature`,
+`api_key` and the rest of TypeScript's list) are redacted, and no event carries a
+preimage or private key. `client.recover.start` logs the wallet's recovery xpub
+at info, as TypeScript does. The logger runs synchronously and must not panic.
+There is no console logger: use `TracingLogger` with a `tracing_subscriber::fmt`
+subscriber. TypeScript's Electrum/Esplora fallback, price, CCTP preflight,
+funding-record and collaborative-refund fallback events have no Rust
+counterpart, because those fallbacks do not exist here. Request spans and other
+existing `tracing` events stay on `tracing` whichever logger is set.
 
 ## Compatibility and validation limits
 

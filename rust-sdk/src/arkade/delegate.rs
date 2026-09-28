@@ -10,6 +10,7 @@ use super::execution::validate_info;
 use super::execution::validate_vtxos;
 use super::*;
 use crate::SwapMetadata;
+use crate::logging::sdk_log;
 use ark_rs::core::batch::prepare_delegate_psbts;
 use ark_rs::core::intent::Input;
 use ark_rs::core::intent::Output;
@@ -171,6 +172,8 @@ impl Client {
                 let available:Vec<_>=list.batch_settleable_at(&info,i64::try_from(now).map_err(decode)?,|_|Some(htlc.options.server)).collect();
                 if available.is_empty() {return Err(invalid("no settleable Arkade VTXOs"));}
                 let amount=available.iter().try_fold(0u64,|sum,v|sum.checked_add(v.amount.to_sat()).filter(|sum|*sum<=Amount::MAX_MONEY.to_sat()).ok_or_else(||invalid("Arkade amount overflow")))?;
+                let log=self.log.child("delegate","delegate.settle").swap_id(id).with("destinationAddress",options.destination.as_str()).with("networkName",htlc.network.to_string());
+                sdk_log!(log,Info,"delegate.settle.vtxos_found","Found settleable VTXOs for delegate settlement","vtxoCount"=>available.len(),"totalAmount"=>amount.to_string());
                 if operation==ArkadeSpend::Claim && amount<htlc.expected_amount.to_sat() {return Err(invalid("Arkade HTLC is underfunded"));}
                 let control=htlc.script.taproot_spend_info().control_block(&(script.clone(),LeafVersion::TapScript)).ok_or_else(||invalid("Arkade control block missing"))?;
                 let lock=(operation==ArkadeSpend::Refund).then(||bitcoin::absolute::LockTime::from_consensus(htlc.options.refund_locktime));

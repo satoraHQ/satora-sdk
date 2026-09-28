@@ -734,6 +734,57 @@ async fn a_recorded_funding_hash_that_never_mined_is_resolved_through_the_server
 }
 
 #[tokio::test]
+async fn a_failed_server_funding_lookup_is_logged() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::path;
+    let (_, wallet, store) = setup(false);
+    let stale = B256::repeat_byte(44);
+    wallet.missing_receipts.lock().unwrap().push(stale);
+    let mut stored = store.get_swap("test").unwrap().unwrap();
+    stored.metadata.evm_fund_txid = Some(stale.to_string());
+    store.store_swap(stored).unwrap();
+    let server = MockServer::start().await;
+    Mock::given(path("/swap/test"))
+        .respond_with(ResponseTemplate::new(503))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mut client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(store)
+        .build()
+        .unwrap();
+    let logger = Arc::new(crate::logging::RecordingLogger::default());
+    client.set_logger(logger.clone(), crate::logging::LogLevel::Debug);
+    wallet.now.store(wallet.htlc.timelock, Ordering::Relaxed);
+    assert!(
+        client
+            .refund_evm_with_wallet(
+                "test",
+                &wallet,
+                RefundOptions {
+                    htlc: wallet.htlc.address,
+                    lock_token: wallet.htlc.token,
+                    coordinator: Some(wallet.coordinator),
+                    timeout: Duration::from_secs(10),
+                },
+            )
+            .await
+            .is_err()
+    );
+    let failed = logger.find("client.refundSwap.serverLookupFailed").unwrap();
+    assert_eq!(failed.level, crate::logging::LogLevel::Debug);
+    assert_eq!(failed.swap_id.as_deref(), Some("test"));
+    assert!(
+        failed.data["error"].as_str().unwrap().contains("503"),
+        "{failed:?}"
+    );
+}
+
+#[tokio::test]
 async fn a_slow_but_valid_recorded_hash_is_not_held_up_by_a_hung_server() {
     use wiremock::Mock;
     use wiremock::MockServer;

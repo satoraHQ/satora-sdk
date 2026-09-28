@@ -2,6 +2,8 @@
 use lendaswap_sdk::Client;
 use lendaswap_sdk::Error;
 use lendaswap_sdk::InMemorySwapStorage;
+use lendaswap_sdk::LogLevel;
+use lendaswap_sdk::LogRecord;
 use lendaswap_sdk::Signer;
 use lendaswap_sdk::SwapStorage;
 use lendaswap_sdk::types::Address;
@@ -13,6 +15,7 @@ use lendaswap_sdk::types::TokenId;
 use serde_json::Value;
 use serde_json::json;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 use wiremock::Mock;
 use wiremock::MockServer;
@@ -37,6 +40,22 @@ fn client(server: &MockServer) -> Client {
         .mnemonic(MNEMONIC)
         .build()
         .unwrap()
+}
+
+/// A client whose SDK events are collected at debug level and above.
+fn recording_client(server: &MockServer) -> (Client, Arc<Mutex<Vec<LogRecord>>>) {
+    let records = Arc::new(Mutex::new(Vec::new()));
+    let sink = records.clone();
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .logger(Arc::new(move |record: &LogRecord| {
+            sink.lock().unwrap().push(record.clone())
+        }))
+        .log_level(LogLevel::Debug)
+        .build()
+        .unwrap();
+    (client, records)
 }
 
 fn assert_schema(value: &Value, name: &str) {
@@ -155,11 +174,26 @@ async fn duplicate_invoice_is_not_retried() {
         .expect(1)
         .mount(&server)
         .await;
-    let err = client(&server)
+    let (client, records) = recording_client(&server);
+    let err = client
         .create_arkade_to_lightning_swap(LightningDestination::Invoice("lnbcrt1fixture".into()))
         .await
         .unwrap_err();
     assert!(matches!(err, Error::Api { status: 409, .. }));
+    let records = records.lock().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        records[0].event.as_deref(),
+        Some("create.retry.attempt_failed")
+    );
+    assert_eq!(records[0].data["attempt"], json!(1));
+    assert!(
+        records[0]
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("preimage already exists")
+    );
 }
 
 #[tokio::test]
@@ -379,15 +413,54 @@ async fn recovery_pages_restore_keys_and_never_regress_the_counter() {
     }
     let storage = Arc::new(InMemorySwapStorage::new());
     storage.ensure_next_key_index(50).unwrap();
+    let records = Arc::new(Mutex::new(Vec::new()));
+    let sink = records.clone();
     let client = Client::builder()
         .base_url(server.uri())
         .mnemonic(MNEMONIC)
         .storage(storage.clone())
+        .logger(Arc::new(move |record: &LogRecord| {
+            sink.lock().unwrap().push(record.clone())
+        }))
+        .log_level(LogLevel::Debug)
         .build()
         .unwrap();
     let recovery = client.recover_all_swaps(None).await.unwrap();
     assert_eq!(recovery.swaps.len(), 2);
     assert!(recovery.complete);
+    let records = records.lock().unwrap();
+    let events: Vec<_> = records.iter().filter_map(|r| r.event.as_deref()).collect();
+    assert_eq!(
+        events,
+        [
+            "client.recover.start",
+            "client.recover.response",
+            "client.recover.start",
+            "client.recover.response",
+        ]
+    );
+    let xpub = Signer::from_mnemonic(MNEMONIC)
+        .unwrap()
+        .derive_user_id_xpub()
+        .unwrap()
+        .to_string();
+    assert_eq!(records[0].level, LogLevel::Info);
+    assert_eq!(
+        Value::Object(records[0].data.clone()),
+        json!({"xpub": xpub, "startIndex": null})
+    );
+    assert_eq!(records[2].data["startIndex"], json!(10));
+    assert_eq!(records[1].level, LogLevel::Debug);
+    assert_eq!(
+        Value::Object(records[1].data.clone()),
+        json!({
+            "recoveredSwapCount": 1,
+            "highestIndex": 3,
+            "nextIndex": 4,
+            "scannedUntil": 9,
+            "complete": false,
+        })
+    );
     assert_eq!(storage.get_swap_key_index("swap-3").unwrap(), Some(3));
     assert_eq!(storage.get_swap_key_index("swap-12").unwrap(), Some(12));
     assert_eq!(storage.next_key_index().unwrap(), 50);
@@ -1139,7 +1212,7 @@ async fn retries_only_explicit_hash_collisions_with_typescript_index_spacing() {
         .expect(2)
         .mount(&server)
         .await;
-    let client = client(&server);
+    let (client, records) = recording_client(&server);
     let (_, _, _, request) = creation_cases(QuoteAmount::Target(100_000)).remove(0);
     let swap = client
         .create_swap_request(request, SwapOptions::default())
@@ -1148,6 +1221,27 @@ async fn retries_only_explicit_hash_collisions_with_typescript_index_spacing() {
     assert_eq!(
         client.get_stored_swap(&swap.id).unwrap().unwrap().key_index,
         11
+    );
+    let records = records.lock().unwrap().clone();
+    assert_eq!(records.len(), 1);
+    let failed = &records[0];
+    assert_eq!(failed.level, LogLevel::Debug);
+    assert_eq!(failed.event.as_deref(), Some("create.retry.attempt_failed"));
+    assert_eq!(failed.module.as_deref(), Some("create/retry"));
+    assert_eq!(
+        failed.operation.as_deref(),
+        Some("create.retry_on_hash_collision")
+    );
+    assert_eq!(
+        Value::Object(failed.data.clone()),
+        json!({"attempt": 1, "keyIndex": 0})
+    );
+    assert!(
+        failed
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("a swap with this preimage hash exists already")
     );
     let requests = server.received_requests().await.unwrap();
     let first: Value = serde_json::from_slice(&requests[0].body).unwrap();

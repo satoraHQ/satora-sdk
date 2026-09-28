@@ -26,6 +26,7 @@ use crate::aa::kernel::erc1271_wrapped_digest;
 use crate::aa::kernel::wrap_erc1271_signature;
 use crate::aa::permit2::PERMIT2_ADDRESS;
 use crate::aa::signing::sign_hash;
+use crate::logging::sdk_log;
 use crate::signer::EvmKey;
 use crate::storage::RelayFundingJournal;
 use crate::storage::RelayFundingOutcome;
@@ -647,7 +648,17 @@ impl Client {
                 },
                 // As in the TypeScript client: a plain signature from a delegated
                 // depositor fails the relay's dry-run before anything is broadcast.
-                Err(_) => false,
+                Err(error) => {
+                    sdk_log!(
+                        self.log.clone().swap_id(id),
+                        Warn,
+                        "client.isKernelDelegated.codeLookupFailed",
+                        "Depositor code lookup failed; signing without the Kernel envelope",
+                        "address" => owner.to_string(),
+                        "error" => error.to_string()
+                    );
+                    false
+                }
             },
         };
         let sign = |digest: B256| -> Result<Signature> {
@@ -811,7 +822,9 @@ impl Client {
             }
         };
         context.validate_wallet(reader)?;
-        let server = self.server_funding_hash(id).await;
+        let server = self
+            .server_funding_hash(id, "client.reconcileGaslessRelay.serverLookupFailed")
+            .await;
         let proven = {
             let (context, journal) = (&context, &journal);
             let verify = |hash: String| async move {

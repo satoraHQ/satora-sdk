@@ -553,6 +553,7 @@ pub use execution::VhtlcBalance;
 impl Client {
     /// Claim an EVM, Lightning, or Bitcoin to Arkade swap. Progress is persisted
     /// before submission and finalization so the same call can resume after restart.
+    #[tracing::instrument(name = "claim", skip_all, fields(%swap_id))]
     pub async fn claim(&self, swap_id: &str, destination: &str) -> Result<ClaimReceipt> {
         if self.get_stored_swap(swap_id)?.is_none() {
             self.refresh_swap(swap_id).await?;
@@ -694,11 +695,17 @@ impl Client {
             if let Some(state) = &stored.metadata.arkade_delegate {
                 // A replacement is signed for the server's current key; reconciling a
                 // settlement needs no key, so an unreachable server falls back to it.
-                if state.commitment_txid.is_none()
-                    && delegate::delegation_replaceable(state)?
-                    && let Ok(key) = self.delegate_cosigner_key().await
-                {
-                    return Ok(Some(key));
+                if state.commitment_txid.is_none() && delegate::delegation_replaceable(state)? {
+                    match self.delegate_cosigner_key().await {
+                        Ok(key) => return Ok(Some(key)),
+                        Err(error) => crate::logging::sdk_log!(
+                            self.log.child("arkade", "arkade.settle").swap_id(swap_id),
+                            Warn,
+                            "arkade.settle.cosignerKeyFallback",
+                            "Cosigner key lookup failed; resuming with the persisted key",
+                            "error" => error.to_string()
+                        ),
+                    }
                 }
                 return state
                     .cosigner_pk

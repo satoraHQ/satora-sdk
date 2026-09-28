@@ -13,6 +13,8 @@ use crate::arkade::ArkadeSettlement;
 use crate::arkade::ArkadeSpend;
 use crate::bitcoin::BitcoinBackend;
 use crate::bitcoin::BitcoinSpendOptions;
+#[cfg(feature = "gasless")]
+use crate::logging::sdk_log;
 use crate::types::GetSwapResponse;
 use bitcoin::Amount;
 use std::sync::Arc;
@@ -430,7 +432,13 @@ impl AutoClaimer {
                     // A DEX payout on Arbitrum has no working server path.
                     Err(error) if !direct || self.may_have_sent(id) => return Err(error),
                     Err(error) => {
-                        tracing::warn!(%id, %error, "sponsored claim sent nothing; claiming through the server relay");
+                        sdk_log!(
+                            self.client.log.clone().swap_id(id),
+                            Warn,
+                            "client.claim.sponsoredFallback",
+                            "sponsored claim sent nothing; claiming through the server relay",
+                            "error" => error.to_string()
+                        );
                     }
                 }
             }

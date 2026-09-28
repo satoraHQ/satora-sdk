@@ -1,6 +1,8 @@
 //! Validated multi-VTXO spending with restartable offchain submission.
 use super::*;
 use crate::SwapMetadata;
+use crate::logging::SdkLogger;
+use crate::logging::sdk_log;
 use crate::types::GetSwapResponse;
 use ark_rs::core::server::Info;
 use ark_rs::core::server::PendingTx;
@@ -387,6 +389,17 @@ impl Client {
                 .ok_or_else(|| invalid("signer missing"))?
                 .derive_swap_params(stored.key_index)?;
             let htlc = self.arkade_htlc(id)?;
+            let log = self.arkade_log(id, &htlc, operation, false, &options.destination);
+            let continue_log = self.arkade_log(id, &htlc, operation, true, &options.destination);
+            // TypeScript's claim always tries continueArkadeClaim first, which logs
+            // its own start; ours only continues a persisted or already spent claim.
+            if continue_only {
+                sdk_log!(continue_log, Info, "arkade.claim.continue_start", "Continuing Arkade claim");
+            } else {
+                let (event, message) = spend_event(operation, SpendStep::Start);
+                sdk_log!(log, Info, event, message);
+            }
+            let mut continued = continue_only;
             let script = htlc.spend_script(operation)?;
             let destination = if continue_only {
                 None
@@ -412,6 +425,10 @@ impl Client {
             let preimage = (operation == ArkadeSpend::Claim).then_some(params.preimage);
             let mut recovered = None;
             let mut pending = if let Some(pending) = stored.metadata.arkade_pending {
+                if operation == ArkadeSpend::Claim && !continue_only {
+                    sdk_log!(continue_log, Info, "arkade.claim.continue_start", "Continuing Arkade claim");
+                    continued = true;
+                }
                 // An attempted claim is fixed and may already sit at arkd, so it
                 // finishes whichever destination it pays.
                 let fixed = operation == ArkadeSpend::Claim && pending.attempted;
@@ -424,6 +441,16 @@ impl Client {
                 // refusing to finish would only strand the claim.
                 if operation == ArkadeSpend::Claim && !fixed && !continue_only {
                     ensure_claim_window(&htlc, chain, options.minimum_remaining_seconds).await?;
+                }
+                if operation == ArkadeSpend::Claim {
+                    sdk_log!(
+                        continue_log,
+                        Info,
+                        "arkade.claim.continue_vtxos_found",
+                        "Found VTXOs for pending Arkade claim",
+                        "totalAmount" => pending.amount_sats.to_string(),
+                        "vtxoCount" => pending.checkpoints.len()
+                    );
                 }
                 pending
             } else {
@@ -456,7 +483,11 @@ impl Client {
                             && !v.is_unrolled
                     })
                     .collect();
-                let continued = if operation == ArkadeSpend::Claim && !spent.is_empty() {
+                let queried = operation == ArkadeSpend::Claim && !spent.is_empty();
+                let found = if queried {
+                    if !continue_only {
+                        sdk_log!(continue_log, Info, "arkade.claim.continue_start", "Continuing Arkade claim");
+                    }
                     // Before the refund lock the VHTLC spends offchain only through the
                     // claim path or a refund our receiver key cosigned, which no SDK
                     // does. So arkd already holds the preimage and asking it for the
@@ -466,22 +497,41 @@ impl Client {
                             "Arkade HTLC spent offchain after its refund lock may have matured; not revealing the preimage to query arkd",
                         ));
                     }
-                    pending_claim(&htlc, &info, backend, &pair, params.preimage, &spent).await?
+                    let total = sum_sats(&spent)?;
+                    sdk_log!(
+                        continue_log,
+                        Info,
+                        "arkade.claim.continue_vtxos_found",
+                        "Found VTXOs for pending Arkade claim",
+                        "totalAmount" => total.to_string(),
+                        "vtxoCount" => spent.len()
+                    );
+                    pending_claim(&htlc, &info, backend, &pair, params.preimage, &spent, &continue_log)
+                        .await?
                 } else if continue_only {
                     Err("no pending Arkade claim to continue")
                 } else {
                     Err("no spendable Arkade HTLC outputs")
                 };
-                match continued {
+                match found {
                     Ok((pending, found)) => {
                         self.save_arkade_pending(id, pending.clone())?;
                         recovered = Some(found);
+                        continued = true;
                         pending
                     }
                     Err(unspendable) => {
                         let Some(destination) = destination else {
                             return Err(invalid(unspendable));
                         };
+                        if queried {
+                            sdk_log!(
+                                log,
+                                Debug,
+                                "arkade.claim.no_pending",
+                                "No pending Arkade claim found; submitting a new claim"
+                            );
+                        }
                         if operation == ArkadeSpend::Claim {
                             ensure_claim_window(&htlc, chain, options.minimum_remaining_seconds)
                                 .await?;
@@ -502,9 +552,39 @@ impl Client {
                             })
                             .collect();
                         if vtxos.is_empty() {
+                            let (event, message) =
+                                spend_event(operation, SpendStep::NoSpendableVtxos);
+                            sdk_log!(
+                                log,
+                                Debug,
+                                event,
+                                message,
+                                "vtxos" => list.all().map(vtxo_log).collect::<Vec<_>>()
+                            );
                             return Err(invalid(unspendable));
                         }
                         let amount = sum_sats(&vtxos)?;
+                        if operation == ArkadeSpend::Claim {
+                            sdk_log!(
+                                log,
+                                Info,
+                                "arkade.claim.vtxos_found",
+                                "Found spendable VTXOs for Arkade claim",
+                                "totalAmount" => amount.to_string(),
+                                "vtxoCount" => vtxos.len()
+                            );
+                        } else {
+                            sdk_log!(
+                                log,
+                                Info,
+                                "arkade.refund.vtxos_found",
+                                "Found spendable VTXOs for Arkade refund",
+                                "totalAmount" => amount.to_string(),
+                                "vtxoCount" => vtxos.len(),
+                                "destinationAddressPPkScript" =>
+                                    destination.to_p2tr_script_pubkey().to_hex_string()
+                            );
+                        }
                         if operation == ArkadeSpend::Claim
                             && amount < htlc.expected_amount.to_sat()
                         {
@@ -540,6 +620,7 @@ impl Client {
                     }
                 }
             };
+            let tail_log = if continued { &continue_log } else { &log };
             let ark = restore(&pending.ark_tx, preimage)?;
             let txid = ark.unsigned_tx.compute_txid();
             if pending.completed {
@@ -560,11 +641,27 @@ impl Client {
                     Some(found) => Some(found),
                     None if pending.attempted => {
                         let intent = pending_intent(&htlc, &checkpoints, &pair, preimage)?;
-                        backend
-                            .pending(intent)
-                            .await?
-                            .into_iter()
-                            .find(|p| p.ark_txid == txid)
+                        let candidates = backend.pending(intent).await?;
+                        let claim = operation == ArkadeSpend::Claim;
+                        if claim && !candidates.is_empty() {
+                            sdk_log!(
+                                continue_log,
+                                Info,
+                                "arkade.claim.pending_txs_found",
+                                "Found pending Arkade claim transactions",
+                                "pendingTxCount" => candidates.len()
+                            );
+                        }
+                        let found = candidates.into_iter().find(|p| p.ark_txid == txid);
+                        if claim && found.is_none() && !continue_only {
+                            sdk_log!(
+                                log,
+                                Debug,
+                                "arkade.claim.no_pending",
+                                "No pending Arkade claim found; submitting a new claim"
+                            );
+                        }
+                        found
                     }
                     None => None,
                 };
@@ -603,10 +700,33 @@ impl Client {
                 pending.checkpoints = checkpoints.iter().map(archive).collect();
                 pending.submitted = true;
                 self.save_arkade_pending(id, pending.clone())?;
+                let (event, message) = spend_event(operation, SpendStep::CheckpointsSigned);
+                sdk_log!(tail_log, Debug, event, message);
             }
-            backend.finalize(txid, checkpoints).await?;
+            backend
+                .finalize(txid, checkpoints)
+                .await
+                .inspect_err(|error| match (operation, continued) {
+                    (ArkadeSpend::Claim, false) => sdk_log!(
+                        tail_log,
+                        Error,
+                        "arkade.claim.finalize_failed",
+                        "Failed to finalize Arkade claim";
+                        error = error
+                    ),
+                    (ArkadeSpend::Claim, true) => sdk_log!(
+                        tail_log,
+                        Error,
+                        "arkade.claim.continue_finalize_failed",
+                        "Failed to finalize pending Arkade claim";
+                        error = error
+                    ),
+                    (ArkadeSpend::Refund | ArkadeSpend::CooperativeRefund, _) => {}
+                })?;
             pending.completed = true;
             self.save_arkade_pending(id, pending.clone())?;
+            let (event, message) = spend_event(operation, SpendStep::Finalized);
+            sdk_log!(tail_log, Info, event, message, "arkTxid" => txid.to_string());
             Ok(ClaimReceipt {
                 ark_txid: txid,
                 claim_amount_sats: pending.amount_sats,
@@ -615,6 +735,34 @@ impl Client {
         })
         .await
         .map_err(|_| Error::Timeout("Arkade spend timed out; resume the stored operation".into()))?
+    }
+    /// TypeScript's logger context for a spend. Continued claims log without the
+    /// destination, as `continueArkadeClaim` does.
+    fn arkade_log(
+        &self,
+        id: &str,
+        htlc: &ArkadeHtlc,
+        operation: ArkadeSpend,
+        continued: bool,
+        destination: &str,
+    ) -> SdkLogger {
+        let (module, name) = match (operation, continued) {
+            (ArkadeSpend::Claim, false) => ("redeem/arkade", "arkade.claim"),
+            (ArkadeSpend::Claim, true) => ("redeem/arkade", "arkade.claim.continue"),
+            (ArkadeSpend::Refund, _) => ("refund/arkade", "arkade.refund"),
+            (ArkadeSpend::CooperativeRefund, _) => ("refund/arkade", "arkade.refund.collab"),
+        };
+        let log = self
+            .log
+            .child(module, name)
+            .swap_id(id)
+            .with("vhtlcAddress", htlc.address().encode())
+            .with("network", htlc.network.to_string());
+        if operation == ArkadeSpend::Claim && continued {
+            log
+        } else {
+            log.with("destinationAddress", destination)
+        }
     }
     fn save_arkade_pending(&self, id: &str, pending: ArkadePending) -> Result<()> {
         self.update_swap_metadata(
@@ -731,6 +879,55 @@ async fn claim_window_open(
     };
     Ok(open)
 }
+#[derive(Clone, Copy)]
+enum SpendStep {
+    Start,
+    NoSpendableVtxos,
+    CheckpointsSigned,
+    Finalized,
+}
+/// TypeScript's event name and message for a step of a claim or refund.
+fn spend_event(operation: ArkadeSpend, step: SpendStep) -> (&'static str, &'static str) {
+    let claim = operation == ArkadeSpend::Claim;
+    match (step, claim) {
+        (SpendStep::Start, true) => ("arkade.claim.start", "Starting Arkade claim"),
+        (SpendStep::Start, false) => ("arkade.refund.start", "Starting Arkade refund"),
+        (SpendStep::NoSpendableVtxos, true) => (
+            "arkade.claim.no_spendable_vtxos",
+            "No spendable VTXOs found at VHTLC address",
+        ),
+        (SpendStep::NoSpendableVtxos, false) => (
+            "arkade.refund.no_spendable_vtxos",
+            "No spendable VTXOs found at VHTLC address",
+        ),
+        (SpendStep::CheckpointsSigned, true) => (
+            "arkade.claim.checkpoints_signed",
+            "Checkpoint transactions signed",
+        ),
+        (SpendStep::CheckpointsSigned, false) => (
+            "arkade.refund.checkpoints_signed",
+            "Final checkpoint transactions signed",
+        ),
+        (SpendStep::Finalized, true) => ("arkade.claim.finalized", "Arkade claim finalized"),
+        (SpendStep::Finalized, false) => ("arkade.refund.finalized", "Arkade refund finalized"),
+    }
+}
+fn vtxo_log(vtxo: &VirtualTxOutPoint) -> serde_json::Value {
+    serde_json::json!({
+        "txid": vtxo.outpoint.txid.to_string(),
+        "vout": vtxo.outpoint.vout,
+        "value": vtxo.amount.to_sat(),
+        "createdAt": vtxo.created_at,
+        "expiresAt": vtxo.expires_at,
+        "isPreconfirmed": vtxo.is_preconfirmed,
+        "isSwept": vtxo.is_swept,
+        "isUnrolled": vtxo.is_unrolled,
+        "isSpent": vtxo.is_spent,
+        "spentBy": vtxo.spent_by.map(|txid| txid.to_string()),
+        "arkTxId": vtxo.ark_txid.map(|txid| txid.to_string()),
+        "settledBy": vtxo.settled_by.map(|txid| txid.to_string()),
+    })
+}
 fn sum_sats(vtxos: &[&VirtualTxOutPoint]) -> Result<u64> {
     vtxos.iter().try_fold(0u64, |sum, v| {
         sum.checked_add(v.amount.to_sat())
@@ -778,6 +975,7 @@ async fn pending_claim(
     pair: &Keypair,
     preimage: [u8; 32],
     spent: &[&VirtualTxOutPoint],
+    log: &SdkLogger,
 ) -> Result<std::result::Result<(ArkadePending, PendingTx), &'static str>> {
     let script = htlc.spend_script(ArkadeSpend::Claim)?;
     let inputs = vtxo_inputs(htlc, ArkadeSpend::Claim, &script, spent)?;
@@ -801,6 +999,13 @@ async fn pending_claim(
             "Arkade HTLC already spent offchain and arkd holds no pending claim for it",
         ));
     }
+    sdk_log!(
+        log,
+        Info,
+        "arkade.claim.pending_txs_found",
+        "Found pending Arkade claim transactions",
+        "pendingTxCount" => candidates.len()
+    );
     for candidate in candidates {
         if let Some(found) =
             match_pending_claim(htlc, info, pair, preimage, spent, &checkpoints, candidate)?

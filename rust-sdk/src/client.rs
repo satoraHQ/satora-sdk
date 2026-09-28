@@ -14,6 +14,9 @@
 
 use crate::error::Error;
 use crate::error::Result;
+use crate::logging::LogLevel;
+use crate::logging::Logger;
+use crate::logging::SdkLogger;
 use crate::request::Endpoint;
 use crate::request::PayloadKind;
 use crate::signer::Signer;
@@ -128,6 +131,7 @@ pub struct Client {
     /// DB, so settle would never see the boarding output the user
     /// just funded.
     pub(crate) arkade_wallet: Arc<tokio::sync::OnceCell<crate::arkade::ArkadeWallet>>,
+    pub(crate) log: SdkLogger,
 }
 
 impl std::fmt::Debug for Client {
@@ -161,6 +165,7 @@ impl Client {
             quote_cache: Arc::default(),
             #[cfg(feature = "gasless")]
             evm_execution: Arc::default(),
+            log: SdkLogger::tracing(),
         })
     }
 
@@ -175,6 +180,12 @@ impl Client {
     /// doesn't go through the builder.
     pub fn set_referral_code(&mut self, code: Option<String>) {
         self.referral_code = code.filter(|s| !s.is_empty());
+    }
+
+    /// Replace the event sink and level, as [`ClientBuilder::logger`] and
+    /// [`ClientBuilder::log_level`] do. Useful after [`Self::new`].
+    pub fn set_logger(&mut self, logger: Arc<dyn Logger>, level: LogLevel) {
+        self.log = SdkLogger::new(logger, level);
     }
 
     /// Internal dispatch chokepoint for every endpoint described by
@@ -760,6 +771,8 @@ pub struct ClientBuilder {
     http: Option<reqwest::Client>,
     referral_code: Option<String>,
     arkade_config: Option<crate::arkade::ArkadeConfig>,
+    logger: Option<Arc<dyn Logger>>,
+    log_level: Option<LogLevel>,
 }
 
 impl ClientBuilder {
@@ -825,6 +838,22 @@ impl ClientBuilder {
         self
     }
 
+    /// Sink for the SDK's structured events (see [`crate::logging`]), replacing
+    /// the default `tracing` sink. Silent until [`Self::log_level`] is set, as
+    /// in TypeScript.
+    pub fn logger(mut self, logger: Arc<dyn Logger>) -> Self {
+        self.logger = Some(logger);
+        self
+    }
+
+    /// Minimum level of SDK events. Without a custom logger it defaults to
+    /// `Trace`, leaving filtering to the `tracing` subscriber; with one it
+    /// defaults to `Silent`.
+    pub fn log_level(mut self, level: LogLevel) -> Self {
+        self.log_level = Some(level);
+        self
+    }
+
     pub fn build(self) -> Result<Client> {
         crate::crypto_init::ensure_default_provider_installed();
         let base_url = self
@@ -859,6 +888,13 @@ impl ClientBuilder {
             (None, None) => Arc::new(InMemorySwapStorage::new()),
         };
         let http = self.http.unwrap_or_else(default_http);
+        let log = match self.logger {
+            Some(logger) => SdkLogger::new(logger, self.log_level.unwrap_or(LogLevel::Silent)),
+            None => SdkLogger::new(
+                Arc::new(crate::logging::TracingLogger),
+                self.log_level.unwrap_or(LogLevel::Trace),
+            ),
+        };
         Ok(Client {
             http,
             base_url,
@@ -873,6 +909,7 @@ impl ClientBuilder {
             quote_cache: Arc::default(),
             #[cfg(feature = "gasless")]
             evm_execution: Arc::default(),
+            log,
         })
     }
 }
