@@ -21,7 +21,7 @@ import type { Chain, Hex } from "viem";
 import { arbitrum } from "viem/chains";
 import type { ApiClient } from "../api/client.js";
 import { fetchAttestation } from "../cctp/attestation.js";
-import { IRIS_API_MAINNET } from "../cctp/constants.js";
+import { IRIS_API_MAINNET, TOKEN_MESSENGER_V2 } from "../cctp/constants.js";
 import type { EvmSigner } from "../evm/wallet.js";
 import { approveAndBurn } from "./approveAndBurn.js";
 import { cctpMetaForChainId, finalityForChainId } from "./chainMap.js";
@@ -66,8 +66,12 @@ export interface CctpFundSwapParams {
    * Called as soon as the burn is broadcast, before its receipt. Persist the
    * hash here: from this point the USDC has left the source chain, and the
    * hash is what resuming or recovering the settlement needs.
+   *
+   * Called again once the burn has mined: with the replacement's hash if the
+   * wallet sped it up, or with `undefined` if nothing was burned (the burn
+   * reverted, or the wallet cancelled it) so the next attempt burns afresh.
    */
-  onBurn?: (burnTxHash: Hex) => void | Promise<void>;
+  onBurn?: (burnTxHash: Hex | undefined) => void | Promise<void>;
   /** USDC amount in smallest units (6 decimals). */
   amount: bigint;
   /**
@@ -107,6 +111,42 @@ export interface CctpFundSwapResult {
 export interface CctpFundSwapContext {
   apiClient: ApiClient;
   aa: AaConfig;
+}
+
+/**
+ * Wait for the burn to mine and return the hash Circle attests it under.
+ *
+ * The receipt follows a replacement the wallet made, so the mined hash can
+ * differ from the one sent: a speed-up burned under the new hash, a
+ * cancellation (a self-send) burned nothing. Only a transaction to the
+ * TokenMessenger burns, so that decides which. A burn that reverted or was
+ * cancelled clears the recorded hash: nothing left the source chain, and the
+ * next attempt must burn again rather than wait on an attestation that will
+ * never come.
+ */
+async function confirmBurn(
+  signer: EvmSigner,
+  sentTxHash: Hex,
+  onBurn: CctpFundSwapParams["onBurn"],
+): Promise<Hex> {
+  const receipt = await signer.waitForReceipt(sentTxHash);
+  if (receipt.status !== "success") {
+    await onBurn?.(undefined);
+    throw new Error(`CCTP burn tx reverted: ${receipt.transactionHash}`);
+  }
+  const minedTxHash = (receipt.transactionHash ?? sentTxHash) as Hex;
+  if (minedTxHash.toLowerCase() === sentTxHash.toLowerCase()) {
+    return sentTxHash;
+  }
+  const mined = await signer.getTransaction(minedTxHash);
+  if (mined?.to?.toLowerCase() !== TOKEN_MESSENGER_V2.toLowerCase()) {
+    await onBurn?.(undefined);
+    throw new Error(
+      `The CCTP burn ${sentTxHash} was replaced by ${minedTxHash}, which did not burn (cancelled in the wallet?). No USDC left the source chain; try again.`,
+    );
+  }
+  await onBurn?.(minedTxHash);
+  return minedTxHash;
 }
 
 /**
@@ -176,10 +216,7 @@ export async function cctpFundSwap(
     await onBurn?.(burnTxHash);
   }
   onProgress?.({ phase: "burning", burnTxHash });
-  const burnReceipt = await signer.waitForReceipt(burnTxHash);
-  if (burnReceipt.status !== "success") {
-    throw new Error(`CCTP burn tx reverted: ${burnTxHash}`);
-  }
+  burnTxHash = await confirmBurn(signer, burnTxHash, onBurn);
 
   // 2. Wait for the IRIS attestation to clear.
   onProgress?.({ phase: "attestation" });

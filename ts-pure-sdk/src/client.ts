@@ -4784,8 +4784,13 @@ export class Client {
    * it is broadcast the USDC has left the source chain, and this hash is what
    * resuming the settlement or recovering the USDC needs, so it is kept beside
    * the stored `response` (every server refresh replaces that copy).
+   * `undefined` clears it: the burn reverted or the wallet cancelled it, so
+   * nothing left the source chain and the next attempt must burn again.
    */
-  async #recordCctpBurn(swapId: string, burnTxHash: string): Promise<void> {
+  async #recordCctpBurn(
+    swapId: string,
+    burnTxHash: string | undefined,
+  ): Promise<void> {
     if (!this.#swapStorage) return;
     try {
       const stored = await this.#swapStorage.get(swapId);

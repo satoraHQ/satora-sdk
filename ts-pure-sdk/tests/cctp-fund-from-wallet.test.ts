@@ -41,9 +41,29 @@ import { SWAP_ID, storedSwap, swapResponse } from "./evm-funding-fixture.js";
 const WALLET = "0x90f79bf6eb2c4f870365e785982e1f101e93b906";
 const OPTIMISM_USDC = "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85";
 const BURN = `0x${"b0".repeat(32)}` as const;
+/** The hash a wallet's speed-up or cancellation mined under instead. */
+const REPLACED = `0x${"b1".repeat(32)}` as const;
+const TOKEN_MESSENGER = "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d";
 const USER_OP = `0x${"0e".repeat(32)}` as const;
 const SETTLE_TX = `0x${"5e".repeat(32)}` as const;
 const AA = { bundlerUrl: "http://bundler.test" };
+
+/**
+ * A wallet whose burn was replaced before it mined: `to` is where the
+ * replacement went (the TokenMessenger for a speed-up, the wallet itself for
+ * a cancellation).
+ */
+function walletWhoseBurnWasReplaced(to: string): EvmSigner {
+  return {
+    ...walletOnOptimism(),
+    waitForReceipt: async () => ({
+      status: "success",
+      transactionHash: REPLACED,
+      blockNumber: 1n,
+    }),
+    getTransaction: async () => ({ to, input: "0x", from: WALLET }),
+  };
+}
 
 /** The user's browser wallet on Optimism: sends txs, cannot sign 7702. */
 function walletOnOptimism(): EvmSigner {
@@ -147,6 +167,61 @@ describe("cctpFundSwap", () => {
     });
 
     expect(order).toEqual([`burn ${BURN}`, "receipt"]);
+  });
+
+  it("follows a sped-up burn to the hash it mined under", async () => {
+    const onBurn = vi.fn();
+    await cctpFundSwap(context, {
+      swapId: SWAP_ID,
+      signer: walletWhoseBurnWasReplaced(TOKEN_MESSENGER),
+      amount: 1_000_000n,
+      maxFee: 100n,
+      onBurn,
+    });
+
+    expect(onBurn.mock.calls).toEqual([[BURN], [REPLACED]]);
+    expect(fetchAttestation).toHaveBeenCalledWith(
+      expect.objectContaining({ txHash: REPLACED }),
+    );
+  });
+
+  it("clears the burn when the wallet cancelled it", async () => {
+    const onBurn = vi.fn();
+    await expect(
+      cctpFundSwap(context, {
+        swapId: SWAP_ID,
+        signer: walletWhoseBurnWasReplaced(WALLET),
+        amount: 1_000_000n,
+        maxFee: 100n,
+        onBurn,
+      }),
+    ).rejects.toThrow(/did not burn/);
+
+    expect(onBurn.mock.calls).toEqual([[BURN], [undefined]]);
+    expect(fetchAttestation).not.toHaveBeenCalled();
+  });
+
+  it("clears the burn when it reverted", async () => {
+    const onBurn = vi.fn();
+    const wallet = walletOnOptimism();
+    wallet.waitForReceipt = async (hash) => ({
+      status: "reverted",
+      transactionHash: hash,
+      blockNumber: 1n,
+    });
+
+    await expect(
+      cctpFundSwap(context, {
+        swapId: SWAP_ID,
+        signer: wallet,
+        amount: 1_000_000n,
+        maxFee: 100n,
+        onBurn,
+      }),
+    ).rejects.toThrow(/reverted/);
+
+    expect(onBurn.mock.calls).toEqual([[BURN], [undefined]]);
+    expect(fetchAttestation).not.toHaveBeenCalled();
   });
 
   it("resumes from a known burn without burning again", async () => {
@@ -265,6 +340,22 @@ describe("Client.fundSwap from a wallet on a CCTP-only chain", () => {
     expect(fetchAttestation).toHaveBeenCalledWith(
       expect.objectContaining({ txHash: BURN }),
     );
+  });
+
+  it("burns again after the wallet cancelled the recorded burn", async () => {
+    const { client, storage } = await clientWith((sdk) => sdk);
+
+    await expect(
+      client.fundSwap(SWAP_ID, walletWhoseBurnWasReplaced(WALLET), {
+        maxFee: 100n,
+      }),
+    ).rejects.toThrow(/did not burn/);
+    expect((await storage.get(SWAP_ID))?.cctpBurnTxid).toBeUndefined();
+
+    await client.fundSwap(SWAP_ID, walletOnOptimism(), { maxFee: 100n });
+
+    expect(approveAndBurn).toHaveBeenCalledTimes(2);
+    expect((await storage.get(SWAP_ID))?.cctpBurnTxid).toBe(BURN);
   });
 
   it("does not resume a swap the recorded burn already funded", async () => {
