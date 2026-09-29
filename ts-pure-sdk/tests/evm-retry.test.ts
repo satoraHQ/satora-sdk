@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { deriveEvmAddress } from "../src/evm/signing.js";
 import type { EvmSigner } from "../src/evm/wallet.js";
 import { Client, InMemorySwapStorage } from "../src/index.js";
 import { SWAP_ID, storedSwap, swapResponse } from "./evm-funding-fixture.js";
@@ -105,6 +106,19 @@ describe("Client.refundEvmSponsored", () => {
     await expect(client.refundEvmSponsored(SWAP_ID)).rejects.toThrow(
       /reverted on-chain: HTLC: swap not active/,
     );
+  });
+
+  it("refunds a legacy gasless swap from its per-swap key's account", async () => {
+    // Older SDKs funded gasless swaps from the swap's own key.
+    const legacyDepositor = deriveEvmAddress(storedSwap().secretKey);
+    const { client } = await clientWith({ depositorOf: () => legacyDepositor });
+    const { sendUserOperation, createSmartAccountClient } = refundable(client);
+
+    await client.refundEvmSponsored(SWAP_ID);
+
+    const owner = createSmartAccountClient.mock.calls[0][0].signer;
+    expect(owner.address.toLowerCase()).toBe(legacyDepositor.toLowerCase());
+    expect(sendUserOperation).toHaveBeenCalledOnce();
   });
 
   it("refuses a wallet-funded swap, whose wallet refunds itself", async () => {

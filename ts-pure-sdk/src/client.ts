@@ -7225,6 +7225,10 @@ export class Client {
    * gas. The refunded token lands in that account, from where
    * {@link continueRefundedEvmSwap} swaps it again. Arbitrum only, where the
    * paymaster runs.
+   *
+   * Gasless swaps from older SDK versions were funded from the swap's own
+   * key instead; those are refunded from that key's account (a continuation
+   * cannot pick the refund up from there).
    */
   async refundEvmSponsored(
     swapId: string,
@@ -7247,14 +7251,29 @@ export class Client {
     }
     // Only the depositor's account is sponsored. A wallet-funded swap's
     // wallet is the depositor and sends the refund itself.
-    const depositor = (stored.response as { client_evm_address?: string })
-      .client_evm_address;
-    if (depositor?.toLowerCase() !== this.getEvmAddress().toLowerCase()) {
+    const { client_evm_address: depositor, gasless } = stored.response as {
+      client_evm_address?: string;
+      gasless?: boolean;
+    };
+    let owner: EvmSigner;
+    if (depositor?.toLowerCase() === this.getEvmAddress().toLowerCase()) {
+      owner = this.#keyOwnerSigner();
+    } else if (
+      gasless &&
+      depositor?.toLowerCase() ===
+        deriveEvmAddress(stored.secretKey).toLowerCase()
+    ) {
+      // A legacy gasless swap, funded from its per-swap key (as the
+      // collaborative refund's key selection also allows).
+      owner = keyToKernelOwnerSigner(
+        hexToBytes(stored.secretKey.replace(/^0x/, "")),
+        42161,
+      );
+    } else {
       throw new Error(
         `Swap ${swapId} was funded by ${depositor}, not this client's key; only gasless swaps can be refunded sponsored. Refund it with \`refundEvmWithSigner\` from that wallet.`,
       );
     }
-    const owner = this.#keyOwnerSigner();
 
     const result = await this.refundSwap(swapId);
     if (!result.evmRefundData) {
