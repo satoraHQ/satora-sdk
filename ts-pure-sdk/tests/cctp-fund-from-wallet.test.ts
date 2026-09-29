@@ -31,7 +31,11 @@ vi.mock("../src/cctp-inbound/recover.js", () => ({
 
 import { cctpFundSwap } from "../src/cctp-inbound/fundSwap.js";
 import type { EvmSigner } from "../src/evm/wallet.js";
-import { Client, InMemorySwapStorage } from "../src/index.js";
+import {
+  Client,
+  InMemorySwapStorage,
+  InMemoryWalletStorage,
+} from "../src/index.js";
 import { SWAP_ID, storedSwap, swapResponse } from "./evm-funding-fixture.js";
 
 const WALLET = "0x90f79bf6eb2c4f870365e785982e1f101e93b906";
@@ -273,6 +277,41 @@ describe("Client.fundSwap from a wallet on a CCTP-only chain", () => {
       client.fundSwap(SWAP_ID, walletOnOptimism(), { maxFee: 100n }),
     ).rejects.toThrow(/already clientfundingseen/);
     expect(submitCctpInboundUserOp).not.toHaveBeenCalled();
+  });
+
+  it("keeps the recorded burn when recovery from the seed rebuilds the swap", async () => {
+    const burn = BURN;
+    let response: ReturnType<typeof cctpSwap> | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (url.endsWith("/swap/recover") && response) {
+          return Response.json(
+            {
+              swaps: [{ ...response, index: 0 }],
+              highest_index: 0,
+              next_index: 1,
+              scanned_until: 0,
+              complete: true,
+            },
+            { status: 200 },
+          );
+        }
+        throw new Error(`unexpected request ${url}`);
+      }),
+    );
+    const storage = new InMemorySwapStorage();
+    const client = await Client.builder()
+      .withSignerStorage(new InMemoryWalletStorage())
+      .withSwapStorage(storage)
+      .build();
+    response = cctpSwap(client.getEvmAddress());
+    await storage.store(storedSwap({ response, cctpBurnTxid: burn }));
+
+    await client.recoverSwaps();
+
+    expect((await storage.get(SWAP_ID))?.cctpBurnTxid).toBe(burn);
   });
 
   it("recovers from the recorded burn with the SDK's key", async () => {

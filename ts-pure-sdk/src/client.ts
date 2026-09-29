@@ -5357,6 +5357,9 @@ export class Client {
       bridgeRecipientWallet: bridge?.recipientWallet,
       evmFundTxid: existing?.evmFundTxid,
       evmCoordinatorAddress: existing?.evmCoordinatorAddress,
+      // A CCTP-inbound burn is the only way to resume or recover once the
+      // USDC has left the source chain.
+      cctpBurnTxid: existing?.cctpBurnTxid,
     };
 
     await this.#swapStorage.store(storedSwap);

@@ -128,12 +128,17 @@ export class SqliteSwapStorage implements SwapStorage {
         stored_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         evm_fund_txid TEXT,
-        evm_coordinator_address TEXT
+        evm_coordinator_address TEXT,
+        cctp_burn_txid TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_swaps_stored_at ON swaps(stored_at);
     `);
     // Databases created before these columns existed.
-    for (const column of ["evm_fund_txid", "evm_coordinator_address"]) {
+    for (const column of [
+      "evm_fund_txid",
+      "evm_coordinator_address",
+      "cctp_burn_txid",
+    ]) {
       if (this.#columns().includes(column)) continue;
       try {
         this.#db.exec(`ALTER TABLE swaps ADD COLUMN ${column} TEXT`);
@@ -163,8 +168,8 @@ export class SqliteSwapStorage implements SwapStorage {
     this.#db
       .prepare(
         `INSERT OR REPLACE INTO swaps
-         (swap_id, version, key_index, response, public_key, preimage, preimage_hash, secret_key, stored_at, updated_at, evm_fund_txid, evm_coordinator_address)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (swap_id, version, key_index, response, public_key, preimage, preimage_hash, secret_key, stored_at, updated_at, evm_fund_txid, evm_coordinator_address, cctp_burn_txid)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         swap.swapId,
@@ -179,6 +184,7 @@ export class SqliteSwapStorage implements SwapStorage {
         swap.updatedAt,
         swap.evmFundTxid ?? null,
         swap.evmCoordinatorAddress ?? null,
+        swap.cctpBurnTxid ?? null,
       );
   }
 
@@ -226,6 +232,7 @@ export class SqliteSwapStorage implements SwapStorage {
       updatedAt: row.updated_at,
       evmFundTxid: row.evm_fund_txid ?? undefined,
       evmCoordinatorAddress: row.evm_coordinator_address ?? undefined,
+      cctpBurnTxid: row.cctp_burn_txid ?? undefined,
     };
   }
 
@@ -250,6 +257,7 @@ interface SqliteSwapRow {
   updated_at: number;
   evm_fund_txid: string | null;
   evm_coordinator_address: string | null;
+  cctp_burn_txid: string | null;
 }
 
 /**
