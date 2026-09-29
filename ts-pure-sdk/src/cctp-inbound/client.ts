@@ -189,9 +189,9 @@ export class CctpInboundClient {
    * via the Kernel smart account. Paymaster sponsors the settlement
    * so the user needs no ETH on the destination chain.
    *
-   * The `walletClient.account` signs both the source-chain txs and
-   * the destination-chain UserOp (as Kernel owner), and its address
-   * anchors the deterministic smart-account address.
+   * `signer` sends the source-chain txs; `ownerSigner` (default:
+   * `signer`) owns the Kernel account that submits the settlement
+   * UserOp, and its address anchors the smart-account address.
    */
   fundSwap(params: CctpFundSwapParams): Promise<CctpFundSwapResult> {
     return cctpFundSwap({ apiClient: this.#apiClient, aa: this.#aa }, params);

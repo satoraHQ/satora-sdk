@@ -16,7 +16,7 @@ import {
   type TokenInfos,
 } from "./api/client.js";
 import { getVhtlcAmounts, type VhtlcAmounts } from "./arkade.js";
-import { USDC_ADDRESSES } from "./cctp/constants.js";
+import { type CctpChainName, USDC_ADDRESSES } from "./cctp/constants.js";
 import { computeCctpFastFee, getCachedCctpFee } from "./cctp/fee.js";
 import {
   cctpMetaForChainId,
@@ -27,6 +27,11 @@ import type {
   CctpFundSwapResult,
   CctpProgressStep,
 } from "./cctp-inbound/fundSwap.js";
+import {
+  type RecoverCctpInboundResult,
+  type RecoveryProgress,
+  recoverCctpInbound,
+} from "./cctp-inbound/recover.js";
 import type { AaConfig } from "./cctp-inbound/types.js";
 import {
   type ComposeQuoteParams,
@@ -109,6 +114,7 @@ import {
   type UnsignedPermit2FundingData,
   wrapKernelErc1271Signature,
 } from "./evm/index.js";
+import { keyToKernelOwnerSigner } from "./evm/key-signer.js";
 import {
   decodeUint256,
   type EvmSigner,
@@ -4744,6 +4750,65 @@ export class Client {
   }
 
   /**
+   * The Kernel owner that settles a CCTP-inbound swap on Arbitrum. The owner's
+   * address receives the minted USDC and must be the swap's depositor, which
+   * the paymaster checks before sponsoring. A swap created gasless has the
+   * SDK's own key as depositor; that key can sign the EIP-7702 authorization a
+   * browser wallet usually cannot. Otherwise the wallet itself is the owner.
+   */
+  #cctpOwnerSigner(
+    swapResponse: GetSwapResponse,
+    walletSigner?: EvmSigner,
+  ): EvmSigner {
+    const depositor = (
+      swapResponse as { client_evm_address?: string }
+    ).client_evm_address?.toLowerCase();
+    if (depositor === this.getEvmAddress().toLowerCase()) {
+      return keyToKernelOwnerSigner(
+        this.#signer.deriveEvmKey().secretKey,
+        42161, // Arbitrum, the only CCTP-inbound settlement chain
+      );
+    }
+    if (walletSigner && depositor === walletSigner.address.toLowerCase()) {
+      return walletSigner;
+    }
+    throw new Error(
+      `CCTP-inbound swap ${swapResponse.id} was created for depositor ${depositor}, ` +
+        "which is neither this client's key nor the given wallet. " +
+        "Create the swap with `gasless: true` to settle through the SDK's key.",
+    );
+  }
+
+  /**
+   * Record the source-chain CCTP burn of a CCTP-inbound swap. From the moment
+   * it is broadcast the USDC has left the source chain, and this hash is what
+   * resuming the settlement or recovering the USDC needs, so it is kept beside
+   * the stored `response` (every server refresh replaces that copy).
+   */
+  async #recordCctpBurn(swapId: string, burnTxHash: string): Promise<void> {
+    if (!this.#swapStorage) return;
+    try {
+      const stored = await this.#swapStorage.get(swapId);
+      if (!stored) return;
+      await this.#swapStorage.store({
+        ...stored,
+        cctpBurnTxid: burnTxHash,
+        updatedAt: Date.now(),
+      });
+    } catch (error) {
+      // The burn is on-chain either way; a bookkeeping failure must not abort
+      // the settlement that follows it.
+      this.#logger.warn({
+        event: "client.fundSwap.recordCctpBurnFailed",
+        message: "could not record the CCTP burn tx on the stored swap",
+        swapId,
+        data: { burnTxHash },
+        error,
+      });
+    }
+  }
+
+  /**
    * Refund calldata for an EVM-sourced swap. With a signer it is built from
    * the funding tx's `SwapCreated` log, since the DEX swap inside that tx
    * decides the locked amount; the log's sender picks `refundTo` on the
@@ -6442,9 +6507,25 @@ export class Client {
           amount,
         );
 
+      // A burn recorded by an interrupted attempt: resume at the
+      // attestation instead of burning the USDC a second time. The swap must
+      // still be unfunded, or the settlement already landed.
+      const recordedBurn = stored?.cctpBurnTxid as `0x${string}` | undefined;
+      if (recordedBurn) {
+        const fresh = await this.getSwap(swapId, { updateStorage: true });
+        if (fresh.status !== "pending") {
+          throw new Error(
+            `Swap ${swapId} is already ${fresh.status}; its CCTP burn ${recordedBurn} was settled.`,
+          );
+        }
+      }
+
       const cctp = await this.cctpInbound.fundSwap({
         swapId,
         signer,
+        ownerSigner: this.#cctpOwnerSigner(swapResponse, signer),
+        burnTxHash: recordedBurn,
+        onBurn: (burnTxHash) => this.#recordCctpBurn(swapId, burnTxHash),
         amount,
         maxFee,
         onProgress: options?.onProgress,
@@ -7327,6 +7408,63 @@ export class Client {
     const privateKey = evmKey.startsWith("0x") ? evmKey : `0x${evmKey}`;
     const address = deriveEvmAddress(evmKey);
     return { privateKey, address };
+  }
+
+  /**
+   * Recover the USDC of a CCTP-inbound swap whose Arbitrum settlement never
+   * landed: mints it from the recorded burn if that has not happened yet, then
+   * sweeps the smart account's USDC to `recipient` on Arbitrum. Both steps are
+   * paymaster-sponsored UserOps. Uses the burn {@link fundSwap} recorded and
+   * the same owner rule, so a swap created gasless needs no wallet here.
+   *
+   * @param swapId - The UUID of the CCTP-inbound swap
+   * @param recipient - Arbitrum address that receives the recovered USDC
+   * @param options.ownerSigner - The owner when the swap's depositor is the
+   *   user's wallet rather than this client's key
+   * @param options.burnTxHash - The burn, when it was not recorded locally
+   *   (e.g. a funding started on another device)
+   */
+  async recoverCctpInboundSwap(
+    swapId: string,
+    recipient: string,
+    options?: {
+      ownerSigner?: EvmSigner;
+      burnTxHash?: string;
+      onProgress?: (step: RecoveryProgress) => void;
+      signal?: AbortSignal;
+    },
+  ): Promise<RecoverCctpInboundResult> {
+    if (!this.#config.aa) {
+      throw new Error(
+        "Recovering a CCTP-inbound swap requires AA config. Call `.withAa({ bundlerUrl, paymasterPolicyId })` on the ClientBuilder before `.build()`.",
+      );
+    }
+    const stored = await this.getStoredSwap(swapId);
+    if (!stored) {
+      throw new Error(`Swap ${swapId} not found in local storage.`);
+    }
+    const sourceChain = (stored.response as { bridge_source_chain?: string })
+      .bridge_source_chain;
+    if (!sourceChain) {
+      throw new Error(`Swap ${swapId} is not a CCTP-inbound swap.`);
+    }
+    const burnTxHash = options?.burnTxHash ?? stored.cctpBurnTxid;
+    if (!burnTxHash) {
+      throw new Error(
+        `No CCTP burn is recorded for swap ${swapId}; pass it as \`burnTxHash\`.`,
+      );
+    }
+    return recoverCctpInbound(
+      { aa: this.#config.aa },
+      {
+        signer: this.#cctpOwnerSigner(stored.response, options?.ownerSigner),
+        burnTxHash: burnTxHash as `0x${string}`,
+        sourceChain: sourceChain as CctpChainName,
+        recipient: recipient as `0x${string}`,
+        onProgress: options?.onProgress,
+        signal: options?.signal,
+      },
+    );
   }
 
   /**

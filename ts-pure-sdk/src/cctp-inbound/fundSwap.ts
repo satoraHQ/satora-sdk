@@ -9,10 +9,12 @@
  *   3. `submitUserOp` on the settlement chain via the caller's Kernel
  *      smart account (paymaster-sponsored).
  *
- * The caller's single `EvmSigner` serves double duty: source-chain
- * signer for step 1 AND Kernel owner for step 3. The smart-account
- * address is derived once up-front and pinned as
- * `mintRecipient` / `destinationCaller` on the burn.
+ * `signer` sends the source-chain approve + burn. `ownerSigner` owns the
+ * Kernel account that settles on Arbitrum; it defaults to `signer`, but a
+ * browser wallet usually cannot sign an EIP-7702 authorization, so the
+ * `Client` passes the SDK's own key there for swaps created gasless. The
+ * smart-account address (the owner's address, under 7702) is derived once
+ * up-front and pinned as `mintRecipient` / `destinationCaller` on the burn.
  */
 
 import type { Chain, Hex } from "viem";
@@ -43,11 +45,29 @@ export interface CctpFundSwapParams {
   /** Swap ID from `client.createSwap(...)`. */
   swapId: string;
   /**
-   * SDK signer bound to the **source chain**. Its `address` is the
-   * source-chain sender AND the Kernel-account owner on the settlement
-   * chain. Requires `signer.signMessage` for the CCTP path.
+   * SDK signer bound to the **source chain**: sends the approve + burn.
+   * Also the Kernel-account owner unless `ownerSigner` is set, in which case
+   * it needs `signMessage` and `signAuthorization`.
    */
   signer: EvmSigner;
+  /**
+   * Kernel-account owner on the settlement chain (needs `signMessage`,
+   * `signTypedData` and `signAuthorization`). Defaults to `signer`. Its
+   * address receives the minted USDC and is the only allowed caller of
+   * `receiveMessage`, so it must match the swap's depositor.
+   */
+  ownerSigner?: EvmSigner;
+  /**
+   * A burn this swap already sent (e.g. recorded by a previous attempt that
+   * was interrupted). Skips approve + burn and resumes at the attestation.
+   */
+  burnTxHash?: Hex;
+  /**
+   * Called as soon as the burn is broadcast, before its receipt. Persist the
+   * hash here: from this point the USDC has left the source chain, and the
+   * hash is what resuming or recovering the settlement needs.
+   */
+  onBurn?: (burnTxHash: Hex) => void | Promise<void>;
   /** USDC amount in smallest units (6 decimals). */
   amount: bigint;
   /**
@@ -102,6 +122,9 @@ export async function cctpFundSwap(
   const {
     swapId,
     signer,
+    ownerSigner = signer,
+    burnTxHash: resumeBurnTxHash,
+    onBurn,
     amount,
     maxFee,
     settlementChain = arbitrum,
@@ -126,22 +149,32 @@ export async function cctpFundSwap(
   // `receiveMessage` call on it.
   const { accountAddress: smartAccountAddress } =
     await createSwapSmartAccountClient({
-      signer,
+      signer: ownerSigner,
       aa: context.aa,
       chain: settlementChain,
     });
 
-  // 1. Source-chain approve + burn.
-  onProgress?.({ phase: "approving" });
-  const { approveTxHash, burnTxHash } = await approveAndBurn({
-    signer,
-    amount,
-    usdcAddress: source.usdc,
-    destinationDomain: destination.domain,
-    smartAccountAddress,
-    maxFee,
-    minFinalityThreshold,
-  });
+  // 1. Source-chain approve + burn, unless a previous attempt already burned.
+  let approveTxHash: Hex | undefined;
+  let burnTxHash: Hex;
+  if (resumeBurnTxHash) {
+    burnTxHash = resumeBurnTxHash;
+  } else {
+    onProgress?.({ phase: "approving" });
+    const burn = await approveAndBurn({
+      signer,
+      amount,
+      usdcAddress: source.usdc,
+      destinationDomain: destination.domain,
+      smartAccountAddress,
+      maxFee,
+      minFinalityThreshold,
+    });
+    approveTxHash = burn.approveTxHash;
+    burnTxHash = burn.burnTxHash;
+    // `approveAndBurn` returns as soon as the burn is broadcast.
+    await onBurn?.(burnTxHash);
+  }
   onProgress?.({ phase: "burning", burnTxHash });
   const burnReceipt = await signer.waitForReceipt(burnTxHash);
   if (burnReceipt.status !== "success") {
@@ -161,7 +194,7 @@ export async function cctpFundSwap(
   onProgress?.({ phase: "submitting" });
   const submit = await submitCctpInboundUserOp(context, {
     swapId,
-    signer,
+    signer: ownerSigner,
     cctpMessage: message as Hex,
     cctpAttestation: attestation as Hex,
     chain: settlementChain,
