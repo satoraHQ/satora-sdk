@@ -4759,10 +4759,12 @@ export class Client {
    * which the paymaster checks before sponsoring. A swap created gasless has the
    * SDK's own key as depositor; that key can sign the EIP-7702 authorization a
    * browser wallet usually cannot. Otherwise the wallet itself is the owner.
+   * `hint` is appended to the error when neither is.
    */
   #depositorOwnerSigner(
     swapResponse: GetSwapResponse,
     walletSigner?: EvmSigner,
+    hint?: string,
   ): EvmSigner {
     const depositor = (
       swapResponse as { client_evm_address?: string }
@@ -4774,9 +4776,10 @@ export class Client {
       return walletSigner;
     }
     throw new Error(
-      `CCTP-inbound swap ${swapResponse.id} was created for depositor ${depositor}, ` +
-        "which is neither this client's key nor the given wallet. " +
-        "Create the swap with `gasless: true` to settle through the SDK's key.",
+      `Swap ${swapResponse.id} was created for depositor ${depositor}, ` +
+        `which is neither this client's key nor the given wallet.${
+          hint ? ` ${hint}` : ""
+        }`,
     );
   }
 
@@ -6532,7 +6535,11 @@ export class Client {
       const cctp = await this.cctpInbound.fundSwap({
         swapId,
         signer,
-        ownerSigner: this.#depositorOwnerSigner(swapResponse, signer),
+        ownerSigner: this.#depositorOwnerSigner(
+          swapResponse,
+          signer,
+          "Create the swap with `gasless: true` to settle through the SDK's key.",
+        ),
         burnTxHash: recordedBurn,
         onBurn: (burnTxHash) => this.#recordCctpBurn(swapId, burnTxHash),
         amount,
@@ -7238,9 +7245,16 @@ export class Client {
         `Sponsored refunds run on Arbitrum only; swap ${swapId} is on chain ${chainId}. Use refundEvmWithSigner.`,
       );
     }
-    // Only the depositor's account is sponsored; throws for a wallet-funded
-    // swap, whose refund the wallet sends itself (refundEvmWithSigner).
-    const owner = this.#depositorOwnerSigner(stored.response);
+    // Only the depositor's account is sponsored. A wallet-funded swap's
+    // wallet is the depositor and sends the refund itself.
+    const depositor = (stored.response as { client_evm_address?: string })
+      .client_evm_address;
+    if (depositor?.toLowerCase() !== this.getEvmAddress().toLowerCase()) {
+      throw new Error(
+        `Swap ${swapId} was funded by ${depositor}, not this client's key; only gasless swaps can be refunded sponsored. Refund it with \`refundEvmWithSigner\` from that wallet.`,
+      );
+    }
+    const owner = this.#keyOwnerSigner();
 
     const result = await this.refundSwap(swapId);
     if (!result.evmRefundData) {

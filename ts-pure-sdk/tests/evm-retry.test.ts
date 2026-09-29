@@ -112,7 +112,7 @@ describe("Client.refundEvmSponsored", () => {
     const { sendUserOperation } = refundable(client);
 
     await expect(client.refundEvmSponsored(SWAP_ID)).rejects.toThrow(
-      /neither this client's key/,
+      /funded by 0x90f79bf6eb2c4f870365e785982e1f101e93b906, not this client's key; .*`refundEvmWithSigner`/,
     );
     expect(sendUserOperation).not.toHaveBeenCalled();
   });
