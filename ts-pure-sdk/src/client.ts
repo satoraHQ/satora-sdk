@@ -7256,9 +7256,18 @@ export class Client {
         },
       ],
     });
-    const { receipt } = await client.waitForUserOperationReceipt({
-      hash: userOpHash,
-    });
+    const { receipt, success, reason } =
+      await client.waitForUserOperationReceipt({ hash: userOpHash });
+    // An included UserOp can still revert (e.g. the server's collaborative
+    // refund won the race); the receipt then resolves with `success: false`
+    // instead of throwing. Nothing was refunded, so fail rather than report it.
+    if (!success) {
+      throw new Error(
+        `Sponsored refund UserOp ${userOpHash} reverted on-chain${
+          reason ? `: ${reason}` : ""
+        }`,
+      );
+    }
     return { txHash: receipt.transactionHash, userOpHash };
   }
 

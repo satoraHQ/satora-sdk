@@ -45,7 +45,7 @@ afterEach(() => {
 });
 
 describe("Client.refundEvmSponsored", () => {
-  function refundable(client: Client, timelockExpired = true) {
+  function refundable(client: Client, timelockExpired = true, success = true) {
     vi.spyOn(client, "refundSwap").mockResolvedValue({
       success: true,
       message: "",
@@ -66,6 +66,8 @@ describe("Client.refundEvmSponsored", () => {
             client: {
               sendUserOperation,
               waitForUserOperationReceipt: async () => ({
+                success,
+                reason: success ? undefined : "HTLC: swap not active",
                 receipt: { transactionHash: REFUND_TX },
               }),
             },
@@ -94,6 +96,15 @@ describe("Client.refundEvmSponsored", () => {
         },
       ],
     });
+  });
+
+  it("fails when the refund UserOp was included but reverted", async () => {
+    const { client } = await clientWith();
+    refundable(client, true, false);
+
+    await expect(client.refundEvmSponsored(SWAP_ID)).rejects.toThrow(
+      /reverted on-chain: HTLC: swap not active/,
+    );
   });
 
   it("refuses a wallet-funded swap, whose wallet refunds itself", async () => {
