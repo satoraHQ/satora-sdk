@@ -610,6 +610,13 @@ export class Client {
   }
 
   /** Delegated to the legacy client (migration checkpoint). */
+  refundEvmSponsored(
+    ...args: Parameters<LegacyClient["refundEvmSponsored"]>
+  ): ReturnType<LegacyClient["refundEvmSponsored"]> {
+    return this.#legacy.refundEvmSponsored(...args);
+  }
+
+  /** Delegated to the legacy client (migration checkpoint). */
   collabRefundEvmWithSigner(
     ...args: Parameters<LegacyClient["collabRefundEvmWithSigner"]>
   ): ReturnType<LegacyClient["collabRefundEvmWithSigner"]> {

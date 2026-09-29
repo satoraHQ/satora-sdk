@@ -586,6 +586,9 @@ export interface ContinueRefundedEvmSwapInfo {
   oldSwap?: GetSwapResponse;
 }
 
+/** What a continued swap pays out to. */
+export type ContinueTarget = "bitcoin" | "arkade" | "lightning";
+
 export interface ContinueRefundedEvmSwapResult {
   oldSwapId: string;
   newSwapId: string;
@@ -4750,13 +4753,14 @@ export class Client {
   }
 
   /**
-   * The Kernel owner that settles a CCTP-inbound swap on Arbitrum. The owner's
-   * address receives the minted USDC and must be the swap's depositor, which
-   * the paymaster checks before sponsoring. A swap created gasless has the
+   * The Kernel owner for a swap's sponsored UserOps on Arbitrum (the
+   * CCTP-inbound settlement, a sponsored refund, a continuation). The owner's
+   * address is the account the funds sit in and must be the swap's depositor,
+   * which the paymaster checks before sponsoring. A swap created gasless has the
    * SDK's own key as depositor; that key can sign the EIP-7702 authorization a
    * browser wallet usually cannot. Otherwise the wallet itself is the owner.
    */
-  #cctpOwnerSigner(
+  #depositorOwnerSigner(
     swapResponse: GetSwapResponse,
     walletSigner?: EvmSigner,
   ): EvmSigner {
@@ -4764,10 +4768,7 @@ export class Client {
       swapResponse as { client_evm_address?: string }
     ).client_evm_address?.toLowerCase();
     if (depositor === this.getEvmAddress().toLowerCase()) {
-      return keyToKernelOwnerSigner(
-        this.#signer.deriveEvmKey().secretKey,
-        42161, // Arbitrum, the only CCTP-inbound settlement chain
-      );
+      return this.#keyOwnerSigner();
     }
     if (walletSigner && depositor === walletSigner.address.toLowerCase()) {
       return walletSigner;
@@ -6531,7 +6532,7 @@ export class Client {
       const cctp = await this.cctpInbound.fundSwap({
         swapId,
         signer,
-        ownerSigner: this.#cctpOwnerSigner(swapResponse, signer),
+        ownerSigner: this.#depositorOwnerSigner(swapResponse, signer),
         burnTxHash: recordedBurn,
         onBurn: (burnTxHash) => this.#recordCctpBurn(swapId, burnTxHash),
         amount,
@@ -6948,15 +6949,23 @@ export class Client {
     return transfers.at(-1) ?? null;
   }
 
+  /**
+   * Whether a refunded EVM-sourced swap can be swapped again from its refund:
+   * the refunded token must sit in the depositor's Kernel account on
+   * Arbitrum. Without `signer` the account is this client's key (swaps
+   * created gasless, incl. CCTP-inbound) and balances are read through the AA
+   * RPC; pass the owner's signer for any other account.
+   */
   async getRefundedEvmSwapContinuation(
     oldSwapId: string,
-    signer: EvmSigner,
+    signer?: EvmSigner,
   ): Promise<ContinueRefundedEvmSwapInfo> {
     const oldSwap = await this.getSwap(oldSwapId, { updateStorage: true });
 
     if (
       oldSwap.direction !== "evm_to_arkade" &&
-      oldSwap.direction !== "evm_to_bitcoin"
+      oldSwap.direction !== "evm_to_bitcoin" &&
+      oldSwap.direction !== "evm_to_lightning"
     ) {
       return {
         eligible: false,
@@ -6985,10 +6994,14 @@ export class Client {
       };
     }
 
+    const owner = signer ?? this.#keyOwnerSigner();
     const { accountAddress } = await this.cctpInbound.createSmartAccountClient({
-      signer,
+      signer: owner,
     });
     const smartAccountAddress = accountAddress;
+    const readCall = signer
+      ? (tx: { to: string; data: string }) => signer.call(tx)
+      : await this.#aaRpcCall();
 
     const chainConfig = await this.getChainConfig();
     const refundChain = "42161" as Chain;
@@ -7066,7 +7079,7 @@ export class Client {
         candidate.address,
         smartAccountAddress,
       );
-      const balanceResult = await signer.call({
+      const balanceResult = await readCall({
         to: balanceCall.to,
         data: balanceCall.data,
       });
@@ -7097,9 +7110,26 @@ export class Client {
     };
   }
 
+  /**
+   * Swap the refund of a failed EVM-sourced swap again, instead of leaving it
+   * in the depositor's Kernel account: creates a new swap funded from that
+   * balance and funds it with a paymaster-sponsored UserOp (no wallet, no
+   * gas).
+   *
+   * @param options.targetAddress - Where the new swap pays out: a Bitcoin
+   *   address, an Arkade address, or for Lightning a BOLT11 invoice (its amount
+   *   must be covered by the refund), a Lightning address or an LNURL.
+   * @param options.target - The payout type; defaults to the old swap's.
+   * @param options.signer - The account owner when it is not this client's
+   *   key (see {@link getRefundedEvmSwapContinuation}).
+   */
   async continueRefundedEvmSwap(
     oldSwapId: string,
-    options: { targetAddress: string; signer: EvmSigner },
+    options: {
+      targetAddress: string;
+      target?: ContinueTarget;
+      signer?: EvmSigner;
+    },
   ): Promise<ContinueRefundedEvmSwapResult> {
     const info = await this.getRefundedEvmSwapContinuation(
       oldSwapId,
@@ -7109,7 +7139,14 @@ export class Client {
       throw new Error(info.reason ?? "Refunded swap cannot be continued.");
     }
 
-    let created: CreateSwapResult;
+    const target =
+      options.target ??
+      ({
+        evm_to_arkade: "arkade",
+        evm_to_bitcoin: "bitcoin",
+        evm_to_lightning: "lightning",
+      }[info.oldSwap.direction as string] as ContinueTarget | undefined);
+    const sourceAmount = BigInt(info.amount);
     const common = {
       tokenAddress: info.token.address,
       evmChainId: 42161,
@@ -7117,17 +7154,23 @@ export class Client {
       gasless: true,
     };
 
-    if (info.oldSwap.direction === "evm_to_arkade") {
+    let created: CreateSwapResult;
+    if (target === "arkade") {
       created = await this.createEvmToArkadeSwapGeneric({
         ...common,
         targetAddress: options.targetAddress,
-        sourceAmount: BigInt(info.amount),
+        sourceAmount,
       });
-    } else if (info.oldSwap.direction === "evm_to_bitcoin") {
+    } else if (target === "bitcoin") {
       created = await this.createEvmToBitcoinSwap({
         ...common,
         targetAddress: options.targetAddress,
-        sourceAmount: BigInt(info.amount),
+        sourceAmount,
+      });
+    } else if (target === "lightning") {
+      created = await this.createEvmToLightningSwap({
+        ...common,
+        ...lightningPayoutOf(options.targetAddress, sourceAmount),
       });
     } else {
       throw new Error(
@@ -7135,10 +7178,13 @@ export class Client {
       );
     }
 
+    // `expectedMaxSourceAmount` caps the spend at this refund: a Lightning
+    // invoice pins the payout, and one the refund cannot cover must fail
+    // rather than draw on unrelated balance in the account.
     const submitted = await this.cctpInbound.submitBalanceUserOp({
       swapId: created.response.id,
-      signer: options.signer,
-      expectedMaxSourceAmount: BigInt(info.amount),
+      signer: options.signer ?? this.#keyOwnerSigner(),
+      expectedMaxSourceAmount: sourceAmount,
     });
 
     return {
@@ -7150,6 +7196,103 @@ export class Client {
       amount: info.amount,
       token: info.token,
     };
+  }
+
+  /**
+   * Refund an EVM-sourced swap whose depositor is this client's key (created
+   * gasless, incl. CCTP-inbound) once its timelock has passed, as a
+   * paymaster-sponsored UserOp from that key's Kernel account: no wallet, no
+   * gas. The refunded token lands in that account, from where
+   * {@link continueRefundedEvmSwap} swaps it again. Arbitrum only, where the
+   * paymaster runs.
+   */
+  async refundEvmSponsored(
+    swapId: string,
+  ): Promise<{ txHash: string; userOpHash: string }> {
+    const aa = this.#config.aa;
+    if (!aa) {
+      throw new Error(
+        "A sponsored refund requires AA config. Call `.withAa({ bundlerUrl, paymasterPolicyId })` on the ClientBuilder before `.build()`.",
+      );
+    }
+    const stored = await this.getStoredSwap(swapId);
+    if (!stored) {
+      throw new Error(`Swap ${swapId} not found in local storage.`);
+    }
+    const chainId = (stored.response as { evm_chain_id?: number }).evm_chain_id;
+    if (chainId !== 42161) {
+      throw new Error(
+        `Sponsored refunds run on Arbitrum only; swap ${swapId} is on chain ${chainId}. Use refundEvmWithSigner.`,
+      );
+    }
+    // Only the depositor's account is sponsored; throws for a wallet-funded
+    // swap, whose refund the wallet sends itself (refundEvmWithSigner).
+    const owner = this.#depositorOwnerSigner(stored.response);
+
+    const result = await this.refundSwap(swapId);
+    if (!result.evmRefundData) {
+      throw new Error(
+        `Unable to get EVM refund data for: ${swapId}. ${result.message}`,
+      );
+    }
+    if (!result.evmRefundData.timelockExpired) {
+      const expiryDate = new Date(
+        result.evmRefundData.timelockExpiry * 1000,
+      ).toISOString();
+      throw new Error(
+        `Refund timelock has not expired yet (expires ${expiryDate}).`,
+      );
+    }
+
+    const { client } = await this.cctpInbound.createSmartAccountClient({
+      signer: owner,
+    });
+    const userOpHash = await client.sendUserOperation({
+      calls: [
+        {
+          to: result.evmRefundData.to as `0x${string}`,
+          data: result.evmRefundData.data as `0x${string}`,
+          value: 0n,
+        },
+      ],
+    });
+    const { receipt } = await client.waitForUserOperationReceipt({
+      hash: userOpHash,
+    });
+    return { txHash: receipt.transactionHash, userOpHash };
+  }
+
+  /** This client's key as the Kernel owner on Arbitrum. */
+  #keyOwnerSigner(): EvmSigner {
+    return keyToKernelOwnerSigner(this.#signer.deriveEvmKey().secretKey, 42161);
+  }
+
+  /**
+   * An `eth_call` over the AA RPC, for reads on an account this client owns
+   * with its key (whose signer does not read the chain).
+   */
+  async #aaRpcCall(): Promise<
+    (tx: { to: string; data: string }) => Promise<string>
+  > {
+    const rpcUrl = this.#config.aa?.rpcUrl ?? this.#config.aa?.bundlerUrl;
+    if (!rpcUrl) {
+      throw new Error(
+        "Reading a refunded balance without a signer requires AA config (`.withAa(...)`).",
+      );
+    }
+    const { createPublicClient, http } = await import("viem");
+    const { arbitrum } = await import("viem/chains");
+    const publicClient = createPublicClient({
+      chain: arbitrum,
+      transport: http(rpcUrl),
+    });
+    return async ({ to, data }) =>
+      (
+        await publicClient.call({
+          to: to as `0x${string}`,
+          data: data as `0x${string}`,
+        })
+      ).data ?? "0x";
   }
 
   /**
@@ -7465,7 +7608,10 @@ export class Client {
     return recoverCctpInbound(
       { aa: this.#config.aa },
       {
-        signer: this.#cctpOwnerSigner(stored.response, options?.ownerSigner),
+        signer: this.#depositorOwnerSigner(
+          stored.response,
+          options?.ownerSigner,
+        ),
         burnTxHash: burnTxHash as `0x${string}`,
         sourceChain: sourceChain as CctpChainName,
         recipient: recipient as `0x${string}`,
@@ -7621,4 +7767,25 @@ export class Client {
 
     return vtxos.some((v) => v.txid === receiveArkadeTxid);
   }
+}
+
+/**
+ * The Lightning payout fields for a continuation: a BOLT11 invoice pins the
+ * payout amount itself; a Lightning address or LNURL is paid the refund,
+ * minus fees.
+ */
+function lightningPayoutOf(
+  target: string,
+  sourceAmount: bigint,
+):
+  | { lightningInvoice: string }
+  | { lightningAddress: string; sourceAmount: bigint }
+  | { lnurl: string; sourceAmount: bigint } {
+  const value = target.trim().replace(/^lightning:/i, "");
+  if (/^ln(bc|tb|bcrt)[0-9]/i.test(value)) return { lightningInvoice: value };
+  if (/^lnurl/i.test(value)) return { lnurl: value, sourceAmount };
+  if (value.includes("@")) return { lightningAddress: value, sourceAmount };
+  throw new Error(
+    `"${target}" is not a Lightning invoice, Lightning address or LNURL.`,
+  );
 }
