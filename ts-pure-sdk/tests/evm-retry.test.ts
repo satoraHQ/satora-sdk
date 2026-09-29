@@ -233,17 +233,33 @@ describe("Client.continueRefundedEvmSwap", () => {
     );
   });
 
-  it("funds with the given signer for an account it owns", async () => {
+  it("funds with a given signer for this client's key", async () => {
     const { client, response } = await clientWith();
     const spies = continuable(client, response);
-    const wallet = { address: WALLET } as EvmSigner;
+    const keySigner = { address: client.getEvmAddress() } as EvmSigner;
 
     await client.continueRefundedEvmSwap(SWAP_ID, {
       targetAddress: "bc1qexample",
-      signer: wallet,
+      signer: keySigner,
     });
 
-    expect(spies.submit.mock.calls[0][0].signer).toBe(wallet);
+    expect(spies.submit.mock.calls[0][0].signer).toBe(keySigner);
+  });
+
+  it("rejects another owner before creating a swap it could not fund", async () => {
+    const { client, response } = await clientWith();
+    const spies = continuable(client, response);
+
+    await expect(
+      client.continueRefundedEvmSwap(SWAP_ID, {
+        targetAddress: "satoshi@example.com",
+        target: "lightning",
+        signer: { address: WALLET } as EvmSigner,
+      }),
+    ).rejects.toThrow(/funded from this client's key/);
+    expect(spies.toLightning).not.toHaveBeenCalled();
+    expect(spies.toBitcoin).not.toHaveBeenCalled();
+    expect(spies.submit).not.toHaveBeenCalled();
   });
 
   it("rejects a Lightning target that is not a Lightning payee", async () => {

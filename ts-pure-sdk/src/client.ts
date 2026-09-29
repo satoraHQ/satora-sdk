@@ -7120,8 +7120,10 @@ export class Client {
    *   address, an Arkade address, or for Lightning a BOLT11 invoice (its amount
    *   must be covered by the refund), a Lightning address or an LNURL.
    * @param options.target - The payout type; defaults to the old swap's.
-   * @param options.signer - The account owner when it is not this client's
-   *   key (see {@link getRefundedEvmSwapContinuation}).
+   * @param options.signer - A signer for this client's key; defaults to one
+   *   derived from it. Any other owner is rejected: the new swap is created
+   *   gasless, which records this client's key as its depositor, and the
+   *   paymaster only sponsors funding from the depositor's account.
    */
   async continueRefundedEvmSwap(
     oldSwapId: string,
@@ -7131,6 +7133,17 @@ export class Client {
       signer?: EvmSigner;
     },
   ): Promise<ContinueRefundedEvmSwapResult> {
+    // Checked before anything is created: a swap whose depositor cannot fund
+    // it would be left behind unfunded.
+    if (
+      options.signer &&
+      options.signer.address.toLowerCase() !==
+        this.getEvmAddress().toLowerCase()
+    ) {
+      throw new Error(
+        `Cannot continue refunded swap ${oldSwapId} with signer ${options.signer.address}: a continuation is funded from this client's key (${this.getEvmAddress()}).`,
+      );
+    }
     const info = await this.getRefundedEvmSwapContinuation(
       oldSwapId,
       options.signer,
