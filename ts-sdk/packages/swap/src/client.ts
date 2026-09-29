@@ -652,6 +652,13 @@ export class Client {
   }
 
   /** Delegated to the legacy client (migration checkpoint). */
+  recoverCctpInboundSwap(
+    ...args: Parameters<LegacyClient["recoverCctpInboundSwap"]>
+  ): ReturnType<LegacyClient["recoverCctpInboundSwap"]> {
+    return this.#legacy.recoverCctpInboundSwap(...args);
+  }
+
+  /** Delegated to the legacy client (migration checkpoint). */
   recoverGaslessFunds(
     ...args: Parameters<LegacyClient["recoverGaslessFunds"]>
   ): ReturnType<LegacyClient["recoverGaslessFunds"]> {
