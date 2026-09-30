@@ -16,7 +16,11 @@ import {
   type TokenInfos,
 } from "./api/client.js";
 import { getVhtlcAmounts, type VhtlcAmounts } from "./arkade.js";
-import { type CctpChainName, USDC_ADDRESSES } from "./cctp/constants.js";
+import {
+  CCTP_DOMAINS,
+  type CctpChainName,
+  USDC_ADDRESSES,
+} from "./cctp/constants.js";
 import { computeCctpFastFee, getCachedCctpFee } from "./cctp/fee.js";
 import {
   cctpMetaForChainId,
@@ -32,6 +36,11 @@ import {
   type RecoveryProgress,
   recoverCctpInbound,
 } from "./cctp-inbound/recover.js";
+import type {
+  CctpFundSwapFromSolanaResult,
+  SolanaCctpProgressStep,
+} from "./cctp-inbound/solana/fundSwap.js";
+import type { SolanaSigner } from "./cctp-inbound/solana/types.js";
 import type { AaConfig } from "./cctp-inbound/types.js";
 import {
   type ComposeQuoteParams,
@@ -926,6 +935,11 @@ export interface ClientConfig {
    * on first CCTP API call if omitted.
    */
   aa?: AaConfig;
+  /**
+   * Optional Solana JSON-RPC URL, used to build and confirm the USDC burn of
+   * a swap funded from Solana ({@link Client.fundSwapFromSolana}).
+   */
+  solanaRpcUrl?: string;
   /** Optional logger sink. The SDK is silent by default. */
   logger?: Logger;
   /** Minimum log level to emit. Defaults to `silent`. */
@@ -986,6 +1000,7 @@ export class ClientBuilder {
   #mnemonic?: string;
   #xprv?: string;
   #aa?: AaConfig;
+  #solanaRpcUrl?: string;
   #logger?: Logger;
   #logLevel?: LogLevel;
 
@@ -1160,6 +1175,17 @@ export class ClientBuilder {
   }
 
   /**
+   * Sets the Solana JSON-RPC URL used to fund swaps from Solana
+   * ({@link Client.fundSwapFromSolana}): it fetches the blockhash, simulates
+   * the USDC burn and confirms it. Public endpoints rate-limit hard; use a
+   * dedicated one in production.
+   */
+  withSolanaRpcUrl(url: string): this {
+    this.#solanaRpcUrl = url;
+    return this;
+  }
+
+  /**
    * Sets the logger sink used by the SDK.
    *
    * The SDK is silent by default. Pair this with `withLogLevel()` to opt in
@@ -1241,6 +1267,7 @@ export class ClientBuilder {
         electrumWsUrl: this.#electrumWsUrl?.replace(/\/+$/, ""),
         arkadeServerUrl: this.#arkadeServerUrl?.replace(/\/+$/, ""),
         aa: this.#aa ?? defaultAaConfig(),
+        solanaRpcUrl: this.#solanaRpcUrl,
         logger: this.#logger,
         logLevel: this.#logLevel,
       },
@@ -2295,6 +2322,17 @@ export class Client {
       }
       bridgeSourceChain = source.name;
       bridgeSourceTokenAddress = source.usdc;
+      sourceChain = "42161" as Chain;
+      sourceToken = USDC_ADDRESSES.Arbitrum;
+    }
+    if (isSolanaToken(params.sourceChain)) {
+      if (params.sourceToken !== USDC_ADDRESSES.Solana) {
+        throw new Error(
+          `Quote on Solana requires native USDC (${USDC_ADDRESSES.Solana}); got ${params.sourceToken}. Only USDC is bridgeable via CCTP.`,
+        );
+      }
+      bridgeSourceChain = "Solana";
+      bridgeSourceTokenAddress = USDC_ADDRESSES.Solana;
       sourceChain = "42161" as Chain;
       sourceToken = USDC_ADDRESSES.Arbitrum;
     }
@@ -5491,6 +5529,27 @@ export class Client {
       sourceChain = "42161";
       sourceTokenId = USDC_ADDRESSES.Arbitrum;
     }
+    // USDC on Solana: the same CCTP hop, burned from a Solana wallet (see
+    // `fundSwapFromSolana`). A Solana wallet has no EVM account to settle
+    // with on Arbitrum, so the swap must use this client's key (gasless).
+    if (!inboundBridgeParams && isSolanaToken(sourceChain)) {
+      if (sourceTokenId !== USDC_ADDRESSES.Solana) {
+        throw new Error(
+          `createSwap on Solana requires native USDC (${USDC_ADDRESSES.Solana}); got ${sourceTokenId}. Only USDC is bridgeable via CCTP.`,
+        );
+      }
+      if (!options.gasless) {
+        throw new Error(
+          "Swaps funded from Solana must be created with `gasless: true`: they settle on Arbitrum with this client's key.",
+        );
+      }
+      inboundBridgeParams = {
+        sourceChain: "Solana",
+        sourceTokenAddress: USDC_ADDRESSES.Solana,
+      };
+      sourceChain = "42161";
+      sourceTokenId = USDC_ADDRESSES.Arbitrum;
+    }
 
     // Arkade → EVM
     if (isArkade(sourceAsset) && isEvmToken(targetChain)) {
@@ -6453,6 +6512,15 @@ export class Client {
         );
         return { txHash };
       }
+      // Burning on Solana needs a Solana wallet, not an EVM signer.
+      if (
+        (response as { bridge_source_chain?: string }).bridge_source_chain ===
+        "Solana"
+      ) {
+        throw new Error(
+          `Swap ${swapId} is funded from Solana; use fundSwapFromSolana with a Solana wallet.`,
+        );
+      }
     }
 
     // Dispatch the CCTP-inbound path only for chains the backend does
@@ -6662,6 +6730,149 @@ export class Client {
       token: freshFunding.lockTokenAddress,
     });
     return { txHash: mined };
+  }
+
+  /**
+   * Fund a swap created with USDC on Solana as its source: burns the USDC on
+   * Solana through CCTP with the user's wallet, waits for Circle's
+   * attestation, then settles on Arbitrum with one paymaster-sponsored UserOp
+   * (`receiveMessage` + Permit2 approval + HTLC creation).
+   *
+   * The Arbitrum side is always this client's key, so the swap must have been
+   * created `gasless`. The burn is recorded on the stored swap as soon as the
+   * wallet sends it; calling this again for a still-pending swap resumes from
+   * that burn instead of burning twice, and
+   * {@link recoverCctpInboundSwap} uses it if the settlement never lands.
+   *
+   * @param swapId - The UUID of the swap
+   * @param signer - The user's Solana wallet, see {@link SolanaSigner}
+   * @param options.rpcUrl - Solana JSON-RPC URL; defaults to the one set with
+   *   `withSolanaRpcUrl` on the builder
+   * @param options.maxFee - CCTP fast-transfer fee cap in USDC units;
+   *   defaults to the IRIS-quoted fee
+   * @param options.priorityFeeMicroLamports - Solana priority fee per compute
+   *   unit; defaults to recent network fees
+   * @returns The Arbitrum settlement tx hash (or UserOp hash) and the burn
+   */
+  async fundSwapFromSolana(
+    swapId: string,
+    signer: SolanaSigner,
+    options?: {
+      rpcUrl?: string;
+      maxFee?: bigint;
+      priorityFeeMicroLamports?: bigint;
+      onProgress?: (step: SolanaCctpProgressStep) => void;
+      signal?: AbortSignal;
+    },
+  ): Promise<{ txHash: string; cctp: CctpFundSwapFromSolanaResult }> {
+    const rpcUrl = options?.rpcUrl ?? this.#config.solanaRpcUrl;
+    if (!rpcUrl) {
+      throw new Error(
+        "Funding from Solana needs a Solana RPC URL. Pass `rpcUrl` or call `.withSolanaRpcUrl(url)` on the ClientBuilder.",
+      );
+    }
+    const stored = await this.#swapStorage?.get(swapId);
+    const swapResponse =
+      stored?.response ?? (await this.getSwap(swapId, { updateStorage: true }));
+    const bridge = swapResponse as {
+      bridge_source_chain?: string;
+      bridge_source_token_address?: string;
+      source_amount?: number | string;
+    };
+    if (bridge.bridge_source_chain !== "Solana") {
+      throw new Error(
+        `Swap ${swapId} is not funded from Solana (bridge source: ${bridge.bridge_source_chain ?? "none"}).`,
+      );
+    }
+    if (
+      bridge.bridge_source_token_address &&
+      bridge.bridge_source_token_address !== USDC_ADDRESSES.Solana
+    ) {
+      throw new Error(
+        `fundSwapFromSolana requires native USDC (${USDC_ADDRESSES.Solana}), but the swap's bridge_source_token_address is ${bridge.bridge_source_token_address}.`,
+      );
+    }
+    if (bridge.source_amount === undefined) {
+      throw new Error(
+        `Swap ${swapId} has no source_amount — cannot route CCTP fund.`,
+      );
+    }
+    const amount = BigInt(bridge.source_amount);
+    const maxFee =
+      options?.maxFee ??
+      computeCctpFastFee(
+        await getCachedCctpFee({
+          sourceDomain: CCTP_DOMAINS.Solana,
+          destinationDomain: CCTP_DOMAINS.Arbitrum,
+        }),
+        amount,
+      );
+
+    // A burn recorded by an interrupted attempt: resume from it instead of
+    // burning the USDC a second time, if the swap is still unfunded.
+    const recordedBurn = stored?.cctpBurnTxid;
+    if (recordedBurn) {
+      const fresh = await this.getSwap(swapId, { updateStorage: true });
+      if (fresh.status !== "pending") {
+        throw new Error(
+          `Swap ${swapId} is already ${fresh.status}; its CCTP burn ${recordedBurn} was settled.`,
+        );
+      }
+    }
+
+    const { cctpFundSwapFromSolana } = await import(
+      "./cctp-inbound/solana/fundSwap.js"
+    );
+    // Built through the namespace so a missing AA config fails clearly.
+    const { aa } = this.cctpInbound;
+    const cctp = await cctpFundSwapFromSolana(
+      { apiClient: this.#apiClient, aa },
+      {
+        swapId,
+        signer,
+        ownerSigner: this.#depositorOwnerSigner(
+          swapResponse,
+          undefined,
+          "A swap funded from Solana must be created with `gasless: true`.",
+        ),
+        rpcUrl,
+        burnSignature: recordedBurn,
+        onBurn: (burnSignature) => this.#recordCctpBurn(swapId, burnSignature),
+        amount,
+        maxFee,
+        priorityFeeMicroLamports: options?.priorityFeeMicroLamports,
+        onProgress: options?.onProgress,
+        signal: options?.signal,
+      },
+    );
+    return { txHash: cctp.transactionHash ?? cctp.userOpHash, cctp };
+  }
+
+  /**
+   * The USDC balance (6 decimals) of a Solana wallet: what its USDC
+   * associated token account holds, the account {@link fundSwapFromSolana}
+   * burns from. `0n` when the wallet has none.
+   *
+   * @param owner - The wallet's public key (base58)
+   * @param options.rpcUrl - Solana JSON-RPC URL; defaults to the one set with
+   *   `withSolanaRpcUrl` on the builder
+   */
+  async getSolanaUsdcBalance(
+    owner: string,
+    options?: { rpcUrl?: string },
+  ): Promise<bigint> {
+    const rpcUrl = options?.rpcUrl ?? this.#config.solanaRpcUrl;
+    if (!rpcUrl) {
+      throw new Error(
+        "Reading a Solana balance needs a Solana RPC URL. Pass `rpcUrl` or call `.withSolanaRpcUrl(url)` on the ClientBuilder.",
+      );
+    }
+    const [{ deriveAssociatedTokenAccount }, { getTokenAccountAmount }] =
+      await Promise.all([
+        import("./cctp-inbound/solana/burn.js"),
+        import("./cctp-inbound/solana/rpc.js"),
+      ]);
+    return getTokenAccountAmount(rpcUrl, deriveAssociatedTokenAccount(owner));
   }
 
   /**
@@ -7628,7 +7839,8 @@ export class Client {
    * @param options.ownerSigner - The owner when the swap's depositor is the
    *   user's wallet rather than this client's key
    * @param options.burnTxHash - The burn, when it was not recorded locally
-   *   (e.g. a funding started on another device)
+   *   (e.g. a funding started on another device); for a swap funded from
+   *   Solana, the burn's transaction signature
    */
   async recoverCctpInboundSwap(
     swapId: string,
@@ -7667,7 +7879,7 @@ export class Client {
           stored.response,
           options?.ownerSigner,
         ),
-        burnTxHash: burnTxHash as `0x${string}`,
+        burnTxHash,
         sourceChain: sourceChain as CctpChainName,
         recipient: recipient as `0x${string}`,
         onProgress: options?.onProgress,

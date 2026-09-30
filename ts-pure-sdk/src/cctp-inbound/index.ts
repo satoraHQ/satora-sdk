@@ -78,6 +78,19 @@ export {
   type CreateSwapSmartAccountClientParams,
   createSwapSmartAccountClient,
 } from "./smartAccount.js";
+// Solana source. Only types and constants are exported here: the burn
+// builder (ed25519) is loaded on demand by `Client.fundSwapFromSolana`.
+export {
+  SOLANA_MESSAGE_TRANSMITTER_V2,
+  SOLANA_TOKEN_MESSENGER_MINTER_V2,
+  SOLANA_USDC_MINT,
+} from "./solana/constants.js";
+export type {
+  CctpFundSwapFromSolanaParams,
+  CctpFundSwapFromSolanaResult,
+  SolanaCctpProgressStep,
+} from "./solana/fundSwap.js";
+export type { SolanaSigner } from "./solana/types.js";
 export {
   type SubmitBalanceUserOpParams,
   type SubmitUserOpContext,

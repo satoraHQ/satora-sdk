@@ -603,6 +603,20 @@ export class Client {
   }
 
   /** Delegated to the legacy client (migration checkpoint). */
+  fundSwapFromSolana(
+    ...args: Parameters<LegacyClient["fundSwapFromSolana"]>
+  ): ReturnType<LegacyClient["fundSwapFromSolana"]> {
+    return this.#legacy.fundSwapFromSolana(...args);
+  }
+
+  /** Delegated to the legacy client (migration checkpoint). */
+  getSolanaUsdcBalance(
+    ...args: Parameters<LegacyClient["getSolanaUsdcBalance"]>
+  ): ReturnType<LegacyClient["getSolanaUsdcBalance"]> {
+    return this.#legacy.getSolanaUsdcBalance(...args);
+  }
+
+  /** Delegated to the legacy client (migration checkpoint). */
   refundEvmWithSigner(
     ...args: Parameters<LegacyClient["refundEvmWithSigner"]>
   ): ReturnType<LegacyClient["refundEvmWithSigner"]> {
@@ -1210,6 +1224,13 @@ export class ClientBuilder {
 
   withAa(...args: Parameters<LegacyClientBuilder["withAa"]>): this {
     this.#inner.withAa(...args);
+    return this;
+  }
+
+  withSolanaRpcUrl(
+    ...args: Parameters<LegacyClientBuilder["withSolanaRpcUrl"]>
+  ): this {
+    this.#inner.withSolanaRpcUrl(...args);
     return this;
   }
 

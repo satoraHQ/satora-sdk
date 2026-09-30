@@ -109,8 +109,11 @@ export type RecoveryProgress =
 export interface RecoverCctpInboundParams {
   /** Kernel-account owner; must match the original burn's `destinationCaller`. */
   signer: EvmSigner;
-  /** Source-chain `depositForBurn` tx hash. */
-  burnTxHash: Hex;
+  /**
+   * Source-chain `depositForBurn` tx hash (for Solana, the base58 transaction
+   * signature).
+   */
+  burnTxHash: string;
   /** SDK chain name the burn originated on (e.g. "HyperEVM"). */
   sourceChain: CctpChainName;
   /** EVM address that should receive the recovered USDC on the settlement chain. */
