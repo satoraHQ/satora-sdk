@@ -2308,13 +2308,16 @@ export interface components {
              */
             arkade_htlc_script_version: number;
             /**
-             * @description Optional: CCTP bridge source chain (e.g., "Ethereum", "Optimism"). When set,
+             * @description Optional: CCTP bridge source chain (e.g., "Ethereum", "Optimism", "Solana"). When set,
              *     the user's source USDC originates on this chain and hops through CCTPv2 to
              *     Arbitrum before the HTLC is created. The backend pads `deposit_amount` by
              *     the fast-transfer fee at UserOp-calldata time.
              */
             bridge_source_chain?: string | null;
-            /** @description Optional: USDC address on the bridge source chain. */
+            /**
+             * @description Optional: USDC address on the bridge source chain (0x address on EVM chains,
+             *     base58 mint on Solana).
+             */
             bridge_source_token_address?: string | null;
             /**
              * Format: int64
@@ -2357,7 +2360,7 @@ export interface components {
              *     expected to burn from.
              */
             bridge_source_chain?: string | null;
-            /** @description Native USDC address on the bridge source chain. */
+            /** @description Native USDC address on the bridge source chain (base58 mint on Solana). */
             bridge_source_token_address?: string | null;
             btc_claim_txid?: string | null;
             btc_fund_txid?: string | null;
@@ -2435,13 +2438,16 @@ export interface components {
              */
             amount_out?: number | null;
             /**
-             * @description Optional: CCTP bridge source chain (e.g., "Ethereum", "Optimism"). When set,
+             * @description Optional: CCTP bridge source chain (e.g., "Ethereum", "Optimism", "Solana"). When set,
              *     the user's source USDC originates on this chain and hops through CCTPv2 to
              *     Arbitrum before the HTLC is created. The backend pads `deposit_amount` by
              *     the fast-transfer fee at UserOp-calldata time.
              */
             bridge_source_chain?: string | null;
-            /** @description Optional: USDC address on the bridge source chain. */
+            /**
+             * @description Optional: USDC address on the bridge source chain (0x address on EVM chains,
+             *     base58 mint on Solana).
+             */
             bridge_source_token_address?: string | null;
             /**
              * Format: int64
@@ -2486,7 +2492,7 @@ export interface components {
              *     expected to burn from.
              */
             bridge_source_chain?: string | null;
-            /** @description Native USDC address on the bridge source chain. */
+            /** @description Native USDC address on the bridge source chain (base58 mint on Solana). */
             bridge_source_token_address?: string | null;
             btc_claim_txid?: string | null;
             btc_fund_txid?: string | null;
@@ -2585,12 +2591,15 @@ export interface components {
              */
             amount_in?: string | null;
             /**
-             * @description Optional: CCTP bridge source chain (e.g., "Ethereum", "Optimism"). When set,
+             * @description Optional: CCTP bridge source chain (e.g., "Ethereum", "Optimism", "Solana"). When set,
              *     the user's source USDC originates on this chain and hops through CCTPv2 to
              *     Arbitrum before the HTLC is created.
              */
             bridge_source_chain?: string | null;
-            /** @description Optional: USDC address on the bridge source chain. */
+            /**
+             * @description Optional: USDC address on the bridge source chain (0x address on EVM chains,
+             *     base58 mint on Solana).
+             */
             bridge_source_token_address?: string | null;
             /**
              * Format: int64
@@ -2647,7 +2656,7 @@ export interface components {
              *     HTLC was created.
              */
             bridge_source_chain?: string | null;
-            /** @description Native USDC address on the bridge source chain. */
+            /** @description Native USDC address on the bridge source chain (base58 mint on Solana). */
             bridge_source_token_address?: string | null;
             chain: string;
             client_evm_address: string;
@@ -4231,7 +4240,7 @@ export interface operations {
                  */
                 bridge_target_chain?: string | null;
                 /**
-                 * @description Optional: CCTP bridge source chain (e.g., "Optimism", "Base"). Set when
+                 * @description Optional: CCTP bridge source chain (e.g., "Optimism", "Base", "Solana"). Set when
                  *     the user's source USDC originates on another CCTP chain and hops to
                  *     Arbitrum via CCTPv2 before the HTLC is created. The quote internally
                  *     runs the DEX calculation on Arbitrum-native USDC and accounts for the

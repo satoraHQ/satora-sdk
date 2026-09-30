@@ -826,7 +826,7 @@
           {
             "name": "bridge_source_chain",
             "in": "query",
-            "description": "Optional: CCTP bridge source chain (e.g., \"Optimism\", \"Base\"). Set when\nthe user's source USDC originates on another CCTP chain and hops to\nArbitrum via CCTPv2 before the HTLC is created. The quote internally\nruns the DEX calculation on Arbitrum-native USDC and accounts for the\nfast-transfer fee deducted on the burn.",
+            "description": "Optional: CCTP bridge source chain (e.g., \"Optimism\", \"Base\", \"Solana\"). Set when\nthe user's source USDC originates on another CCTP chain and hops to\nArbitrum via CCTPv2 before the HTLC is created. The quote internally\nruns the DEX calculation on Arbitrum-native USDC and accounts for the\nfast-transfer fee deducted on the burn.",
             "required": false,
             "schema": {
               "type": [
@@ -4421,7 +4421,7 @@
               },
               {
                 "$ref": "#/components/schemas/BridgeRate",
-                "description": "Cross-chain bridge fee model, tagged by protocol. Present for any\nbridged quote — `Cctp { … }` (a USDC deduction) or `LayerZero { … }`\n(a sats fee, no token deduction) — and absent (`None`) only for plain same-chain quotes. The\nSDK folds it into the end-to-end quote; see [`BridgeRate`]."
+                "description": "Cross-chain bridge fee model, tagged by protocol. Present for any\nbridged quote — `Cctp { … }` (a USDC deduction) or `LayerZero { … }`\n(a sats fee, no token deduction) — and absent (`None`) only for plain same-chain quotes.\nThe SDK folds it into the end-to-end quote; see [`BridgeRate`]."
               }
             ]
           },
@@ -4586,14 +4586,14 @@
               "string",
               "null"
             ],
-            "description": "Optional: CCTP bridge source chain (e.g., \"Ethereum\", \"Optimism\"). When set,\nthe user's source USDC originates on this chain and hops through CCTPv2 to\nArbitrum before the HTLC is created. The backend pads `deposit_amount` by\nthe fast-transfer fee at UserOp-calldata time."
+            "description": "Optional: CCTP bridge source chain (e.g., \"Ethereum\", \"Optimism\", \"Solana\"). When set,\nthe user's source USDC originates on this chain and hops through CCTPv2 to\nArbitrum before the HTLC is created. The backend pads `deposit_amount` by\nthe fast-transfer fee at UserOp-calldata time."
           },
           "bridge_source_token_address": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Optional: USDC address on the bridge source chain."
+            "description": "Optional: USDC address on the bridge source chain (0x address on EVM chains,\nbase58 mint on Solana)."
           },
           "evm_chain_id": {
             "type": "integer",
@@ -4704,7 +4704,7 @@
               "string",
               "null"
             ],
-            "description": "Native USDC address on the bridge source chain."
+            "description": "Native USDC address on the bridge source chain (base58 mint on Solana)."
           },
           "btc_claim_txid": {
             "type": [
@@ -4872,14 +4872,14 @@
               "string",
               "null"
             ],
-            "description": "Optional: CCTP bridge source chain (e.g., \"Ethereum\", \"Optimism\"). When set,\nthe user's source USDC originates on this chain and hops through CCTPv2 to\nArbitrum before the HTLC is created. The backend pads `deposit_amount` by\nthe fast-transfer fee at UserOp-calldata time."
+            "description": "Optional: CCTP bridge source chain (e.g., \"Ethereum\", \"Optimism\", \"Solana\"). When set,\nthe user's source USDC originates on this chain and hops through CCTPv2 to\nArbitrum before the HTLC is created. The backend pads `deposit_amount` by\nthe fast-transfer fee at UserOp-calldata time."
           },
           "bridge_source_token_address": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Optional: USDC address on the bridge source chain."
+            "description": "Optional: USDC address on the bridge source chain (0x address on EVM chains,\nbase58 mint on Solana)."
           },
           "btc_htlc_script_version": {
             "type": "integer",
@@ -4988,7 +4988,7 @@
               "string",
               "null"
             ],
-            "description": "Native USDC address on the bridge source chain."
+            "description": "Native USDC address on the bridge source chain (base58 mint on Solana)."
           },
           "btc_claim_txid": {
             "type": [
@@ -5169,14 +5169,14 @@
               "string",
               "null"
             ],
-            "description": "Optional: CCTP bridge source chain (e.g., \"Ethereum\", \"Optimism\"). When set,\nthe user's source USDC originates on this chain and hops through CCTPv2 to\nArbitrum before the HTLC is created."
+            "description": "Optional: CCTP bridge source chain (e.g., \"Ethereum\", \"Optimism\", \"Solana\"). When set,\nthe user's source USDC originates on this chain and hops through CCTPv2 to\nArbitrum before the HTLC is created."
           },
           "bridge_source_token_address": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Optional: USDC address on the bridge source chain."
+            "description": "Optional: USDC address on the bridge source chain (0x address on EVM chains,\nbase58 mint on Solana)."
           },
           "evm_chain_id": {
             "type": "integer",
@@ -5292,7 +5292,7 @@
               "string",
               "null"
             ],
-            "description": "Native USDC address on the bridge source chain."
+            "description": "Native USDC address on the bridge source chain (base58 mint on Solana)."
           },
           "chain": {
             "type": "string"
