@@ -6577,15 +6577,6 @@ export class Client {
       const amount = BigInt(rawAmount);
 
       const destination = cctpMetaForChainId(42161);
-      const maxFee =
-        options?.maxFee ??
-        computeCctpFastFee(
-          await getCachedCctpFee({
-            sourceDomain: source.domain,
-            destinationDomain: destination.domain,
-          }),
-          amount,
-        );
 
       // A burn recorded by an interrupted attempt: resume at the
       // attestation instead of burning the USDC a second time. The swap must
@@ -6599,6 +6590,19 @@ export class Client {
           );
         }
       }
+
+      // Only a new burn uses the fee, so resuming one must not depend on the
+      // fee service being reachable.
+      const maxFee = recordedBurn
+        ? 0n
+        : (options?.maxFee ??
+          computeCctpFastFee(
+            await getCachedCctpFee({
+              sourceDomain: source.domain,
+              destinationDomain: destination.domain,
+            }),
+            amount,
+          ));
 
       const cctp = await this.cctpInbound.fundSwap({
         swapId,
@@ -6798,15 +6802,6 @@ export class Client {
       );
     }
     const amount = BigInt(bridge.source_amount);
-    const maxFee =
-      options?.maxFee ??
-      computeCctpFastFee(
-        await getCachedCctpFee({
-          sourceDomain: CCTP_DOMAINS.Solana,
-          destinationDomain: CCTP_DOMAINS.Arbitrum,
-        }),
-        amount,
-      );
 
     // A burn recorded by an interrupted attempt: resume from it instead of
     // burning the USDC a second time, if the swap is still unfunded.
@@ -6819,6 +6814,19 @@ export class Client {
         );
       }
     }
+
+    // Only a new burn uses the fee, so resuming one must not depend on the
+    // fee service being reachable.
+    const maxFee = recordedBurn
+      ? 0n
+      : (options?.maxFee ??
+        computeCctpFastFee(
+          await getCachedCctpFee({
+            sourceDomain: CCTP_DOMAINS.Solana,
+            destinationDomain: CCTP_DOMAINS.Arbitrum,
+          }),
+          amount,
+        ));
 
     const { cctpFundSwapFromSolana } = await import(
       "./cctp-inbound/solana/fundSwap.js"
