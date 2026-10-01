@@ -7,6 +7,6 @@ Bitcoin → Lightning is observed like the Bitcoin → EVM one, the
 server-funded HTLC of Lightning → Bitcoin like the EVM → Bitcoin one; the
 Lightning legs have no chain leg.
 
-On mainnet the tracker stops recommending a claim of a server-funded BTC
-HTLC (EVM → Bitcoin and Lightning → Bitcoin) 30 minutes before its refund
-locktime, so a slow claim cannot reveal the preimage to a racing refund.
+On mainnet the tracker stops recommending a claim of a Lightning → Bitcoin
+HTLC 30 minutes before its refund locktime, so a slow claim cannot reveal the
+preimage to a racing refund.

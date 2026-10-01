@@ -512,7 +512,7 @@ describe("swapToTracked", () => {
     expect(tracked?.serverRefundLocktime).toBe(900_000_000);
   });
 
-  it("stops claiming a server-funded BTC HTLC 30 minutes before its mainnet locktime", () => {
+  it("stops claiming a Lightning -> Bitcoin HTLC 30 minutes before its mainnet locktime", () => {
     const onMainnet = (direction: string) =>
       swapToTracked(
         stored({
@@ -528,8 +528,10 @@ describe("swapToTracked", () => {
     expect(onMainnet("lightning_to_bitcoin")?.serverRefundLocktime).toBe(
       (1_000_000 - 1_800) * 1000,
     );
+    // The EVM -> Bitcoin payer leaves no matching margin, so that route
+    // keeps its whole window.
     expect(onMainnet("evm_to_bitcoin")?.serverRefundLocktime).toBe(
-      (1_000_000 - 1_800) * 1000,
+      1_000_000 * 1000,
     );
   });
 

@@ -22,14 +22,14 @@ import type { TrackedSwap } from "./swap-tracker.js";
 const ms = (seconds: number): number => seconds * 1000;
 
 /**
- * How long before a server-funded on-chain Bitcoin HTLC's refund locktime the
- * client stops claiming it on mainnet. A claim reveals the preimage, and one
- * still unconfirmed when median time passes the locktime can be replaced by
- * the server's refund while the server uses the preimage to take the client's
+ * How long before a Lightning → Bitcoin HTLC's refund locktime the client
+ * stops claiming it on mainnet. A claim reveals the preimage, and one still
+ * unconfirmed when median time passes the locktime can be replaced by the
+ * server's refund while the server uses the preimage to take the client's
  * side. Test networks keep their whole locktime window of a few minutes.
- * It has to stay below the Lightning → Bitcoin funder's margin
- * (`ln_btc_claim_margin_secs`, 45 minutes), or a swap funded right at that
- * margin could not be claimed.
+ * It has to stay below the funder's margin (`ln_btc_claim_margin_secs`, 45
+ * minutes), or a swap funded right at that margin could not be claimed.
+ * EVM → Bitcoin keeps its whole window: its payer leaves no such margin.
  */
 const ONCHAIN_CLAIM_MARGIN_SECONDS = 30 * 60;
 
@@ -314,10 +314,7 @@ export function swapToTracked(stored: StoredSwap): TrackedSwap | undefined {
           minServerPayout(r),
         ),
         clientRefundLocktime: ms(r.evm_refund_locktime),
-        serverRefundLocktime: onchainClaimDeadline(
-          r.btc_refund_locktime,
-          r.network,
-        ),
+        serverRefundLocktime: ms(r.btc_refund_locktime),
       };
 
     // Client sends BTC (funds the on-chain HTLC) and claims the Arkade VHTLC (the
