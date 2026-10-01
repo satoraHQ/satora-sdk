@@ -19,7 +19,7 @@
 import { base64 } from "@scure/base";
 import type { Chain, Hex } from "viem";
 import { arbitrum } from "viem/chains";
-import { fetchAttestation } from "../../cctp/attestation.js";
+import { fetchAttestation, hasCctpMessage } from "../../cctp/attestation.js";
 import {
   CCTP_DOMAINS,
   FINALITY_FAST,
@@ -63,12 +63,21 @@ export interface CctpFundSwapFromSolanaParams {
   /** A burn this swap already sent: skips the burn, resumes at confirmation. */
   burnSignature?: string;
   /**
-   * Called with the burn's signature as soon as the wallet sent it, and with
-   * `undefined` if it then failed or expired (nothing was burned, the next
-   * attempt must burn again). Persist it: it is what resuming or recovering
-   * the settlement needs.
+   * The last block height at which {@link burnSignature} could land, as
+   * reported to {@link onBurn}. Without it a resumed burn the RPC cannot find
+   * is never given up, since only the chain can show that it expired.
    */
-  onBurn?: (burnSignature: string | undefined) => void | Promise<void>;
+  burnLastValidBlockHeight?: number;
+  /**
+   * Called with the burn's signature and the last block height it can land
+   * at as soon as the wallet sent it, and with `undefined` once it provably
+   * failed or expired (nothing was burned, the next attempt must burn again).
+   * Persist both: they are what resuming or recovering the settlement needs.
+   */
+  onBurn?: (
+    burnSignature: string | undefined,
+    lastValidBlockHeight?: number,
+  ) => void | Promise<void>;
   /** USDC amount in smallest units (6 decimals). */
   amount: bigint;
   /** Max fast-transfer fee in USDC units. */
@@ -94,9 +103,9 @@ export interface CctpFundSwapFromSolanaResult {
 }
 
 /**
- * How long a resumed burn may stay unknown to the RPC before it is taken as
- * dropped. Longer than a blockhash lives (150 blocks, ~60-90 s), so a burn
- * sent just before the page reloaded has either landed or expired by then.
+ * How long to look for a resumed burn whose expiry height was not recorded
+ * before giving up on this attempt. The burn is kept: elapsed time does not
+ * show that it never landed.
  */
 const RESUME_LOOKUP_MS = 120_000;
 
@@ -116,19 +125,23 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 /**
- * Wait until the burn is confirmed. A burn that failed on-chain, or never
- * landed before its blockhash expired (or, when resuming without one, within
- * {@link RESUME_LOOKUP_MS}), clears the recorded signature and throws:
- * nothing left Solana and the next attempt must burn again.
+ * Wait until the burn is confirmed. The recorded signature is cleared, and
+ * the next attempt burns again, only once the chain shows that nothing left
+ * Solana: the burn failed on-chain, or the block height passed its
+ * `lastValidBlockHeight` while neither the RPC nor IRIS knows it. A lookup
+ * that cannot tell (an RPC without the transaction's history, no recorded
+ * expiry height, IRIS unreachable) throws and keeps the burn to resume from.
  */
 async function confirmSolanaBurn(
   rpcUrl: string,
+  irisApiUrl: string,
   signature: string,
-  expiry: { lastValidBlockHeight: number } | { deadline: number },
+  lastValidBlockHeight: number | undefined,
   onBurn: CctpFundSwapFromSolanaParams["onBurn"],
   pollIntervalMs: number,
   signal?: AbortSignal,
 ): Promise<void> {
+  const deadline = Date.now() + RESUME_LOOKUP_MS;
   for (;;) {
     const status = await getSignatureStatus(rpcUrl, signature);
     if (status?.err != null) {
@@ -144,11 +157,25 @@ async function confirmSolanaBurn(
       return;
     }
     if (!status) {
-      const expired =
-        "deadline" in expiry
-          ? Date.now() > expiry.deadline
-          : (await getBlockHeight(rpcUrl)) > expiry.lastValidBlockHeight;
-      if (expired) {
+      if (lastValidBlockHeight === undefined) {
+        if (Date.now() > deadline) {
+          throw new Error(
+            `CCTP burn ${signature} is not visible on Solana yet. It is kept; try again later.`,
+          );
+        }
+      } else if ((await getBlockHeight(rpcUrl)) > lastValidBlockHeight) {
+        // Past its expiry the burn can no longer land, but an RPC without
+        // the transaction's history reports a landed one as unknown too.
+        // IRIS indexes every landed burn.
+        if (
+          await hasCctpMessage({
+            sourceChain: "Solana",
+            txHash: signature,
+            irisApiUrl,
+          })
+        ) {
+          return;
+        }
         await onBurn?.(undefined);
         throw new Error(
           `CCTP burn ${signature} never landed on Solana. No USDC left the wallet; try again.`,
@@ -169,6 +196,7 @@ export async function cctpFundSwapFromSolana(
     ownerSigner,
     rpcUrl,
     burnSignature: resumeSignature,
+    burnLastValidBlockHeight,
     onBurn,
     amount,
     maxFee,
@@ -193,8 +221,9 @@ export async function cctpFundSwapFromSolana(
     onProgress?.({ phase: "burning", burnSignature });
     await confirmSolanaBurn(
       rpcUrl,
+      irisApiUrl,
       burnSignature,
-      { deadline: Date.now() + RESUME_LOOKUP_MS },
+      burnLastValidBlockHeight,
       onBurn,
       pollIntervalMs,
       signal,
@@ -248,12 +277,13 @@ export async function cctpFundSwapFromSolana(
 
     onProgress?.({ phase: "signing" });
     burnSignature = await signer.signAndSendTransaction(burn.transaction);
-    await onBurn?.(burnSignature);
+    await onBurn?.(burnSignature, lastValidBlockHeight);
     onProgress?.({ phase: "burning", burnSignature });
     await confirmSolanaBurn(
       rpcUrl,
+      irisApiUrl,
       burnSignature,
-      { lastValidBlockHeight },
+      lastValidBlockHeight,
       onBurn,
       pollIntervalMs,
       signal,

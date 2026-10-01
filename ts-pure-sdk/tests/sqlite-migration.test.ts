@@ -113,4 +113,32 @@ describe("SqliteSwapStorage schema migration", () => {
     expect((await reopened.get(SWAP_ID))?.cctpBurnTxid).toBe(burn);
     reopened.close();
   });
+
+  it("persists a Solana burn's expiry height, added to a database created before it", async () => {
+    // Created with the burn column but before its expiry height.
+    const path = oldDatabase([
+      "evm_fund_txid",
+      "evm_coordinator_address",
+      "cctp_burn_txid",
+    ]);
+    paths.push(path);
+
+    const storage = new SqliteSwapStorage(path);
+    expect(
+      (await storage.get(SWAP_ID))?.cctpBurnLastValidBlockHeight,
+    ).toBeUndefined();
+    await storage.store(
+      storedSwap({
+        cctpBurnTxid: "burn",
+        cctpBurnLastValidBlockHeight: 412_345_678,
+      }),
+    );
+    storage.close();
+
+    const reopened = new SqliteSwapStorage(path);
+    expect((await reopened.get(SWAP_ID))?.cctpBurnLastValidBlockHeight).toBe(
+      412_345_678,
+    );
+    reopened.close();
+  });
 });

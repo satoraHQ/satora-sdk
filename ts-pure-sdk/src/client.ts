@@ -4828,10 +4828,12 @@ export class Client {
    * the stored `response` (every server refresh replaces that copy).
    * `undefined` clears it: the burn reverted or the wallet cancelled it, so
    * nothing left the source chain and the next attempt must burn again.
+   * A Solana burn also records the last block height it can land at.
    */
   async #recordCctpBurn(
     swapId: string,
     burnTxHash: string | undefined,
+    lastValidBlockHeight?: number,
   ): Promise<void> {
     if (!this.#swapStorage) return;
     try {
@@ -4840,6 +4842,7 @@ export class Client {
       await this.#swapStorage.store({
         ...stored,
         cctpBurnTxid: burnTxHash,
+        cctpBurnLastValidBlockHeight: lastValidBlockHeight,
         updatedAt: Date.now(),
       });
     } catch (error) {
@@ -5407,6 +5410,7 @@ export class Client {
       // A CCTP-inbound burn is the only way to resume or recover once the
       // USDC has left the source chain.
       cctpBurnTxid: existing?.cctpBurnTxid,
+      cctpBurnLastValidBlockHeight: existing?.cctpBurnLastValidBlockHeight,
     };
 
     await this.#swapStorage.store(storedSwap);
@@ -6845,7 +6849,9 @@ export class Client {
         ),
         rpcUrl,
         burnSignature: recordedBurn,
-        onBurn: (burnSignature) => this.#recordCctpBurn(swapId, burnSignature),
+        burnLastValidBlockHeight: stored?.cctpBurnLastValidBlockHeight,
+        onBurn: (burnSignature, lastValidBlockHeight) =>
+          this.#recordCctpBurn(swapId, burnSignature, lastValidBlockHeight),
         amount,
         maxFee,
         priorityFeeMicroLamports: options?.priorityFeeMicroLamports,

@@ -112,6 +112,36 @@ export async function fetchAttestation(
   );
 }
 
+/**
+ * Whether IRIS has indexed a CCTP message for a burn tx, attested or not.
+ * A single lookup, unlike {@link fetchAttestation}.
+ *
+ * @throws If IRIS cannot be reached or answers with an error, so an outage
+ *   is never mistaken for an unknown burn.
+ */
+export async function hasCctpMessage(options: {
+  sourceChain: CctpChainName;
+  txHash: string;
+  irisApiUrl?: string;
+}): Promise<boolean> {
+  const { sourceChain, txHash, irisApiUrl = IRIS_API_MAINNET } = options;
+  const sourceDomain = CCTP_DOMAINS[sourceChain];
+  if (sourceDomain === undefined) {
+    throw new Error(`Unknown CCTP source chain: ${sourceChain}`);
+  }
+  const response = await fetch(
+    `${irisApiUrl}/v2/messages/${sourceDomain}?transactionHash=${txHash}`,
+  );
+  if (response.status === 404) return false;
+  if (!response.ok) {
+    throw new Error(
+      `IRIS API error: ${response.status} ${response.statusText}`,
+    );
+  }
+  const data: AttestationResponse = await response.json();
+  return data.messages.length > 0;
+}
+
 // ============================================================================
 // Cross-chain message tracking (with forwarding)
 // ============================================================================

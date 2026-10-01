@@ -129,19 +129,21 @@ export class SqliteSwapStorage implements SwapStorage {
         updated_at INTEGER NOT NULL,
         evm_fund_txid TEXT,
         evm_coordinator_address TEXT,
-        cctp_burn_txid TEXT
+        cctp_burn_txid TEXT,
+        cctp_burn_last_valid_block_height INTEGER
       );
       CREATE INDEX IF NOT EXISTS idx_swaps_stored_at ON swaps(stored_at);
     `);
     // Databases created before these columns existed.
-    for (const column of [
-      "evm_fund_txid",
-      "evm_coordinator_address",
-      "cctp_burn_txid",
+    for (const [column, type] of [
+      ["evm_fund_txid", "TEXT"],
+      ["evm_coordinator_address", "TEXT"],
+      ["cctp_burn_txid", "TEXT"],
+      ["cctp_burn_last_valid_block_height", "INTEGER"],
     ]) {
       if (this.#columns().includes(column)) continue;
       try {
-        this.#db.exec(`ALTER TABLE swaps ADD COLUMN ${column} TEXT`);
+        this.#db.exec(`ALTER TABLE swaps ADD COLUMN ${column} ${type}`);
       } catch (error) {
         // Another process may have added it between the check and the ALTER.
         if (!this.#columns().includes(column)) throw error;
@@ -168,8 +170,8 @@ export class SqliteSwapStorage implements SwapStorage {
     this.#db
       .prepare(
         `INSERT OR REPLACE INTO swaps
-         (swap_id, version, key_index, response, public_key, preimage, preimage_hash, secret_key, stored_at, updated_at, evm_fund_txid, evm_coordinator_address, cctp_burn_txid)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (swap_id, version, key_index, response, public_key, preimage, preimage_hash, secret_key, stored_at, updated_at, evm_fund_txid, evm_coordinator_address, cctp_burn_txid, cctp_burn_last_valid_block_height)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         swap.swapId,
@@ -185,6 +187,7 @@ export class SqliteSwapStorage implements SwapStorage {
         swap.evmFundTxid ?? null,
         swap.evmCoordinatorAddress ?? null,
         swap.cctpBurnTxid ?? null,
+        swap.cctpBurnLastValidBlockHeight ?? null,
       );
   }
 
@@ -233,6 +236,8 @@ export class SqliteSwapStorage implements SwapStorage {
       evmFundTxid: row.evm_fund_txid ?? undefined,
       evmCoordinatorAddress: row.evm_coordinator_address ?? undefined,
       cctpBurnTxid: row.cctp_burn_txid ?? undefined,
+      cctpBurnLastValidBlockHeight:
+        row.cctp_burn_last_valid_block_height ?? undefined,
     };
   }
 
@@ -258,6 +263,7 @@ interface SqliteSwapRow {
   evm_fund_txid: string | null;
   evm_coordinator_address: string | null;
   cctp_burn_txid: string | null;
+  cctp_burn_last_valid_block_height: number | null;
 }
 
 /**

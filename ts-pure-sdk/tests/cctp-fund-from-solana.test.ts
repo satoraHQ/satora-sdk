@@ -15,6 +15,7 @@ const rpc = {
   suggestPriorityFee: vi.fn(),
 };
 const fetchAttestation = vi.fn();
+const hasCctpMessage = vi.fn();
 const createSwapSmartAccountClient = vi.fn();
 const submitCctpInboundUserOp = vi.fn();
 const recoverCctpInbound = vi.fn();
@@ -29,6 +30,7 @@ vi.mock("../src/cctp-inbound/solana/rpc.js", () => ({
 }));
 vi.mock("../src/cctp/attestation.js", () => ({
   fetchAttestation: (...args: unknown[]) => fetchAttestation(...args),
+  hasCctpMessage: (...args: unknown[]) => hasCctpMessage(...args),
 }));
 vi.mock("../src/cctp-inbound/smartAccount.js", () => ({
   createSwapSmartAccountClient: (...args: unknown[]) =>
@@ -113,6 +115,7 @@ beforeEach(() => {
   rpc.simulateTransaction.mockResolvedValue(null);
   rpc.suggestPriorityFee.mockResolvedValue(10_000n);
   fetchAttestation.mockResolvedValue({ message: "0x01", attestation: "0x02" });
+  hasCctpMessage.mockResolvedValue(false);
   createSwapSmartAccountClient.mockImplementation(
     async ({ signer }: { signer: EvmSigner }) => ({
       accountAddress: signer.address,
@@ -125,6 +128,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.clearAllMocks();
   vi.unstubAllGlobals();
 });
@@ -238,7 +242,7 @@ describe("cctpFundSwapFromSolana", () => {
     // The Kernel address is pinned as mint recipient in the sent burn.
     const hex = Buffer.from(signer.sent[0]).toString("hex");
     expect(hex).toContain(`${"00".repeat(12)}${KERNEL.slice(2)}`.repeat(2));
-    expect(onBurn.mock.calls).toEqual([[SIGNATURE]]);
+    expect(onBurn.mock.calls).toEqual([[SIGNATURE, 100]]);
     expect(fetchAttestation).toHaveBeenCalledWith(
       expect.objectContaining({ sourceChain: "Solana", txHash: SIGNATURE }),
     );
@@ -283,7 +287,7 @@ describe("cctpFundSwapFromSolana", () => {
     await expect(
       cctpFundSwapFromSolana(context, { ...base, signer: wallet(), onBurn }),
     ).rejects.toThrow(/failed on Solana/);
-    expect(onBurn.mock.calls).toEqual([[SIGNATURE], [undefined]]);
+    expect(onBurn.mock.calls).toEqual([[SIGNATURE, 100], [undefined]]);
     expect(fetchAttestation).not.toHaveBeenCalled();
   });
 
@@ -294,7 +298,87 @@ describe("cctpFundSwapFromSolana", () => {
     await expect(
       cctpFundSwapFromSolana(context, { ...base, signer: wallet(), onBurn }),
     ).rejects.toThrow(/never landed/);
-    expect(onBurn.mock.calls).toEqual([[SIGNATURE], [undefined]]);
+    expect(onBurn.mock.calls).toEqual([[SIGNATURE, 100], [undefined]]);
+    expect(hasCctpMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceChain: "Solana", txHash: SIGNATURE }),
+    );
+  });
+
+  it("keeps polling an unseen burn until its blockhash expires", async () => {
+    rpc.getSignatureStatus
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue({ confirmationStatus: "confirmed", err: null });
+    rpc.getBlockHeight.mockResolvedValue(100);
+    const onBurn = vi.fn();
+    await cctpFundSwapFromSolana(context, {
+      ...base,
+      signer: wallet(),
+      onBurn,
+    });
+    expect(onBurn.mock.calls).toEqual([[SIGNATURE, 100]]);
+    expect(hasCctpMessage).not.toHaveBeenCalled();
+  });
+
+  describe("resuming a burn the RPC cannot find", () => {
+    const resume = (extra: { burnLastValidBlockHeight?: number } = {}) => {
+      const signer = wallet();
+      const onBurn = vi.fn();
+      const run = cctpFundSwapFromSolana(context, {
+        ...base,
+        signer,
+        onBurn,
+        burnSignature: SIGNATURE,
+        ...extra,
+      });
+      return { signer, onBurn, run };
+    };
+
+    beforeEach(() => {
+      rpc.getSignatureStatus.mockResolvedValue(null);
+      rpc.getBlockHeight.mockResolvedValue(101);
+    });
+
+    it("settles a burn IRIS knows, though the RPC lacks its history", async () => {
+      hasCctpMessage.mockResolvedValue(true);
+      const { signer, onBurn, run } = resume({ burnLastValidBlockHeight: 100 });
+
+      await run;
+
+      expect(signer.sent).toHaveLength(0);
+      expect(onBurn).not.toHaveBeenCalled();
+      expect(submitCctpInboundUserOp).toHaveBeenCalled();
+    });
+
+    it("clears it once past its expiry height and unknown to IRIS", async () => {
+      const { onBurn, run } = resume({ burnLastValidBlockHeight: 100 });
+
+      await expect(run).rejects.toThrow(/never landed/);
+      expect(onBurn.mock.calls).toEqual([[undefined]]);
+    });
+
+    it("keeps it when IRIS cannot be asked", async () => {
+      hasCctpMessage.mockRejectedValue(new Error("IRIS API error: 503"));
+      const { onBurn, run } = resume({ burnLastValidBlockHeight: 100 });
+
+      await expect(run).rejects.toThrow(/IRIS API error/);
+      expect(onBurn).not.toHaveBeenCalled();
+    });
+
+    it("keeps it, however long it stays unseen, without an expiry height", async () => {
+      // Long past the lookup window, yet only the chain can show the burn
+      // expired, and its expiry height was not recorded.
+      const start = Date.now();
+      let calls = 0;
+      vi.spyOn(Date, "now").mockImplementation(
+        () => start + (calls++ > 0 ? 3_600_000 : 0),
+      );
+      const { onBurn, run } = resume();
+
+      await expect(run).rejects.toThrow(/not visible on Solana yet/);
+      expect(onBurn).not.toHaveBeenCalled();
+      expect(hasCctpMessage).not.toHaveBeenCalled();
+    });
   });
 
   it("resumes from a known burn without burning again", async () => {
@@ -328,7 +412,12 @@ describe("Client.fundSwapFromSolana", () => {
 
   async function clientWith(
     depositorOf: (sdkAddress: string) => string,
-    extra: { cctpBurnTxid?: string; status?: string; bridge?: string } = {},
+    extra: {
+      cctpBurnTxid?: string;
+      cctpBurnLastValidBlockHeight?: number;
+      status?: string;
+      bridge?: string;
+    } = {},
   ) {
     let response: ReturnType<typeof solanaSwap> | undefined;
     vi.stubGlobal(
@@ -353,7 +442,11 @@ describe("Client.fundSwapFromSolana", () => {
         extra.bridge;
     }
     await storage.store(
-      storedSwap({ response, cctpBurnTxid: extra.cctpBurnTxid }),
+      storedSwap({
+        response,
+        cctpBurnTxid: extra.cctpBurnTxid,
+        cctpBurnLastValidBlockHeight: extra.cctpBurnLastValidBlockHeight,
+      }),
     );
     return { client, storage };
   }
@@ -371,7 +464,10 @@ describe("Client.fundSwapFromSolana", () => {
       client.getEvmAddress().toLowerCase(),
     );
     expect(owner.signAuthorization).toBeTypeOf("function");
-    expect((await storage.get(SWAP_ID))?.cctpBurnTxid).toBe(SIGNATURE);
+    expect(await storage.get(SWAP_ID)).toMatchObject({
+      cctpBurnTxid: SIGNATURE,
+      cctpBurnLastValidBlockHeight: 100,
+    });
     expect(rpc.getLatestBlockhash).toHaveBeenCalledWith(RPC_URL);
   });
 
@@ -395,6 +491,23 @@ describe("Client.fundSwapFromSolana", () => {
     expect(fetchAttestation).toHaveBeenCalledWith(
       expect.objectContaining({ sourceChain: "Solana", txHash: SIGNATURE }),
     );
+  });
+
+  it("resumes against the recorded expiry height", async () => {
+    rpc.getSignatureStatus.mockResolvedValue(null);
+    rpc.getBlockHeight.mockResolvedValue(101);
+    const { client, storage } = await clientWith((sdk) => sdk, {
+      cctpBurnTxid: SIGNATURE,
+      cctpBurnLastValidBlockHeight: 100,
+    });
+
+    await expect(
+      client.fundSwapFromSolana(SWAP_ID, wallet(), { maxFee: 100n }),
+    ).rejects.toThrow(/never landed/);
+    expect(await storage.get(SWAP_ID)).toMatchObject({
+      cctpBurnTxid: undefined,
+      cctpBurnLastValidBlockHeight: undefined,
+    });
   });
 
   it("does not resume a swap the recorded burn already funded", async () => {

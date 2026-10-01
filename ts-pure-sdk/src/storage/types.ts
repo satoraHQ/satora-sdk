@@ -102,4 +102,11 @@ export interface StoredSwap {
    * `recoverCctpInboundSwap` recovers the USDC with it if settlement fails.
    */
   cctpBurnTxid?: string;
+
+  /**
+   * The last block height at which a Solana {@link cctpBurnTxid} can land.
+   * Resuming gives the burn up only once the chain is past it, so an RPC that
+   * cannot find an older burn never causes a second one.
+   */
+  cctpBurnLastValidBlockHeight?: number;
 }

@@ -9,7 +9,10 @@ source (swaps must be created `gasless: true`), and the new
 Solana wallet wrapped as a `SolanaSigner`, waits for Circle's attestation and
 settles on Arbitrum with the SDK's key in one sponsored UserOp. The burn
 signature is recorded like an EVM burn, so a second call resumes instead of
-burning twice and `recoverCctpInboundSwap` works for Solana burns too. Set the
+burning twice and `recoverCctpInboundSwap` works for Solana burns too. A
+recorded burn is given up only once the chain shows it never landed (past its
+recorded `cctpBurnLastValidBlockHeight` and unknown to IRIS), never on a
+timeout or an RPC without the transaction's history. Set the
 Solana RPC with `withSolanaRpcUrl(url)` on the builder (or per call);
 `getSolanaUsdcBalance(owner)` reads the wallet's USDC. The Solana code loads on
 demand, so EVM-only consumers don't pay for it.
