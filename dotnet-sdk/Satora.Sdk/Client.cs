@@ -19,10 +19,8 @@ using Ffi = uniffi.satora_sdk_ffi;
 
 /// <summary>
 /// Wraps every error surfaced by the Satora SDK across the FFI
-/// boundary. uniffi-bindgen-cs marks its own <c>SdkException</c> base
-/// class as <c>internal</c> (only the concrete variant subclasses are
-/// public), so this public type lets callers catch SDK errors without
-/// importing the generated namespace.
+/// boundary, so callers catch one type without importing the generated
+/// namespace.
 /// </summary>
 public sealed class SdkException : Exception
 {

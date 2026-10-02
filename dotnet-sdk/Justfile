@@ -41,40 +41,12 @@ build-native:
 # the standalone mirror, where there's no Cargo.toml above `dotnet-sdk/`.
 # Anchoring at `native/Cargo.toml` makes the recipe robust either way.
 #
-# Post-process: uniffi-bindgen-cs emits the base record of every tagged
-# enum (and the SDK error base type) as `internal`, while the variants
-# are `public`. That breaks any public API that uses these types as
-# parameters — callers in another assembly see `internal` types they
-# can't even name. We bump the chain / token / quote-amount enum base
-# records to `public` so the SDK can expose them in its public surface.
-# Idempotent: running twice is a no-op.
+# `native/uniffi.toml` sets the generated types to `public`, so the
+# facade can expose them across assemblies.
 generate-bindings: build-native
     cd native && uniffi-bindgen-cs \
         --library target/debug/libsatora_sdk_ffi.dylib \
         --out-dir ../{{ generated_dir }}
-    sed -i.bak \
-        -e 's/^internal record ChainId {/public record ChainId {/' \
-        -e 's/^internal record TokenId {/public record TokenId {/' \
-        -e 's/^internal record QuoteAmount {/public record QuoteAmount {/' \
-        -e 's/^internal record Address {/public record Address {/' \
-        -e 's/^internal record SwapStatus {/public record SwapStatus {/' \
-        -e 's/^internal record SwapFunding {/public record SwapFunding {/' \
-        -e 's/^internal record Swap (/public record Swap (/' \
-        -e 's/^internal record Version (/public record Version (/' \
-        -e 's/^internal record QuoteResult (/public record QuoteResult (/' \
-        -e 's/^internal record GaslessOpts (/public record GaslessOpts (/' \
-        -e 's/^internal record FundSwapReceipt (/public record FundSwapReceipt (/' \
-        -e 's/^internal record GasOverrides (/public record GasOverrides (/' \
-        -e 's/^internal record ArkadeConfig (/public record ArkadeConfig (/' \
-        -e 's/^internal record ClaimReceipt (/public record ClaimReceipt (/' \
-        -e 's/^internal record ArkadeBalance (/public record ArkadeBalance (/' \
-        -e 's/^internal record DepositStatus (/public record DepositStatus (/' \
-        -e 's/^internal record LightningDestination {/public record LightningDestination {/' \
-        -e 's/^internal enum BitcoinNetwork: int/public enum BitcoinNetwork: int/' \
-        -e 's/^internal interface ISatoraClient {/public interface ISatoraClient {/' \
-        -e 's/^internal class SatoraClient : ISatoraClient/public class SatoraClient : ISatoraClient/' \
-        {{ generated_dir }}/satora_sdk_ffi.cs
-    rm {{ generated_dir }}/satora_sdk_ffi.cs.bak
 
 # Lint Rust side. Mirrors what the client-sdk top-level Justfile expects.
 lint-rust:

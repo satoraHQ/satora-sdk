@@ -188,38 +188,38 @@ struct UniffiRustCallStatus {
 }
 
 // Base class for all uniffi exceptions
-internal class UniffiException: System.Exception {
+public class UniffiException: System.Exception {
     public UniffiException(): base() {}
     public UniffiException(string message): base(message) {}
 }
 
-internal class UndeclaredErrorException: UniffiException {
+public class UndeclaredErrorException: UniffiException {
     public UndeclaredErrorException(string message): base(message) {}
 }
 
-internal class PanicException: UniffiException {
+public class PanicException: UniffiException {
     public PanicException(string message): base(message) {}
 }
 
-internal class AllocationException: UniffiException {
+public class AllocationException: UniffiException {
     public AllocationException(string message): base(message) {}
 }
 
-internal class InternalException: UniffiException {
+public class InternalException: UniffiException {
     public InternalException(string message): base(message) {}
 }
 
-internal class InvalidEnumException: InternalException {
+public class InvalidEnumException: InternalException {
     public InvalidEnumException(string message): base(message) {
     }
 }
 
-internal class UniffiContractVersionException: UniffiException {
+public class UniffiContractVersionException: UniffiException {
     public UniffiContractVersionException(string message): base(message) {
     }
 }
 
-internal class UniffiContractChecksumException: UniffiException {
+public class UniffiContractChecksumException: UniffiException {
     public UniffiContractChecksumException(string message): base(message) {
     }
 }
@@ -2846,6 +2846,9 @@ public record ChainId {
     public record Arbitrum: ChainId {}
     
     
+    public record Rootstock: ChainId {}
+    
+    
     public record Arkade: ChainId {}
     
     
@@ -2879,15 +2882,18 @@ class FfiConverterTypeChainId : FfiConverterRustBuffer<ChainId>{
                 return new ChainId.Arbitrum(
                 );
             case 4:
-                return new ChainId.Arkade(
+                return new ChainId.Rootstock(
                 );
             case 5:
-                return new ChainId.Lightning(
+                return new ChainId.Arkade(
                 );
             case 6:
-                return new ChainId.Bitcoin(
+                return new ChainId.Lightning(
                 );
             case 7:
+                return new ChainId.Bitcoin(
+                );
+            case 8:
                 return new ChainId.Other(
                     FfiConverterString.INSTANCE.Read(stream)
                 );
@@ -2903,6 +2909,8 @@ class FfiConverterTypeChainId : FfiConverterRustBuffer<ChainId>{
             case ChainId.Ethereum variant_value:
                 return 4;
             case ChainId.Arbitrum variant_value:
+                return 4;
+            case ChainId.Rootstock variant_value:
                 return 4;
             case ChainId.Arkade variant_value:
                 return 4;
@@ -2929,17 +2937,20 @@ class FfiConverterTypeChainId : FfiConverterRustBuffer<ChainId>{
             case ChainId.Arbitrum variant_value:
                 stream.WriteInt(3);
                 break;
-            case ChainId.Arkade variant_value:
+            case ChainId.Rootstock variant_value:
                 stream.WriteInt(4);
                 break;
-            case ChainId.Lightning variant_value:
+            case ChainId.Arkade variant_value:
                 stream.WriteInt(5);
                 break;
-            case ChainId.Bitcoin variant_value:
+            case ChainId.Lightning variant_value:
                 stream.WriteInt(6);
                 break;
-            case ChainId.Other variant_value:
+            case ChainId.Bitcoin variant_value:
                 stream.WriteInt(7);
+                break;
+            case ChainId.Other variant_value:
+                stream.WriteInt(8);
                 FfiConverterString.INSTANCE.Write(variant_value.@wire, stream);
                 break;
             default:
@@ -3148,7 +3159,7 @@ class FfiConverterTypeQuoteAmount : FfiConverterRustBuffer<QuoteAmount>{
 /// breaking match exhaustiveness on the C# side, which has to handle
 /// the catch-all anyway.
 /// </summary>
-internal class SdkException: UniffiException {
+public class SdkException: UniffiException {
     SdkException() : base() {}
     SdkException(String @Message) : base(@Message) {}
 
@@ -3923,6 +3934,6 @@ class FfiConverterSequenceTypeSwapStatus: FfiConverterRustBuffer<SwapStatus[]> {
     }
 }
 #pragma warning restore 8625
-internal static class SatoraSdkFfiMethods {
+public static class SatoraSdkFfiMethods {
 }
 
