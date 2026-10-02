@@ -350,10 +350,10 @@ impl ArkadeWallet {
     /// transaction. Returns the Ark txid of the offchain spend (NOT a
     /// batch commitment txid — settle is the thing that anchors on L1).
     ///
-    /// Used to fund the Arkade VHTLC returned by
-    /// [`crate::Client::create_arkade_to_lightning_swap`], but works
-    /// for any Arkade destination — including a plain `tark1q…`
-    /// address you got from someone else.
+    /// Works for any Arkade destination, including a plain `tark1q…`
+    /// address you got from someone else. Fund a swap's VHTLC with
+    /// [`crate::Client::fund_arkade_swap`] instead, which journals the
+    /// payment and resolves a retry from it.
     pub async fn send_offchain(&self, destination: &str, amount_sats: u64) -> Result<Txid> {
         let address = ArkAddress::decode(destination).map_err(|e| {
             Error::InvalidSwap(format!("invalid Arkade address `{destination}`: {e}"))
@@ -542,6 +542,7 @@ impl Blockchain for EsploraBlockchain {
 
 mod delegate;
 mod execution;
+mod funding;
 pub use delegate::ArkadeDelegateState;
 pub use delegate::ArkadeSettlement;
 pub use execution::ArkadeBackend;
@@ -551,6 +552,7 @@ pub use execution::ArkadePending;
 pub use execution::ArkadeSpend;
 pub use execution::ArkadeSpendOptions;
 pub use execution::VhtlcBalance;
+pub use funding::ArkadeFunding;
 
 impl Client {
     /// Claim an EVM, Lightning, or Bitcoin to Arkade swap. Progress is persisted

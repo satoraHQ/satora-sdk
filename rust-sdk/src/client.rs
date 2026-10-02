@@ -49,9 +49,7 @@ mod lightning;
 mod quotes;
 mod storage;
 
-#[cfg(feature = "gasless")]
 pub(crate) use lightning::INVOICE_HASH_MISMATCH;
-#[cfg(feature = "gasless")]
 pub(crate) use lightning::invoice_payment_hash;
 pub use quotes::DEFAULT_COMPOSE_SLIPPAGE_BPS;
 
@@ -926,8 +924,12 @@ impl Client {
 
     /// Send `amount_sats` from the internal Arkade wallet to
     /// `destination` via an offchain Ark transaction. Returns the Ark
-    /// txid. Primary use case: funding the Arkade VHTLC returned by
-    /// [`Self::create_arkade_to_lightning_swap`].
+    /// txid. Fund a swap's VHTLC with [`Self::fund_arkade_swap`] instead,
+    /// which journals the payment and resolves a retry from it.
+    ///
+    /// It spends confirmed and pre-confirmed VTXOs, including inputs a failed
+    /// [`Self::fund_arkade_swap`] journaled; once arkd names and returns this spend,
+    /// which pays nothing to its VHTLC, that call resolves its journal.
     ///
     /// [`Error::Transport`], or [`Error::Timeout`] after 120 seconds, leaves the
     /// outcome unknown: arkd may have accepted the payment, so check the destination
@@ -1706,5 +1708,6 @@ mod tests {
         let client = Client::new("http://127.0.0.1:1").unwrap();
         waits_for_the_wallet_lock(&client, client.arkade_send("tark1", 1_000)).await;
         waits_for_the_wallet_lock(&client, client.arkade_settle()).await;
+        waits_for_the_wallet_lock(&client, client.fund_arkade_swap("missing")).await;
     }
 }

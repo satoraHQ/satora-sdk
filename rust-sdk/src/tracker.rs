@@ -750,6 +750,7 @@ impl SwapTracker {
             .ok_or_else(|| invalid("swap record missing"))?;
         let server_status = hinted.unwrap_or_else(|| stored.response.status());
         let metadata = stored.metadata;
+        let arkade_funding = metadata.arkade_funding.as_ref();
         let attempt = record.attempt.as_ref();
         let submitted = attempt.filter(|a| matches!(a.state, AttemptState::Submitted { .. }));
         let uncertain = attempt
@@ -765,14 +766,18 @@ impl SwapTracker {
                 server: server.as_ref(),
                 funding_submitted: metadata.evm_fund_txid.is_some()
                     || metadata.evm_fund_userop_hash.is_some()
+                    || arkade_funding.is_some_and(|funding| funding.txid.is_some())
                     || submitted
                         .is_some_and(|a| matches!(a.action, ActionKind::RecoverCctp { .. })),
                 claim_submitted: metadata.evm_claim_txid.is_some()
                     || metadata.evm_claim_userop_hash.is_some()
                     || submitted.is_some_and(|a| a.action == ActionKind::Claim),
-                funding_uncertain: metadata.evm_fund_started == Some(true)
+                funding_uncertain: (metadata.evm_fund_started == Some(true)
                     && metadata.evm_fund_txid.is_none()
-                    && metadata.evm_fund_userop_hash.is_none(),
+                    && metadata.evm_fund_userop_hash.is_none())
+                    || arkade_funding.is_some_and(|funding| {
+                        !funding.inputs.is_empty() && funding.txid.is_none()
+                    }),
                 submission_uncertain: uncertain
                     || metadata.evm_refund_started == Some(true)
                     || metadata.btc_spend_txid.is_some()

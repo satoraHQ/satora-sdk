@@ -195,7 +195,13 @@ fn setup_with_lock(
         direction,
         "btc_to_arkade" | "evm_to_arkade" | "lightning_to_arkade"
     );
-    let hash = if claim { params.hash_lock } else { [22; 32] };
+    // A Lightning payout locks under its invoice's payment hash, 0x22..22 in the fixture;
+    // every other direction under the hash of the client's preimage.
+    let hash = if direction == "arkade_to_lightning" {
+        [0x22; 32]
+    } else {
+        params.hash_lock
+    };
     let options = StrictVhtlcOptions {
         sender: if claim { counterparty } else { own },
         receiver: if claim { own } else { counterparty },
@@ -2990,6 +2996,199 @@ async fn vhtlc_spends_run_while_the_wallet_lock_is_held() {
         settled,
         super::super::ArkadeSettlement::Delegated { commitment_txid } if commitment_txid == commitment
     ));
+}
+
+#[tokio::test]
+async fn wallet_funding_refuses_swaps_the_client_receives() {
+    for direction in ["btc_to_arkade", "evm_to_arkade", "lightning_to_arkade"] {
+        let (client, ..) = setup(direction);
+        let error = client.fund_arkade_swap("arkade").await.unwrap_err();
+        assert!(
+            error.to_string().contains("funded from the wallet"),
+            "{error}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn wallet_funding_pays_only_the_vhtlc_and_amount_the_client_stored() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    for (direction, address) in [
+        ("arkade_to_evm", "btc_vhtlc_address"),
+        ("arkade_to_lightning", "arkade_vhtlc_address"),
+    ] {
+        let (_, _, store, elsewhere) = setup(direction);
+        let stored = store.get_swap("arkade").unwrap().unwrap().response;
+        let stored = serde_json::to_value(stored).unwrap();
+        let mut inflated = stored.clone();
+        inflated["source_amount"] = json!("100001");
+        let mut moved = stored.clone();
+        moved[address] = json!(elsewhere);
+        for (response, differs) in [(inflated, true), (moved, true), (stored, false)] {
+            let server = MockServer::start().await;
+            Mock::given(wiremock::matchers::path("/swap/arkade"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(response))
+                .mount(&server)
+                .await;
+            let client = Client::builder()
+                .mnemonic(MNEMONIC)
+                .storage(store.clone())
+                .base_url(server.uri())
+                .build()
+                .unwrap();
+            // Matching details get as far as the missing Arkade wallet config.
+            let error = client.fund_arkade_swap("arkade").await.unwrap_err();
+            let expected = if differs {
+                "differ from the stored swap"
+            } else {
+                "without an arkade_config"
+            };
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+}
+
+#[test]
+fn wallet_funding_pays_only_a_vhtlc_under_the_swaps_hash_lock() {
+    let invoices: Value =
+        serde_json::from_str(include_str!("../../../fixtures/lightning-invoices.json")).unwrap();
+    for (direction, refusal) in [
+        (
+            "arkade_to_evm",
+            "swap hash lock does not match the seed-derived preimage",
+        ),
+        ("arkade_to_lightning", crate::client::INVOICE_HASH_MISMATCH),
+    ] {
+        let (client, _, store, _) = setup(direction);
+        let htlc = client.arkade_htlc("arkade").unwrap();
+        let mut stored = store.get_swap("arkade").unwrap().unwrap();
+        client.validate_funding_hash_lock(&htlc, &stored).unwrap();
+        // The VHTLC the server could have returned, consistent with a hash it chose.
+        let mut options = htlc.options.clone();
+        options.preimage_hash = ripemd160::Hash::hash(&[0x33; 32]);
+        let foreign = ArkadeHtlc {
+            script: StrictVhtlcScript::new(options.clone(), Network::Regtest).unwrap(),
+            options,
+            network: htlc.network,
+            is_receiver: false,
+            expected_amount: htlc.expected_amount,
+        };
+        let error = client
+            .validate_funding_hash_lock(&foreign, &stored)
+            .unwrap_err();
+        assert!(
+            matches!(&error, Error::InvalidSwap(message) if message == refusal),
+            "{direction}: {error:?}"
+        );
+        if let GetSwapResponse::ArkadeToLightning(r) = &mut stored.response {
+            r.client_lightning_invoice = invoices["invoices"]["lnd_hold_33"]["bolt11"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let error = client
+                .validate_funding_hash_lock(&htlc, &stored)
+                .unwrap_err();
+            assert!(
+                matches!(&error, Error::InvalidSwap(message) if message == refusal),
+                "{error:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn wallet_funding_pays_only_a_vhtlc_under_the_current_signer() {
+    use super::super::funding::validate_funding_signer;
+    use ark_rs::core::server::DeprecatedSigner;
+    let (client, backend, ..) = setup("arkade_to_lightning");
+    let htlc = client.arkade_htlc("arkade").unwrap();
+    let mut info = backend.info.clone();
+    validate_funding_signer(&htlc, &info).unwrap();
+    let rotated = info.signer_pk;
+    info.signer_pk = pair(9).public_key();
+    // Due now, past its cutoff, and still before it.
+    for cutoff_date in [0, 1, i64::MAX] {
+        info.deprecated_signers = vec![DeprecatedSigner {
+            pk: rotated,
+            cutoff_date,
+        }];
+        validate_info(&htlc, &info).unwrap();
+        let error = validate_funding_signer(&htlc, &info).unwrap_err();
+        assert!(
+            error.to_string().contains("not arkd's current signer"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn wallet_funding_pays_only_an_amount_ark_core_writes_to_the_vhtlc_script() {
+    use super::super::funding::JournaledInput;
+    use super::super::funding::funding_script;
+    use super::super::funding::mark_spent_elsewhere;
+    use super::super::funding::validate_funding_amount;
+    let (client, backend, ..) = setup("arkade_to_lightning");
+    let htlc = client.arkade_htlc("arkade").unwrap();
+    let script = funding_script(None, &htlc).unwrap();
+    assert_eq!(script, htlc.address().to_p2tr_script_pubkey());
+    // The VHTLC's own outputs, exactly the amount, serve as inputs to a payment of it.
+    let spend = htlc.spend_script(ArkadeSpend::CooperativeRefund).unwrap();
+    let vtxos: Vec<_> = backend.vtxos.iter().collect();
+    let inputs = vtxo_inputs(&htlc, ArkadeSpend::CooperativeRefund, &spend, &vtxos).unwrap();
+    let spender = Txid::from_byte_array([7; 32]);
+    let read_payment = |info: &Info| {
+        let payment = build_offchain_transactions(
+            &[SendReceiver::bitcoin(htlc.address(), htlc.expected_amount)],
+            &htlc.address(),
+            &inputs,
+            info,
+        )
+        .unwrap()
+        .ark_tx;
+        let mut journaled = vec![(OutPoint::null(), JournaledInput::Spent(Some(spender)))];
+        mark_spent_elsewhere(&mut journaled, spender, Some(&payment), &script);
+        journaled[0].1
+    };
+    let mut info = backend.info.clone();
+    info.dust = htlc.expected_amount;
+    validate_funding_amount(&htlc, &info).unwrap();
+    assert_eq!(read_payment(&info), JournaledInput::Spent(Some(spender)));
+    // Below dust ark-core writes an OP_RETURN, which reads as a payment elsewhere.
+    info.dust = htlc.expected_amount + Amount::ONE_SAT;
+    assert_eq!(read_payment(&info), JournaledInput::SpentElsewhere);
+    let error = validate_funding_amount(&htlc, &info).unwrap_err();
+    assert!(
+        matches!(error, Error::InvalidSwap(_)) && error.to_string().contains("dust"),
+        "{error}"
+    );
+}
+
+#[test]
+fn wallet_funding_leaves_a_journal_for_another_vhtlc_address_unresolved() {
+    use super::super::ArkadeFunding;
+    use super::super::funding::funding_script;
+    let (client, _, _, elsewhere) = setup("arkade_to_lightning");
+    let htlc = client.arkade_htlc("arkade").unwrap();
+    let journal = |address: Option<String>| ArkadeFunding {
+        inputs: vec![OutPoint::null().to_string()],
+        address,
+        txid: None,
+    };
+    let current = htlc.address().to_p2tr_script_pubkey();
+    for address in [None, Some(htlc.address().encode())] {
+        assert_eq!(
+            funding_script(Some(&journal(address)), &htlc).unwrap(),
+            current
+        );
+    }
+    let error = funding_script(Some(&journal(Some(elsewhere))), &htlc).unwrap_err();
+    assert!(
+        matches!(error, Error::UnresolvedFunding(_))
+            && error.to_string().contains("different VHTLC address"),
+        "{error}"
+    );
 }
 
 const EVM_FUNDING: &str = "0xabababababababababababababababababababababababababababababababab";

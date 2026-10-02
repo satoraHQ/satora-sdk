@@ -43,6 +43,7 @@ strings on the wire, while Bitcoin amounts must be positive and fit in `i64`.
 | EVM execution (`gasless`) | External and local wallets, Permit2 and EIP-2612, ERC-4337 and server funding/claims, timeout refunds, deposit recovery and refund continuation  |
 | Bitcoin execution         | Strict version 1 Taproot claims/refunds, multiple outputs, Esplora and optional Electrum                                                         |
 | Arkade execution          | All supported directions, offchain claims/refunds, cooperative refunds, delegated settlement, interrupted-batch recovery                         |
+| Arkade wallet             | Balance, boarding, sends and settlement, journaled VHTLC funding                                                                                 |
 | Bridges (`gasless`)       | CCTP v2 and USDT0 fees/messages, wallet/sponsored transfers, atomic inbound funding, outbound claims, delivery tracking and recovery             |
 | Status feed (`websocket`) | Reconnect/resubscribe, bounded queues, HTTP reconciliation, cancellation                                                                         |
 | Observations              | Bitcoin/Arkade/EVM HTLC readers, confirmation policy, verified preimages, reorg-aware bounded managers                                           |
@@ -335,12 +336,48 @@ refused whatever the lock shows. Without a reader for the chain the claim is
 refused. A record rebuilt from the server, by recovery or after a restart with an
 index-only store, takes the server's amounts at that time as its targets.
 
-The internal wallet's spends (`arkade_send` and `arkade_settle`) take one lock shared by
-every clone of a `Client`; claims and refunds never wait for it. Each holds it for at
-most 120 seconds (`arkade_send`) or 300 seconds (`arkade_settle`) and then fails with
-`Timeout`. A `Transport` or `Timeout` error from `arkade_send` or `arkade_settle` leaves
-the outcome unknown: check the balance or destination before sending again, and settle
-again freely (each method's docs say more).
+The internal wallet's spends (`arkade_send`, `arkade_settle` and `fund_arkade_swap`) take
+one lock shared by every clone of a `Client`; claims and refunds never wait for it. Each
+holds it for at most 120 seconds (`arkade_send`, `fund_arkade_swap`) or 300 seconds
+(`arkade_settle`) and then fails with `Timeout`. A `Transport` or `Timeout` error from
+`arkade_send`, `arkade_settle` or `fund_arkade_swap` leaves the outcome unknown: check the
+balance or destination before sending again, settle again freely, and call
+`fund_arkade_swap` again, which resolves it from its journal (each method's docs say
+more).
+
+`fund_arkade_swap` pays an Arkade→Lightning or Arkade→EVM VHTLC. It finalizes the
+wallet's pending transactions, refuses with `InvalidSwap` a swap that is not pending,
+whose VHTLC holds outputs it did not journal, or whose VHTLC is locked to a server key
+other than arkd's current signer, and journals its inputs and the VHTLC address before
+paying and the Ark txid after. It also refuses a VHTLC amount below arkd's dust, which
+ark-core would write as an OP_RETURN output, and a VHTLC whose hash lock is not the
+swap's: the hash of the client's preimage for Arkade→EVM, the payment hash of the
+stored invoice for Arkade→Lightning. `arkade_send` can spend inputs a failed funding
+journaled; once arkd names and returns the send, which pays nothing to the VHTLC, the
+next `fund_arkade_swap` resolves that journal.
+
+A retry returns a journaled txid. Otherwise an Ark transaction arkd names as the
+spender of any journaled input may be the payment, or that of an earlier attempt still
+in flight when a retry widened the selection: the retry returns that transaction once
+its VHTLC output is visible and fails with `UnresolvedFunding` until then, unless arkd
+returns it and none of its outputs pays the VHTLC. A journaled input spent without
+arkd naming a spender, a journaled input arkd does not know, and a journal for a VHTLC
+address other than the swap's fail the same way and are never resolved automatically.
+While a funding is unresolved, follow the swap's status, never pay the VHTLC by other
+means, and give the swap up only once a check by hand shows where the funds went.
+Inputs left unspent, forfeited into a batch, or spent by transactions that pay nothing
+to the VHTLC prove the payment never happened, and the swap is paid again under the
+same checks from a selection that includes every journaled input still spendable, so
+arkd accepts at most one of the two payments if the first is still in flight. When no
+journaled input is spendable any more, that rests on arkd also refusing inputs the
+client sees as expired, swept, unrolled or under a retired signer. A swap that no
+longer awaits funding instead has such a journal emptied before the refusal, so the
+tracker stops waiting on its recovery. With a store that kept the swap's journal, that
+refusal is the only error proving the wallet paid nothing; the others, such as a
+refusal before the journal is read, leave an earlier payment possible. A swap
+recovered on another device has no journal, and an index-only store keeps it only
+for one `Client`'s life. Once arkd accepted the payment, a failure to journal its
+txid is logged and the txid returned.
 
 Offchain progress retains exact PSBTs with condition witnesses removed. Resume
 with the same operation and destination (a claim whose submit was attempted

@@ -23,7 +23,7 @@ use serde::Serialize;
 /// one does after a replacement, reconciling the replacement's inputs finds it.
 pub(super) const INTENT_REPLACEMENT_GRACE_SECS: u64 = 120;
 
-fn unix_now() -> Result<u64> {
+pub(super) fn unix_now() -> Result<u64> {
     Ok(std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(decode)?

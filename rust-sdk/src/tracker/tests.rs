@@ -797,6 +797,101 @@ async fn cctp_recovery_waits_for_observed_funding_before_claiming() {
 }
 
 #[tokio::test]
+async fn arkade_wallet_funding_journal_counts_as_submitted_or_uncertain_funding() {
+    use crate::arkade::ArkadeFunding;
+    let inputs = vec![format!("{}:0", "11".repeat(32))];
+    for (journal, expected) in [
+        (None, ActionKind::Fund),
+        (
+            Some(ArkadeFunding {
+                inputs: inputs.clone(),
+                address: None,
+                txid: None,
+            }),
+            ActionKind::Wait {
+                on: WaitingOn::SubmissionRecovery,
+            },
+        ),
+        (
+            Some(ArkadeFunding {
+                inputs,
+                address: None,
+                txid: Some("22".repeat(32)),
+            }),
+            ActionKind::Wait {
+                on: WaitingOn::FundingConfirmation,
+            },
+        ),
+    ] {
+        let (tracker, _, executor, id) =
+            setup_fixture("arkade_to_lightning", 0, TrackerOptions::default());
+        track(&tracker, &id).await;
+        tracker
+            .0
+            .client
+            .update_swap_metadata(
+                &id,
+                SwapMetadata {
+                    arkade_funding: journal,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            tracker
+                .reconcile(&id)
+                .await
+                .unwrap()
+                .recommended()
+                .unwrap()
+                .kind,
+            expected
+        );
+        assert_eq!(executor.calls.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn an_arkade_funding_shown_unpaid_lets_an_expired_swap_complete() {
+    use crate::arkade::ArkadeFunding;
+    let (tracker, reader, _, id) =
+        setup_fixture("arkade_to_lightning", 0, TrackerOptions::default());
+    track(&tracker, &id).await;
+    let journal = ArkadeFunding {
+        inputs: vec![format!("{}:0", "11".repeat(32))],
+        address: None,
+        txid: None,
+    };
+    let client = &tracker.0.client;
+    client
+        .update_swap_metadata(
+            &id,
+            SwapMetadata {
+                arkade_funding: Some(journal.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    // Past the client lock and the funding grace, with the VHTLC never funded.
+    *reader.0.lock().unwrap() = (HtlcState::Absent, HtlcState::Absent, 206);
+    assert_eq!(
+        recommended(&tracker.reconcile(&id).await.unwrap()),
+        ActionKind::Wait {
+            on: WaitingOn::SubmissionRecovery
+        }
+    );
+    // What fund_arkade_swap writes before refusing a swap that no longer awaits
+    // funding, once the journal is shown never paid.
+    client.clear_unpaid_funding(&id, Some(journal)).unwrap();
+    assert_eq!(
+        recommended(&tracker.reconcile(&id).await.unwrap()),
+        ActionKind::Complete {
+            outcome: Outcome::Expired
+        }
+    );
+}
+
+#[tokio::test]
 async fn sqlite_reopen_retains_timed_out_attempt_and_opt_in_options() {
     let (tracker, reader, executor, id) = setup(
         3,

@@ -40,6 +40,19 @@ pub enum Error {
 
     #[error("swap storage error: {0}")]
     Storage(String),
+
+    /// An earlier funding of the swap may have gone out, and the SDK cannot tell.
+    /// Never fund the swap by other means and do not treat it as unfunded: follow its
+    /// status meanwhile, and give it up only once a check by hand shows where the funds
+    /// went.
+    ///
+    /// From [`Client::fund_arkade_swap`](crate::Client::fund_arkade_swap), a spender of
+    /// a journaled input that arkd names resolves on a later call, once arkd shows its
+    /// VHTLC output or returns it paying nothing to the VHTLC. A spender arkd does not
+    /// name, a journaled input arkd does not know, and a journal for another VHTLC
+    /// address never resolve on their own.
+    #[error("unresolved funding: {0}")]
+    UnresolvedFunding(String),
 }
 
 impl From<rusqlite::Error> for Error {
