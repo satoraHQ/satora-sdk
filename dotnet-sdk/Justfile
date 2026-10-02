@@ -60,8 +60,10 @@ fmt-rust:
 build: generate-bindings
     dotnet build Satora.Sdk.sln
 
-# Run xUnit tests. Live tests are skipped unless LENDASWAP_API_URL is set.
+# Run the native crate's Rust tests and the xUnit tests. Live tests are
+# skipped unless LENDASWAP_API_URL is set.
 test: generate-bindings
+    cd native && cargo test --locked
     dotnet test Satora.Sdk.sln
 
 # Run live tests too (set LENDASWAP_API_URL or rely on the default).

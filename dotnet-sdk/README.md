@@ -50,7 +50,7 @@ in lockstep when you add a direction.
 ```bash
 just install-bindgen      # one-time, pins uniffi-bindgen-cs v0.10.0+v0.29.4
 just build                # builds the cdylib + generates C# + dotnet build
-just test                 # runs xUnit tests (live tests skipped unless env set)
+just test                 # runs the native crate's tests and the xUnit tests (live tests skipped unless env set)
 just test-live            # hits http://localhost:3333 by default
 ```
 

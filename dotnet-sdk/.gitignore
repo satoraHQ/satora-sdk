@@ -1,6 +1,5 @@
 # Rust build artefacts
 native/target/
-native/Cargo.lock
 
 # .NET build artefacts
 **/bin/

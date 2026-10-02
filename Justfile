@@ -111,7 +111,7 @@ fmt-ts:
 # Run Rust unit tests (currently the only working set).
 test: test-rust
 
-# Run Rust unit tests only (rust-sdk; dotnet-sdk/native is pure FFI scaffolding).
+# Run Rust unit tests only (rust-sdk; dotnet-sdk/native's tests run under test-dotnet).
 test-rust:
     cd rust-sdk && cargo test
 
@@ -139,7 +139,7 @@ lint-ts:
 build-dotnet:
     cd dotnet-sdk && just build
 
-# Run the C# test suite.
+# Run the native crate's Rust tests and the C# test suite.
 test-dotnet:
     cd dotnet-sdk && just test
 
