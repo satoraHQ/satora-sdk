@@ -93,6 +93,14 @@ fn arkade_address(address: &str) -> Result<()> {
 impl Client {
     /// Create any API swap direction with explicit rails and EVM chain IDs.
     /// Local metadata is persisted with the response before returning.
+    ///
+    /// For Bitcoin→Arkade and Bitcoin→EVM the HTLC is rebuilt from the client's
+    /// keys and the response, as [`Self::bitcoin_htlc`] does. [`Error::InvalidSwap`]
+    /// refuses a hash lock that is not HASH160 of this client's preimage, an unknown
+    /// network, an unsupported script version or zero refund locktime, and a
+    /// `btc_htlc_address` other than the rebuilt one; [`Error::Decode`] refuses a
+    /// server key, hash lock or refund locktime that does not parse. Such a swap
+    /// stays in storage for recovery; never fund its address.
     pub async fn create_swap_request(
         &self,
         request: SwapCreation,
@@ -351,6 +359,14 @@ impl Client {
                 let response: GetSwapResponse =
                     serde_json::from_value(response).map_err(|e| Error::Decode(e.to_string()))?;
                 self.persist_swap_with_metadata(index, response.clone(), metadata.clone())?;
+                if matches!(
+                    response,
+                    GetSwapResponse::BtcToArkade(_) | GetSwapResponse::BitcoinToEvm(_)
+                ) {
+                    // The payer funds this address, so it must be the script our keys
+                    // rebuild; the record stays stored, unreturned, for recovery.
+                    self.bitcoin_htlc(response.id())?;
+                }
                 Ok::<_, Error>(Swap::from(response))
             }
             .await;

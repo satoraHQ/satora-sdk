@@ -572,6 +572,14 @@ impl Client {
     ///
     /// `sats_receive` is the exact amount to receive on Arkade; the API takes
     /// no source amount for this direction.
+    ///
+    /// Here and through [`Self::create_swap`] alike, the HTLC is rebuilt from the
+    /// client's keys and the response, as [`Self::bitcoin_htlc`] does.
+    /// [`Error::InvalidSwap`] refuses a hash lock that is not HASH160 of this client's
+    /// preimage, an unknown network, an unsupported script version or zero refund
+    /// locktime, and a `btc_htlc_address` other than the rebuilt one; [`Error::Decode`]
+    /// refuses a server key, hash lock or refund locktime that does not parse. Such a
+    /// swap stays in storage for recovery; never fund its address.
     pub async fn create_bitcoin_to_arkade_swap(
         &self,
         sats_receive: u64,

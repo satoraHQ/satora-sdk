@@ -37,6 +37,38 @@ fn fixture(direction: &str) -> Value {
     fixtures[direction].clone()
 }
 
+/// A Bitcoin→Arkade or Bitcoin→EVM creation response whose HTLC the client's keys
+/// at `key_index` rebuild, as creation requires.
+fn bitcoin_htlc_response(direction: &str, key_index: u32) -> Value {
+    use bitcoin::hashes::Hash;
+    use bitcoin::hashes::hash160;
+    use bitcoin::secp256k1::PublicKey;
+    let signer = Signer::from_mnemonic(MNEMONIC).unwrap();
+    let params = signer.derive_swap_params(key_index).unwrap();
+    let server =
+        PublicKey::from_slice(&signer.derive_swap_params(999).unwrap().public_key).unwrap();
+    let htlc = lendaswap_sdk::bitcoin::BitcoinHtlc {
+        network: bitcoin::Network::Regtest,
+        hash_lock: hash160::Hash::hash(&params.preimage).to_byte_array(),
+        claimer: server.x_only_public_key().0,
+        refunder: PublicKey::from_slice(&params.public_key)
+            .unwrap()
+            .x_only_public_key()
+            .0,
+        refund_locktime: 1,
+        script_version: 1,
+    };
+    let (hash_lock, server_pk) = match direction {
+        "btc_to_arkade" => ("hash_lock", "server_vhtlc_pk"),
+        _ => ("btc_hash_lock", "btc_server_pk"),
+    };
+    let mut response = fixture(direction);
+    response[hash_lock] = json!(hex::encode(htlc.hash_lock));
+    response[server_pk] = json!(server.to_string());
+    response["btc_htlc_address"] = json!(htlc.address().unwrap().to_string());
+    response
+}
+
 fn client(server: &MockServer) -> Client {
     Client::builder()
         .base_url(server.uri())
@@ -980,7 +1012,9 @@ async fn bitcoin_receive_helper_creates_a_bitcoin_to_arkade_swap() {
             "target_arkade_address": arkade,
             "extra_fees": 15,
         })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(fixture("btc_to_arkade")))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(bitcoin_htlc_response("btc_to_arkade", 0)),
+        )
         .expect(1)
         .mount(&server)
         .await;
@@ -1000,6 +1034,64 @@ async fn bitcoin_receive_helper_creates_a_bitcoin_to_arkade_swap() {
         "{:?}",
         swap.funding
     );
+}
+
+#[tokio::test]
+async fn bitcoin_creation_refuses_an_htlc_address_our_keys_do_not_rebuild() {
+    let arkade = Address::Arkade("tark1qqellv77udfmr20tun8dvju5vgudpf9vxe8jwhthrkn26fz96pawqfdy8nk05rsmrf8h94j26905e7n6sng8y059z8ykn2j5xcuw4xt846qj6x".into());
+    let (_, _, _, bitcoin_to_evm) = creation_cases(QuoteAmount::Target(100_000))
+        .into_iter()
+        .find(|case| case.1 == "bitcoin_to_evm")
+        .unwrap();
+    for (route, direction, entry) in [
+        (
+            "bitcoin/arkade",
+            "btc_to_arkade",
+            "create_bitcoin_to_arkade_swap",
+        ),
+        ("bitcoin/arkade", "btc_to_arkade", "create_swap"),
+        ("bitcoin/evm", "bitcoin_to_evm", "create_swap_request"),
+    ] {
+        let mut response = bitcoin_htlc_response(direction, 0);
+        response["btc_htlc_address"] =
+            bitcoin_htlc_response(direction, 1)["btc_htlc_address"].clone();
+        let server = MockServer::start().await;
+        Mock::given(path(format!("/swap/{route}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = client(&server);
+        let refused = match entry {
+            "create_swap" => {
+                client
+                    .create_swap(
+                        lendaswap_sdk::types::KnownChain::Bitcoin,
+                        TokenId::Btc,
+                        TokenId::Btc,
+                        QuoteAmount::Target(100_000),
+                        Some(arkade.clone()),
+                        None,
+                    )
+                    .await
+            }
+            "create_swap_request" => {
+                client
+                    .create_swap_request(bitcoin_to_evm.clone(), Default::default())
+                    .await
+            }
+            _ => {
+                client
+                    .create_bitcoin_to_arkade_swap(100_000, arkade.clone(), None)
+                    .await
+            }
+        }
+        .unwrap_err();
+        assert!(
+            matches!(&refused, Error::InvalidSwap(message) if message.contains("address mismatch")),
+            "{entry}: {refused:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -1234,9 +1326,14 @@ async fn creates_all_nine_directions_with_current_schemas_and_persists_snapshots
     for amount in [QuoteAmount::Source(100_000), QuoteAmount::Target(100_000)] {
         for (route, direction, schema, request) in creation_cases(amount) {
             let server = MockServer::start().await;
+            let response = if matches!(direction, "btc_to_arkade" | "bitcoin_to_evm") {
+                bitcoin_htlc_response(direction, 0)
+            } else {
+                fixture(direction)
+            };
             Mock::given(method("POST"))
                 .and(path(format!("/swap/{route}")))
-                .respond_with(ResponseTemplate::new(200).set_body_json(fixture(direction)))
+                .respond_with(ResponseTemplate::new(200).set_body_json(response))
                 .expect(1)
                 .mount(&server)
                 .await;
@@ -1347,7 +1444,8 @@ async fn retries_only_explicit_hash_collisions_with_typescript_index_spacing() {
                         json!({"error":"a swap with this preimage hash exists already"}),
                     )
                 } else {
-                    ResponseTemplate::new(200).set_body_json(fixture("btc_to_arkade"))
+                    ResponseTemplate::new(200)
+                        .set_body_json(bitcoin_htlc_response("btc_to_arkade", 11))
                 }
             }
         })
