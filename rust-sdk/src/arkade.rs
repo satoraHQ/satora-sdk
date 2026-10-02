@@ -631,6 +631,8 @@ impl Client {
         .await
     }
 
+    /// Refund an Arkade to EVM or Arkade to Lightning VHTLC before its timelock with
+    /// the receiver's signatures, which the server obtains and this client verifies.
     pub async fn collab_refund_arkade(
         &self,
         swap_id: &str,

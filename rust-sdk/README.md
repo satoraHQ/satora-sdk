@@ -289,9 +289,10 @@ validators.
 Arkade `claim` supports Bitcoin, EVM and Lightning inputs and spends all
 eligible VTXOs after checking the expected funding amount. `refund_arkade` checks
 maturity against Bitcoin chain data; `collab_refund_arkade` obtains and verifies
-the receiver's signatures for Arkade→EVM refunds. `arkade_htlc`, `vhtlc_balance`,
-and `spend_arkade` expose reconstruction, spend observations, and an injectable
-`ArkadeBackend` for external integrations. `ClientBuilder::arkade_config` has no
+the receiver's signatures for Arkade→EVM and Arkade→Lightning refunds.
+`arkade_htlc`, `vhtlc_balance`, and `spend_arkade` expose reconstruction, spend
+observations, and an injectable `ArkadeBackend` for external integrations.
+`ClientBuilder::arkade_config` has no
 default endpoints; the TypeScript SDK defaults to `https://arkade.computer` on
 mainnet and `https://mutinynet.arkade.sh` on signet (Mutinynet).
 

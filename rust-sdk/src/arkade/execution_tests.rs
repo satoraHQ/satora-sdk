@@ -813,10 +813,15 @@ async fn refund_checks_chain_maturity_and_does_not_require_the_invoice_preimage(
 }
 #[tokio::test]
 async fn cooperative_refund_preserves_receiver_signatures_through_server_cosigning() {
+    for direction in ["arkade_to_evm", "arkade_to_lightning"] {
+        cooperative_refund_through_server_cosigning(direction).await;
+    }
+}
+async fn cooperative_refund_through_server_cosigning(direction: &str) {
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
-    let (_, backend, store, destination) = setup("arkade_to_evm");
+    let (_, backend, store, destination) = setup(direction);
     let server = MockServer::start().await;
     Mock::given(wiremock::matchers::path(
         "/api/swap/arkade-evm/arkade/collab-refund",
@@ -1226,10 +1231,15 @@ async fn mount_cosigner(
 
 #[tokio::test]
 async fn cooperative_delegate_verifies_receiver_signatures_including_forfeits() {
+    for direction in ["arkade_to_evm", "arkade_to_lightning"] {
+        cooperative_delegate_through_server_cosigning(direction).await;
+    }
+}
+async fn cooperative_delegate_through_server_cosigning(direction: &str) {
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
-    let (_, mut backend, store, destination) = setup("arkade_to_evm");
+    let (_, mut backend, store, destination) = setup(direction);
     backend.vtxos[0].is_swept = true;
     let server = MockServer::start().await;
     let cosigned = mount_cosigner(&server, TapSighashType::AllPlusAnyoneCanPay).await;
@@ -1321,6 +1331,59 @@ async fn cooperative_delegate_rejects_forfeit_signed_without_anyonecanpay() {
             .arkade_delegate
             .is_none()
     );
+}
+#[tokio::test]
+async fn cooperative_refunds_of_arkade_received_swaps_never_reach_the_cosigner() {
+    let (_, mut backend, store, destination) = setup("lightning_to_arkade");
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::any())
+        .respond_with(wiremock::ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let client = Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(store)
+        .base_url(server.uri())
+        .build()
+        .unwrap();
+    let offchain = client
+        .spend_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::CooperativeRefund,
+            spend_options(destination.clone()),
+        )
+        .await;
+    assert!(
+        matches!(&offchain, Err(Error::InvalidSwap(m)) if m.contains("direction does not match")),
+        "{offchain:?}"
+    );
+    backend.vtxos[0].is_swept = true;
+    assert!(
+        client
+            .vhtlc_balance("arkade", &backend)
+            .await
+            .unwrap()
+            .recoverable_sats
+            > 0
+    );
+    let delegated = client
+        .settle_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::CooperativeRefund,
+            Some(pair(5).public_key()),
+            spend_options(destination),
+        )
+        .await;
+    assert!(
+        matches!(&delegated, Err(Error::InvalidSwap(m)) if m.contains("direction does not match")),
+        "{delegated:?}"
+    );
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 0);
 }
 #[tokio::test]
 async fn one_call_settle_fetches_the_cosigner_for_a_recoverable_claim() {

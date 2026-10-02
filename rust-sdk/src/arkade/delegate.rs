@@ -236,8 +236,11 @@ impl Client {
                 .ok_or_else(|| invalid("swap missing"))?
                 .response,
             crate::types::GetSwapResponse::ArkadeToEvm(_)
+                | crate::types::GetSwapResponse::ArkadeToLightning(_)
         ) {
-            return Err(invalid("cooperative delegation requires Arkade to EVM"));
+            return Err(invalid(
+                "cooperative delegation requires Arkade to EVM or Arkade to Lightning",
+            ));
         }
         let mut url = self.base_url.join("/api/swap/arkade-evm/")?;
         url.path_segments_mut()

@@ -946,10 +946,10 @@ impl Client {
             self.get_stored_swap(id)?
                 .ok_or_else(|| invalid("swap missing"))?
                 .response,
-            GetSwapResponse::ArkadeToEvm(_)
+            GetSwapResponse::ArkadeToEvm(_) | GetSwapResponse::ArkadeToLightning(_)
         ) {
             return Err(invalid(
-                "cooperative Arkade refund endpoint requires Arkade to EVM",
+                "cooperative Arkade refund endpoint requires Arkade to EVM or Arkade to Lightning",
             ));
         }
         let mut url = self.base_url.join("/api/swap/arkade-evm/")?;
