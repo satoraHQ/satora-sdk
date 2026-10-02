@@ -354,6 +354,32 @@ async fn all_arkade_directions_validate_ownership_hash_and_address() {
     }
 }
 #[tokio::test]
+async fn amounts_for_swap_checks_the_swap_before_reading_through_the_internal_wallet() {
+    let (client, _, store, _) = setup("arkade_to_lightning");
+    let mut fixture: Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/swap-responses.json")).unwrap();
+    fixture["bitcoin_to_evm"]["id"] = json!("onchain");
+    store
+        .store_swap(
+            StoredSwap::new(
+                1,
+                serde_json::from_value(fixture["bitcoin_to_evm"].take()).unwrap(),
+                SwapMetadata::default(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    // The client has no arkade_config, so only a call that reaches the wallet says so.
+    for (id, expected) in [
+        ("arkade", "without an arkade_config"),
+        ("onchain", "swap has no Arkade HTLC"),
+        ("missing", "swap record missing"),
+    ] {
+        let error = client.amounts_for_swap(id).await.unwrap_err();
+        assert!(error.to_string().contains(expected), "{id}: {error}");
+    }
+}
+#[tokio::test]
 async fn multi_output_claim_resumes_finalization_without_resubmission_or_persisted_preimages() {
     let (client, backend, store, destination) = setup("btc_to_arkade");
     backend.fail_finalize.store(true, Ordering::Relaxed);

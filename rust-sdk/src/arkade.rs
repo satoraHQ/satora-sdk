@@ -653,6 +653,16 @@ impl Client {
         .await
     }
 
+    /// Spendable, recoverable and spent sats at a stored swap's VHTLC, read through
+    /// the internal Arkade wallet (TypeScript `amountsForSwap`). Reads only the
+    /// local record, unlike `claim` and `settle`; call `refresh_swap` first for an
+    /// index-only entry from an older database.
+    pub async fn amounts_for_swap(&self, swap_id: &str) -> Result<VhtlcBalance> {
+        self.arkade_htlc(swap_id)?;
+        let backend = self.arkade_wallet().await?;
+        self.vhtlc_balance(swap_id, backend).await
+    }
+
     /// Claim or refund through [`Client::settle_arkade`], routing recoverable
     /// outputs to delegated settlement with the cosigner key the API server reports.
     pub async fn settle(
