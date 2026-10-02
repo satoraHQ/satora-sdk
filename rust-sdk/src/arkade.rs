@@ -294,16 +294,16 @@ impl ArkadeWallet {
         })
     }
 
-    /// Roll over all expired VTXOs + boarding outputs into the next
-    /// Arkade batch. The wallet ends up with fresh confirmed VTXOs at
-    /// the same offchain address, with the exit-window timer reset —
-    /// the operation users perform before their VTXOs expire.
+    /// Roll the wallet's recoverable VTXOs (expired, swept or below dust)
+    /// and its boarding outputs into the next Arkade batch, as fresh
+    /// confirmed VTXOs at the same offchain address. Healthy VTXOs are
+    /// left alone, so settling before they expire renews nothing.
     ///
-    /// Returns `Ok(None)` if the wallet has nothing to settle (no
-    /// boarding inputs and no VTXOs); otherwise the commitment txid
-    /// of the batch that absorbed them.
+    /// Returns `Ok(None)` if the wallet has nothing recoverable and no
+    /// boarding outputs; otherwise the commitment txid of the batch
+    /// that absorbed them.
     ///
-    /// Uses [`rand::rngs::OsRng`] internally — the underlying ark-rs
+    /// Uses [`rand::rngs::OsRng`] internally: the underlying ark-rs
     /// settle path needs a CSPRNG for nonce generation.
     ///
     /// Boarding-output discovery in ark-client's
@@ -314,7 +314,7 @@ impl ArkadeWallet {
     /// boarding-output *descriptor*, which is persisted by an earlier
     /// `get_boarding_address` call on the same Client-held wallet
     /// instance (the wallet is shared across calls via
-    /// `tokio::sync::OnceCell` — see [`crate::Client`]).
+    /// `tokio::sync::OnceCell`; see [`crate::Client`]).
     ///
     /// If we later add operations that read from BDK's on-chain UTXO
     /// set (e.g. unilateral exit), those will need to `wallet.sync()`

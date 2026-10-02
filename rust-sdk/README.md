@@ -218,8 +218,11 @@ proves nothing was sent, release the reservation by merging `Some(false)` into
 `update_swap_metadata`. The tracker never releases these on its own;
 `resolve_attempt` covers only the cases listed under automation. Retrying a known
 refund verifies the receipt even after the coordinator deletes its deposit entry.
-Execution calls through cloned clients are serialized. Separate processes must
-coordinate exclusive ownership of a swap before executing it.
+Each kind of execution through a `Client` and its clones, such as wallet spends or
+swap claims, runs one at a time, and different kinds can overlap. Separate `Client`
+instances over the same storage are not coordinated, so keep one `Client` per wallet
+per process and clone it. Separate processes must coordinate exclusive ownership of
+a swap before executing it.
 
 `fund_swap_gasless_relay` funds a swap created with `gasless` through the server,
 as the TypeScript `fundSwapGasless` does. The swap's EVM key signs a Permit2
@@ -331,6 +334,13 @@ target than `Client::set_conversion_shortfall_limit` allows (none by default) is
 refused whatever the lock shows. Without a reader for the chain the claim is
 refused. A record rebuilt from the server, by recovery or after a restart with an
 index-only store, takes the server's amounts at that time as its targets.
+
+The internal wallet's spends (`arkade_send` and `arkade_settle`) take one lock shared by
+every clone of a `Client`; claims and refunds never wait for it. Each holds it for at
+most 120 seconds (`arkade_send`) or 300 seconds (`arkade_settle`) and then fails with
+`Timeout`. A `Transport` or `Timeout` error from `arkade_send` or `arkade_settle` leaves
+the outcome unknown: check the balance or destination before sending again, and settle
+again freely (each method's docs say more).
 
 Offchain progress retains exact PSBTs with condition witnesses removed. Resume
 with the same operation and destination (a claim whose submit was attempted

@@ -71,6 +71,11 @@ const API_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// A hung connect then fails as a connect error, which proves nothing was sent,
 /// instead of running into an operation deadline.
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Bound on an offchain payment from the internal Arkade wallet, a few arkd round trips.
+pub(crate) const WALLET_PAYMENT_TIMEOUT: Duration = Duration::from_secs(120);
+/// Bound on a batch join by the internal Arkade wallet. Ark batches run about every 60
+/// seconds on mainnet (arkd announces `sessionDuration` 60), so this covers a few.
+const WALLET_BATCH_TIMEOUT: Duration = Duration::from_secs(300);
 fn default_http() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(API_TIMEOUT)
@@ -109,6 +114,9 @@ fn is_preimage_collision(err: &Error) -> bool {
 #[derive(Clone)]
 pub struct Client {
     pub(crate) arkade_execution: Arc<tokio::sync::Mutex<()>>,
+    /// Spends of the internal Arkade wallet's own VTXOs. VHTLC claims and refunds never
+    /// select those, so they take `arkade_execution` and do not wait for a batch here.
+    pub(crate) wallet_execution: Arc<tokio::sync::Mutex<()>>,
     pub(crate) bitcoin_execution: Arc<tokio::sync::Mutex<()>>,
     quote_cache: Arc<tokio::sync::Mutex<quotes::QuoteCache>>,
     #[cfg(feature = "gasless")]
@@ -179,6 +187,7 @@ impl Client {
             arkade_config: None,
             arkade_wallet: Arc::new(tokio::sync::OnceCell::new()),
             arkade_execution: Arc::default(),
+            wallet_execution: Arc::default(),
             bitcoin_execution: Arc::default(),
             quote_cache: Arc::default(),
             #[cfg(feature = "gasless")]
@@ -855,6 +864,26 @@ impl Client {
             .await
     }
 
+    /// Run a spend of the internal wallet's own VTXOs under `wallet_execution`,
+    /// bounded so that a stalled arkd call cannot hold the lock for good. The bound
+    /// starts once the lock is held: bounding the wait too would report
+    /// [`Error::Timeout`] for a call that sent nothing. Expiry drops the spend and
+    /// fails with [`Error::Timeout`]; each caller documents what that leaves behind.
+    /// The spend is boxed because this future holds it while waiting for the lock,
+    /// and unboxed spends overflow a debug build's stack.
+    pub(crate) async fn wallet_spend<T>(
+        &self,
+        timeout: Duration,
+        spend: std::pin::Pin<Box<impl std::future::Future<Output = Result<T>>>>,
+    ) -> Result<T> {
+        let _spend = self.wallet_execution.lock().await;
+        tokio::time::timeout(timeout, spend).await.map_err(|_| {
+            Error::Timeout(format!(
+                "Arkade wallet operation timed out after {timeout:?}"
+            ))
+        })?
+    }
+
     /// Offchain VTXO balance of the internal Arkade wallet, broken
     /// into confirmed / pre-confirmed / recoverable buckets — see
     /// [`crate::arkade::ArkadeBalance`]. The headline number a caller
@@ -866,13 +895,24 @@ impl Client {
         wallet.offchain_balance().await
     }
 
-    /// Roll over all spendable VTXOs + boarding outputs into the next
-    /// Arkade batch — the operation users perform before their VTXOs
-    /// expire. Returns `Ok(None)` if there's nothing to settle, or
+    /// Roll the wallet's recoverable VTXOs (expired, swept or below dust) and its
+    /// boarding outputs into the next Arkade batch; healthy VTXOs are left alone.
+    /// Returns `Ok(None)` if there's nothing to settle, or
     /// `Ok(Some(commitment_txid))` for the batch that absorbed them.
+    ///
+    /// [`Error::Transport`], or [`Error::Timeout`] after 300 seconds, leaves the
+    /// outcome unknown: the batch may still settle. Settling again is safe, since it
+    /// only pays the wallet itself. The 300 seconds start once any wallet spend in
+    /// progress has finished.
     pub async fn arkade_settle(&self) -> Result<Option<bitcoin::Txid>> {
-        let wallet = self.arkade_wallet().await?;
-        wallet.settle().await
+        self.wallet_spend(
+            WALLET_BATCH_TIMEOUT,
+            Box::pin(async {
+                let wallet = self.arkade_wallet().await?;
+                wallet.settle().await
+            }),
+        )
+        .await
     }
 
     /// Derive the internal Arkade wallet's offchain address. Useful for
@@ -888,9 +928,20 @@ impl Client {
     /// `destination` via an offchain Ark transaction. Returns the Ark
     /// txid. Primary use case: funding the Arkade VHTLC returned by
     /// [`Self::create_arkade_to_lightning_swap`].
+    ///
+    /// [`Error::Transport`], or [`Error::Timeout`] after 120 seconds, leaves the
+    /// outcome unknown: arkd may have accepted the payment, so check the destination
+    /// or the balance before sending again. The 120 seconds start once any wallet
+    /// spend in progress has finished.
     pub async fn arkade_send(&self, destination: &str, amount_sats: u64) -> Result<bitcoin::Txid> {
-        let wallet = self.arkade_wallet().await?;
-        wallet.send_offchain(destination, amount_sats).await
+        self.wallet_spend(
+            WALLET_PAYMENT_TIMEOUT,
+            Box::pin(async {
+                let wallet = self.arkade_wallet().await?;
+                wallet.send_offchain(destination, amount_sats).await
+            }),
+        )
+        .await
     }
 
     /// On-chain Bitcoin boarding address for the internal Arkade
@@ -1131,6 +1182,7 @@ impl ClientBuilder {
             arkade_config,
             arkade_wallet: Arc::new(tokio::sync::OnceCell::new()),
             arkade_execution: Arc::default(),
+            wallet_execution: Arc::default(),
             bitcoin_execution: Arc::default(),
             quote_cache: Arc::default(),
             #[cfg(feature = "gasless")]
@@ -1609,5 +1661,50 @@ mod tests {
         assert_eq!(held_by_a_tracker.bitcoin_min_confirmations(), Some(0));
         held_by_a_tracker.set_bitcoin_min_confirmations(None);
         assert_eq!(client.bitcoin_min_confirmations(), None);
+    }
+
+    /// Holds the wallet lock through a clone, checks that `spend` waits for it, then
+    /// lets it finish. Without an Arkade config every spend fails once it proceeds.
+    async fn waits_for_the_wallet_lock<T: std::fmt::Debug>(
+        client: &Client,
+        spend: impl std::future::Future<Output = Result<T>>,
+    ) {
+        let clone = client.clone();
+        let held = clone.wallet_execution.lock().await;
+        let mut spend = std::pin::pin!(spend);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut spend)
+                .await
+                .is_err()
+        );
+        drop(held);
+        assert!(spend.await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_stalled_wallet_spend_times_out_and_frees_the_lock() {
+        let client = Client::new("http://127.0.0.1:1").unwrap();
+        let stalled = tokio::time::timeout(
+            Duration::from_secs(5),
+            client.wallet_spend(
+                Duration::from_millis(20),
+                Box::pin(std::future::pending::<Result<()>>()),
+            ),
+        )
+        .await
+        .expect("the spend must be bounded");
+        // Only each method's docs can say whether a timeout leaves the outcome unknown.
+        assert!(
+            matches!(&stalled, Err(Error::Timeout(message)) if !message.contains("unknown")),
+            "{stalled:?}"
+        );
+        assert!(client.wallet_execution.try_lock().is_ok());
+    }
+
+    #[tokio::test]
+    async fn wallet_spends_take_one_lock_shared_by_clones() {
+        let client = Client::new("http://127.0.0.1:1").unwrap();
+        waits_for_the_wallet_lock(&client, client.arkade_send("tark1", 1_000)).await;
+        waits_for_the_wallet_lock(&client, client.arkade_settle()).await;
     }
 }

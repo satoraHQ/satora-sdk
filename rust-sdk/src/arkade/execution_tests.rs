@@ -2930,6 +2930,68 @@ async fn delegated_settlement_logs_its_outputs_and_a_cosigner_key_fallback() {
     );
 }
 
+#[tokio::test]
+async fn vhtlc_spends_run_while_the_wallet_lock_is_held() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    // Each spend's own five second timeout fails one that waits for the lock.
+    let (client, backend, _, destination) = setup("lightning_to_arkade");
+    let _wallet_spend = client.wallet_execution.lock().await;
+    client
+        .spend_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            spend_options(destination),
+        )
+        .await
+        .unwrap();
+
+    let (_, mut backend, store, destination) = setup("lightning_to_arkade");
+    backend.vtxos.truncate(1);
+    backend.vtxos[0].amount = Amount::from_sat(100_000);
+    backend.vtxos[0].is_swept = true;
+    backend.vtxos[0].expires_at = 0;
+    let server = MockServer::start().await;
+    let commitment = Txid::from_byte_array([16; 32]);
+    Mock::given(wiremock::matchers::path("/api/delegate/cosigner-pk"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"cosigner_pk":pair(5).public_key().to_string()})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(wiremock::matchers::path("/api/delegate/settle"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"commitment_txid":commitment})),
+        )
+        .mount(&server)
+        .await;
+    let delegating = Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(store)
+        .base_url(server.uri())
+        .build()
+        .unwrap();
+    let _wallet_spend = delegating.wallet_execution.lock().await;
+    let settled = delegating
+        .settle_with(
+            "arkade",
+            &backend,
+            ArkadeSpend::Claim,
+            destination,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        settled,
+        super::super::ArkadeSettlement::Delegated { commitment_txid } if commitment_txid == commitment
+    ));
+}
+
 const EVM_FUNDING: &str = "0xabababababababababababababababababababababababababababababababab";
 
 /// An EVM to Arkade swap created to pay 100_000 sats out of a lock of 101_000
