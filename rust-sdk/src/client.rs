@@ -30,6 +30,7 @@ use crate::types::EvmToArkadeSwapResponse;
 use crate::types::GetSwapResponse;
 use crate::types::KnownChain;
 use crate::types::QuoteAmount;
+use crate::types::SwapDirection;
 use crate::types::SwapStatus;
 use crate::types::TokenId;
 use crate::types::Version;
@@ -561,6 +562,40 @@ impl Client {
         .await
     }
 
+    /// Create an on-chain Bitcoin → BTC-on-Arkade swap.
+    ///
+    /// The payer sends `deposit_amount` sats to the returned
+    /// [`SwapFunding::BitcoinAddress`]. Once the server funds the Arkade
+    /// VHTLC, claim it with [`Self::claim`]. If the swap does not complete, the
+    /// deposit comes back through [`Self::refund_bitcoin`] once
+    /// `btc_refund_locktime` has matured.
+    ///
+    /// `sats_receive` is the exact amount to receive on Arkade; the API takes
+    /// no source amount for this direction.
+    pub async fn create_bitcoin_to_arkade_swap(
+        &self,
+        sats_receive: u64,
+        receive_to: Address,
+        extra_fees_bps: Option<u16>,
+    ) -> Result<Swap> {
+        let Address::Arkade(target_address) = receive_to else {
+            return Err(Error::InvalidSwap(
+                "Bitcoin→Arkade requires an Arkade destination".into(),
+            ));
+        };
+        self.create_swap_request(
+            crate::types::SwapCreation::BitcoinToArkade {
+                sats_receive,
+                target_address,
+            },
+            crate::types::SwapOptions {
+                extra_fees_bps,
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
     /// Create a Lightning → BTC-on-Arkade swap.
     ///
     /// The user pays the returned Bolt11 invoice over Lightning; the
@@ -666,12 +701,12 @@ impl Client {
     /// Not routed through [`Self::send`] because the endpoint has a
     /// path parameter and [`Endpoint::PATH`] is a `&'static str`. The
     /// shape varies per direction (the server wraps it in a
-    /// `direction`-tagged enum); the projection in `Swap::from_response`
-    /// dispatches on the variant.
+    /// `direction`-tagged enum); the `From<GetSwapResponse>` projection
+    /// for [`Swap`] dispatches on the variant.
     #[tracing::instrument(name = "get_swap", skip_all, fields(%swap_id))]
     pub async fn get_swap(&self, swap_id: &str) -> Result<Swap> {
         let body = self.fetch_swap_response(swap_id).await?;
-        Ok(Swap::from_response(body))
+        Ok(Swap::from(body))
     }
 
     /// Private: fetch the raw backend response without projection.
@@ -1122,15 +1157,24 @@ fn same_file(a: &Path, b: &Path) -> bool {
 }
 
 /// Compact, user-facing view of a created swap. Carries the fields a
-/// caller needs to display payment instructions to the user.
+/// caller needs to display payment instructions to the user and to time
+/// claims and refunds.
 ///
-/// `#[non_exhaustive]` so we can add fields (e.g. `expires_at`) in a
-/// SemVer-minor release.
+/// Locktimes and expiries are unix seconds, `None` when the direction has no
+/// such leg. A locktime on the leg the client funds is when the client's
+/// refund unlocks. On the leg the server funds, the server can refund from
+/// then, so it is the client's deadline to claim. Bitcoin and Arkade locks
+/// mature on median time past, which trails wall clock by about an hour, so a
+/// refund at the locktime can still be refused; [`Client::claim`] refuses
+/// within 300 seconds of the VHTLC locktime.
+///
+/// `#[non_exhaustive]` so we can add fields in a SemVer-minor release.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Swap {
     pub id: String,
     pub status: SwapStatus,
+    pub direction: SwapDirection,
     /// Funding instructions — depends on whether the swap was created
     /// with `gasless = true` (Gasless variant) or `gasless = false`
     /// (UserSubmitted variant).
@@ -1145,6 +1189,26 @@ pub struct Swap {
     /// Amount the user will receive, in the smallest unit of `receive_token`.
     pub receive_amount: String,
     pub receive_token: TokenId,
+    /// Server creation time as sent on the wire (RFC 3339).
+    pub created_at: String,
+    /// Arkade VHTLC refund locktime. Bitcoin, EVM or Lightning to Arkade: the
+    /// claim deadline. Arkade to EVM or Lightning: when the client's refund
+    /// unlocks.
+    pub vhtlc_refund_locktime: Option<i64>,
+    /// On-chain Bitcoin HTLC refund locktime. Bitcoin to Arkade or EVM: when
+    /// the client's refund unlocks. EVM to Bitcoin: the claim deadline.
+    pub btc_refund_locktime: Option<i64>,
+    /// EVM HTLC refund locktime. EVM to Arkade, Bitcoin or Lightning: when the
+    /// client's refund unlocks. Bitcoin, Arkade or Lightning to EVM: the claim
+    /// deadline.
+    pub evm_refund_locktime: Option<i64>,
+    /// Expiry of the invoice the payer pays (Lightning to Arkade or EVM) or the
+    /// server pays (Arkade or EVM to Lightning). `None` also when the server
+    /// reports no expiry, which it sends as 0. A payer must pay before both
+    /// this expiry and the claim cutoff on the server-funded leg
+    /// (`vhtlc_refund_locktime` for Lightning to Arkade, `evm_refund_locktime`
+    /// for Lightning to EVM); the server does not guarantee which comes first.
+    pub invoice_expires_at: Option<i64>,
 }
 
 /// How the user has to fund the swap.
@@ -1195,14 +1259,15 @@ pub enum SwapFunding {
     },
 }
 
-impl Swap {
+impl From<GetSwapResponse> for Swap {
     /// Project a `GetSwapResponse` (direction-tagged) into the
     /// per-direction-agnostic public [`Swap`] surface.
-    fn from_response(r: GetSwapResponse) -> Self {
+    fn from(r: GetSwapResponse) -> Self {
         match r {
             GetSwapResponse::BtcToArkade(r) => Self {
                 id: r.id,
                 status: r.status,
+                direction: SwapDirection::BtcToArkade,
                 funding: SwapFunding::BitcoinAddress {
                     address: r.btc_htlc_address,
                 },
@@ -1211,10 +1276,16 @@ impl Swap {
                 receive_address: r.target_arkade_address,
                 receive_amount: r.target_amount,
                 receive_token: r.target_token.token_id,
+                created_at: r.created_at,
+                vhtlc_refund_locktime: Some(r.vhtlc_refund_locktime),
+                btc_refund_locktime: Some(r.btc_refund_locktime),
+                evm_refund_locktime: None,
+                invoice_expires_at: None,
             },
             GetSwapResponse::BitcoinToEvm(r) => Self {
                 id: r.id,
                 status: r.status,
+                direction: SwapDirection::BitcoinToEvm,
                 funding: SwapFunding::BitcoinAddress {
                     address: r.btc_htlc_address,
                 },
@@ -1223,10 +1294,16 @@ impl Swap {
                 receive_address: r.target_evm_address.unwrap_or(r.client_evm_address),
                 receive_amount: r.target_amount,
                 receive_token: r.target_token.token_id,
+                created_at: r.created_at,
+                vhtlc_refund_locktime: None,
+                btc_refund_locktime: Some(r.btc_refund_locktime),
+                evm_refund_locktime: Some(r.evm_refund_locktime),
+                invoice_expires_at: None,
             },
             GetSwapResponse::ArkadeToEvm(r) => Self {
                 id: r.id,
                 status: r.status,
+                direction: SwapDirection::ArkadeToEvm,
                 funding: SwapFunding::ArkadeAddress {
                     address: r.btc_vhtlc_address,
                 },
@@ -1235,10 +1312,16 @@ impl Swap {
                 receive_address: r.target_evm_address.unwrap_or(r.client_evm_address),
                 receive_amount: r.target_amount,
                 receive_token: r.target_token.token_id,
+                created_at: r.created_at,
+                vhtlc_refund_locktime: Some(r.vhtlc_refund_locktime),
+                btc_refund_locktime: None,
+                evm_refund_locktime: Some(r.evm_refund_locktime),
+                invoice_expires_at: None,
             },
             GetSwapResponse::LightningToEvm(r) => Self {
                 id: r.id,
                 status: r.status,
+                direction: SwapDirection::LightningToEvm,
                 funding: SwapFunding::Bolt11Invoice {
                     invoice: r.bolt11_invoice,
                 },
@@ -1247,10 +1330,16 @@ impl Swap {
                 receive_address: r.target_evm_address.unwrap_or(r.client_evm_address),
                 receive_amount: r.target_amount,
                 receive_token: r.target_token.token_id,
+                created_at: r.created_at,
+                vhtlc_refund_locktime: None,
+                btc_refund_locktime: None,
+                evm_refund_locktime: Some(r.evm_refund_locktime),
+                invoice_expires_at: r.invoice_expires_at.filter(|&t| t > 0),
             },
             GetSwapResponse::EvmToBitcoin(r) => Self {
                 id: r.id,
                 status: r.status,
+                direction: SwapDirection::EvmToBitcoin,
                 funding: if r.gasless {
                     SwapFunding::Gasless {
                         deposit_address: r.client_evm_address,
@@ -1263,10 +1352,16 @@ impl Swap {
                 receive_address: r.target_btc_address.unwrap_or_default(),
                 receive_amount: r.target_amount,
                 receive_token: r.target_token.token_id,
+                created_at: r.created_at,
+                vhtlc_refund_locktime: None,
+                btc_refund_locktime: Some(r.btc_refund_locktime),
+                evm_refund_locktime: Some(r.evm_refund_locktime),
+                invoice_expires_at: None,
             },
             GetSwapResponse::EvmToLightning(r) => Self {
                 id: r.id,
                 status: r.status,
+                direction: SwapDirection::EvmToLightning,
                 funding: if r.gasless {
                     SwapFunding::Gasless {
                         deposit_address: r.client_evm_address,
@@ -1279,13 +1374,20 @@ impl Swap {
                 receive_address: r.client_lightning_invoice,
                 receive_amount: r.target_amount,
                 receive_token: r.target_token.token_id,
+                created_at: r.created_at,
+                vhtlc_refund_locktime: None,
+                btc_refund_locktime: None,
+                evm_refund_locktime: Some(r.evm_refund_locktime),
+                invoice_expires_at: Some(r.invoice_expires_at).filter(|&t| t > 0),
             },
             GetSwapResponse::EvmToArkade(r) => Self::from_evm_response(r),
             GetSwapResponse::LightningToArkade(r) => Self::from_lightning_response(r),
             GetSwapResponse::ArkadeToLightning(r) => Self::from_arkade_to_lightning_response(r),
         }
     }
+}
 
+impl Swap {
     fn from_evm_response(r: EvmToArkadeSwapResponse) -> Self {
         // `client_evm_address` is the address the SDK derives from the
         // signer's EVM key and echoes back in the response. In the
@@ -1300,12 +1402,18 @@ impl Swap {
         Self {
             id: r.id,
             status: r.status,
+            direction: SwapDirection::EvmToArkade,
             funding,
             deposit_amount: r.source_amount,
             deposit_token: r.source_token.token_id,
             receive_address: r.target_arkade_address,
             receive_amount: r.target_amount,
             receive_token: r.target_token.token_id,
+            created_at: r.created_at,
+            vhtlc_refund_locktime: i64::try_from(r.vhtlc_refund_locktime).ok(),
+            btc_refund_locktime: None,
+            evm_refund_locktime: i64::try_from(r.evm_refund_locktime).ok(),
+            invoice_expires_at: None,
         }
     }
 
@@ -1313,6 +1421,7 @@ impl Swap {
         Self {
             id: r.id,
             status: r.status,
+            direction: SwapDirection::LightningToArkade,
             funding: SwapFunding::Bolt11Invoice {
                 invoice: r.bolt11_invoice,
             },
@@ -1321,6 +1430,11 @@ impl Swap {
             receive_address: r.target_arkade_address,
             receive_amount: r.target_amount,
             receive_token: r.target_token.token_id,
+            created_at: r.created_at,
+            vhtlc_refund_locktime: i64::try_from(r.vhtlc_refund_locktime).ok(),
+            btc_refund_locktime: None,
+            evm_refund_locktime: None,
+            invoice_expires_at: Some(r.invoice_expires_at).filter(|&t| t > 0),
         }
     }
 
@@ -1328,6 +1442,7 @@ impl Swap {
         Self {
             id: r.id,
             status: r.status,
+            direction: SwapDirection::ArkadeToLightning,
             funding: SwapFunding::ArkadeAddress {
                 address: r.arkade_vhtlc_address,
             },
@@ -1339,6 +1454,11 @@ impl Swap {
             receive_address: r.client_lightning_invoice,
             receive_amount: r.target_amount,
             receive_token: r.target_token.token_id,
+            created_at: r.created_at,
+            vhtlc_refund_locktime: i64::try_from(r.vhtlc_refund_locktime).ok(),
+            btc_refund_locktime: None,
+            evm_refund_locktime: None,
+            invoice_expires_at: Some(r.invoice_expires_at).filter(|&t| t > 0),
         }
     }
 }

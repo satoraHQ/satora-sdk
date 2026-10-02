@@ -79,7 +79,11 @@ supports both source and target amounts, a UTF-8 invoice description of at most
 
 `get_swap_details` preserves the server's full response. `get_swap` projects it
 into payment instructions; its `receive_address` is empty for an EVM→Bitcoin
-swap whose server response has no target address.
+swap whose server response has no target address. `Swap::from` applies the same
+projection to a `GetSwapResponse`. A `Swap` also carries its `direction`,
+`created_at`, and under their wire names the refund locktimes and invoice expiry
+in unix seconds. A locktime on the leg the client funds is when its refund
+unlocks; on the leg the server funds it is the client's claim deadline.
 
 `create_swap_request(SwapCreation, SwapOptions)` provides explicit routes for all
 nine directions. `EvmAsset` accepts a chain ID and either a named token or a
@@ -89,7 +93,8 @@ routing. Bridge recipients and recipient setup are stored for later execution.
 Creating a bridge route does not execute the bridge.
 
 Bitcoin→Arkade requires an exact target amount and uses HASH160; other
-client-owned locks use SHA256. All new Bitcoin/Arkade scripts use version 1.
+client-owned locks use SHA256. `create_bitcoin_to_arkade_swap` takes that amount
+as `sats_receive`. All new Bitcoin/Arkade scripts use version 1.
 Malformed destinations, mismatched token chains, and invalid amounts are rejected
 before allocating an index. Explicit reused-preimage errors retry at most ten
 times, skipping ten additional indices per collision, matching TypeScript.

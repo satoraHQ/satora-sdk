@@ -28,6 +28,7 @@ pub use swap::EvmToArkadeSwapResponse;
 pub use swap::GetSwapResponse;
 pub use swap::LightningDestination;
 pub use swap::LightningToArkadeSwapResponse;
+pub use swap::SwapDirection;
 pub use swap::SwapStatus;
 pub use swap::TokenInfo;
 pub use token::TokenId;

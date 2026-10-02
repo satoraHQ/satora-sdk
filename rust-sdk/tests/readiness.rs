@@ -5,11 +5,14 @@ use lendaswap_sdk::InMemorySwapStorage;
 use lendaswap_sdk::LogLevel;
 use lendaswap_sdk::LogRecord;
 use lendaswap_sdk::Signer;
+use lendaswap_sdk::Swap;
+use lendaswap_sdk::SwapFunding;
 use lendaswap_sdk::SwapStorage;
 use lendaswap_sdk::types::Address;
 use lendaswap_sdk::types::GetSwapResponse;
 use lendaswap_sdk::types::LightningDestination;
 use lendaswap_sdk::types::QuoteAmount;
+use lendaswap_sdk::types::SwapDirection;
 use lendaswap_sdk::types::SwapStatus;
 use lendaswap_sdk::types::TokenId;
 use serde_json::Value;
@@ -87,6 +90,112 @@ fn every_swap_direction_deserializes_and_round_trips_the_current_schema() {
         let encoded = serde_json::to_value(swap).unwrap();
         assert_schema(&encoded, "GetSwapResponse");
     }
+}
+
+#[test]
+fn swap_projection_carries_direction_and_deadlines_for_every_direction() {
+    const VHTLC: i64 = 1_800_000_001;
+    const BTC: i64 = 1_800_000_002;
+    const EVM: i64 = 1_800_000_003;
+    const INVOICE: i64 = 1_800_000_004;
+    // [vhtlc_refund_locktime, btc_refund_locktime, evm_refund_locktime, invoice_expires_at]
+    let cases = [
+        (
+            "btc_to_arkade",
+            SwapDirection::BtcToArkade,
+            [Some(VHTLC), Some(BTC), None, None],
+        ),
+        (
+            "bitcoin_to_evm",
+            SwapDirection::BitcoinToEvm,
+            [None, Some(BTC), Some(EVM), None],
+        ),
+        (
+            "arkade_to_evm",
+            SwapDirection::ArkadeToEvm,
+            [Some(VHTLC), None, Some(EVM), None],
+        ),
+        (
+            "lightning_to_evm",
+            SwapDirection::LightningToEvm,
+            [None, None, Some(EVM), Some(INVOICE)],
+        ),
+        (
+            "evm_to_bitcoin",
+            SwapDirection::EvmToBitcoin,
+            [None, Some(BTC), Some(EVM), None],
+        ),
+        (
+            "evm_to_lightning",
+            SwapDirection::EvmToLightning,
+            [None, None, Some(EVM), Some(INVOICE)],
+        ),
+        (
+            "evm_to_arkade",
+            SwapDirection::EvmToArkade,
+            [Some(VHTLC), None, Some(EVM), None],
+        ),
+        (
+            "lightning_to_arkade",
+            SwapDirection::LightningToArkade,
+            [Some(VHTLC), None, None, Some(INVOICE)],
+        ),
+        (
+            "arkade_to_lightning",
+            SwapDirection::ArkadeToLightning,
+            [Some(VHTLC), None, None, Some(INVOICE)],
+        ),
+    ];
+    for (name, direction, deadlines) in cases {
+        let mut value = fixture(name);
+        value["created_at"] = json!("2026-10-02T12:00:00Z");
+        // Decoding drops the fields a direction does not carry.
+        value["vhtlc_refund_locktime"] = json!(VHTLC);
+        value["btc_refund_locktime"] = json!(BTC);
+        value["evm_refund_locktime"] = json!(EVM);
+        value["invoice_expires_at"] = json!(INVOICE);
+        let swap = Swap::from(serde_json::from_value::<GetSwapResponse>(value).unwrap());
+        assert_eq!(swap.direction, direction, "{name}");
+        assert_eq!(swap.created_at, "2026-10-02T12:00:00Z", "{name}");
+        assert_eq!(
+            [
+                swap.vhtlc_refund_locktime,
+                swap.btc_refund_locktime,
+                swap.evm_refund_locktime,
+                swap.invoice_expires_at,
+            ],
+            deadlines,
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn swap_projection_drops_out_of_range_locktimes_and_unset_invoice_expiry() {
+    let project = |name: &str, field: &str, raw: serde_json::Value| {
+        let mut value = fixture(name);
+        value[field] = raw;
+        Swap::from(serde_json::from_value::<GetSwapResponse>(value).unwrap())
+    };
+    for name in [
+        "lightning_to_arkade",
+        "arkade_to_lightning",
+        "evm_to_lightning",
+        "lightning_to_evm",
+    ] {
+        let swap = project(name, "invoice_expires_at", json!(0));
+        assert_eq!(swap.invoice_expires_at, None, "{name}");
+    }
+    for name in [
+        "lightning_to_arkade",
+        "arkade_to_lightning",
+        "evm_to_arkade",
+    ] {
+        let swap = project(name, "vhtlc_refund_locktime", json!(u64::MAX));
+        assert_eq!(swap.vhtlc_refund_locktime, None, "{name}");
+    }
+    let swap = project("evm_to_arkade", "evm_refund_locktime", json!(u64::MAX));
+    assert_eq!(swap.evm_refund_locktime, None);
 }
 
 #[tokio::test]
@@ -858,6 +967,39 @@ async fn dispatcher_forwards_lightning_source_amount_and_surcharge() {
         )
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn bitcoin_receive_helper_creates_a_bitcoin_to_arkade_swap() {
+    let arkade = "tark1qqellv77udfmr20tun8dvju5vgudpf9vxe8jwhthrkn26fz96pawqfdy8nk05rsmrf8h94j26905e7n6sng8y059z8ykn2j5xcuw4xt846qj6x";
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/swap/bitcoin/arkade"))
+        .and(body_partial_json(json!({
+            "sats_receive": 100_000,
+            "target_arkade_address": arkade,
+            "extra_fees": 15,
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(fixture("btc_to_arkade")))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = client(&server);
+    let err = client
+        .create_bitcoin_to_arkade_swap(100_000, Address::Bitcoin("bcrt1qfixture".into()), None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::InvalidSwap(_)), "{err:?}");
+    let swap = client
+        .create_bitcoin_to_arkade_swap(100_000, Address::Arkade(arkade.into()), Some(15))
+        .await
+        .unwrap();
+    assert_eq!(swap.direction, SwapDirection::BtcToArkade);
+    assert!(
+        matches!(swap.funding, SwapFunding::BitcoinAddress { .. }),
+        "{:?}",
+        swap.funding
+    );
 }
 
 #[tokio::test]

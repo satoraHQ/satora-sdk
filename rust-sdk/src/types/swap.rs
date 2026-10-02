@@ -426,6 +426,21 @@ impl GetSwapResponse {
     }
 }
 
+/// Route of a swap, one variant per [`GetSwapResponse`] variant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum SwapDirection {
+    BtcToArkade,
+    BitcoinToEvm,
+    ArkadeToEvm,
+    LightningToEvm,
+    EvmToBitcoin,
+    EvmToLightning,
+    EvmToArkade,
+    LightningToArkade,
+    ArkadeToLightning,
+}
+
 /// Response from `POST /swap/lightning/arkade`. Maps to the
 /// `LightningToArkadeSwapResponse` component schema.
 ///

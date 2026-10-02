@@ -351,7 +351,7 @@ impl Client {
                 let response: GetSwapResponse =
                     serde_json::from_value(response).map_err(|e| Error::Decode(e.to_string()))?;
                 self.persist_swap_with_metadata(index, response.clone(), metadata.clone())?;
-                Ok::<_, Error>(Swap::from_response(response))
+                Ok::<_, Error>(Swap::from(response))
             }
             .await;
             let error = match result {
