@@ -38,9 +38,17 @@ dispatcher in `client.rs` rejects anything else with
 Arbitrum, or Ethereum (whichever pairs are wired in `TokenId`, canonical
 list in `client-sdk/rust-sdk/src/types/token.rs`). Bitcoin → Arkade also
 has `CreateBitcoinToArkadeSwapAsync`, and `RefundBitcoinAsync` returns
-the on-chain deposit of one that did not complete. The full matrix lives
-in the nuget README (`Satora.Sdk/README.md`); update both in lockstep
-when you add a direction.
+the on-chain deposit of one that did not complete. Lightning → Arkade
+has `CreateLightningToArkadeSwapAsync`, with an overload for an exact
+source or target amount and an invoice description; Arkade → Lightning
+has `CreateArkadeToLightningSwapAsync` (including send-max destinations)
+and `GetLightningSendQuoteAsync`. `SettleAsync` claims or refunds any
+swap's Arkade VHTLC, recoverable outputs included, and
+`AmountsForSwapAsync` shows what the VHTLC holds. `GetBulkStatusAsync`
+and `RecoverAllSwapsAsync` cover status polling and restoring swaps
+from the seed. The full matrix lives in the nuget README
+(`Satora.Sdk/README.md`); update both in lockstep when you add a
+direction.
 
 ## Prerequisites
 

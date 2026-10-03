@@ -91,10 +91,10 @@ replacement over the same directory only after that.
 `CreateSwapAsync` routes **EVM-stablecoin → BTC on Arkade**, **on-chain
 Bitcoin → BTC on Arkade** (see [Bitcoin → Arkade](#bitcoin--arkade)
 below) and **Lightning → BTC on Arkade**; Arkade → Lightning has its own
-entry point, `CreateArkadeToLightningSwapAsync`. Other directions the
-backend supports (Bitcoin ↔ EVM, Arkade → EVM, etc.) will land as we add
-direction-specific entry points; open an issue if you need one
-prioritised.
+entry point (see [Lightning ↔ Arkade](#lightning--arkade)). Other
+directions the backend supports (Bitcoin ↔ EVM, Arkade → EVM, etc.)
+will land as we add direction-specific entry points; open an issue if
+you need one prioritised.
 
 EVM source tokens (use as `sourceToken` with the matching
 `sourceChain`):
@@ -189,6 +189,53 @@ var refund = await client.RefundBitcoinAsync(
     swap.Id, "bc1q…", feeRateSatVb: null, maximumFeeSats: 5_000);
 ```
 
+## Lightning ↔ Arkade
+
+`CreateLightningToArkadeSwapAsync(satsReceive)` returns a BOLT11 invoice
+in `SwapFunding.Bolt11Invoice`. Once it is paid and the server has
+funded the Arkade VHTLC, `ClaimAsync` sweeps it. The overload taking a
+`QuoteAmount` fixes either the invoice amount (`QuoteAmount.Source`) or
+what arrives on Arkade (`QuoteAmount.Target`), and also takes a fee
+surcharge and an invoice description. The invoice must be paid before
+both `InvoiceExpiresAt` and the claim cutoff `VhtlcRefundLocktime`; the
+server does not guarantee which comes first, and `InvoiceExpiresAt` is
+null when the server reports no expiry. `ClaimAsync` refuses within 300
+seconds of `VhtlcRefundLocktime`.
+
+`CreateArkadeToLightningSwapAsync(destination)` returns an Arkade VHTLC
+address in `SwapFunding.ArkadeAddress`; fund it with `DepositAmount`
+sats and the server pays the destination. `LightningDestination.AddressSendMax`
+and `LightningDestination.LnurlSendMax` take a fixed amount from Arkade
+and pay out what remains after fees. `GetLightningSendQuoteAsync` prices
+a destination with the Lightning provider's actual fee. If the swap
+fails, `SettleAsync` with `ArkadeSpend.CooperativeRefund` (or
+`ArkadeSpend.Refund` once median time past, which trails wall clock by
+about an hour, has reached the VHTLC refund locktime) returns the funds.
+
+```csharp
+var destination = new LightningDestination.Address("alice@example.com", 50_000);
+var quote = await client.GetLightningSendQuoteAsync(destination);
+var swap = await client.CreateArkadeToLightningSwapAsync(destination);
+```
+
+## Arkade VHTLCs
+
+`SettleAsync(swapId, operation, destination)` claims (`ArkadeSpend.Claim`)
+or refunds (`ArkadeSpend.Refund`, `ArkadeSpend.CooperativeRefund`) a
+swap's Arkade VHTLC. Unlike `ClaimAsync`, it also spends recoverable
+(expired) outputs, through a batch, and its `ArkadeSettlement` says
+which path it took. `AmountsForSwapAsync(swapId)` shows the spendable,
+recoverable and spent sats at the VHTLC.
+
+## Swap status and recovery
+
+`SwapDetails` carries the swap's `Direction` and, in unix seconds, the
+locktimes and invoice expiry that bound when it can be paid, claimed or
+refunded. `GetBulkStatusAsync(ids)` reads the status of any number of
+swaps in one call. After restoring a seed on a new machine,
+`RecoverAllSwapsAsync()` finds the wallet's swaps on the server and
+stores them so they can be claimed or refunded.
+
 ## Supported runtimes
 
 The package ships native cdylibs for:
@@ -238,12 +285,12 @@ included, and a Rust SDK error this version does not name yet have
 `Storage` error from `FundSwapAsync`, the outcome is unknown: check the
 swap status or the balance before trying again (a `FundSwapAsync` retry
 is refused while its stored operation is unresolved, so checking first is
-safe). After one from `ClaimAsync`, or a `Storage` error from it once
-arkd may hold the claim, call it again, which resumes from its journal.
-After one from `RefundBitcoinAsync`, or a `Storage` error from it after a
-fee bump, call it again with the same destination, which returns the
-pending or confirmed refund instead of building another. A chain read
-that straddled a new block, such as
+safe). After one from `ClaimAsync` or `SettleAsync`, or a `Storage` error
+from them once arkd may hold the spend, call it again, which resumes from
+its journal. After one from `RefundBitcoinAsync`, or a `Storage` error
+from it after a fee bump, call it again with the same destination, which
+returns the pending or confirmed refund instead of building another. A
+chain read that straddled a new block, such as
 `Bitcoin tip changed during observation`, is a `Transport` error too, so
 the same retry applies.
 

@@ -58,6 +58,8 @@
     <Using Include="uniffi.satora_sdk_ffi.LightningDestination" Alias="LightningDestination" />
     <Using Include="uniffi.satora_sdk_ffi.ArkadeBalance" Alias="ArkadeBalance" />
     <Using Include="uniffi.satora_sdk_ffi.SwapDirection" Alias="SwapDirection" />
+    <Using Include="uniffi.satora_sdk_ffi.ArkadeSpend" Alias="ArkadeSpend" />
+    <Using Include="uniffi.satora_sdk_ffi.ArkadeSettlement" Alias="ArkadeSettlement" />
   </ItemGroup>
 
   <!-- Native libraries: at pack time these go under runtimes/{rid}/native

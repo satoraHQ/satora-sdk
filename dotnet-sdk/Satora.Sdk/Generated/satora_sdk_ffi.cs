@@ -789,6 +789,18 @@ static class _UniFFILib {
     
     
     
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
 
     static _UniFFILib() {
         _UniFFILib.uniffiCheckContractApiVersion();
@@ -814,6 +826,10 @@ static class _UniFFILib {
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern IntPtr uniffi_satora_sdk_ffi_fn_constructor_satoraclient_new_with_arkade(RustBuffer @baseUrl,RustBuffer @mnemonic,RustBuffer @arkadeConfig,RustBuffer @referralCode,RustBuffer @storagePath,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_amounts_for_swap(IntPtr @ptr,RustBuffer @swapId,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -857,11 +873,23 @@ static class _UniFFILib {
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_create_lightning_to_arkade_swap_with_options(IntPtr @ptr,RustBuffer @amount,RustBuffer @receiveTo,RustBuffer @extraFeesBps,RustBuffer @invoiceDescription,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_create_swap(IntPtr @ptr,RustBuffer @sourceChain,RustBuffer @sourceToken,RustBuffer @targetChain,RustBuffer @targetToken,RustBuffer @amount,RustBuffer @receiveTo,sbyte @gasless,RustBuffer @extraFeesBps,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_fund_swap_gasless(IntPtr @ptr,RustBuffer @swapId,RustBuffer @opts,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_get_bulk_status(IntPtr @ptr,RustBuffer @ids,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_get_lightning_send_quote(IntPtr @ptr,RustBuffer @destination,RustBuffer @extraFeesBps,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -873,7 +901,15 @@ static class _UniFFILib {
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_recover_all_swaps(IntPtr @ptr,RustBuffer @startIndex,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_refund_bitcoin(IntPtr @ptr,RustBuffer @swapId,RustBuffer @destination,RustBuffer @feeRateSatVb,ulong @maximumFeeSats,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_settle(IntPtr @ptr,RustBuffer @swapId,RustBuffer @operation,RustBuffer @destination,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -1121,6 +1157,10 @@ static class _UniFFILib {
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_amounts_for_swap(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_balance(
     );
 
@@ -1161,11 +1201,23 @@ static class _UniFFILib {
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_lightning_to_arkade_swap_with_options(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_swap(
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_fund_swap_gasless(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_get_bulk_status(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_get_lightning_send_quote(
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -1177,7 +1229,15 @@ static class _UniFFILib {
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_recover_all_swaps(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_refund_bitcoin(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_settle(
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -1225,6 +1285,12 @@ static class _UniFFILib {
             }
         }
         {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_amounts_for_swap();
+            if (checksum != 59822) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_amounts_for_swap` checksum `59822`, library returned `{checksum}`");
+            }
+        }
+        {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_balance();
             if (checksum != 49598) {
                 throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_balance` checksum `49598`, library returned `{checksum}`");
@@ -1250,8 +1316,8 @@ static class _UniFFILib {
         }
         {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_settle();
-            if (checksum != 53054) {
-                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_settle` checksum `53054`, library returned `{checksum}`");
+            if (checksum != 56837) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_settle` checksum `56837`, library returned `{checksum}`");
             }
         }
         {
@@ -1285,6 +1351,12 @@ static class _UniFFILib {
             }
         }
         {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_lightning_to_arkade_swap_with_options();
+            if (checksum != 11560) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_lightning_to_arkade_swap_with_options` checksum `11560`, library returned `{checksum}`");
+            }
+        }
+        {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_swap();
             if (checksum != 9195) {
                 throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_swap` checksum `9195`, library returned `{checksum}`");
@@ -1294,6 +1366,18 @@ static class _UniFFILib {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_fund_swap_gasless();
             if (checksum != 41022) {
                 throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_fund_swap_gasless` checksum `41022`, library returned `{checksum}`");
+            }
+        }
+        {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_get_bulk_status();
+            if (checksum != 922) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_get_bulk_status` checksum `922`, library returned `{checksum}`");
+            }
+        }
+        {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_get_lightning_send_quote();
+            if (checksum != 47326) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_get_lightning_send_quote` checksum `47326`, library returned `{checksum}`");
             }
         }
         {
@@ -1309,9 +1393,21 @@ static class _UniFFILib {
             }
         }
         {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_recover_all_swaps();
+            if (checksum != 38163) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_recover_all_swaps` checksum `38163`, library returned `{checksum}`");
+            }
+        }
+        {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_refund_bitcoin();
             if (checksum != 31945) {
                 throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_refund_bitcoin` checksum `31945`, library returned `{checksum}`");
+            }
+        }
+        {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_settle();
+            if (checksum != 65000) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_settle` checksum `65000`, library returned `{checksum}`");
             }
         }
         {
@@ -1381,6 +1477,32 @@ class FfiConverterUInt16: FfiConverter<ushort, ushort> {
 
     public override void Write(ushort value, BigEndianStream stream) {
         stream.WriteUShort(value);
+    }
+}
+
+
+
+class FfiConverterUInt32: FfiConverter<uint, uint> {
+    public static FfiConverterUInt32 INSTANCE = new FfiConverterUInt32();
+
+    public override uint Lift(uint value) {
+        return value;
+    }
+
+    public override uint Read(BigEndianStream stream) {
+        return stream.ReadUInt();
+    }
+
+    public override uint Lower(uint value) {
+        return value;
+    }
+
+    public override int AllocationSize(uint value) {
+        return 4;
+    }
+
+    public override void Write(uint value, BigEndianStream stream) {
+        stream.WriteUInt(value);
     }
 }
 
@@ -1551,6 +1673,15 @@ class FfiConverterString: FfiConverter<string, RustBuffer> {
 /// </summary>
 public interface ISatoraClient {
     /// <summary>
+    /// Spendable, recoverable and spent sats at a stored swap's VHTLC,
+    /// read through the internal Arkade wallet. Reads only the swap record
+    /// in this client's storage, which swap creation and
+    /// [`Self::recover_all_swaps`] write; a swap missing from it is
+    /// `SdkError::InvalidSwap`.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    VhtlcAmounts AmountsForSwap(string @swapId);
+    /// <summary>
     /// Offchain VTXO balance of the SDK's internal Arkade wallet,
     /// broken into the three buckets ark-client distinguishes — see
     /// [`ArkadeBalance`]. Hits the Arkade server's gRPC indexer.
@@ -1593,7 +1724,9 @@ public interface ISatoraClient {
     /// Roll the wallet's recoverable VTXOs (expired, swept or below dust)
     /// and its boarding outputs into the next Arkade batch; healthy VTXOs
     /// are left alone. `None` => nothing to settle; `Some(txid)` => hex
-    /// commitment txid (`0x…`) of the batch that absorbed them.
+    /// commitment txid (`0x…`) of the batch that absorbed them. This
+    /// settles the wallet's own outputs; [`Self::settle`] spends a swap's
+    /// VHTLC.
     ///
     /// A `Transport` error, or `Timeout` after 300 seconds, leaves the
     /// outcome unknown: the batch may still settle. Settling again is
@@ -1678,6 +1811,17 @@ public interface ISatoraClient {
     /// <exception cref="SdkException"></exception>
     Swap CreateLightningToArkadeSwap(ulong @satsReceive, Address? @receiveTo);
     /// <summary>
+    /// [`Self::create_lightning_to_arkade_swap`] with an exact source or
+    /// target amount: `QuoteAmount::Source` fixes the invoice amount,
+    /// `QuoteAmount::Target` what arrives on Arkade, both in sats.
+    /// `receive_to` `None` routes to the SDK's own internal Arkade wallet.
+    /// `extra_fees_bps` is the optional per-swap fee surcharge
+    /// [`Self::create_swap`] takes. `invoice_description` is at most 639
+    /// UTF-8 bytes; `None` uses the server default.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    Swap CreateLightningToArkadeSwapWithOptions(QuoteAmount @amount, Address? @receiveTo, ushort? @extraFeesBps, string? @invoiceDescription);
+    /// <summary>
     /// Create a swap. Thin forward to the Rust SDK's dispatcher
     /// ([`lendaswap_sdk::Client::create_swap`]). Direction is resolved
     /// from `source_chain` (Lightning, Bitcoin or EVM) plus the target.
@@ -1711,6 +1855,24 @@ public interface ISatoraClient {
     /// <exception cref="SdkException"></exception>
     FundSwapReceipt FundSwapGasless(string @swapId, GaslessOpts @opts);
     /// <summary>
+    /// Current status of each swap in `ids`, any number of them, in
+    /// requests of at most 100 IDs. Read-only, so safe to call again
+    /// after any error.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    BulkStatus GetBulkStatus(string[] @ids);
+    /// <summary>
+    /// Quote paying `destination` from Arkade BTC with the Lightning
+    /// provider's fee for that destination, unlike [`Self::quote`], whose
+    /// Lightning fee is an estimate. Informational: creating the swap
+    /// quotes the fee again, and it can move in between. `extra_fees_bps`
+    /// is the optional per-swap fee surcharge [`Self::create_swap`] takes;
+    /// [`Self::create_arkade_to_lightning_swap`] has no surcharge parameter
+    /// yet, so pass `None` to quote like for like.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    LightningSendQuote GetLightningSendQuote(LightningDestination @destination, ushort? @extraFeesBps);
+    /// <summary>
     /// `GET /swap/{id}` — fetch a swap's current state. Returns the
     /// same `Swap` shape `create_swap` does, so callers can re-read
     /// after the backend transitions states (e.g. ServerFunded).
@@ -1724,6 +1886,22 @@ public interface ISatoraClient {
     /// </summary>
     /// <exception cref="SdkException"></exception>
     QuoteResult Quote(ChainId @sourceChain, TokenId @sourceToken, ChainId @targetChain, TokenId @targetToken, QuoteAmount @amount);
+    /// <summary>
+    /// Find this wallet's swaps on the server, from wallet key index
+    /// `start_index` (`None` for 0) until the server's gap limit, and
+    /// store each with its key index so this client can claim and refund
+    /// it. Only the wallet's public recovery key is sent. Needs a signing
+    /// client.
+    ///
+    /// Pages already processed stay stored if a later one fails, and a
+    /// swap stored again keeps its progress, so call again after a
+    /// `Transport` or `Timeout` error. `SdkError::InvalidSwap` refuses a
+    /// page holding a swap that fails this client's checks, such as a
+    /// Lightning swap whose invoice does not pay its hash lock: nothing
+    /// from that page is stored, and calling again refuses it again.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    RecoveryResult RecoverAllSwaps(uint? @startIndex);
     /// <summary>
     /// Refund the on-chain HTLC of a Bitcoin → Arkade swap to
     /// `destination`, a Bitcoin address on the client's network, once the
@@ -1754,6 +1932,23 @@ public interface ISatoraClient {
     /// </summary>
     /// <exception cref="SdkException"></exception>
     BitcoinRefundReceipt RefundBitcoin(string @swapId, string @destination, ulong? @feeRateSatVb, ulong @maximumFeeSats);
+    /// <summary>
+    /// Claim or refund a swap's Arkade VHTLC to `destination`, an Arkade
+    /// address. This spends a swap's VHTLC; [`Self::arkade_settle`]
+    /// recovers the wallet's own expired, swept or sub-dust VTXOs and
+    /// boarding outputs. Unlike [`Self::claim`], which refuses a VHTLC
+    /// holding recoverable outputs, this settles those in a batch with the
+    /// cosigner key the server reports. A claim is refused within 300
+    /// seconds of the VHTLC refund locktime.
+    ///
+    /// A `Transport` or `Timeout` error leaves the outcome unknown, and so
+    /// does `Storage` once arkd may hold the spend. The spend's progress is
+    /// stored before submission, so calling this again with the same
+    /// storage resumes it instead of spending twice; the swap status and
+    /// [`Self::amounts_for_swap`] show where it stands.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    ArkadeSettlement Settle(string @swapId, ArkadeSpend @operation, string @destination);
     /// <summary>
     /// `GET /version` — canary endpoint. Exercises the full build
     /// chain (Rust → cdylib → uniffi-generated C# → managed test)
@@ -1904,6 +2099,22 @@ public class SatoraClient : ISatoraClient, IDisposable {
 
     
     /// <summary>
+    /// Spendable, recoverable and spent sats at a stored swap's VHTLC,
+    /// read through the internal Arkade wallet. Reads only the swap record
+    /// in this client's storage, which swap creation and
+    /// [`Self::recover_all_swaps`] write; a swap missing from it is
+    /// `SdkError::InvalidSwap`.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public VhtlcAmounts AmountsForSwap(string @swapId) {
+        return CallWithPointer(thisPtr => FfiConverterTypeVhtlcAmounts.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_amounts_for_swap(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), ref _status)
+)));
+    }
+    
+    
+    /// <summary>
     /// Offchain VTXO balance of the SDK's internal Arkade wallet,
     /// broken into the three buckets ark-client distinguishes — see
     /// [`ArkadeBalance`]. Hits the Arkade server's gRPC indexer.
@@ -1974,7 +2185,9 @@ public class SatoraClient : ISatoraClient, IDisposable {
     /// Roll the wallet's recoverable VTXOs (expired, swept or below dust)
     /// and its boarding outputs into the next Arkade batch; healthy VTXOs
     /// are left alone. `None` => nothing to settle; `Some(txid)` => hex
-    /// commitment txid (`0x…`) of the batch that absorbed them.
+    /// commitment txid (`0x…`) of the batch that absorbed them. This
+    /// settles the wallet's own outputs; [`Self::settle`] spends a swap's
+    /// VHTLC.
     ///
     /// A `Transport` error, or `Timeout` after 300 seconds, leaves the
     /// outcome unknown: the batch may still settle. Settling again is
@@ -2101,6 +2314,24 @@ public class SatoraClient : ISatoraClient, IDisposable {
     
     
     /// <summary>
+    /// [`Self::create_lightning_to_arkade_swap`] with an exact source or
+    /// target amount: `QuoteAmount::Source` fixes the invoice amount,
+    /// `QuoteAmount::Target` what arrives on Arkade, both in sats.
+    /// `receive_to` `None` routes to the SDK's own internal Arkade wallet.
+    /// `extra_fees_bps` is the optional per-swap fee surcharge
+    /// [`Self::create_swap`] takes. `invoice_description` is at most 639
+    /// UTF-8 bytes; `None` uses the server default.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public Swap CreateLightningToArkadeSwapWithOptions(QuoteAmount @amount, Address? @receiveTo, ushort? @extraFeesBps, string? @invoiceDescription) {
+        return CallWithPointer(thisPtr => FfiConverterTypeSwap.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_create_lightning_to_arkade_swap_with_options(thisPtr, FfiConverterTypeQuoteAmount.INSTANCE.Lower(@amount), FfiConverterOptionalTypeAddress.INSTANCE.Lower(@receiveTo), FfiConverterOptionalUInt16.INSTANCE.Lower(@extraFeesBps), FfiConverterOptionalString.INSTANCE.Lower(@invoiceDescription), ref _status)
+)));
+    }
+    
+    
+    /// <summary>
     /// Create a swap. Thin forward to the Rust SDK's dispatcher
     /// ([`lendaswap_sdk::Client::create_swap`]). Direction is resolved
     /// from `source_chain` (Lightning, Bitcoin or EVM) plus the target.
@@ -2148,6 +2379,38 @@ public class SatoraClient : ISatoraClient, IDisposable {
     
     
     /// <summary>
+    /// Current status of each swap in `ids`, any number of them, in
+    /// requests of at most 100 IDs. Read-only, so safe to call again
+    /// after any error.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public BulkStatus GetBulkStatus(string[] @ids) {
+        return CallWithPointer(thisPtr => FfiConverterTypeBulkStatus.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_get_bulk_status(thisPtr, FfiConverterSequenceString.INSTANCE.Lower(@ids), ref _status)
+)));
+    }
+    
+    
+    /// <summary>
+    /// Quote paying `destination` from Arkade BTC with the Lightning
+    /// provider's fee for that destination, unlike [`Self::quote`], whose
+    /// Lightning fee is an estimate. Informational: creating the swap
+    /// quotes the fee again, and it can move in between. `extra_fees_bps`
+    /// is the optional per-swap fee surcharge [`Self::create_swap`] takes;
+    /// [`Self::create_arkade_to_lightning_swap`] has no surcharge parameter
+    /// yet, so pass `None` to quote like for like.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public LightningSendQuote GetLightningSendQuote(LightningDestination @destination, ushort? @extraFeesBps) {
+        return CallWithPointer(thisPtr => FfiConverterTypeLightningSendQuote.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_get_lightning_send_quote(thisPtr, FfiConverterTypeLightningDestination.INSTANCE.Lower(@destination), FfiConverterOptionalUInt16.INSTANCE.Lower(@extraFeesBps), ref _status)
+)));
+    }
+    
+    
+    /// <summary>
     /// `GET /swap/{id}` — fetch a swap's current state. Returns the
     /// same `Swap` shape `create_swap` does, so callers can re-read
     /// after the backend transitions states (e.g. ServerFunded).
@@ -2171,6 +2434,29 @@ public class SatoraClient : ISatoraClient, IDisposable {
         return CallWithPointer(thisPtr => FfiConverterTypeQuoteResult.INSTANCE.Lift(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
     _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_quote(thisPtr, FfiConverterTypeChainId.INSTANCE.Lower(@sourceChain), FfiConverterTypeTokenId.INSTANCE.Lower(@sourceToken), FfiConverterTypeChainId.INSTANCE.Lower(@targetChain), FfiConverterTypeTokenId.INSTANCE.Lower(@targetToken), FfiConverterTypeQuoteAmount.INSTANCE.Lower(@amount), ref _status)
+)));
+    }
+    
+    
+    /// <summary>
+    /// Find this wallet's swaps on the server, from wallet key index
+    /// `start_index` (`None` for 0) until the server's gap limit, and
+    /// store each with its key index so this client can claim and refund
+    /// it. Only the wallet's public recovery key is sent. Needs a signing
+    /// client.
+    ///
+    /// Pages already processed stay stored if a later one fails, and a
+    /// swap stored again keeps its progress, so call again after a
+    /// `Transport` or `Timeout` error. `SdkError::InvalidSwap` refuses a
+    /// page holding a swap that fails this client's checks, such as a
+    /// Lightning swap whose invoice does not pay its hash lock: nothing
+    /// from that page is stored, and calling again refuses it again.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public RecoveryResult RecoverAllSwaps(uint? @startIndex) {
+        return CallWithPointer(thisPtr => FfiConverterTypeRecoveryResult.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_recover_all_swaps(thisPtr, FfiConverterOptionalUInt32.INSTANCE.Lower(@startIndex), ref _status)
 )));
     }
     
@@ -2208,6 +2494,30 @@ public class SatoraClient : ISatoraClient, IDisposable {
         return CallWithPointer(thisPtr => FfiConverterTypeBitcoinRefundReceipt.INSTANCE.Lift(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
     _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_refund_bitcoin(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterString.INSTANCE.Lower(@destination), FfiConverterOptionalUInt64.INSTANCE.Lower(@feeRateSatVb), FfiConverterUInt64.INSTANCE.Lower(@maximumFeeSats), ref _status)
+)));
+    }
+    
+    
+    /// <summary>
+    /// Claim or refund a swap's Arkade VHTLC to `destination`, an Arkade
+    /// address. This spends a swap's VHTLC; [`Self::arkade_settle`]
+    /// recovers the wallet's own expired, swept or sub-dust VTXOs and
+    /// boarding outputs. Unlike [`Self::claim`], which refuses a VHTLC
+    /// holding recoverable outputs, this settles those in a batch with the
+    /// cosigner key the server reports. A claim is refused within 300
+    /// seconds of the VHTLC refund locktime.
+    ///
+    /// A `Transport` or `Timeout` error leaves the outcome unknown, and so
+    /// does `Storage` once arkd may hold the spend. The spend's progress is
+    /// stored before submission, so calling this again with the same
+    /// storage resumes it instead of spending twice; the swap status and
+    /// [`Self::amounts_for_swap`] show where it stands.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public ArkadeSettlement Settle(string @swapId, ArkadeSpend @operation, string @destination) {
+        return CallWithPointer(thisPtr => FfiConverterTypeArkadeSettlement.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_settle(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterTypeArkadeSpend.INSTANCE.Lower(@operation), FfiConverterString.INSTANCE.Lower(@destination), ref _status)
 )));
     }
     
@@ -2515,6 +2825,46 @@ class FfiConverterTypeBitcoinRefundReceipt: FfiConverterRustBuffer<BitcoinRefund
 
 
 /// <summary>
+/// Statuses of the swaps [`SatoraClient::get_bulk_status`] was asked
+/// about. Mirrors `lendaswap_sdk::types::BulkStatusResponse`.
+/// </summary>
+/// <param name="not_found">
+/// Requested IDs the server does not know.
+/// </param>
+public record BulkStatus (
+    SwapStatusEntry[] @statuses, 
+    /// <summary>
+    /// Requested IDs the server does not know.
+    /// </summary>
+    string[] @notFound
+) {
+}
+
+class FfiConverterTypeBulkStatus: FfiConverterRustBuffer<BulkStatus> {
+    public static FfiConverterTypeBulkStatus INSTANCE = new FfiConverterTypeBulkStatus();
+
+    public override BulkStatus Read(BigEndianStream stream) {
+        return new BulkStatus(
+            @statuses: FfiConverterSequenceTypeSwapStatusEntry.INSTANCE.Read(stream),
+            @notFound: FfiConverterSequenceString.INSTANCE.Read(stream)
+        );
+    }
+
+    public override int AllocationSize(BulkStatus value) {
+        return 0
+            + FfiConverterSequenceTypeSwapStatusEntry.INSTANCE.AllocationSize(value.@statuses)
+            + FfiConverterSequenceString.INSTANCE.AllocationSize(value.@notFound);
+    }
+
+    public override void Write(BulkStatus value, BigEndianStream stream) {
+            FfiConverterSequenceTypeSwapStatusEntry.INSTANCE.Write(value.@statuses, stream);
+            FfiConverterSequenceString.INSTANCE.Write(value.@notFound, stream);
+    }
+}
+
+
+
+/// <summary>
 /// Result of an Arkade VHTLC claim.
 /// </summary>
 /// <param name="ark_txid">
@@ -2774,6 +3124,120 @@ class FfiConverterTypeGaslessOpts: FfiConverterRustBuffer<GaslessOpts> {
 
 
 /// <summary>
+/// Exact quote for paying a Lightning destination from Arkade. Mirrors
+/// `lendaswap_sdk::types::LightningSendQuoteResponse`.
+/// </summary>
+/// <param name="exchange_rate">
+/// Source tokens per BTC locked; "1" for Arkade, where the source is
+/// already sats.
+/// </param>
+/// <param name="max_amount_sats">
+/// Maximum payout for this route, in sats.
+/// </param>
+/// <param name="min_amount_sats">
+/// Minimum payout for this route, in sats.
+/// </param>
+/// <param name="network_fee_sats">
+/// The Lightning provider's send fee for this destination, in sats.
+/// </param>
+/// <param name="protocol_fee_rate">
+/// Protocol fee rate (0.003 = 0.30%).
+/// </param>
+/// <param name="source_amount">
+/// Total taken from Arkade (payout plus fees), in sats, as a decimal
+/// string.
+/// </param>
+/// <param name="source_amount_sats">
+/// Deprecated by the server in favour of `source_amount`.
+/// </param>
+/// <param name="target_amount_sats">
+/// Paid out on the Lightning invoice, in sats.
+/// </param>
+public record LightningSendQuote (
+    /// <summary>
+    /// Source tokens per BTC locked; "1" for Arkade, where the source is
+    /// already sats.
+    /// </summary>
+    string @exchangeRate, 
+    /// <summary>
+    /// Maximum payout for this route, in sats.
+    /// </summary>
+    ulong @maxAmountSats, 
+    /// <summary>
+    /// Minimum payout for this route, in sats.
+    /// </summary>
+    ulong @minAmountSats, 
+    /// <summary>
+    /// The Lightning provider's send fee for this destination, in sats.
+    /// </summary>
+    ulong @networkFeeSats, 
+    /// <summary>
+    /// Protocol fee rate (0.003 = 0.30%).
+    /// </summary>
+    double @protocolFeeRate, 
+    ulong @protocolFeeSats, 
+    /// <summary>
+    /// Total taken from Arkade (payout plus fees), in sats, as a decimal
+    /// string.
+    /// </summary>
+    string @sourceAmount, 
+    /// <summary>
+    /// Deprecated by the server in favour of `source_amount`.
+    /// </summary>
+    ulong @sourceAmountSats, 
+    /// <summary>
+    /// Paid out on the Lightning invoice, in sats.
+    /// </summary>
+    ulong @targetAmountSats
+) {
+}
+
+class FfiConverterTypeLightningSendQuote: FfiConverterRustBuffer<LightningSendQuote> {
+    public static FfiConverterTypeLightningSendQuote INSTANCE = new FfiConverterTypeLightningSendQuote();
+
+    public override LightningSendQuote Read(BigEndianStream stream) {
+        return new LightningSendQuote(
+            @exchangeRate: FfiConverterString.INSTANCE.Read(stream),
+            @maxAmountSats: FfiConverterUInt64.INSTANCE.Read(stream),
+            @minAmountSats: FfiConverterUInt64.INSTANCE.Read(stream),
+            @networkFeeSats: FfiConverterUInt64.INSTANCE.Read(stream),
+            @protocolFeeRate: FfiConverterDouble.INSTANCE.Read(stream),
+            @protocolFeeSats: FfiConverterUInt64.INSTANCE.Read(stream),
+            @sourceAmount: FfiConverterString.INSTANCE.Read(stream),
+            @sourceAmountSats: FfiConverterUInt64.INSTANCE.Read(stream),
+            @targetAmountSats: FfiConverterUInt64.INSTANCE.Read(stream)
+        );
+    }
+
+    public override int AllocationSize(LightningSendQuote value) {
+        return 0
+            + FfiConverterString.INSTANCE.AllocationSize(value.@exchangeRate)
+            + FfiConverterUInt64.INSTANCE.AllocationSize(value.@maxAmountSats)
+            + FfiConverterUInt64.INSTANCE.AllocationSize(value.@minAmountSats)
+            + FfiConverterUInt64.INSTANCE.AllocationSize(value.@networkFeeSats)
+            + FfiConverterDouble.INSTANCE.AllocationSize(value.@protocolFeeRate)
+            + FfiConverterUInt64.INSTANCE.AllocationSize(value.@protocolFeeSats)
+            + FfiConverterString.INSTANCE.AllocationSize(value.@sourceAmount)
+            + FfiConverterUInt64.INSTANCE.AllocationSize(value.@sourceAmountSats)
+            + FfiConverterUInt64.INSTANCE.AllocationSize(value.@targetAmountSats);
+    }
+
+    public override void Write(LightningSendQuote value, BigEndianStream stream) {
+            FfiConverterString.INSTANCE.Write(value.@exchangeRate, stream);
+            FfiConverterUInt64.INSTANCE.Write(value.@maxAmountSats, stream);
+            FfiConverterUInt64.INSTANCE.Write(value.@minAmountSats, stream);
+            FfiConverterUInt64.INSTANCE.Write(value.@networkFeeSats, stream);
+            FfiConverterDouble.INSTANCE.Write(value.@protocolFeeRate, stream);
+            FfiConverterUInt64.INSTANCE.Write(value.@protocolFeeSats, stream);
+            FfiConverterString.INSTANCE.Write(value.@sourceAmount, stream);
+            FfiConverterUInt64.INSTANCE.Write(value.@sourceAmountSats, stream);
+            FfiConverterUInt64.INSTANCE.Write(value.@targetAmountSats, stream);
+    }
+}
+
+
+
+/// <summary>
 /// Compact view of the quote endpoint's response. Mirrors
 /// `lendaswap_sdk::types::QuoteResponse` minus the wire-only fields
 /// that aren't useful to a non-Rust caller.
@@ -2847,6 +3311,66 @@ class FfiConverterTypeQuoteResult: FfiConverterRustBuffer<QuoteResult> {
             FfiConverterString.INSTANCE.Write(value.@netSourceAmount, stream);
             FfiConverterString.INSTANCE.Write(value.@netTargetAmount, stream);
             FfiConverterOptionalUInt64.INSTANCE.Write(value.@bridgeFee, stream);
+    }
+}
+
+
+
+/// <summary>
+/// Swaps [`SatoraClient::recover_all_swaps`] found. Mirrors
+/// `lendaswap_sdk::types::RecoveryResponse`, minus the swaps themselves.
+/// </summary>
+/// <param name="swap_ids">
+/// IDs of the recovered swaps, now in this client's storage.
+/// </param>
+/// <param name="next_index">
+/// Wallet key index the next new swap uses.
+/// </param>
+/// <param name="scanned_until">
+/// Last wallet key index the scan covered. A later scan for newer swaps
+/// starts at `next_index` (or the original start index), not after
+/// this one.
+/// </param>
+public record RecoveryResult (
+    /// <summary>
+    /// IDs of the recovered swaps, now in this client's storage.
+    /// </summary>
+    string[] @swapIds, 
+    /// <summary>
+    /// Wallet key index the next new swap uses.
+    /// </summary>
+    uint @nextIndex, 
+    /// <summary>
+    /// Last wallet key index the scan covered. A later scan for newer swaps
+    /// starts at `next_index` (or the original start index), not after
+    /// this one.
+    /// </summary>
+    uint @scannedUntil
+) {
+}
+
+class FfiConverterTypeRecoveryResult: FfiConverterRustBuffer<RecoveryResult> {
+    public static FfiConverterTypeRecoveryResult INSTANCE = new FfiConverterTypeRecoveryResult();
+
+    public override RecoveryResult Read(BigEndianStream stream) {
+        return new RecoveryResult(
+            @swapIds: FfiConverterSequenceString.INSTANCE.Read(stream),
+            @nextIndex: FfiConverterUInt32.INSTANCE.Read(stream),
+            @scannedUntil: FfiConverterUInt32.INSTANCE.Read(stream)
+        );
+    }
+
+    public override int AllocationSize(RecoveryResult value) {
+        return 0
+            + FfiConverterSequenceString.INSTANCE.AllocationSize(value.@swapIds)
+            + FfiConverterUInt32.INSTANCE.AllocationSize(value.@nextIndex)
+            + FfiConverterUInt32.INSTANCE.AllocationSize(value.@scannedUntil);
+    }
+
+    public override void Write(RecoveryResult value, BigEndianStream stream) {
+            FfiConverterSequenceString.INSTANCE.Write(value.@swapIds, stream);
+            FfiConverterUInt32.INSTANCE.Write(value.@nextIndex, stream);
+            FfiConverterUInt32.INSTANCE.Write(value.@scannedUntil, stream);
     }
 }
 
@@ -2999,6 +3523,40 @@ class FfiConverterTypeSwap: FfiConverterRustBuffer<Swap> {
 
 
 /// <summary>
+/// One swap's status in a [`BulkStatus`]. Mirrors
+/// `lendaswap_sdk::types::SwapStatusEntry`.
+/// </summary>
+public record SwapStatusEntry (
+    string @id, 
+    SwapStatus @status
+) {
+}
+
+class FfiConverterTypeSwapStatusEntry: FfiConverterRustBuffer<SwapStatusEntry> {
+    public static FfiConverterTypeSwapStatusEntry INSTANCE = new FfiConverterTypeSwapStatusEntry();
+
+    public override SwapStatusEntry Read(BigEndianStream stream) {
+        return new SwapStatusEntry(
+            @id: FfiConverterString.INSTANCE.Read(stream),
+            @status: FfiConverterTypeSwapStatus.INSTANCE.Read(stream)
+        );
+    }
+
+    public override int AllocationSize(SwapStatusEntry value) {
+        return 0
+            + FfiConverterString.INSTANCE.AllocationSize(value.@id)
+            + FfiConverterTypeSwapStatus.INSTANCE.AllocationSize(value.@status);
+    }
+
+    public override void Write(SwapStatusEntry value, BigEndianStream stream) {
+            FfiConverterString.INSTANCE.Write(value.@id, stream);
+            FfiConverterTypeSwapStatus.INSTANCE.Write(value.@status, stream);
+    }
+}
+
+
+
+/// <summary>
 /// Version reported by the backend (`GET /version`). Mirrors
 /// `lendaswap_sdk::types::Version` — copied here as a `uniffi::Record`
 /// so the FFI surface owns its own data shape and can evolve
@@ -3029,6 +3587,68 @@ class FfiConverterTypeVersion: FfiConverterRustBuffer<Version> {
     public override void Write(Version value, BigEndianStream stream) {
             FfiConverterString.INSTANCE.Write(value.@tag, stream);
             FfiConverterString.INSTANCE.Write(value.@commitHash, stream);
+    }
+}
+
+
+
+/// <summary>
+/// Sats at a swap's VHTLC by state. Mirrors
+/// `lendaswap_sdk::arkade::VhtlcBalance` (TypeScript `VhtlcAmounts`).
+/// </summary>
+/// <param name="spendable_sats">
+/// Spendable by an offchain transaction.
+/// </param>
+/// <param name="recoverable_sats">
+/// Expired outputs that only [`SatoraClient::settle`] can spend.
+/// </param>
+/// <param name="spent_by">
+/// Transactions that spent the VHTLC, hex, `0x`-prefixed; useful when
+/// another device completed the swap.
+/// </param>
+public record VhtlcAmounts (
+    /// <summary>
+    /// Spendable by an offchain transaction.
+    /// </summary>
+    ulong @spendableSats, 
+    /// <summary>
+    /// Expired outputs that only [`SatoraClient::settle`] can spend.
+    /// </summary>
+    ulong @recoverableSats, 
+    ulong @spentSats, 
+    /// <summary>
+    /// Transactions that spent the VHTLC, hex, `0x`-prefixed; useful when
+    /// another device completed the swap.
+    /// </summary>
+    string[] @spentBy
+) {
+}
+
+class FfiConverterTypeVhtlcAmounts: FfiConverterRustBuffer<VhtlcAmounts> {
+    public static FfiConverterTypeVhtlcAmounts INSTANCE = new FfiConverterTypeVhtlcAmounts();
+
+    public override VhtlcAmounts Read(BigEndianStream stream) {
+        return new VhtlcAmounts(
+            @spendableSats: FfiConverterUInt64.INSTANCE.Read(stream),
+            @recoverableSats: FfiConverterUInt64.INSTANCE.Read(stream),
+            @spentSats: FfiConverterUInt64.INSTANCE.Read(stream),
+            @spentBy: FfiConverterSequenceString.INSTANCE.Read(stream)
+        );
+    }
+
+    public override int AllocationSize(VhtlcAmounts value) {
+        return 0
+            + FfiConverterUInt64.INSTANCE.AllocationSize(value.@spendableSats)
+            + FfiConverterUInt64.INSTANCE.AllocationSize(value.@recoverableSats)
+            + FfiConverterUInt64.INSTANCE.AllocationSize(value.@spentSats)
+            + FfiConverterSequenceString.INSTANCE.AllocationSize(value.@spentBy);
+    }
+
+    public override void Write(VhtlcAmounts value, BigEndianStream stream) {
+            FfiConverterUInt64.INSTANCE.Write(value.@spendableSats, stream);
+            FfiConverterUInt64.INSTANCE.Write(value.@recoverableSats, stream);
+            FfiConverterUInt64.INSTANCE.Write(value.@spentSats, stream);
+            FfiConverterSequenceString.INSTANCE.Write(value.@spentBy, stream);
     }
 }
 
@@ -3133,6 +3753,139 @@ class FfiConverterTypeAddress : FfiConverterRustBuffer<Address>{
             default:
                 throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeAddress.Write()", value));
         }
+    }
+}
+
+
+
+
+
+
+
+/// <summary>
+/// How [`SatoraClient::settle`] spent the VHTLC. Txids are hex,
+/// `0x`-prefixed.
+/// </summary>
+public record ArkadeSettlement {
+    
+    /// <summary>
+    /// An offchain Ark transaction, as [`SatoraClient::claim`] submits.
+    /// </summary>
+    public record Offchain (
+        string @arkTxid,
+        ulong @claimAmountSats
+    ) : ArkadeSettlement {}
+    
+    /// <summary>
+    /// The VHTLC held recoverable outputs, which only a batch can spend:
+    /// the commitment transaction of the batch that settled them.
+    /// </summary>
+    public record Delegated (
+        string @commitmentTxid
+    ) : ArkadeSettlement {}
+    
+
+    
+}
+
+class FfiConverterTypeArkadeSettlement : FfiConverterRustBuffer<ArkadeSettlement>{
+    public static FfiConverterRustBuffer<ArkadeSettlement> INSTANCE = new FfiConverterTypeArkadeSettlement();
+
+    public override ArkadeSettlement Read(BigEndianStream stream) {
+        var value = stream.ReadInt();
+        switch (value) {
+            case 1:
+                return new ArkadeSettlement.Offchain(
+                    FfiConverterString.INSTANCE.Read(stream),
+                    FfiConverterUInt64.INSTANCE.Read(stream)
+                );
+            case 2:
+                return new ArkadeSettlement.Delegated(
+                    FfiConverterString.INSTANCE.Read(stream)
+                );
+            default:
+                throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeArkadeSettlement.Read()", value));
+        }
+    }
+
+    public override int AllocationSize(ArkadeSettlement value) {
+        switch (value) {
+            case ArkadeSettlement.Offchain variant_value:
+                return 4
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@arkTxid)
+                    + FfiConverterUInt64.INSTANCE.AllocationSize(variant_value.@claimAmountSats);
+            case ArkadeSettlement.Delegated variant_value:
+                return 4
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@commitmentTxid);
+            default:
+                throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeArkadeSettlement.AllocationSize()", value));
+        }
+    }
+
+    public override void Write(ArkadeSettlement value, BigEndianStream stream) {
+        switch (value) {
+            case ArkadeSettlement.Offchain variant_value:
+                stream.WriteInt(1);
+                FfiConverterString.INSTANCE.Write(variant_value.@arkTxid, stream);
+                FfiConverterUInt64.INSTANCE.Write(variant_value.@claimAmountSats, stream);
+                break;
+            case ArkadeSettlement.Delegated variant_value:
+                stream.WriteInt(2);
+                FfiConverterString.INSTANCE.Write(variant_value.@commitmentTxid, stream);
+                break;
+            default:
+                throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeArkadeSettlement.Write()", value));
+        }
+    }
+}
+
+
+
+
+
+
+
+/// <summary>
+/// Spend of a swap's Arkade VHTLC. Mirrors
+/// `lendaswap_sdk::arkade::ArkadeSpend`.
+/// </summary>
+public enum ArkadeSpend: int {
+    
+    /// <summary>
+    /// Receiver path with the preimage: Bitcoin, EVM or Lightning to
+    /// Arkade.
+    /// </summary>
+    Claim,
+    /// <summary>
+    /// Sender path once the VHTLC refund locktime has matured, without
+    /// the swap server: Arkade to EVM or Lightning.
+    /// </summary>
+    Refund,
+    /// <summary>
+    /// Sender path cosigned by the swap server, before the locktime:
+    /// Arkade to EVM or Lightning.
+    /// </summary>
+    CooperativeRefund
+}
+
+class FfiConverterTypeArkadeSpend: FfiConverterRustBuffer<ArkadeSpend> {
+    public static FfiConverterTypeArkadeSpend INSTANCE = new FfiConverterTypeArkadeSpend();
+
+    public override ArkadeSpend Read(BigEndianStream stream) {
+        var value = stream.ReadInt() - 1;
+        if (Enum.IsDefined(typeof(ArkadeSpend), value)) {
+            return (ArkadeSpend)value;
+        } else {
+            throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeArkadeSpend.Read()", value));
+        }
+    }
+
+    public override int AllocationSize(ArkadeSpend value) {
+        return 4;
+    }
+
+    public override void Write(ArkadeSpend value, BigEndianStream stream) {
+        stream.WriteInt((int)value + 1);
     }
 }
 
@@ -3323,8 +4076,10 @@ class FfiConverterTypeChainId : FfiConverterRustBuffer<ChainId>{
 
 /// <summary>
 /// Lightning destination for an Arkade → Lightning swap. The server
-/// resolves `Address` / `Lnurl` via LNURL-pay using `sats`; `Invoice`
-/// carries its amount in the BOLT11 payload.
+/// resolves `Address` / `Lnurl` via LNURL-pay using `sats`, the payout,
+/// and the send-max variants using `amount`, the sats the swap takes from
+/// Arkade, paying out what remains after fees; `Invoice` carries its
+/// amount in the BOLT11 payload.
 /// </summary>
 public record LightningDestination {
     
@@ -3352,6 +4107,22 @@ public record LightningDestination {
         ulong @sats
     ) : LightningDestination {}
     
+    /// <summary>
+    /// Lightning address with a fixed source amount in sats.
+    /// </summary>
+    public record AddressSendMax (
+        string @address,
+        ulong @amount
+    ) : LightningDestination {}
+    
+    /// <summary>
+    /// Raw LNURL with a fixed source amount in sats.
+    /// </summary>
+    public record LnurlSendMax (
+        string @lnurl,
+        ulong @amount
+    ) : LightningDestination {}
+    
 
     
 }
@@ -3376,6 +4147,16 @@ class FfiConverterTypeLightningDestination : FfiConverterRustBuffer<LightningDes
                     FfiConverterString.INSTANCE.Read(stream),
                     FfiConverterUInt64.INSTANCE.Read(stream)
                 );
+            case 4:
+                return new LightningDestination.AddressSendMax(
+                    FfiConverterString.INSTANCE.Read(stream),
+                    FfiConverterUInt64.INSTANCE.Read(stream)
+                );
+            case 5:
+                return new LightningDestination.LnurlSendMax(
+                    FfiConverterString.INSTANCE.Read(stream),
+                    FfiConverterUInt64.INSTANCE.Read(stream)
+                );
             default:
                 throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeLightningDestination.Read()", value));
         }
@@ -3394,6 +4175,14 @@ class FfiConverterTypeLightningDestination : FfiConverterRustBuffer<LightningDes
                 return 4
                     + FfiConverterString.INSTANCE.AllocationSize(variant_value.@lnurl)
                     + FfiConverterUInt64.INSTANCE.AllocationSize(variant_value.@sats);
+            case LightningDestination.AddressSendMax variant_value:
+                return 4
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@address)
+                    + FfiConverterUInt64.INSTANCE.AllocationSize(variant_value.@amount);
+            case LightningDestination.LnurlSendMax variant_value:
+                return 4
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@lnurl)
+                    + FfiConverterUInt64.INSTANCE.AllocationSize(variant_value.@amount);
             default:
                 throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeLightningDestination.AllocationSize()", value));
         }
@@ -3414,6 +4203,16 @@ class FfiConverterTypeLightningDestination : FfiConverterRustBuffer<LightningDes
                 stream.WriteInt(3);
                 FfiConverterString.INSTANCE.Write(variant_value.@lnurl, stream);
                 FfiConverterUInt64.INSTANCE.Write(variant_value.@sats, stream);
+                break;
+            case LightningDestination.AddressSendMax variant_value:
+                stream.WriteInt(4);
+                FfiConverterString.INSTANCE.Write(variant_value.@address, stream);
+                FfiConverterUInt64.INSTANCE.Write(variant_value.@amount, stream);
+                break;
+            case LightningDestination.LnurlSendMax variant_value:
+                stream.WriteInt(5);
+                FfiConverterString.INSTANCE.Write(variant_value.@lnurl, stream);
+                FfiConverterUInt64.INSTANCE.Write(variant_value.@amount, stream);
                 break;
             default:
                 throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeLightningDestination.Write()", value));
@@ -4602,6 +5401,37 @@ class FfiConverterOptionalUInt16: FfiConverterRustBuffer<ushort?> {
 
 
 
+class FfiConverterOptionalUInt32: FfiConverterRustBuffer<uint?> {
+    public static FfiConverterOptionalUInt32 INSTANCE = new FfiConverterOptionalUInt32();
+
+    public override uint? Read(BigEndianStream stream) {
+        if (stream.ReadByte() == 0) {
+            return null;
+        }
+        return FfiConverterUInt32.INSTANCE.Read(stream);
+    }
+
+    public override int AllocationSize(uint? value) {
+        if (value == null) {
+            return 1;
+        } else {
+            return 1 + FfiConverterUInt32.INSTANCE.AllocationSize((uint)value);
+        }
+    }
+
+    public override void Write(uint? value, BigEndianStream stream) {
+        if (value == null) {
+            stream.WriteByte(0);
+        } else {
+            stream.WriteByte(1);
+            FfiConverterUInt32.INSTANCE.Write((uint)value, stream);
+        }
+    }
+}
+
+
+
+
 class FfiConverterOptionalUInt64: FfiConverterRustBuffer<ulong?> {
     public static FfiConverterOptionalUInt64 INSTANCE = new FfiConverterOptionalUInt64();
 
@@ -4751,6 +5581,98 @@ class FfiConverterOptionalTypeAddress: FfiConverterRustBuffer<Address?> {
             stream.WriteByte(1);
             FfiConverterTypeAddress.INSTANCE.Write((Address)value, stream);
         }
+    }
+}
+
+
+
+
+class FfiConverterSequenceString: FfiConverterRustBuffer<string[]> {
+    public static FfiConverterSequenceString INSTANCE = new FfiConverterSequenceString();
+
+    public override string[]  Read(BigEndianStream stream) {
+        var length = stream.ReadInt();
+        if (length == 0) {
+            return [];
+        }
+
+        var result = new string[(length)];
+        var readFn = FfiConverterString.INSTANCE.Read;
+        for (int i = 0; i < length; i++) {
+            result[i] = readFn(stream);
+        }
+        return result;
+    }
+
+    public override int AllocationSize(string[]  value) {
+        var sizeForLength = 4;
+
+        // details/1-empty-list-as-default-method-parameter.md
+        if (value == null) {
+            return sizeForLength;
+        }
+
+        var allocationSizeFn = FfiConverterString.INSTANCE.AllocationSize;
+        var sizeForItems = value.Sum(item => allocationSizeFn(item));
+        return sizeForLength + sizeForItems;
+    }
+
+    public override void Write(string[] value, BigEndianStream stream) {
+        // details/1-empty-list-as-default-method-parameter.md
+        if (value == null) {
+            stream.WriteInt(0);
+            return;
+        }
+
+        stream.WriteInt(value.Length);
+        var writerFn = FfiConverterString.INSTANCE.Write;
+        value.ForEach(item => writerFn(item, stream));
+    }
+}
+
+
+
+
+class FfiConverterSequenceTypeSwapStatusEntry: FfiConverterRustBuffer<SwapStatusEntry[]> {
+    public static FfiConverterSequenceTypeSwapStatusEntry INSTANCE = new FfiConverterSequenceTypeSwapStatusEntry();
+
+    public override SwapStatusEntry[]  Read(BigEndianStream stream) {
+        var length = stream.ReadInt();
+        if (length == 0) {
+            return [];
+        }
+
+        var result = new SwapStatusEntry[(length)];
+        var readFn = FfiConverterTypeSwapStatusEntry.INSTANCE.Read;
+        for (int i = 0; i < length; i++) {
+            result[i] = readFn(stream);
+        }
+        return result;
+    }
+
+    public override int AllocationSize(SwapStatusEntry[]  value) {
+        var sizeForLength = 4;
+
+        // details/1-empty-list-as-default-method-parameter.md
+        if (value == null) {
+            return sizeForLength;
+        }
+
+        var allocationSizeFn = FfiConverterTypeSwapStatusEntry.INSTANCE.AllocationSize;
+        var sizeForItems = value.Sum(item => allocationSizeFn(item));
+        return sizeForLength + sizeForItems;
+    }
+
+    public override void Write(SwapStatusEntry[] value, BigEndianStream stream) {
+        // details/1-empty-list-as-default-method-parameter.md
+        if (value == null) {
+            stream.WriteInt(0);
+            return;
+        }
+
+        stream.WriteInt(value.Length);
+        var writerFn = FfiConverterTypeSwapStatusEntry.INSTANCE.Write;
+        value.ForEach(item => writerFn(item, stream));
     }
 }
 

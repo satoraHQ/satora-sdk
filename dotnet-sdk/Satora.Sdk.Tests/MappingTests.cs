@@ -47,4 +47,67 @@ public class MappingTests
                 1_004),
             swap);
     }
+
+    [Fact]
+    public void LightningSendQuoteKeepsEveryField()
+    {
+        var quote = LightningSendQuote.FromFfi(new Ffi.LightningSendQuote(
+            @exchangeRate: "1",
+            @maxAmountSats: 1,
+            @minAmountSats: 2,
+            @networkFeeSats: 3,
+            @protocolFeeRate: 0.004,
+            @protocolFeeSats: 5,
+            @sourceAmount: "6",
+            @sourceAmountSats: 7,
+            @targetAmountSats: 8));
+
+        Assert.Equal(new LightningSendQuote("1", 1, 2, 3, 0.004, 5, "6", 7, 8), quote);
+    }
+
+    [Fact]
+    public void VhtlcAmountsKeepEachBucketAndSpendingTxid()
+    {
+        var amounts = VhtlcAmounts.FromFfi(new Ffi.VhtlcAmounts(
+            @spendableSats: 1,
+            @recoverableSats: 2,
+            @spentSats: 3,
+            @spentBy: new[] { "0xaa", "0xbb" }));
+
+        Assert.Equal((1UL, 2UL, 3UL), (amounts.SpendableSats, amounts.RecoverableSats, amounts.SpentSats));
+        Assert.Equal(new[] { "0xaa", "0xbb" }, amounts.SpentBy);
+    }
+
+    [Fact]
+    public void BulkStatusKeepsEachEntryAndTheUnknownIds()
+    {
+        var status = BulkStatus.FromFfi(new Ffi.BulkStatus(
+            @statuses: new[]
+            {
+                new Ffi.SwapStatusEntry("swap-a", new Ffi.SwapStatus.Pending()),
+                new Ffi.SwapStatusEntry("swap-b", new Ffi.SwapStatus.ServerRedeemed()),
+            },
+            @notFound: new[] { "swap-c" }));
+
+        Assert.Equal(
+            new[]
+            {
+                new SwapStatusEntry("swap-a", new Ffi.SwapStatus.Pending()),
+                new SwapStatusEntry("swap-b", new Ffi.SwapStatus.ServerRedeemed()),
+            },
+            status.Statuses);
+        Assert.Equal(new[] { "swap-c" }, status.NotFound);
+    }
+
+    [Fact]
+    public void RecoveryResultKeepsTheSwapIdsAndTheCursor()
+    {
+        var result = RecoveryResult.FromFfi(new Ffi.RecoveryResult(
+            @swapIds: new[] { "swap-a", "swap-b" },
+            @nextIndex: 6,
+            @scannedUntil: 25));
+
+        Assert.Equal(new[] { "swap-a", "swap-b" }, result.SwapIds);
+        Assert.Equal((6U, 25U), (result.NextIndex, result.ScannedUntil));
+    }
 }

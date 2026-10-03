@@ -23,8 +23,9 @@ using Ffi = uniffi.satora_sdk_ffi;
 /// is safe: <see cref="Transport"/> and
 /// <see cref="Timeout"/> cover both requests that never reached the server
 /// and spends whose outcome is unknown, and <see cref="Storage"/> from
-/// <see cref="Client.ClaimAsync"/> once arkd may hold the spend, from
-/// <see cref="Client.RefundBitcoinAsync"/> after a fee bump, or from
+/// <see cref="Client.ClaimAsync"/> and <see cref="Client.SettleAsync"/> once
+/// arkd may hold the spend, from <see cref="Client.RefundBitcoinAsync"/>
+/// after a fee bump, or from
 /// <see cref="Client.FundSwapAsync(string, GaslessOpts, CancellationToken)"/>
 /// at any point, leaves the outcome unknown too. Each method's remarks
 /// say what to do next.
@@ -245,6 +246,98 @@ public sealed record SwapDetails(
         s.@btcRefundLocktime,
         s.@evmRefundLocktime,
         s.@invoiceExpiresAt);
+}
+
+/// <summary>
+/// Exact quote for paying a Lightning destination from Arkade, from
+/// <see cref="Client.GetLightningSendQuoteAsync"/>.
+/// </summary>
+/// <param name="ExchangeRate">Source tokens per BTC locked; "1" for Arkade, where the source is already sats.</param>
+/// <param name="MaxAmountSats">Maximum payout for this route, in satoshis.</param>
+/// <param name="MinAmountSats">Minimum payout for this route, in satoshis.</param>
+/// <param name="NetworkFeeSats">The Lightning provider's send fee for this destination, in satoshis.</param>
+/// <param name="ProtocolFeeRate">Protocol fee rate (0.003 = 0.30%).</param>
+/// <param name="ProtocolFeeSats">Protocol fee in satoshis.</param>
+/// <param name="SourceAmount">Total taken from Arkade (payout plus fees), in satoshis, as a decimal string.</param>
+/// <param name="SourceAmountSats">Deprecated by the server in favour of <paramref name="SourceAmount"/>.</param>
+/// <param name="TargetAmountSats">Paid out on the Lightning invoice, in satoshis.</param>
+public sealed record LightningSendQuote(
+    string ExchangeRate,
+    ulong MaxAmountSats,
+    ulong MinAmountSats,
+    ulong NetworkFeeSats,
+    double ProtocolFeeRate,
+    ulong ProtocolFeeSats,
+    string SourceAmount,
+    ulong SourceAmountSats,
+    ulong TargetAmountSats)
+{
+    internal static LightningSendQuote FromFfi(Ffi.LightningSendQuote q) => new(
+        q.@exchangeRate,
+        q.@maxAmountSats,
+        q.@minAmountSats,
+        q.@networkFeeSats,
+        q.@protocolFeeRate,
+        q.@protocolFeeSats,
+        q.@sourceAmount,
+        q.@sourceAmountSats,
+        q.@targetAmountSats);
+}
+
+/// <summary>
+/// Sats at a swap's VHTLC by state, from <see cref="Client.AmountsForSwapAsync"/>.
+/// </summary>
+/// <param name="SpendableSats">Spendable by an offchain transaction.</param>
+/// <param name="RecoverableSats">Expired outputs that only <see cref="Client.SettleAsync"/> can spend.</param>
+/// <param name="SpentSats">Already spent.</param>
+/// <param name="SpentBy">
+/// Transactions that spent the VHTLC (hex, <c>0x…</c>); useful when
+/// another device completed the swap.
+/// </param>
+public sealed record VhtlcAmounts(
+    ulong SpendableSats,
+    ulong RecoverableSats,
+    ulong SpentSats,
+    IReadOnlyList<string> SpentBy)
+{
+    internal static VhtlcAmounts FromFfi(Ffi.VhtlcAmounts a) => new(
+        a.@spendableSats,
+        a.@recoverableSats,
+        a.@spentSats,
+        a.@spentBy);
+}
+
+/// <summary>One swap's status in a <see cref="BulkStatus"/>.</summary>
+public sealed record SwapStatusEntry(string Id, SwapStatus Status)
+{
+    internal static SwapStatusEntry FromFfi(Ffi.SwapStatusEntry e) => new(e.@id, e.@status);
+}
+
+/// <summary>
+/// Statuses of the swaps <see cref="Client.GetBulkStatusAsync"/> was asked about.
+/// </summary>
+/// <param name="Statuses">Status of each known swap.</param>
+/// <param name="NotFound">Requested IDs the server does not know.</param>
+public sealed record BulkStatus(IReadOnlyList<SwapStatusEntry> Statuses, IReadOnlyList<string> NotFound)
+{
+    internal static BulkStatus FromFfi(Ffi.BulkStatus b) => new(
+        b.@statuses.Select(SwapStatusEntry.FromFfi).ToArray(),
+        b.@notFound);
+}
+
+/// <summary>
+/// Swaps <see cref="Client.RecoverAllSwapsAsync"/> found.
+/// </summary>
+/// <param name="SwapIds">IDs of the recovered swaps, now in the client's storage.</param>
+/// <param name="NextIndex">Wallet key index the next new swap uses.</param>
+/// <param name="ScannedUntil">
+/// Last wallet key index the scan covered. A later scan for newer swaps
+/// starts at <paramref name="NextIndex"/> (or the original start index),
+/// not after this one.
+/// </param>
+public sealed record RecoveryResult(IReadOnlyList<string> SwapIds, uint NextIndex, uint ScannedUntil)
+{
+    internal static RecoveryResult FromFfi(Ffi.RecoveryResult r) => new(r.@swapIds, r.@nextIndex, r.@scannedUntil);
 }
 
 /// <summary>
@@ -563,6 +656,8 @@ public sealed class Client : IDisposable
     /// and its boarding outputs into the next Arkade batch; healthy VTXOs
     /// are left alone. Returns the hex commitment txid of the batch that
     /// absorbed them, or <c>null</c> if the wallet had nothing to settle.
+    /// This settles the wallet's own outputs; <see cref="SettleAsync"/>
+    /// spends a swap's VHTLC.
     /// </summary>
     /// <remarks>
     /// A <see cref="SdkErrorKind.Transport"/> error, or
@@ -669,6 +764,41 @@ public sealed class Client : IDisposable
     }
 
     /// <summary>
+    /// Create a Lightning → Arkade swap with an exact source or target
+    /// amount, a fee surcharge or an invoice description; otherwise as
+    /// <see cref="CreateLightningToArkadeSwapAsync(ulong, Address?, CancellationToken)"/>.
+    /// </summary>
+    /// <param name="amount">
+    /// <c>QuoteAmount.Source</c> fixes the invoice amount,
+    /// <c>QuoteAmount.Target</c> what arrives on Arkade, both in satoshis.
+    /// </param>
+    /// <param name="receiveTo">
+    /// Arkade address (<c>tark1…</c>) that receives the BTC. Pass
+    /// <c>null</c> to route to the SDK's own internal Arkade wallet.
+    /// </param>
+    /// <param name="extraFeesBps">
+    /// Optional per-swap fee surcharge in basis points, as for
+    /// <see cref="CreateSwapAsync"/>.
+    /// </param>
+    /// <param name="invoiceDescription">
+    /// Description in the invoice, at most 639 UTF-8 bytes. Pass
+    /// <c>null</c> for the server default.
+    /// </param>
+    public Task<SwapDetails> CreateLightningToArkadeSwapAsync(
+        QuoteAmount amount,
+        Address? receiveTo = null,
+        ushort? extraFeesBps = null,
+        string? invoiceDescription = null,
+        CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        return Task.Run(
+            () => TryOrThrow(() => SwapDetails.FromFfi(ffi.CreateLightningToArkadeSwapWithOptions(
+                amount, receiveTo, extraFeesBps, invoiceDescription))),
+            cancellationToken);
+    }
+
+    /// <summary>
     /// Create an on-chain Bitcoin → Arkade swap. The payer sends
     /// <c>swap.DepositAmount</c> sats to the HTLC address in
     /// <c>swap.Funding</c> (<c>SwapFunding.BitcoinAddress</c>); once the
@@ -770,7 +900,10 @@ public sealed class Client : IDisposable
     /// <c>LightningDestination.Address</c> /
     /// <c>LightningDestination.Lnurl</c> with an explicit <c>sats</c>
     /// — the server resolves LNURL-pay itself, no client-side LNURL
-    /// resolver needed.
+    /// resolver needed. <c>LightningDestination.AddressSendMax</c> /
+    /// <c>LightningDestination.LnurlSendMax</c> take a fixed
+    /// <c>amount</c> from Arkade instead and pay out what remains after
+    /// fees.
     /// </param>
     public Task<SwapDetails> CreateArkadeToLightningSwapAsync(
         LightningDestination destination,
@@ -779,6 +912,32 @@ public sealed class Client : IDisposable
         var ffi = _ffi;
         return Task.Run(
             () => TryOrThrow(() => SwapDetails.FromFfi(ffi.CreateArkadeToLightningSwap(destination))),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Quote paying <paramref name="destination"/> from Arkade BTC with the
+    /// Lightning provider's fee for that destination, unlike
+    /// <see cref="GetQuoteAsync"/>, whose Lightning fee is an estimate.
+    /// Informational: creating the swap quotes the fee again, and it can
+    /// move in between.
+    /// </summary>
+    /// <param name="destination">Destination as for <see cref="CreateArkadeToLightningSwapAsync"/>.</param>
+    /// <param name="extraFeesBps">
+    /// Optional per-swap fee surcharge in basis points, as for
+    /// <see cref="CreateSwapAsync"/>.
+    /// <see cref="CreateArkadeToLightningSwapAsync"/> has no surcharge
+    /// parameter yet, so pass <c>null</c> to quote like for like.
+    /// </param>
+    public Task<LightningSendQuote> GetLightningSendQuoteAsync(
+        LightningDestination destination,
+        ushort? extraFeesBps = null,
+        CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        return Task.Run(
+            () => TryOrThrow(() => LightningSendQuote.FromFfi(
+                ffi.GetLightningSendQuote(destination, extraFeesBps))),
             cancellationToken);
     }
 
@@ -909,6 +1068,22 @@ public sealed class Client : IDisposable
     }
 
     /// <summary>
+    /// Current status of each swap in <paramref name="ids"/>, any number
+    /// of them, in requests of at most 100 IDs. Read-only, so safe to call
+    /// again after any error.
+    /// </summary>
+    public Task<BulkStatus> GetBulkStatusAsync(
+        IEnumerable<string> ids,
+        CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        var idArray = ids.ToArray();
+        return Task.Run(
+            () => TryOrThrow(() => BulkStatus.FromFfi(ffi.GetBulkStatus(idArray))),
+            cancellationToken);
+    }
+
+    /// <summary>
     /// Poll <c>GET /swap/{id}</c> until the backend reaches one of
     /// <paramref name="targets"/> or <paramref name="timeout"/> elapses
     /// (in which case the SDK throws <see cref="SdkException"/> with
@@ -959,6 +1134,88 @@ public sealed class Client : IDisposable
         var ffi = _ffi;
         return Task.Run(
             () => TryOrThrow(() => ClaimReceipt.FromFfi(ffi.Claim(swapId, destination))),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Claim or refund a swap's Arkade VHTLC to <paramref name="destination"/>.
+    /// This spends a swap's VHTLC; <see cref="SettleArkadeAsync"/> recovers
+    /// the wallet's own expired, swept or sub-dust VTXOs and boarding
+    /// outputs. Unlike <see cref="ClaimAsync"/>, which refuses a VHTLC
+    /// holding recoverable outputs, this settles those in a batch with the
+    /// cosigner key the server reports. A claim is refused within 300
+    /// seconds of the VHTLC refund locktime.
+    /// </summary>
+    /// <param name="swapId">UUID of a swap with an Arkade VHTLC.</param>
+    /// <param name="operation">
+    /// <c>ArkadeSpend.Claim</c> for Bitcoin, EVM or Lightning to Arkade;
+    /// <c>ArkadeSpend.Refund</c> (after the refund locktime) or
+    /// <c>ArkadeSpend.CooperativeRefund</c> (cosigned by the swap server,
+    /// before it) for Arkade to EVM or Lightning.
+    /// </param>
+    /// <param name="destination">Arkade address (<c>tark1…</c>) to receive the BTC.</param>
+    /// <remarks>
+    /// A <see cref="SdkErrorKind.Transport"/> or
+    /// <see cref="SdkErrorKind.Timeout"/> error leaves the outcome unknown,
+    /// and so does <see cref="SdkErrorKind.Storage"/> once arkd may hold the
+    /// spend. The spend's progress is stored before submission, so calling
+    /// this again with the same storage resumes it instead of spending twice;
+    /// the swap status and <see cref="AmountsForSwapAsync"/> show where it
+    /// stands.
+    /// </remarks>
+    public Task<ArkadeSettlement> SettleAsync(
+        string swapId,
+        ArkadeSpend operation,
+        string destination,
+        CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        return Task.Run(
+            () => TryOrThrow(() => ffi.Settle(swapId, operation, destination)),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Spendable, recoverable and spent sats at a stored swap's VHTLC, read
+    /// through the internal Arkade wallet. Reads only the swap record in
+    /// the client's storage, which swap creation and
+    /// <see cref="RecoverAllSwapsAsync"/> write; a swap missing from it
+    /// throws <see cref="SdkException"/> with
+    /// <see cref="SdkErrorKind.InvalidSwap"/>.
+    /// </summary>
+    public Task<VhtlcAmounts> AmountsForSwapAsync(
+        string swapId,
+        CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        return Task.Run(
+            () => TryOrThrow(() => VhtlcAmounts.FromFfi(ffi.AmountsForSwap(swapId))),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Find this wallet's swaps on the server, from wallet key index
+    /// <paramref name="startIndex"/> (null for 0) until the server's gap
+    /// limit, and store each with its key index so this client can claim
+    /// and refund it. Only the wallet's public recovery key is sent.
+    /// </summary>
+    /// <remarks>
+    /// Pages already processed stay stored if a later one fails, and a
+    /// swap stored again keeps its progress, so call again after a
+    /// <see cref="SdkErrorKind.Transport"/> or
+    /// <see cref="SdkErrorKind.Timeout"/> error.
+    /// <see cref="SdkErrorKind.InvalidSwap"/> refuses a page holding a
+    /// swap that fails this client's checks, such as a Lightning swap
+    /// whose invoice does not pay its hash lock: nothing from that page is
+    /// stored, and calling again refuses it again.
+    /// </remarks>
+    public Task<RecoveryResult> RecoverAllSwapsAsync(
+        uint? startIndex = null,
+        CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        return Task.Run(
+            () => TryOrThrow(() => RecoveryResult.FromFfi(ffi.RecoverAllSwaps(startIndex))),
             cancellationToken);
     }
 }

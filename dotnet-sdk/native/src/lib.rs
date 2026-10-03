@@ -26,17 +26,24 @@ use lendaswap_sdk::SwapFunding as SdkSwapFunding;
 use lendaswap_sdk::aa::GasOverrides as SdkGasOverrides;
 use lendaswap_sdk::aa::GaslessOpts as SdkGaslessOpts;
 use lendaswap_sdk::arkade::ArkadeConfig as SdkArkadeConfig;
+use lendaswap_sdk::arkade::ArkadeSettlement as SdkArkadeSettlement;
+use lendaswap_sdk::arkade::ArkadeSpend as SdkArkadeSpend;
+use lendaswap_sdk::arkade::VhtlcBalance as SdkVhtlcBalance;
 use lendaswap_sdk::bitcoin::BitcoinSpendOptions;
 use lendaswap_sdk::bitcoin::BitcoinSpendReceipt as SdkBitcoinSpendReceipt;
 use lendaswap_sdk::bitcoin::EsploraBackend;
 use lendaswap_sdk::types::Address as SdkAddress;
+use lendaswap_sdk::types::BulkStatusResponse;
 use lendaswap_sdk::types::Chain as SdkChain;
 use lendaswap_sdk::types::KnownChain as SdkKnownChain;
 use lendaswap_sdk::types::LightningDestination as SdkLightningDestination;
+use lendaswap_sdk::types::LightningSendQuoteResponse;
 use lendaswap_sdk::types::QuoteAmount as SdkQuoteAmount;
 use lendaswap_sdk::types::QuoteRequest;
+use lendaswap_sdk::types::RecoveryResponse;
 use lendaswap_sdk::types::SwapDirection as SdkSwapDirection;
 use lendaswap_sdk::types::SwapStatus as SdkSwapStatus;
+use lendaswap_sdk::types::SwapStatusEntry as SdkSwapStatusEntry;
 use lendaswap_sdk::types::TokenId as SdkTokenId;
 use std::io::IsTerminal;
 use std::sync::OnceLock;
@@ -881,6 +888,35 @@ impl SatoraClient {
             Ok(swap.into())
         })
     }
+
+    /// [`Self::create_lightning_to_arkade_swap`] with an exact source or
+    /// target amount: `QuoteAmount::Source` fixes the invoice amount,
+    /// `QuoteAmount::Target` what arrives on Arkade, both in sats.
+    /// `receive_to` `None` routes to the SDK's own internal Arkade wallet.
+    /// `extra_fees_bps` is the optional per-swap fee surcharge
+    /// [`Self::create_swap`] takes. `invoice_description` is at most 639
+    /// UTF-8 bytes; `None` uses the server default.
+    pub fn create_lightning_to_arkade_swap_with_options(
+        &self,
+        amount: QuoteAmount,
+        receive_to: Option<Address>,
+        extra_fees_bps: Option<u16>,
+        invoice_description: Option<String>,
+    ) -> Result<Swap, SdkError> {
+        runtime().block_on(async {
+            let resolved = self.resolve_receive_to(receive_to).await?;
+            let swap = self
+                .inner
+                .create_lightning_to_arkade_swap_with_options(
+                    amount.into(),
+                    resolved,
+                    extra_fees_bps,
+                    invoice_description,
+                )
+                .await?;
+            Ok(swap.into())
+        })
+    }
 }
 
 // ─── Bitcoin → Arkade ─────────────────────────────────────────────────
@@ -1003,8 +1039,10 @@ impl SatoraClient {
 // ─── Arkade → Lightning ───────────────────────────────────────────────
 
 /// Lightning destination for an Arkade → Lightning swap. The server
-/// resolves `Address` / `Lnurl` via LNURL-pay using `sats`; `Invoice`
-/// carries its amount in the BOLT11 payload.
+/// resolves `Address` / `Lnurl` via LNURL-pay using `sats`, the payout,
+/// and the send-max variants using `amount`, the sats the swap takes from
+/// Arkade, paying out what remains after fees; `Invoice` carries its
+/// amount in the BOLT11 payload.
 #[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum LightningDestination {
     /// BOLT11 invoice. Server pays this exact invoice.
@@ -1014,6 +1052,10 @@ pub enum LightningDestination {
     /// Raw LNURL (`lnurl1…`). Server bech32-decodes + resolves via
     /// LNURL-pay.
     Lnurl { lnurl: String, sats: u64 },
+    /// Lightning address with a fixed source amount in sats.
+    AddressSendMax { address: String, amount: u64 },
+    /// Raw LNURL with a fixed source amount in sats.
+    LnurlSendMax { lnurl: String, amount: u64 },
 }
 
 impl From<LightningDestination> for SdkLightningDestination {
@@ -1026,12 +1068,91 @@ impl From<LightningDestination> for SdkLightningDestination {
             LightningDestination::Lnurl { lnurl, sats } => {
                 SdkLightningDestination::Lnurl { lnurl, sats }
             }
+            LightningDestination::AddressSendMax { address, amount } => {
+                SdkLightningDestination::AddressSendMax {
+                    address,
+                    amount: amount.into(),
+                }
+            }
+            LightningDestination::LnurlSendMax { lnurl, amount } => {
+                SdkLightningDestination::LnurlSendMax {
+                    lnurl,
+                    amount: amount.into(),
+                }
+            }
+        }
+    }
+}
+
+/// Exact quote for paying a Lightning destination from Arkade. Mirrors
+/// `lendaswap_sdk::types::LightningSendQuoteResponse`.
+#[derive(uniffi::Record, Debug, Clone, PartialEq)]
+pub struct LightningSendQuote {
+    /// Source tokens per BTC locked; "1" for Arkade, where the source is
+    /// already sats.
+    pub exchange_rate: String,
+    /// Maximum payout for this route, in sats.
+    pub max_amount_sats: u64,
+    /// Minimum payout for this route, in sats.
+    pub min_amount_sats: u64,
+    /// The Lightning provider's send fee for this destination, in sats.
+    pub network_fee_sats: u64,
+    /// Protocol fee rate (0.003 = 0.30%).
+    pub protocol_fee_rate: f64,
+    pub protocol_fee_sats: u64,
+    /// Total taken from Arkade (payout plus fees), in sats, as a decimal
+    /// string.
+    pub source_amount: String,
+    /// Deprecated by the server in favour of `source_amount`.
+    pub source_amount_sats: u64,
+    /// Paid out on the Lightning invoice, in sats.
+    pub target_amount_sats: u64,
+}
+
+impl From<LightningSendQuoteResponse> for LightningSendQuote {
+    fn from(q: LightningSendQuoteResponse) -> Self {
+        Self {
+            exchange_rate: q.exchange_rate,
+            max_amount_sats: q.max_amount_sats,
+            min_amount_sats: q.min_amount_sats,
+            network_fee_sats: q.network_fee_sats,
+            protocol_fee_rate: q.protocol_fee_rate,
+            protocol_fee_sats: q.protocol_fee_sats,
+            source_amount: q.source_amount,
+            source_amount_sats: q.source_amount_sats,
+            target_amount_sats: q.target_amount_sats,
         }
     }
 }
 
 #[uniffi::export]
 impl SatoraClient {
+    /// Quote paying `destination` from Arkade BTC with the Lightning
+    /// provider's fee for that destination, unlike [`Self::quote`], whose
+    /// Lightning fee is an estimate. Informational: creating the swap
+    /// quotes the fee again, and it can move in between. `extra_fees_bps`
+    /// is the optional per-swap fee surcharge [`Self::create_swap`] takes;
+    /// [`Self::create_arkade_to_lightning_swap`] has no surcharge parameter
+    /// yet, so pass `None` to quote like for like.
+    pub fn get_lightning_send_quote(
+        &self,
+        destination: LightningDestination,
+        extra_fees_bps: Option<u16>,
+    ) -> Result<LightningSendQuote, SdkError> {
+        runtime().block_on(async {
+            let quote = self
+                .inner
+                .get_lightning_send_quote(
+                    SdkKnownChain::Arkade,
+                    SdkTokenId::Btc,
+                    destination.into(),
+                    extra_fees_bps,
+                )
+                .await?;
+            Ok(quote.into())
+        })
+    }
+
     /// Create an Arkade → Lightning swap. The server returns the
     /// Arkade VHTLC address the user must fund (in `swap.funding` as
     /// `SwapFunding::ArkadeAddress`); the server (via Boltz) then pays
@@ -1260,8 +1381,67 @@ impl SatoraClient {
 
 // ─── Status polling ────────────────────────────────────────────────────
 
+/// One swap's status in a [`BulkStatus`]. Mirrors
+/// `lendaswap_sdk::types::SwapStatusEntry`.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct SwapStatusEntry {
+    pub id: String,
+    pub status: SwapStatus,
+}
+
+impl From<SdkSwapStatusEntry> for SwapStatusEntry {
+    fn from(e: SdkSwapStatusEntry) -> Self {
+        Self {
+            id: e.id,
+            status: e.status.into(),
+        }
+    }
+}
+
+/// Statuses of the swaps [`SatoraClient::get_bulk_status`] was asked
+/// about. Mirrors `lendaswap_sdk::types::BulkStatusResponse`.
+#[derive(uniffi::Record, Clone, Debug, Default, PartialEq, Eq)]
+pub struct BulkStatus {
+    pub statuses: Vec<SwapStatusEntry>,
+    /// Requested IDs the server does not know.
+    pub not_found: Vec<String>,
+}
+
+/// Most IDs one `POST /swap/bulk-status` request accepts.
+const BULK_STATUS_CHUNK: usize = 100;
+
+/// Queries `ids` in requests of at most [`BULK_STATUS_CHUNK`], in order,
+/// and concatenates the answers.
+async fn bulk_status_in_chunks<'a, F, Fut>(
+    ids: &'a [String],
+    mut fetch: F,
+) -> Result<BulkStatus, SdkError>
+where
+    F: FnMut(&'a [String]) -> Fut,
+    Fut: std::future::Future<Output = lendaswap_sdk::Result<BulkStatusResponse>>,
+{
+    let mut merged = BulkStatus::default();
+    for chunk in ids.chunks(BULK_STATUS_CHUNK) {
+        let page = fetch(chunk).await?;
+        merged
+            .statuses
+            .extend(page.statuses.into_iter().map(Into::into));
+        merged.not_found.extend(page.not_found);
+    }
+    Ok(merged)
+}
+
 #[uniffi::export]
 impl SatoraClient {
+    /// Current status of each swap in `ids`, any number of them, in
+    /// requests of at most 100 IDs. Read-only, so safe to call again
+    /// after any error.
+    pub fn get_bulk_status(&self, ids: Vec<String>) -> Result<BulkStatus, SdkError> {
+        runtime().block_on(bulk_status_in_chunks(&ids, |chunk| {
+            self.inner.get_bulk_status(chunk)
+        }))
+    }
+
     /// `GET /swap/{id}` — fetch a swap's current state. Returns the
     /// same `Swap` shape `create_swap` does, so callers can re-read
     /// after the backend transitions states (e.g. ServerFunded).
@@ -1294,6 +1474,54 @@ impl SatoraClient {
                 .wait_for_swap_status(&swap_id, &sdk_targets, timeout)
                 .await?;
             Ok(reached.into())
+        })
+    }
+}
+
+// ─── Recovery ──────────────────────────────────────────────────────────
+
+/// Swaps [`SatoraClient::recover_all_swaps`] found. Mirrors
+/// `lendaswap_sdk::types::RecoveryResponse`, minus the swaps themselves.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct RecoveryResult {
+    /// IDs of the recovered swaps, now in this client's storage.
+    pub swap_ids: Vec<String>,
+    /// Wallet key index the next new swap uses.
+    pub next_index: u32,
+    /// Last wallet key index the scan covered. A later scan for newer swaps
+    /// starts at `next_index` (or the original start index), not after
+    /// this one.
+    pub scanned_until: u32,
+}
+
+impl From<RecoveryResponse> for RecoveryResult {
+    fn from(r: RecoveryResponse) -> Self {
+        Self {
+            swap_ids: r.swaps.iter().map(|s| s.swap.id().to_owned()).collect(),
+            next_index: r.next_index,
+            scanned_until: r.scanned_until,
+        }
+    }
+}
+
+#[uniffi::export]
+impl SatoraClient {
+    /// Find this wallet's swaps on the server, from wallet key index
+    /// `start_index` (`None` for 0) until the server's gap limit, and
+    /// store each with its key index so this client can claim and refund
+    /// it. Only the wallet's public recovery key is sent. Needs a signing
+    /// client.
+    ///
+    /// Pages already processed stay stored if a later one fails, and a
+    /// swap stored again keeps its progress, so call again after a
+    /// `Transport` or `Timeout` error. `SdkError::InvalidSwap` refuses a
+    /// page holding a swap that fails this client's checks, such as a
+    /// Lightning swap whose invoice does not pay its hash lock: nothing
+    /// from that page is stored, and calling again refuses it again.
+    pub fn recover_all_swaps(&self, start_index: Option<u32>) -> Result<RecoveryResult, SdkError> {
+        runtime().block_on(async {
+            let recovery = self.inner.recover_all_swaps(start_index).await?;
+            Ok(recovery.into())
         })
     }
 }
@@ -1417,7 +1645,9 @@ impl SatoraClient {
     /// Roll the wallet's recoverable VTXOs (expired, swept or below dust)
     /// and its boarding outputs into the next Arkade batch; healthy VTXOs
     /// are left alone. `None` => nothing to settle; `Some(txid)` => hex
-    /// commitment txid (`0x…`) of the batch that absorbed them.
+    /// commitment txid (`0x…`) of the batch that absorbed them. This
+    /// settles the wallet's own outputs; [`Self::settle`] spends a swap's
+    /// VHTLC.
     ///
     /// A `Transport` error, or `Timeout` after 300 seconds, leaves the
     /// outcome unknown: the batch may still settle. Settling again is
@@ -1476,6 +1706,129 @@ impl SatoraClient {
     }
 }
 
+// ─── Arkade settlement ─────────────────────────────────────────────────
+
+/// Spend of a swap's Arkade VHTLC. Mirrors
+/// `lendaswap_sdk::arkade::ArkadeSpend`.
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ArkadeSpend {
+    /// Receiver path with the preimage: Bitcoin, EVM or Lightning to
+    /// Arkade.
+    Claim,
+    /// Sender path once the VHTLC refund locktime has matured, without
+    /// the swap server: Arkade to EVM or Lightning.
+    Refund,
+    /// Sender path cosigned by the swap server, before the locktime:
+    /// Arkade to EVM or Lightning.
+    CooperativeRefund,
+}
+
+impl From<ArkadeSpend> for SdkArkadeSpend {
+    fn from(s: ArkadeSpend) -> Self {
+        match s {
+            ArkadeSpend::Claim => Self::Claim,
+            ArkadeSpend::Refund => Self::Refund,
+            ArkadeSpend::CooperativeRefund => Self::CooperativeRefund,
+        }
+    }
+}
+
+/// How [`SatoraClient::settle`] spent the VHTLC. Txids are hex,
+/// `0x`-prefixed.
+#[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ArkadeSettlement {
+    /// An offchain Ark transaction, as [`SatoraClient::claim`] submits.
+    Offchain {
+        ark_txid: String,
+        claim_amount_sats: u64,
+    },
+    /// The VHTLC held recoverable outputs, which only a batch can spend:
+    /// the commitment transaction of the batch that settled them.
+    Delegated { commitment_txid: String },
+}
+
+impl From<SdkArkadeSettlement> for ArkadeSettlement {
+    fn from(s: SdkArkadeSettlement) -> Self {
+        match s {
+            SdkArkadeSettlement::Offchain(receipt) => Self::Offchain {
+                ark_txid: format!("{:#x}", receipt.ark_txid),
+                claim_amount_sats: receipt.claim_amount_sats,
+            },
+            SdkArkadeSettlement::Delegated { commitment_txid } => Self::Delegated {
+                commitment_txid: format!("{commitment_txid:#x}"),
+            },
+        }
+    }
+}
+
+/// Sats at a swap's VHTLC by state. Mirrors
+/// `lendaswap_sdk::arkade::VhtlcBalance` (TypeScript `VhtlcAmounts`).
+#[derive(uniffi::Record, Clone, Debug, Default, PartialEq, Eq)]
+pub struct VhtlcAmounts {
+    /// Spendable by an offchain transaction.
+    pub spendable_sats: u64,
+    /// Expired outputs that only [`SatoraClient::settle`] can spend.
+    pub recoverable_sats: u64,
+    pub spent_sats: u64,
+    /// Transactions that spent the VHTLC, hex, `0x`-prefixed; useful when
+    /// another device completed the swap.
+    pub spent_by: Vec<String>,
+}
+
+impl From<SdkVhtlcBalance> for VhtlcAmounts {
+    fn from(b: SdkVhtlcBalance) -> Self {
+        Self {
+            spendable_sats: b.spendable_sats,
+            recoverable_sats: b.recoverable_sats,
+            spent_sats: b.spent_sats,
+            spent_by: b.spent_by.iter().map(|t| format!("{t:#x}")).collect(),
+        }
+    }
+}
+
+#[uniffi::export]
+impl SatoraClient {
+    /// Claim or refund a swap's Arkade VHTLC to `destination`, an Arkade
+    /// address. This spends a swap's VHTLC; [`Self::arkade_settle`]
+    /// recovers the wallet's own expired, swept or sub-dust VTXOs and
+    /// boarding outputs. Unlike [`Self::claim`], which refuses a VHTLC
+    /// holding recoverable outputs, this settles those in a batch with the
+    /// cosigner key the server reports. A claim is refused within 300
+    /// seconds of the VHTLC refund locktime.
+    ///
+    /// A `Transport` or `Timeout` error leaves the outcome unknown, and so
+    /// does `Storage` once arkd may hold the spend. The spend's progress is
+    /// stored before submission, so calling this again with the same
+    /// storage resumes it instead of spending twice; the swap status and
+    /// [`Self::amounts_for_swap`] show where it stands.
+    pub fn settle(
+        &self,
+        swap_id: String,
+        operation: ArkadeSpend,
+        destination: String,
+    ) -> Result<ArkadeSettlement, SdkError> {
+        runtime().block_on(async {
+            let settlement = self
+                .inner
+                .settle(&swap_id, operation.into(), destination)
+                .await?;
+            Ok(settlement.into())
+        })
+    }
+
+    /// Spendable, recoverable and spent sats at a stored swap's VHTLC,
+    /// read through the internal Arkade wallet. Reads only the swap record
+    /// in this client's storage, which swap creation and
+    /// [`Self::recover_all_swaps`] write; a swap missing from it is
+    /// `SdkError::InvalidSwap`.
+    pub fn amounts_for_swap(&self, swap_id: String) -> Result<VhtlcAmounts, SdkError> {
+        runtime().block_on(async {
+            let amounts = self.inner.amounts_for_swap(&swap_id).await?;
+            Ok(amounts.into())
+        })
+    }
+}
+
 /// Reverse of the existing `From<SdkSwapStatus> for SwapStatus`. Needed
 /// because `wait_for_swap_status` takes FFI-side `SwapStatus` values
 /// for the targets array and we need to hand them to the SDK as
@@ -1509,6 +1862,7 @@ fn swap_status_into_sdk(s: SwapStatus) -> SdkSwapStatus {
 mod tests {
     use super::*;
     use lendaswap_sdk::types::GetSwapResponse;
+    use lendaswap_sdk::types::RecoveredSwap;
     use serde_json::json;
 
     const MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -1529,6 +1883,15 @@ mod tests {
             response[field] = value.clone();
         }
         serde_json::from_value(response).unwrap()
+    }
+
+    // Display order, as explorers show them. Every byte differs, so a
+    // mapping that printed the internal byte order would not match.
+    const TXID_A: &str = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
+    const TXID_B: &str = "2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40";
+
+    fn txid(display: &str) -> bitcoin::Txid {
+        display.parse().unwrap()
     }
 
     fn client_with_storage(
@@ -1894,6 +2257,281 @@ mod tests {
                 lightning.invoice_expires_at,
             ),
             (None, None, Some(1_003), Some(1_004))
+        );
+    }
+
+    #[test]
+    fn lightning_destination_keeps_each_variant_and_amount() {
+        let cases = [
+            (
+                LightningDestination::Invoice {
+                    invoice: "lnbcrt1invoice".into(),
+                },
+                SdkLightningDestination::Invoice("lnbcrt1invoice".into()),
+            ),
+            (
+                LightningDestination::Address {
+                    address: "alice@example.com".into(),
+                    sats: 1_000,
+                },
+                SdkLightningDestination::Address {
+                    address: "alice@example.com".into(),
+                    sats: 1_000,
+                },
+            ),
+            (
+                LightningDestination::Lnurl {
+                    lnurl: "lnurl1alice".into(),
+                    sats: 2_000,
+                },
+                SdkLightningDestination::Lnurl {
+                    lnurl: "lnurl1alice".into(),
+                    sats: 2_000,
+                },
+            ),
+            (
+                LightningDestination::AddressSendMax {
+                    address: "alice@example.com".into(),
+                    amount: 3_000,
+                },
+                SdkLightningDestination::AddressSendMax {
+                    address: "alice@example.com".into(),
+                    amount: 3_000,
+                },
+            ),
+            (
+                LightningDestination::LnurlSendMax {
+                    lnurl: "lnurl1alice".into(),
+                    amount: 4_000,
+                },
+                SdkLightningDestination::LnurlSendMax {
+                    lnurl: "lnurl1alice".into(),
+                    amount: 4_000,
+                },
+            ),
+        ];
+        for (destination, expected) in cases {
+            assert_eq!(SdkLightningDestination::from(destination), expected);
+        }
+    }
+
+    #[test]
+    fn lightning_send_quote_keeps_every_field() {
+        let quote = LightningSendQuote::from(LightningSendQuoteResponse {
+            exchange_rate: "1".into(),
+            max_amount_sats: 1,
+            min_amount_sats: 2,
+            network_fee_sats: 3,
+            protocol_fee_rate: 0.004,
+            protocol_fee_sats: 5,
+            source_amount: "6".into(),
+            source_amount_sats: 7,
+            target_amount_sats: 8,
+        });
+        assert_eq!(
+            quote,
+            LightningSendQuote {
+                exchange_rate: "1".into(),
+                max_amount_sats: 1,
+                min_amount_sats: 2,
+                network_fee_sats: 3,
+                protocol_fee_rate: 0.004,
+                protocol_fee_sats: 5,
+                source_amount: "6".into(),
+                source_amount_sats: 7,
+                target_amount_sats: 8,
+            }
+        );
+    }
+
+    #[test]
+    fn lightning_send_quote_asks_for_an_arkade_btc_source() {
+        // A matching EVM source passes local validation too, so only the
+        // request tells them apart: Arkade BTC is the one source sent
+        // without `source_token`.
+        use std::io::BufRead;
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(&stream);
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line).unwrap();
+            let mut header = String::new();
+            while reader.read_line(&mut header).unwrap() > 2 {
+                header.clear();
+            }
+            (&stream)
+                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+            request_line
+        });
+        let client = SatoraClient::new(base_url, None).unwrap();
+        let result = client.get_lightning_send_quote(
+            LightningDestination::AddressSendMax {
+                address: "alice@example.com".into(),
+                amount: 100_000,
+            },
+            None,
+        );
+        assert!(
+            matches!(result, Err(SdkError::Api { status: 404, .. })),
+            "{result:?}"
+        );
+        let request_line = server.join().unwrap();
+        assert!(
+            request_line.starts_with("GET /quote/lightning-send?"),
+            "{request_line}"
+        );
+        assert!(
+            request_line.contains("source_chain=Arkade"),
+            "{request_line}"
+        );
+        assert!(!request_line.contains("source_token"), "{request_line}");
+    }
+
+    #[test]
+    fn arkade_spend_keeps_each_operation() {
+        let cases = [
+            (ArkadeSpend::Claim, SdkArkadeSpend::Claim),
+            (ArkadeSpend::Refund, SdkArkadeSpend::Refund),
+            (
+                ArkadeSpend::CooperativeRefund,
+                SdkArkadeSpend::CooperativeRefund,
+            ),
+        ];
+        for (operation, expected) in cases {
+            assert_eq!(SdkArkadeSpend::from(operation), expected);
+        }
+    }
+
+    #[test]
+    fn arkade_settlement_keeps_its_path_and_prefixes_txids() {
+        let offchain = ArkadeSettlement::from(SdkArkadeSettlement::Offchain(
+            lendaswap_sdk::arkade::ClaimReceipt {
+                ark_txid: txid(TXID_A),
+                claim_amount_sats: 5_000,
+                destination: ARKADE_ADDRESS.into(),
+            },
+        ));
+        assert_eq!(
+            offchain,
+            ArkadeSettlement::Offchain {
+                ark_txid: format!("0x{TXID_A}"),
+                claim_amount_sats: 5_000,
+            }
+        );
+        let delegated = ArkadeSettlement::from(SdkArkadeSettlement::Delegated {
+            commitment_txid: txid(TXID_B),
+        });
+        assert_eq!(
+            delegated,
+            ArkadeSettlement::Delegated {
+                commitment_txid: format!("0x{TXID_B}"),
+            }
+        );
+    }
+
+    #[test]
+    fn vhtlc_amounts_keep_each_bucket_and_spending_txid() {
+        let amounts = VhtlcAmounts::from(SdkVhtlcBalance {
+            spendable_sats: 1,
+            recoverable_sats: 2,
+            spent_sats: 3,
+            spent_by: vec![txid(TXID_A), txid(TXID_B)],
+        });
+        assert_eq!(
+            amounts,
+            VhtlcAmounts {
+                spendable_sats: 1,
+                recoverable_sats: 2,
+                spent_sats: 3,
+                spent_by: vec![format!("0x{TXID_A}"), format!("0x{TXID_B}")],
+            }
+        );
+    }
+
+    #[test]
+    fn bulk_status_queries_in_chunks_of_100_and_merges_them_in_order() {
+        let ids: Vec<String> = (0..250).map(|i| format!("swap-{i}")).collect();
+        // Every seventh ID is unknown to the fake server.
+        let unknown = |id: &String| id.trim_start_matches("swap-").parse::<u32>().unwrap() % 7 == 0;
+        let mut requests: Vec<Vec<String>> = Vec::new();
+        let merged = runtime()
+            .block_on(bulk_status_in_chunks(&ids, |chunk| {
+                requests.push(chunk.to_vec());
+                let (not_found, found): (Vec<_>, Vec<_>) =
+                    chunk.iter().cloned().partition(|id| unknown(id));
+                std::future::ready(Ok(BulkStatusResponse {
+                    not_found,
+                    statuses: found
+                        .into_iter()
+                        .map(|id| SdkSwapStatusEntry {
+                            id,
+                            status: SdkSwapStatus::ServerFunded,
+                        })
+                        .collect(),
+                }))
+            }))
+            .unwrap();
+        assert_eq!(
+            requests.iter().map(Vec::len).collect::<Vec<_>>(),
+            [100, 100, 50]
+        );
+        assert_eq!(requests.concat(), ids);
+        assert_eq!(
+            merged,
+            BulkStatus {
+                statuses: ids
+                    .iter()
+                    .filter(|id| !unknown(id))
+                    .map(|id| SwapStatusEntry {
+                        id: id.clone(),
+                        status: SwapStatus::ServerFunded,
+                    })
+                    .collect(),
+                not_found: ids.iter().filter(|id| unknown(id)).cloned().collect(),
+            }
+        );
+    }
+
+    #[test]
+    fn bulk_status_of_no_ids_sends_no_request() {
+        let mut requests = 0;
+        let merged = runtime()
+            .block_on(bulk_status_in_chunks(&[], |_| {
+                requests += 1;
+                std::future::ready(Ok(BulkStatusResponse {
+                    not_found: vec![],
+                    statuses: vec![],
+                }))
+            }))
+            .unwrap();
+        assert_eq!(requests, 0);
+        assert_eq!(merged, BulkStatus::default());
+    }
+
+    #[test]
+    fn recovery_result_lists_the_recovered_swaps_and_the_cursor() {
+        let recovered = |index, id: &str| RecoveredSwap {
+            index,
+            swap: swap_response("lightning_to_arkade", json!({ "id": id })),
+        };
+        let result = RecoveryResult::from(RecoveryResponse {
+            swaps: vec![recovered(3, "swap-a"), recovered(5, "swap-b")],
+            highest_index: 5,
+            next_index: 6,
+            scanned_until: 25,
+            complete: true,
+        });
+        assert_eq!(
+            result,
+            RecoveryResult {
+                swap_ids: vec!["swap-a".into(), "swap-b".into()],
+                next_index: 6,
+                scanned_until: 25,
+            }
         );
     }
 
