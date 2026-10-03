@@ -388,6 +388,17 @@ public sealed record ClaimReceipt(string ArkTxid, ulong ClaimAmountSats)
 }
 
 /// <summary>
+/// What <see cref="Client.OffboardArkadeAsync"/> pays on chain, and the
+/// server's fee for it, from <see cref="Client.GetArkadeOffboardQuoteAsync"/>.
+/// </summary>
+/// <param name="AmountSats">Satoshis the on-chain address receives.</param>
+/// <param name="FeeSats">The server's fee in satoshis, taken from change on top of <paramref name="AmountSats"/>.</param>
+public sealed record OffboardQuote(ulong AmountSats, ulong FeeSats)
+{
+    internal static OffboardQuote FromFfi(Ffi.OffboardQuote q) => new(q.@amountSats, q.@feeSats);
+}
+
+/// <summary>
 /// Result of an on-chain Bitcoin HTLC refund.
 /// </summary>
 /// <param name="Txid">Refund transaction ID, hex as block explorers show it (no <c>0x</c>).</param>
@@ -640,10 +651,12 @@ public sealed class Client : IDisposable
     /// indexer.
     /// </summary>
     /// <remarks>
-    /// For "what can I send right now?" use
-    /// <c>balance.confirmedSats</c>. <c>total_sats()</c>
-    /// (confirmed + pre-confirmed + recoverable) over-reports
-    /// spendable funds.
+    /// <see cref="SendArkadeAsync"/>, <see cref="FundArkadeSwapAsync"/> and
+    /// <see cref="OffboardArkadeAsync"/> (less VTXOs about to expire and the
+    /// dust it keeps as change) spend <c>balance.confirmedSats</c> plus
+    /// <c>balance.preConfirmedSats</c>.
+    /// <c>balance.recoverableSats</c> moves only through
+    /// <see cref="SettleArkadeAsync"/>.
     /// </remarks>
     public Task<ArkadeBalance> GetArkadeBalanceAsync(CancellationToken cancellationToken = default)
     {
@@ -688,17 +701,24 @@ public sealed class Client : IDisposable
     /// Send <paramref name="amountSats"/> from the SDK's internal
     /// Arkade wallet to <paramref name="destination"/> (any
     /// <c>tark1q…</c> Arkade address) via an offchain Ark transaction.
-    /// Returns the Ark txid as <c>0x…</c> hex.
-    ///
-    /// Primary use case: funding the Arkade VHTLC returned by
-    /// <see cref="CreateArkadeToLightningSwapAsync"/>.
+    /// Returns the Ark txid as <c>0x…</c> hex. Fund a swap's VHTLC with
+    /// <see cref="FundArkadeSwapAsync"/> instead, which journals the
+    /// payment and resolves a retry from it.
     /// </summary>
     /// <remarks>
+    /// <para>
+    /// It spends confirmed and pre-confirmed VTXOs, including inputs a failed
+    /// <see cref="FundArkadeSwapAsync"/> journaled; once arkd names and
+    /// returns this spend, which pays nothing to its VHTLC, that call
+    /// resolves its journal.
+    /// </para>
+    /// <para>
     /// A <see cref="SdkErrorKind.Transport"/> error, or
     /// <see cref="SdkErrorKind.Timeout"/> after 120 seconds, leaves the
     /// outcome unknown: the payment may have gone out, so check the balance
     /// or the recipient before sending again. The 120 seconds start once any
     /// wallet spend in progress on this client has finished.
+    /// </para>
     /// </remarks>
     public Task<string> SendArkadeAsync(
         string destination,
@@ -708,6 +728,160 @@ public sealed class Client : IDisposable
         var ffi = _ffi;
         return Task.Run(
             () => TryOrThrow(() => ffi.ArkadeSend(destination, amountSats)),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Pay the VHTLC of an Arkade → Lightning or Arkade → EVM swap from the
+    /// SDK's internal Arkade wallet. Returns the Ark txid as <c>0x…</c> hex.
+    /// The wallet inputs are journaled in the client's storage before the
+    /// payment and the txid after it. Refuses with
+    /// <see cref="SdkErrorKind.InvalidSwap"/> a swap that is not
+    /// <see cref="SwapStatus.Pending"/>, whose VHTLC holds outputs this
+    /// client did not journal, or whose VHTLC is locked to a server key other
+    /// than arkd's current signer (create a new swap then).
+    /// </summary>
+    /// <param name="swapId">UUID returned by <see cref="CreateArkadeToLightningSwapAsync"/>.</param>
+    /// <remarks>
+    /// <para>
+    /// Before journaling, it also refuses a VHTLC amount below arkd's dust,
+    /// and a VHTLC whose hash lock is not the swap's: the hash of this
+    /// client's preimage for Arkade → EVM, the payment hash of the stored
+    /// invoice for Arkade → Lightning. A new selection draws on confirmed
+    /// and pre-confirmed VTXOs. A swap this client never created or
+    /// recovered throws <see cref="SdkException"/> with
+    /// <see cref="SdkErrorKind.Storage"/>.
+    /// </para>
+    /// <para>
+    /// A retry returns a journaled txid. Otherwise an Ark transaction arkd
+    /// names as the spender of any journaled input may be the payment, or
+    /// that of an earlier attempt still in flight when a retry widened the
+    /// selection: the call returns that transaction once its VHTLC output is
+    /// visible and throws <see cref="SdkException"/> with
+    /// <see cref="SdkErrorKind.UnresolvedFunding"/> until then, unless arkd
+    /// returns it and none of its outputs pays the VHTLC. A journaled input
+    /// spent without arkd naming a spender, a journaled input arkd does not
+    /// know, and a journal for a VHTLC address other than the swap's throw
+    /// the same way and are never resolved automatically. While a funding is
+    /// unresolved, follow the swap's status, never pay the VHTLC by other
+    /// means, and give the swap up only once a check by hand shows where the
+    /// funds went.
+    /// </para>
+    /// <para>
+    /// Journaled inputs left unspent, forfeited into a batch, or spent by
+    /// transactions that pay nothing to the VHTLC prove the payment never
+    /// happened. The swap is then paid again under the checks above from a
+    /// selection that includes every journaled input still spendable, so
+    /// arkd accepts at most one of the two payments if the first is still in
+    /// flight. When no journaled input is spendable any more, that rests on
+    /// arkd also refusing the ones this client sees as expired, swept,
+    /// unrolled or under a retired signer. A swap that no longer awaits
+    /// funding instead has such a journal emptied before the refusal. With
+    /// storage that kept this swap's journal, that refusal is the only error
+    /// proving the wallet paid nothing; the others, such as a refusal before
+    /// the journal is read, leave an earlier payment possible. A swap
+    /// recovered on another device, or after a restart without
+    /// <c>dataDirectory</c>, has no journal.
+    /// </para>
+    /// <para>
+    /// A <see cref="SdkErrorKind.Transport"/> error, or
+    /// <see cref="SdkErrorKind.Timeout"/> after 120 seconds, leaves the
+    /// outcome unknown: call this again with the same storage, which
+    /// resolves it from the journal, and never pay the VHTLC by other means
+    /// such as <see cref="SendArkadeAsync"/>. The 120 seconds start once any
+    /// wallet spend in progress on this client has finished. Once arkd
+    /// accepted the payment, a failure to journal its txid is logged and the
+    /// txid returned; a retry resolves it from the journaled inputs.
+    /// Disposing the client does not stop a running call, so build no
+    /// replacement over the same storage until it has returned.
+    /// </para>
+    /// </remarks>
+    public Task<string> FundArkadeSwapAsync(
+        string swapId,
+        CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        return Task.Run(
+            () => TryOrThrow(() => ffi.FundArkadeSwap(swapId)),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Send <paramref name="amountSats"/> from the SDK's internal Arkade
+    /// wallet to the on-chain Bitcoin <paramref name="address"/> in a
+    /// collaborative exit. Returns the commitment txid as <c>0x…</c> hex.
+    /// Every exit keeps at least the server's dust (330 sats today) in the
+    /// wallet as Arkade change: ark-client 0.11 registers a signing key for
+    /// every exit but signs the batch's VTXO tree only for one that creates
+    /// a VTXO, so arkd would fail any batch an exit without change shares
+    /// with others. The exit spends confirmed and pre-confirmed VTXOs only,
+    /// the soonest-expiring first. Recoverable VTXOs (a batch that mixes
+    /// them with healthy ones fails) and boarding outputs need
+    /// <see cref="SettleArkadeAsync"/> first; VTXOs carrying an asset stay
+    /// offchain. VTXOs that expire before ark-client's four batch join
+    /// attempts could end (each can wait out its intent's 120 s validity
+    /// plus an arkd session; at most this call's 600 s) stay out too, since
+    /// one that expires while the batch is pending fails it; once expired
+    /// they are recoverable. On a server whose VTXOs live minutes, such as
+    /// regtest's 512 s, that margin is half the VTXO lifetime, so a retried
+    /// exit there can still meet an expiring input. The lifetime is read off
+    /// the wallet's confirmed VTXOs, so a wallet that has only received
+    /// offchain gets the full margin until a settle or boarding gives it one.
+    /// </summary>
+    /// <param name="address">Bitcoin address on the client's network.</param>
+    /// <param name="amountSats">
+    /// Satoshis <paramref name="address"/> receives exactly, as the server's
+    /// fee comes out of change; an amount that cannot leave dust as change
+    /// is refused. Pass <c>null</c> to send everything except the
+    /// recoverable balance and the change: the most that leaves at least
+    /// dust, or less than dust plus one fee step when the server's fee
+    /// program skips the amount that leaves exactly dust.
+    /// </param>
+    /// <remarks>
+    /// Address, dust and balance checks throw <see cref="SdkException"/>
+    /// with <see cref="SdkErrorKind.InvalidSwap"/> before anything is sent,
+    /// naming the sats left out as expiring or recoverable when the
+    /// spendable balance falls short, and so does a server fee program that
+    /// charges the inputs or the change, which a collaborative exit does not
+    /// pay. A <see cref="SdkErrorKind.Transport"/> error, or
+    /// <see cref="SdkErrorKind.Timeout"/> after 600 seconds, leaves the
+    /// outcome unknown: the batch may still settle, so check the balance
+    /// before offboarding again. The 600 seconds start once any wallet spend
+    /// in progress on this client has finished. Disposing the client does
+    /// not stop a running call, so build no replacement over the same
+    /// storage until it has returned.
+    /// </remarks>
+    public Task<string> OffboardArkadeAsync(
+        string address,
+        ulong? amountSats,
+        CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        return Task.Run(
+            () => TryOrThrow(() => ffi.ArkadeOffboard(address, amountSats)),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// The amount and fee <see cref="OffboardArkadeAsync"/> would use for
+    /// the same arguments, without sending. It waits for a wallet spend in
+    /// progress on this client, so it prices what is left afterwards.
+    /// </summary>
+    /// <remarks>
+    /// It fails as <see cref="OffboardArkadeAsync"/> does, except that
+    /// nothing is ever sent: call it again freely after a
+    /// <see cref="SdkErrorKind.Transport"/> error or a
+    /// <see cref="SdkErrorKind.Timeout"/> after 300 seconds, which start
+    /// once any wallet spend in progress on this client has finished.
+    /// </remarks>
+    public Task<OffboardQuote> GetArkadeOffboardQuoteAsync(
+        string address,
+        ulong? amountSats,
+        CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        return Task.Run(
+            () => TryOrThrow(() => OffboardQuote.FromFfi(ffi.ArkadeOffboardQuote(address, amountSats))),
             cancellationToken);
     }
 

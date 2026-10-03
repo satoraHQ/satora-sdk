@@ -79,6 +79,14 @@ public class MappingTests
     }
 
     [Fact]
+    public void OffboardQuoteKeepsAmountAndFee()
+    {
+        var quote = OffboardQuote.FromFfi(new Ffi.OffboardQuote(@amountSats: 1, @feeSats: 2));
+
+        Assert.Equal(new OffboardQuote(AmountSats: 1, FeeSats: 2), quote);
+    }
+
+    [Fact]
     public void BulkStatusKeepsEachEntryAndTheUnknownIds()
     {
         var status = BulkStatus.FromFfi(new Ffi.BulkStatus(

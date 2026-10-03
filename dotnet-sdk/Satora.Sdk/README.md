@@ -203,8 +203,9 @@ null when the server reports no expiry. `ClaimAsync` refuses within 300
 seconds of `VhtlcRefundLocktime`.
 
 `CreateArkadeToLightningSwapAsync(destination)` returns an Arkade VHTLC
-address in `SwapFunding.ArkadeAddress`; fund it with `DepositAmount`
-sats and the server pays the destination. `LightningDestination.AddressSendMax`
+address in `SwapFunding.ArkadeAddress`; `FundArkadeSwapAsync(swap.Id)`
+pays it `DepositAmount` sats from the SDK's Arkade wallet and the server
+pays the destination. `LightningDestination.AddressSendMax`
 and `LightningDestination.LnurlSendMax` take a fixed amount from Arkade
 and pay out what remains after fees. `GetLightningSendQuoteAsync` prices
 a destination with the Lightning provider's actual fee. If the swap
@@ -216,7 +217,24 @@ about an hour, has reached the VHTLC refund locktime) returns the funds.
 var destination = new LightningDestination.Address("alice@example.com", 50_000);
 var quote = await client.GetLightningSendQuoteAsync(destination);
 var swap = await client.CreateArkadeToLightningSwapAsync(destination);
+var arkTxid = await client.FundArkadeSwapAsync(swap.Id);
 ```
+
+`FundArkadeSwapAsync` journals the payment in the client's storage, so
+after a `Transport` or `Timeout` error call it again rather than paying
+the VHTLC another way: it returns the payment once it is visible, and
+pays again only when the journal proves none went out. It refuses with
+`InvalidSwap` a VHTLC locked to a server key other than arkd's current
+signer (create a new swap then), a VHTLC amount below arkd's dust, and a
+VHTLC whose hash lock is not the payment hash of the swap's invoice.
+When an earlier payment may be the swap's and the SDK cannot tell, such
+as for a journaled input arkd does not know or a journal for another
+VHTLC address, it throws `UnresolvedFunding`: follow the swap's status,
+never pay the VHTLC by other means, and give the swap up only once a
+check by hand shows where the funds went. `SendArkadeAsync` can spend
+inputs a failed funding journaled; once arkd names and returns the send,
+which pays nothing to the VHTLC, the next `FundArkadeSwapAsync` resolves
+that journal.
 
 ## Arkade VHTLCs
 
@@ -226,6 +244,47 @@ swap's Arkade VHTLC. Unlike `ClaimAsync`, it also spends recoverable
 (expired) outputs, through a batch, and its `ArkadeSettlement` says
 which path it took. `AmountsForSwapAsync(swapId)` shows the spendable,
 recoverable and spent sats at the VHTLC.
+
+## Offboarding
+
+`OffboardArkadeAsync(address, amountSats)` sends sats from the SDK's
+Arkade wallet to an on-chain Bitcoin address in a collaborative exit.
+The server's fee comes out of change, so the address receives exactly
+`amountSats`. Every exit keeps at least the server's dust (330 sats
+today) in the wallet as Arkade change: ark-client 0.11 registers a
+signing key for every exit but signs the batch's VTXO tree only for one
+that creates a VTXO, so arkd would fail any batch an exit without change
+shares with others. `null` therefore sends everything except the
+recoverable balance and that change, the most that leaves at least dust
+(less than dust plus one fee step stays behind when the server's fee
+program skips the amount that leaves exactly dust), and a fixed amount
+that cannot leave dust is refused. `GetArkadeOffboardQuoteAsync` returns
+the amount and fee without sending. A server whose fee program charges
+the inputs or the change is refused with `InvalidSwap` before anything
+is sent, as the collaborative exit pays only the on-chain output's fee.
+
+The exit spends the `confirmedSats` and `preConfirmedSats` of
+`GetArkadeBalanceAsync`, as `SendArkadeAsync` and `FundArkadeSwapAsync`
+do, taking the soonest-expiring VTXOs first. Recoverable VTXOs and
+boarding outputs move only through `SettleArkadeAsync`, so settle before
+offboarding them: a batch that mixes an expired, unswept VTXO with
+healthy ones fails for every participant. For the same reason VTXOs that
+could expire before ark-client's four batch join attempts end (each can
+wait out its intent's 120 s validity plus an arkd session; at most the
+call's 600 s) stay out until they expire and turn recoverable. On a
+server whose VTXOs live minutes, such as regtest's 512 s, that margin is
+half the VTXO lifetime, so a retried exit there can still meet an
+expiring input. The lifetime is read off the wallet's confirmed VTXOs, so
+a wallet that has only received offchain gets the full margin until a
+settle or boarding gives it one. When the spendable balance falls short,
+the `InvalidSwap` message names the sats left out as expiring or
+recoverable.
+
+```csharp
+var quote = await client.GetArkadeOffboardQuoteAsync("bc1q…", amountSats: null);
+Console.WriteLine($"{quote.AmountSats} sats out, {quote.FeeSats} sats fee");
+var txid = await client.OffboardArkadeAsync("bc1q…", amountSats: null);
+```
 
 ## Swap status and recovery
 
@@ -280,24 +339,37 @@ HTTP status in `StatusCode`. A failure inside the bindings, a Rust panic
 included, and a Rust SDK error this version does not name yet have
 `Kind` `Internal` and keep the original as `InnerException`.
 
-`Kind` is not a retry signal. After a `Transport` or `Timeout` error from
-`SendArkadeAsync`, `FundSwapAsync` or `SettleArkadeAsync`, or any
-`Storage` error from `FundSwapAsync`, the outcome is unknown: check the
-swap status or the balance before trying again (a `FundSwapAsync` retry
-is refused while its stored operation is unresolved, so checking first is
-safe). After one from `ClaimAsync` or `SettleAsync`, or a `Storage` error
-from them once arkd may hold the spend, call it again, which resumes from
-its journal. After one from `RefundBitcoinAsync`, or a `Storage` error
-from it after a fee bump, call it again with the same destination, which
-returns the pending or confirmed refund instead of building another. A
-chain read that straddled a new block, such as
+Apart from `UnresolvedFunding`, `Kind` is not a retry signal. After a
+`Transport` or `Timeout` error from `SendArkadeAsync`, `FundSwapAsync`,
+`SettleArkadeAsync` or `OffboardArkadeAsync`, or any `Storage` error from
+`FundSwapAsync`, the outcome is unknown: check the swap status or the
+balance before trying again (a `FundSwapAsync` retry is refused while its
+stored operation is unresolved, so checking first is safe). After one
+from `ClaimAsync` or `SettleAsync`, or a `Storage` error from them once
+arkd may hold the spend, call it again, which resumes from its journal.
+After one from `FundArkadeSwapAsync`, call it again, which resolves the
+outcome from its journal. After one from `RefundBitcoinAsync`, or a
+`Storage` error from it after a fee bump, call it again with the same
+destination, which returns the pending or confirmed refund instead of
+building another. A chain read that straddled a new block, such as
 `Bitcoin tip changed during observation`, is a `Transport` error too, so
 the same retry applies.
 
-The Arkade wallet's own spends (`SendArkadeAsync` and `SettleArkadeAsync`)
-take one lock per `Client`, which claims and refunds never wait for. Each
-holds it for at most 120 seconds (`SendArkadeAsync`) or 300 seconds
-(`SettleArkadeAsync`) and then fails with `Timeout`.
+`UnresolvedFunding` means an earlier funding of the swap may have gone
+out and the SDK cannot tell: never fund the swap by other means, and do
+not treat it as unfunded. Of the `FundArkadeSwapAsync` errors, only the
+`InvalidSwap` refusal of a swap that no longer awaits funding proves the
+wallet paid nothing, provided the storage kept the swap's journal: a
+swap recovered on another device, or after a restart without
+`dataDirectory`, has none.
+
+The Arkade wallet's own spends (`SendArkadeAsync`, `FundArkadeSwapAsync`,
+`SettleArkadeAsync` and `OffboardArkadeAsync`) take one lock per `Client`;
+`GetArkadeOffboardQuoteAsync` waits for it too, while claims and refunds
+never do. Each holds it for at most 120 seconds (`SendArkadeAsync`,
+`FundArkadeSwapAsync`), 300 seconds (`SettleArkadeAsync`,
+`GetArkadeOffboardQuoteAsync`) or 600 seconds (`OffboardArkadeAsync`,
+whose batch join is retried) and then fails with `Timeout`.
 
 ## Cancellation
 

@@ -28,6 +28,7 @@ use lendaswap_sdk::aa::GaslessOpts as SdkGaslessOpts;
 use lendaswap_sdk::arkade::ArkadeConfig as SdkArkadeConfig;
 use lendaswap_sdk::arkade::ArkadeSettlement as SdkArkadeSettlement;
 use lendaswap_sdk::arkade::ArkadeSpend as SdkArkadeSpend;
+use lendaswap_sdk::arkade::OffboardQuote as SdkOffboardQuote;
 use lendaswap_sdk::arkade::VhtlcBalance as SdkVhtlcBalance;
 use lendaswap_sdk::bitcoin::BitcoinSpendOptions;
 use lendaswap_sdk::bitcoin::BitcoinSpendReceipt as SdkBitcoinSpendReceipt;
@@ -1596,10 +1597,12 @@ pub struct ClaimReceipt {
 /// Offchain VTXO balance broken into the three buckets `ark-client`
 /// distinguishes. Mirrors `lendaswap_sdk::arkade::ArkadeBalance`.
 ///
-/// The number callers normally want for "what can I spend right now?"
-/// is `confirmed_sats` — coin selection in `arkade_send` only draws
-/// from that bucket, so basing UX on `confirmed + pre_confirmed +
-/// recoverable` lies about what the wallet can actually do.
+/// Offchain sends ([`SatoraClient::arkade_send`] and
+/// [`SatoraClient::fund_arkade_swap`]) and offboards
+/// ([`SatoraClient::arkade_offboard`], less VTXOs about to expire and the
+/// dust it keeps as change) spend `confirmed_sats` and
+/// `pre_confirmed_sats`. `recoverable_sats` moves only through
+/// [`SatoraClient::arkade_settle`].
 #[derive(uniffi::Record, Clone, Debug, Default, PartialEq, Eq)]
 pub struct ArkadeBalance {
     pub confirmed_sats: u64,
@@ -1675,10 +1678,14 @@ impl SatoraClient {
 
     /// Send `amount_sats` from the SDK's internal Arkade wallet to
     /// `destination` (any `tark1q…` Arkade address) via an offchain
-    /// Ark transaction. Returns the Ark txid as `0x…` hex.
+    /// Ark transaction. Returns the Ark txid as `0x…` hex. Fund a swap's
+    /// VHTLC with [`Self::fund_arkade_swap`] instead, which journals the
+    /// payment and resolves a retry from it.
     ///
-    /// Primary use case: funding the Arkade VHTLC returned by
-    /// [`Self::create_arkade_to_lightning_swap`].
+    /// It spends confirmed and pre-confirmed VTXOs, including inputs a
+    /// failed [`Self::fund_arkade_swap`] journaled; once arkd names and
+    /// returns this spend, which pays nothing to its VHTLC, that call
+    /// resolves its journal.
     ///
     /// A `Transport` error, or `Timeout` after 120 seconds, leaves the
     /// outcome unknown: arkd may have accepted the payment, so check the
@@ -1825,6 +1832,153 @@ impl SatoraClient {
         runtime().block_on(async {
             let amounts = self.inner.amounts_for_swap(&swap_id).await?;
             Ok(amounts.into())
+        })
+    }
+}
+
+// ─── Arkade wallet spends ──────────────────────────────────────────────
+
+/// What [`SatoraClient::arkade_offboard`] pays on chain, and the server's
+/// fee for it. Mirrors `lendaswap_sdk::arkade::OffboardQuote`.
+#[derive(uniffi::Record, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OffboardQuote {
+    /// Sats the on-chain address receives.
+    pub amount_sats: u64,
+    /// The server's fee, taken from change on top of `amount_sats`.
+    pub fee_sats: u64,
+}
+
+impl From<SdkOffboardQuote> for OffboardQuote {
+    fn from(q: SdkOffboardQuote) -> Self {
+        Self {
+            amount_sats: q.amount_sats,
+            fee_sats: q.fee_sats,
+        }
+    }
+}
+
+#[uniffi::export]
+impl SatoraClient {
+    /// Pay the VHTLC of an Arkade → Lightning or Arkade → EVM swap from
+    /// the SDK's internal Arkade wallet and return the Ark txid as `0x…`
+    /// hex. Wraps [`lendaswap_sdk::Client::fund_arkade_swap`]: the wallet
+    /// inputs are journaled in this client's storage before the payment
+    /// and the txid after it. Refuses with `SdkError::InvalidSwap` a swap
+    /// that is not `Pending`, whose VHTLC holds outputs this client did not
+    /// journal, or whose VHTLC is locked to a server key other than arkd's
+    /// current signer (create a new swap then). Before journaling, it also
+    /// refuses a VHTLC amount below arkd's dust, and a VHTLC whose hash
+    /// lock is not the swap's: the hash of this client's preimage for
+    /// Arkade → EVM, the payment hash of the stored invoice for Arkade →
+    /// Lightning. A new selection draws on confirmed and pre-confirmed
+    /// VTXOs. A swap this client never created or recovered fails with
+    /// `SdkError::Storage`.
+    ///
+    /// A retry returns a journaled txid. Otherwise an Ark transaction arkd
+    /// names as the spender of any journaled input may be the payment, or
+    /// that of an earlier attempt still in flight when a retry widened the
+    /// selection: the call returns that transaction once its VHTLC output
+    /// is visible and fails with `SdkError::UnresolvedFunding` until then,
+    /// unless arkd returns it and none of its outputs pays the VHTLC. A
+    /// journaled input spent without arkd naming a spender, a journaled
+    /// input arkd does not know, and a journal for a VHTLC address other
+    /// than the swap's fail the same way and are never resolved
+    /// automatically. While a funding is unresolved, follow the swap's
+    /// status, never pay the VHTLC by other means, and give the swap up
+    /// only once a check by hand shows where the funds went. Journaled
+    /// inputs left unspent, forfeited into a batch, or spent by
+    /// transactions that pay nothing to the VHTLC prove the payment never
+    /// happened. The swap is then paid again under the checks above from a
+    /// selection that includes every journaled input still spendable, so
+    /// arkd accepts at most one of the two payments if the first is still
+    /// in flight. When no journaled input is spendable any more, that rests
+    /// on arkd also refusing the ones this client sees as expired, swept,
+    /// unrolled or under a retired signer. A swap that no longer awaits
+    /// funding instead has such a journal emptied before the refusal. With
+    /// storage that kept this swap's journal, that refusal is the only
+    /// error proving the wallet paid nothing; the others, such as a refusal
+    /// before the journal is read, leave an earlier payment possible. A
+    /// swap recovered on another device, or after a restart without
+    /// `storage_path`, has no journal.
+    ///
+    /// A `Transport` error, or `Timeout` after 120 seconds, leaves the
+    /// outcome unknown: call this again with the same storage, which
+    /// resolves it from the journal, and never pay the VHTLC by other
+    /// means such as [`Self::arkade_send`]. The 120 seconds start once any
+    /// wallet spend in progress has finished. Once arkd accepted the
+    /// payment, a failure to journal its txid is logged and the txid
+    /// returned; a retry resolves it from the journaled inputs.
+    pub fn fund_arkade_swap(&self, swap_id: String) -> Result<String, SdkError> {
+        runtime().block_on(async {
+            let txid = self.inner.fund_arkade_swap(&swap_id).await?;
+            Ok(format!("{txid:#x}"))
+        })
+    }
+
+    /// Send `amount_sats` from the SDK's internal Arkade wallet to the
+    /// on-chain Bitcoin `address` in a collaborative exit and return the
+    /// commitment txid as `0x…` hex. The server's fee comes out of change,
+    /// so `address` receives exactly `amount_sats`. Every exit keeps at
+    /// least the server's dust (330 sats today) in the wallet as Arkade
+    /// change: ark-client 0.11 registers a signing key for every exit but
+    /// signs the batch's VTXO tree only for one that creates a VTXO, so
+    /// arkd would fail any batch an exit without change shares with
+    /// others. `None` therefore sends the most that leaves at least dust as
+    /// change (less than dust plus one fee step stays behind when the
+    /// server's fee program skips the amount that leaves exactly dust), and
+    /// a fixed amount that cannot leave dust is refused.
+    ///
+    /// The exit spends confirmed and pre-confirmed VTXOs only, the
+    /// soonest-expiring first, so `None` sends everything except the
+    /// recoverable balance and the change. Recoverable VTXOs (a batch that
+    /// mixes them with healthy ones fails) and boarding outputs need
+    /// [`Self::arkade_settle`] first; VTXOs carrying an asset stay
+    /// offchain. VTXOs that expire before ark-client's four batch join
+    /// attempts could end (each can wait out its intent's 120 s validity
+    /// plus an arkd session; at most this call's 600 s) stay out too, since
+    /// one that expires while the batch is pending fails it; once expired
+    /// they are recoverable. On a server whose VTXOs live minutes, such as
+    /// regtest's 512 s, that margin is half the VTXO lifetime, so a retried
+    /// exit there can still meet an expiring input. The lifetime is read off
+    /// the wallet's confirmed VTXOs, so a wallet that has only received
+    /// offchain gets the full margin until a settle or boarding gives it one.
+    ///
+    /// Address, dust and balance checks fail with `SdkError::InvalidSwap`
+    /// before anything is sent, naming the sats left out as expiring or
+    /// recoverable when the spendable balance falls short, and so does a
+    /// server fee program that charges the inputs or the change, which a
+    /// collaborative exit does not pay. A `Transport` error, or `Timeout`
+    /// after 600 seconds, leaves the outcome unknown: the batch may still
+    /// settle, so check the balance before offboarding again. The 600
+    /// seconds start once any wallet spend in progress has finished.
+    pub fn arkade_offboard(
+        &self,
+        address: String,
+        amount_sats: Option<u64>,
+    ) -> Result<String, SdkError> {
+        runtime().block_on(async {
+            let txid = self.inner.arkade_offboard(&address, amount_sats).await?;
+            Ok(format!("{txid:#x}"))
+        })
+    }
+
+    /// The amount and fee [`Self::arkade_offboard`] would use, without
+    /// sending. It waits for a wallet spend in progress on this client,
+    /// so it prices what is left afterwards. It fails as
+    /// `arkade_offboard` does, except that nothing is ever sent: call it
+    /// again freely after a `Transport` error or a `Timeout` after 300
+    /// seconds, which start once that spend has finished.
+    pub fn arkade_offboard_quote(
+        &self,
+        address: String,
+        amount_sats: Option<u64>,
+    ) -> Result<OffboardQuote, SdkError> {
+        runtime().block_on(async {
+            let quote = self
+                .inner
+                .arkade_offboard_quote(&address, amount_sats)
+                .await?;
+            Ok(quote.into())
         })
     }
 }
@@ -2449,6 +2603,49 @@ mod tests {
                 spent_sats: 3,
                 spent_by: vec![format!("0x{TXID_A}"), format!("0x{TXID_B}")],
             }
+        );
+    }
+
+    #[test]
+    fn offboard_quote_keeps_amount_and_fee() {
+        let quote = OffboardQuote::from(SdkOffboardQuote {
+            amount_sats: 1,
+            fee_sats: 2,
+        });
+        assert_eq!(
+            quote,
+            OffboardQuote {
+                amount_sats: 1,
+                fee_sats: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn arkade_offboard_refuses_a_client_without_arkade_config() {
+        // Refused before any server is dialled.
+        let client = SatoraClient::new_signing(UNREACHABLE.into(), MNEMONIC.into(), None).unwrap();
+        let no_wallet = |message: &str| message.contains("arkade_config");
+        let send = client.arkade_offboard(REGTEST_ADDRESS.into(), None);
+        assert!(
+            matches!(&send, Err(SdkError::InvalidSwap { message }) if no_wallet(message)),
+            "{send:?}"
+        );
+        let quote = client.arkade_offboard_quote(REGTEST_ADDRESS.into(), Some(10_000));
+        assert!(
+            matches!(&quote, Err(SdkError::InvalidSwap { message }) if no_wallet(message)),
+            "{quote:?}"
+        );
+    }
+
+    #[test]
+    fn fund_arkade_swap_refuses_a_swap_this_client_does_not_know() {
+        // Refused from storage before any server is dialled.
+        let client = SatoraClient::new_signing(UNREACHABLE.into(), MNEMONIC.into(), None).unwrap();
+        let result = client.fund_arkade_swap("missing".into());
+        assert!(
+            matches!(&result, Err(SdkError::Storage { message }) if message.contains("swap key index not found")),
+            "{result:?}"
         );
     }
 

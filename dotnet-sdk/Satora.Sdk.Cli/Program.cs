@@ -509,8 +509,8 @@ internal static class BalanceCommand
         var balance = await client.GetArkadeBalanceAsync().ConfigureAwait(false);
         var total = balance.@confirmedSats + balance.@preConfirmedSats + balance.@recoverableSats;
 
-        // confirmed is the only "spendable right now" bucket; the others
-        // are surfaced so the total isn't mistaken for available funds.
+        // Offchain sends spend confirmed and pre-confirmed; recoverable
+        // waits for a batch, so the total isn't what a send can spend.
         Console.WriteLine($"  confirmed_sats     : {balance.@confirmedSats}");
         Console.WriteLine($"  pre_confirmed_sats : {balance.@preConfirmedSats}");
         Console.WriteLine($"  recoverable_sats   : {balance.@recoverableSats}");
