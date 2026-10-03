@@ -60,6 +60,32 @@ No Arkade infrastructure runs on testnet, so `Testnet` throws an
 `ArgumentException` unless all three URLs are passed. Mutinynet is a
 signet: use `Signet` for it.
 
+### Persistent storage
+
+Without `dataDirectory`, swaps live in memory and a client built after a
+restart cannot fund or claim them. Pass a directory per wallet and
+network to keep them (neither file in it is partitioned by network):
+
+```csharp
+using var client = new Client(mnemonic, dataDirectory: "/var/lib/myapp/satora");
+```
+
+The directory is created if missing. Swaps go in `swaps.sqlite`, and the
+Arkade contract store in `contracts-<wallet id>.sqlite`, with the id
+derived from the seed so a different seed restored into the same
+directory never shares it. An explicit `contractDbPath` overrides the
+latter. Naming the same file as `swaps.sqlite` there throws
+`SdkException` with `Kind` `Storage`; the paths are compared after
+resolving symlinks, `.` and `..`, and on macOS and Windows letter case. The
+mnemonic itself is never written.
+
+Each kind of execution through one `Client`, such as wallet spends or swap
+claims, runs one at a time, and different kinds can overlap. Separate
+instances are not coordinated, even over the same directory: keep one
+`Client` per wallet per process. Calls still running on a disposed
+`Client` keep going until they return or time out, so build its
+replacement over the same directory only after that.
+
 ## Supported swap pairs
 
 The SDK currently exposes **EVM-stablecoin → BTC on Arkade** through
@@ -170,8 +196,40 @@ specific reason.
 ## Errors
 
 All FFI failures surface as `SdkException` (subclass of `Exception`) so
-standard `try`/`catch` works. The inner `Kind` enum carries a tagged
-variant identifying the underlying Rust error.
+standard `try`/`catch` works. `Kind` names the underlying Rust error and
+`Message` carries its text: for `Api`, the server's message, with the
+HTTP status in `StatusCode`. A failure inside the bindings, a Rust panic
+included, and a Rust SDK error this version does not name yet have
+`Kind` `Internal` and keep the original as `InnerException`.
+
+`Kind` is not a retry signal. After a `Transport` or `Timeout` error from
+`SendArkadeAsync`, `FundSwapAsync` or `SettleArkadeAsync`, or any
+`Storage` error from `FundSwapAsync`, the outcome is unknown: check the
+swap status or the balance before trying again (a `FundSwapAsync` retry
+is refused while its stored operation is unresolved, so checking first is
+safe). After one from `ClaimAsync`, or a `Storage` error from it once
+arkd may hold the claim, call it again, which resumes from its journal.
+
+The Arkade wallet's own spends (`SendArkadeAsync` and `SettleArkadeAsync`)
+take one lock per `Client`, which claims and refunds never wait for. Each
+holds it for at most 120 seconds (`SendArkadeAsync`) or 300 seconds
+(`SettleArkadeAsync`) and then fails with `Timeout`.
+
+## Cancellation
+
+Every async method runs its native call on the thread pool. Its
+`CancellationToken` only stops a call that has not started; a running
+native call is not interrupted and runs until it completes or hits its
+own timeout.
+
+## Logging
+
+Set `RUST_LOG` (for example `RUST_LOG=info` or
+`RUST_LOG=lendaswap_sdk=debug`) in the environment the process is
+launched with to write the Rust core's logs to stderr. Logging is off
+when it is unset. `Environment.SetEnvironmentVariable` does not reach
+the native library on Linux and macOS, so setting it from C# has no
+effect there.
 
 ## Links
 

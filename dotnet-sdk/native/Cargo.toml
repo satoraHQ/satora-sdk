@@ -32,6 +32,9 @@ thiserror = "1"
 # worker. block_on() inside extern fns drives async lendaswap-sdk methods
 # from synchronous C# callers.
 tokio = { version = "1", features = ["rt-multi-thread"] }
+# Stderr output for the SDK's `tracing` events, installed only when RUST_LOG
+# is set. Version tracks satora-rust-sdk's dev-dependency.
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # uniffi 0.29.x pairs with uniffi-bindgen-cs v0.10.x (last verified against
 # NordSecurity/uniffi-bindgen-cs releases). Pin tightly while both are
 # pre-1.0 to avoid macro/scaffolding drift between the Rust side and the
@@ -42,6 +45,10 @@ uniffi = { version = "0.29", features = ["tokio"] }
 # into the SDK's `serde_json::Value` field. Both versions track what
 # `satora-rust-sdk` itself uses to keep the resolver coherent.
 url = "2"
+
+[dev-dependencies]
+tempfile = "3"
+tracing = "0.1"
 
 [build-dependencies]
 uniffi = { version = "0.29", features = ["build"] }

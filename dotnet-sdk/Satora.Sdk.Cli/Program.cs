@@ -82,11 +82,10 @@ internal static class Cli
         }
         catch (SdkException ex)
         {
-            // The Rust side already serialises a human-readable message
-            // (incl. wrapped backend HTTP errors). Don't dump the
-            // stack trace on expected outcomes like 400s — just show
-            // the message.
-            Console.Error.WriteLine($"error: {ex.Message}");
+            // Don't dump the stack trace on expected outcomes like 400s;
+            // just show the message.
+            var status = ex.StatusCode is { } code ? $"HTTP {code}: " : "";
+            Console.Error.WriteLine($"error ({ex.Kind}): {status}{ex.Message}");
             return 1;
         }
         catch (ArgumentException ex)

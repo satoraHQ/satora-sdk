@@ -16,8 +16,11 @@
 //! When uniffi's async C# story matures we can flip individual exports
 //! to `async fn` without touching call sites that take `Result<T, E>`.
 
+use bitcoin::hashes::Hash;
+use bitcoin::hashes::sha256;
 use lendaswap_sdk::Client;
 use lendaswap_sdk::Error as SdkErrorInner;
+use lendaswap_sdk::Signer;
 use lendaswap_sdk::Swap as SdkSwap;
 use lendaswap_sdk::SwapFunding as SdkSwapFunding;
 use lendaswap_sdk::aa::GasOverrides as SdkGasOverrides;
@@ -31,7 +34,9 @@ use lendaswap_sdk::types::QuoteAmount as SdkQuoteAmount;
 use lendaswap_sdk::types::QuoteRequest;
 use lendaswap_sdk::types::SwapStatus as SdkSwapStatus;
 use lendaswap_sdk::types::TokenId as SdkTokenId;
+use std::io::IsTerminal;
 use std::sync::OnceLock;
+use tracing_subscriber::EnvFilter;
 
 uniffi::setup_scaffolding!();
 
@@ -40,12 +45,30 @@ uniffi::setup_scaffolding!();
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| {
+        install_stderr_logging(std::env::var("RUST_LOG").ok());
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .thread_name("satora-sdk-ffi")
             .build()
             .expect("failed to build tokio runtime for satora-sdk-ffi")
     })
+}
+
+/// Writes the SDK's `tracing` events to stderr, filtered by `filter` (RUST_LOG
+/// syntax). Off when `filter` is `None`, and left alone when the host process
+/// already installed a global subscriber. Returns whether it installed one.
+/// Public only for the test that owns its process's global subscriber.
+#[doc(hidden)]
+pub fn install_stderr_logging(filter: Option<String>) -> bool {
+    let Some(filter) = filter else {
+        return false;
+    };
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::new(filter))
+        .with_writer(std::io::stderr)
+        .with_ansi(std::io::stderr().is_terminal())
+        .try_init()
+        .is_ok()
 }
 
 /// Version reported by the backend (`GET /version`). Mirrors
@@ -58,25 +81,88 @@ pub struct Version {
     pub commit_hash: String,
 }
 
-/// FFI-visible error variants. Flattens the Rust `Error` enum to one
-/// `Internal { message }` variant for now — the goal is to keep the C#
-/// surface tiny while we settle on which errors callers actually need
-/// to discriminate. We can split out specific variants
-/// (`InvalidBaseUrl`, `Transport`, `Api { status }`) later without
-/// breaking match exhaustiveness on the C# side, which has to handle
-/// the catch-all anyway.
-#[derive(Debug, thiserror::Error, uniffi::Error)]
+/// FFI-visible errors: one variant per [`lendaswap_sdk::Error`] variant, plus
+/// `Internal` for failures on this side of the boundary and for SDK variants
+/// not mirrored here yet. Each carries the SDK variant's own payload: `Api`
+/// the HTTP status and the server's message, the others their message text.
+/// `Cancelled`, which has no payload, and `Internal` carry a description.
+#[derive(Debug, PartialEq, Eq, thiserror::Error, uniffi::Error)]
 pub enum SdkError {
-    #[error("SDK error: {message}")]
+    #[error("{message}")]
+    Cancelled { message: String },
+    #[error("{message}")]
+    InvalidBaseUrl { message: String },
+    #[error("{message}")]
+    Transport { message: String },
+    #[error("{message}")]
+    Decode { message: String },
+    #[error("{message}")]
+    Api { status: u16, message: String },
+    #[error("{message}")]
+    InvalidSigner { message: String },
+    #[error("{message}")]
+    InvalidSwap { message: String },
+    #[error("{message}")]
+    UnsupportedQuotePath { message: String },
+    #[error("{message}")]
+    Timeout { message: String },
+    #[error("{message}")]
+    Storage { message: String },
+    #[error("{message}")]
+    UnresolvedFunding { message: String },
+    #[error("{message}")]
     Internal { message: String },
 }
 
 impl From<SdkErrorInner> for SdkError {
     fn from(e: SdkErrorInner) -> Self {
-        Self::Internal {
-            message: e.to_string(),
+        match e {
+            SdkErrorInner::Cancelled => Self::Cancelled {
+                message: e.to_string(),
+            },
+            SdkErrorInner::InvalidBaseUrl(message) => Self::InvalidBaseUrl { message },
+            SdkErrorInner::Transport(message) => Self::Transport { message },
+            SdkErrorInner::Decode(message) => Self::Decode { message },
+            SdkErrorInner::Api { status, message } => Self::Api { status, message },
+            SdkErrorInner::InvalidSigner(message) => Self::InvalidSigner { message },
+            SdkErrorInner::InvalidSwap(message) => Self::InvalidSwap { message },
+            SdkErrorInner::UnsupportedQuotePath(message) => Self::UnsupportedQuotePath { message },
+            SdkErrorInner::Timeout(message) => Self::Timeout { message },
+            SdkErrorInner::Storage(message) => Self::Storage { message },
+            SdkErrorInner::UnresolvedFunding(message) => Self::UnresolvedFunding { message },
+            // `Error` is `#[non_exhaustive]` upstream: a new variant arrives
+            // as `Internal` until it is mirrored here.
+            _ => Self::Internal {
+                message: e.to_string(),
+            },
         }
     }
+}
+
+/// An FFI argument that does not parse, reported like the SDK's own argument
+/// errors.
+fn invalid_argument(message: String) -> SdkError {
+    SdkErrorInner::InvalidSwap(message).into()
+}
+
+/// Whether `path` names the file at `existing`, which must exist. A path that
+/// does not resolve cannot name an existing file.
+fn names_existing_file(path: &std::path::Path, existing: &std::path::Path) -> bool {
+    std::fs::canonicalize(existing)
+        .is_ok_and(|existing| std::fs::canonicalize(path).is_ok_and(|path| path == existing))
+}
+
+/// Name component for this wallet's Arkade contract store, so wallets sharing a
+/// data directory never share a store: ark-rs keys contracts by script alone,
+/// and a store holding another wallet's contracts feeds that wallet's coins
+/// into balance and coin selection. It is the first 16 hex characters of the
+/// SHA-256 of the user-id xpub that swap storage is partitioned by, which keeps
+/// the xpub itself out of file names.
+#[uniffi::export]
+pub fn contract_store_id(mnemonic: String) -> Result<String, SdkError> {
+    let xpub = Signer::from_mnemonic(mnemonic)?.derive_user_id_xpub()?;
+    let digest = sha256::Hash::hash(xpub.to_string().as_bytes()).to_string();
+    Ok(digest[..16].to_owned())
 }
 
 /// Stateful FFI client — wraps one `lendaswap_sdk::Client` for its
@@ -87,8 +173,8 @@ impl From<SdkErrorInner> for SdkError {
 /// Constructed via [`Self::new`] (read-only, supports version + quote
 /// only) or [`Self::new_signing`] (full surface — required for
 /// `create_swap`, funding, and claim). Both forms use the default
-/// in-memory swap storage; the FFI doesn't expose a way to plug in a
-/// custom backend yet.
+/// in-memory swap storage; [`Self::new_with_arkade`] can persist it to
+/// SQLite instead.
 #[derive(uniffi::Object)]
 pub struct SatoraClient {
     inner: Client,
@@ -143,13 +229,28 @@ impl SatoraClient {
     ///
     /// `referral_code` (optional) is attached to every swap/quote
     /// originated through this client.
+    ///
+    /// `storage_path` (optional) keeps swap records in that SQLite file,
+    /// partitioned by wallet, so a later client over the same file can
+    /// still fund and claim them; its directory must exist. `None` keeps
+    /// them in memory for this client's lifetime. A
+    /// `arkade_config.contract_db_path` naming the same file is refused
+    /// with `SdkError::Storage`: both paths are compared after resolving
+    /// symlinks, `.` and `..`, and on macOS and Windows letter case.
+    ///
+    /// Each kind of execution through one client, such as wallet spends or
+    /// swap claims, runs one at a time, and different kinds can overlap.
+    /// Separate clients are not coordinated, even over the same
+    /// `storage_path`: keep one client per wallet per process.
     #[uniffi::constructor]
     pub fn new_with_arkade(
         base_url: String,
         mnemonic: String,
         arkade_config: ArkadeConfig,
         referral_code: Option<String>,
+        storage_path: Option<String>,
     ) -> Result<std::sync::Arc<Self>, SdkError> {
+        let contract_db_path = arkade_config.contract_db_path.clone();
         let mut builder = Client::builder()
             .base_url(&base_url)
             .mnemonic(&mnemonic)
@@ -157,7 +258,21 @@ impl SatoraClient {
         if let Some(code) = referral_code {
             builder = builder.referral_code(code);
         }
+        if let Some(path) = &storage_path {
+            builder = builder.storage_path(path);
+        }
         let inner = builder.build()?;
+        // Checked once `build` has created the swap store: canonicalizing
+        // an existing file is what resolves letter case on macOS and
+        // Windows, which a check before the file exists would miss.
+        if let (Some(swaps), Some(contracts)) = (storage_path, contract_db_path)
+            && names_existing_file(contracts.as_ref(), swaps.as_ref())
+        {
+            return Err(SdkErrorInner::Storage(
+                "arkade_config.contract_db_path must not be the storage_path database".into(),
+            )
+            .into());
+        }
         Ok(std::sync::Arc::new(Self { inner }))
     }
 
@@ -530,8 +645,8 @@ impl SatoraClient {
     /// State note: `create_swap` writes the per-swap `key_index` into
     /// the inner client's storage. Subsequent [`Self::fund_swap_gasless`]
     /// / [`Self::claim`] calls on THIS instance recover it. A new
-    /// `SatoraClient` instance won't see it — the FFI doesn't
-    /// expose a persistent storage backend yet.
+    /// `SatoraClient` instance sees it only when both were built with
+    /// the same `storage_path`.
     #[allow(
         clippy::too_many_arguments,
         reason = "FFI surface — mirrors the inner SDK signature so uniffi-bindgen-cs maps each arg 1:1 to a C# parameter"
@@ -570,9 +685,9 @@ impl SatoraClient {
             ChainId::Lightning => SdkKnownChain::Lightning,
             ChainId::Bitcoin => SdkKnownChain::Bitcoin,
             ChainId::Other { ref wire } => {
-                return Err(SdkError::Internal {
-                    message: format!("unsupported source_chain Other({wire})"),
-                });
+                return Err(invalid_argument(format!(
+                    "unsupported source_chain Other({wire})"
+                )));
             }
         };
         runtime().block_on(async {
@@ -780,7 +895,7 @@ pub struct FundSwapReceipt {
 }
 
 /// Translate the FFI's URL-string opts into the SDK's typed shape.
-/// Returns `SdkError::Internal` for malformed URL / paymaster JSON.
+/// Returns `SdkError::InvalidSwap` for malformed URL / paymaster JSON.
 /// A `None` node_rpc_url passes through — the SDK fund function
 /// resolves the per-chain default at fund time.
 fn gasless_opts_into_sdk(o: GaslessOpts) -> Result<SdkGaslessOpts, SdkError> {
@@ -790,16 +905,14 @@ fn gasless_opts_into_sdk(o: GaslessOpts) -> Result<SdkGaslessOpts, SdkError> {
         .as_deref()
         .map(Url::parse)
         .transpose()
-        .map_err(|e| SdkError::Internal {
-            message: format!("GaslessOpts.node_rpc_url parse: {e}"),
-        })?;
+        .map_err(|e| invalid_argument(format!("GaslessOpts.node_rpc_url parse: {e}")))?;
     let paymaster_context = o
         .paymaster_context_json
         .as_deref()
         .map(serde_json::from_str)
         .transpose()
-        .map_err(|e: serde_json::Error| SdkError::Internal {
-            message: format!("GaslessOpts.paymaster_context_json parse: {e}"),
+        .map_err(|e: serde_json::Error| {
+            invalid_argument(format!("GaslessOpts.paymaster_context_json parse: {e}"))
         })?;
     let mut sdk_opts = SdkGaslessOpts {
         node_rpc_url,
@@ -824,8 +937,8 @@ impl SatoraClient {
     /// For an unsponsored userOp (no paymaster), ~0.001 ETH (= 1e15
     /// wei) is enough headroom on Arbitrum. With a paymaster, pass 0.
     ///
-    /// Returns an `Internal` error wrapping the SDK's `Error::Timeout`
-    /// if `timeout_seconds` elapses before both thresholds are met.
+    /// Returns `SdkError::Timeout` if `timeout_seconds` elapses before
+    /// both thresholds are met.
     pub fn wait_for_deposit_funding(
         &self,
         swap_id: String,
@@ -834,9 +947,8 @@ impl SatoraClient {
         timeout_seconds: u64,
     ) -> Result<(), SdkError> {
         use url::Url;
-        let node_rpc_url = Url::parse(&node_rpc_url).map_err(|e| SdkError::Internal {
-            message: format!("node_rpc_url parse: {e}"),
-        })?;
+        let node_rpc_url = Url::parse(&node_rpc_url)
+            .map_err(|e| invalid_argument(format!("node_rpc_url parse: {e}")))?;
         runtime().block_on(async {
             self.inner
                 .wait_for_deposit_funding(
@@ -866,9 +978,7 @@ impl SatoraClient {
             .as_deref()
             .map(Url::parse)
             .transpose()
-            .map_err(|e| SdkError::Internal {
-                message: format!("node_rpc_url parse: {e}"),
-            })?;
+            .map_err(|e| invalid_argument(format!("node_rpc_url parse: {e}")))?;
         runtime().block_on(async {
             let status = self
                 .inner
@@ -933,9 +1043,8 @@ impl SatoraClient {
     }
 
     /// Poll `GET /swap/{id}` until the status matches one of `targets`
-    /// or `timeout_seconds` elapses (returns `SdkError::Internal` with
-    /// the SDK's `Error::Timeout` message in that case). 3s poll
-    /// interval, fixed inside the SDK.
+    /// or `timeout_seconds` elapses (returns `SdkError::Timeout` in that
+    /// case). 3s poll interval, fixed inside the SDK.
     ///
     /// `timeout_seconds: u64` because uniffi's `Duration` support is
     /// patchy across foreign bindgens; seconds is precise enough for
@@ -1047,6 +1156,10 @@ impl SatoraClient {
     /// `destination`. Requires a signing client; the Arkade identity
     /// mnemonic is provided separately via [`ArkadeConfig`] because
     /// it's distinct from the lendaswap signing mnemonic.
+    ///
+    /// A `Transport` or `Timeout` error leaves the outcome unknown, and so
+    /// does `Storage` once arkd may hold the claim: call this again, which
+    /// resumes from the journal.
     pub fn claim(&self, swap_id: String, destination: String) -> Result<ClaimReceipt, SdkError> {
         runtime().block_on(async {
             let receipt = self.inner.claim(&swap_id, &destination).await?;
@@ -1071,9 +1184,15 @@ impl SatoraClient {
         })
     }
 
-    /// Roll over all spendable VTXOs + boarding outputs into the next
-    /// Arkade batch. `None` => nothing to settle; `Some(txid)` => hex
+    /// Roll the wallet's recoverable VTXOs (expired, swept or below dust)
+    /// and its boarding outputs into the next Arkade batch; healthy VTXOs
+    /// are left alone. `None` => nothing to settle; `Some(txid)` => hex
     /// commitment txid (`0x…`) of the batch that absorbed them.
+    ///
+    /// A `Transport` error, or `Timeout` after 300 seconds, leaves the
+    /// outcome unknown: the batch may still settle. Settling again is
+    /// safe, since it only pays the wallet itself. The 300 seconds start
+    /// once any wallet spend in progress has finished.
     pub fn arkade_settle(&self) -> Result<Option<String>, SdkError> {
         runtime().block_on(async {
             let txid = self.inner.arkade_settle().await?;
@@ -1100,6 +1219,11 @@ impl SatoraClient {
     ///
     /// Primary use case: funding the Arkade VHTLC returned by
     /// [`Self::create_arkade_to_lightning_swap`].
+    ///
+    /// A `Transport` error, or `Timeout` after 120 seconds, leaves the
+    /// outcome unknown: arkd may have accepted the payment, so check the
+    /// destination or the balance before sending again. The 120 seconds
+    /// start once any wallet spend in progress has finished.
     pub fn arkade_send(&self, destination: String, amount_sats: u64) -> Result<String, SdkError> {
         runtime().block_on(async {
             let txid = self.inner.arkade_send(&destination, amount_sats).await?;
@@ -1148,5 +1272,190 @@ fn swap_status_into_sdk(s: SwapStatus) -> SdkSwapStatus {
             SdkSwapStatus::ClientRedeemedAndClientRefunded
         }
         SwapStatus::Other { wire } => SdkSwapStatus::Other(wire),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    const OTHER_MNEMONIC: &str = "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong";
+    const UNREACHABLE: &str = "http://127.0.0.1:1";
+
+    fn client_with_storage(
+        path: &std::path::Path,
+        contract_db_path: Option<&std::path::Path>,
+    ) -> Result<std::sync::Arc<SatoraClient>, SdkError> {
+        let arkade_config = ArkadeConfig {
+            arkade_server_url: UNREACHABLE.into(),
+            esplora_url: UNREACHABLE.into(),
+            identity_mnemonic: MNEMONIC.into(),
+            network: BitcoinNetwork::Regtest,
+            contract_db_path: contract_db_path.map(|p| p.to_string_lossy().into_owned()),
+        };
+        SatoraClient::new_with_arkade(
+            UNREACHABLE.into(),
+            MNEMONIC.into(),
+            arkade_config,
+            None,
+            Some(path.to_string_lossy().into_owned()),
+        )
+    }
+
+    #[test]
+    fn every_sdk_error_keeps_its_variant_and_payload() {
+        let message = || "detail".to_owned();
+        let cases = [
+            (
+                SdkErrorInner::InvalidBaseUrl(message()),
+                SdkError::InvalidBaseUrl { message: message() },
+            ),
+            (
+                SdkErrorInner::Transport(message()),
+                SdkError::Transport { message: message() },
+            ),
+            (
+                SdkErrorInner::Decode(message()),
+                SdkError::Decode { message: message() },
+            ),
+            (
+                SdkErrorInner::Api {
+                    status: 409,
+                    message: message(),
+                },
+                SdkError::Api {
+                    status: 409,
+                    message: message(),
+                },
+            ),
+            (
+                SdkErrorInner::InvalidSigner(message()),
+                SdkError::InvalidSigner { message: message() },
+            ),
+            (
+                SdkErrorInner::InvalidSwap(message()),
+                SdkError::InvalidSwap { message: message() },
+            ),
+            (
+                SdkErrorInner::UnsupportedQuotePath(message()),
+                SdkError::UnsupportedQuotePath { message: message() },
+            ),
+            (
+                SdkErrorInner::Timeout(message()),
+                SdkError::Timeout { message: message() },
+            ),
+            (
+                SdkErrorInner::Storage(message()),
+                SdkError::Storage { message: message() },
+            ),
+            (
+                SdkErrorInner::UnresolvedFunding(message()),
+                SdkError::UnresolvedFunding { message: message() },
+            ),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(SdkError::from(error), expected);
+        }
+        assert!(matches!(
+            SdkError::from(SdkErrorInner::Cancelled),
+            SdkError::Cancelled { message } if !message.is_empty()
+        ));
+    }
+
+    #[test]
+    fn unparseable_ffi_arguments_are_invalid_swap() {
+        let opts = |node_rpc_url: Option<&str>, paymaster_context_json: Option<&str>| GaslessOpts {
+            node_rpc_url: node_rpc_url.map(Into::into),
+            paymaster_context_json: paymaster_context_json.map(Into::into),
+            gas_overrides: None,
+        };
+        assert!(matches!(
+            gasless_opts_into_sdk(opts(Some("not a url"), None)),
+            Err(SdkError::InvalidSwap { .. })
+        ));
+        assert!(matches!(
+            gasless_opts_into_sdk(opts(None, Some("{"))),
+            Err(SdkError::InvalidSwap { .. })
+        ));
+        let client = SatoraClient::new(UNREACHABLE.into(), None).unwrap();
+        assert!(matches!(
+            client.check_deposit_funding("swap".into(), Some("not a url".into())),
+            Err(SdkError::InvalidSwap { .. })
+        ));
+        assert!(matches!(
+            client.create_swap(
+                ChainId::Other { wire: "x".into() },
+                TokenId::Btc,
+                ChainId::Arkade,
+                TokenId::Btc,
+                QuoteAmount::Target { units: 1 },
+                None,
+                false,
+                None,
+            ),
+            Err(SdkError::InvalidSwap { .. })
+        ));
+    }
+
+    #[test]
+    fn storage_path_opens_the_swap_store_at_construction() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("swaps.sqlite");
+        assert!(client_with_storage(&path, None).is_ok());
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn storage_path_in_a_missing_directory_is_a_storage_error() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            client_with_storage(&dir.path().join("missing/swaps.sqlite"), None),
+            Err(SdkError::Storage { .. })
+        ));
+    }
+
+    #[test]
+    fn contract_db_path_naming_the_swap_store_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let swaps = dir.path().join("swaps.sqlite");
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let mut same_file = vec![swaps.clone(), dir.path().join("sub/../swaps.sqlite")];
+        #[cfg(unix)]
+        {
+            let link = dir.path().join("link");
+            std::os::unix::fs::symlink(dir.path(), &link).unwrap();
+            same_file.push(link.join("swaps.sqlite"));
+        }
+        assert!(client_with_storage(&swaps, Some(&dir.path().join("contracts.sqlite"))).is_ok());
+        // Only once the store exists can the file system say whether it
+        // ignores letter case.
+        let upper = dir.path().join("SWAPS.SQLITE");
+        if upper.exists() {
+            same_file.push(upper);
+        }
+        for contracts in same_file {
+            assert!(
+                matches!(
+                    client_with_storage(&swaps, Some(&contracts)),
+                    Err(SdkError::Storage { .. })
+                ),
+                "{}",
+                contracts.display()
+            );
+        }
+    }
+
+    #[test]
+    fn contract_store_id_is_stable_and_differs_per_wallet() {
+        let id = contract_store_id(MNEMONIC.into()).unwrap();
+        // Pinned: a different derivation would rename existing contract
+        // stores and strand the contracts recorded in them.
+        assert_eq!(id, "fced0fde0196982a");
+        assert_ne!(contract_store_id(OTHER_MNEMONIC.into()).unwrap(), id);
+        assert!(matches!(
+            contract_store_id("not a mnemonic".into()),
+            Err(SdkError::InvalidSigner { .. })
+        ));
     }
 }

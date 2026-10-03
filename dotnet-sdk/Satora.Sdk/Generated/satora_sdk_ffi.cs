@@ -783,6 +783,8 @@ static class _UniFFILib {
     
     
     
+    
+    
 
     static _UniFFILib() {
         _UniFFILib.uniffiCheckContractApiVersion();
@@ -807,7 +809,7 @@ static class _UniFFILib {
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
-    public static extern IntPtr uniffi_satora_sdk_ffi_fn_constructor_satoraclient_new_with_arkade(RustBuffer @baseUrl,RustBuffer @mnemonic,RustBuffer @arkadeConfig,RustBuffer @referralCode,ref UniffiRustCallStatus _uniffi_out_err
+    public static extern IntPtr uniffi_satora_sdk_ffi_fn_constructor_satoraclient_new_with_arkade(RustBuffer @baseUrl,RustBuffer @mnemonic,RustBuffer @arkadeConfig,RustBuffer @referralCode,RustBuffer @storagePath,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -872,6 +874,10 @@ static class _UniFFILib {
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_wait_for_swap_status(IntPtr @ptr,RustBuffer @swapId,RustBuffer @targets,ulong @timeoutSeconds,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_func_contract_store_id(RustBuffer @mnemonic,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -1099,6 +1105,10 @@ static class _UniFFILib {
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_func_contract_store_id(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_balance(
     );
 
@@ -1189,6 +1199,12 @@ static class _UniFFILib {
 
     static void uniffiCheckApiChecksums() {
         {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_func_contract_store_id();
+            if (checksum != 59835) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_func_contract_store_id` checksum `59835`, library returned `{checksum}`");
+            }
+        }
+        {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_balance();
             if (checksum != 49598) {
                 throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_balance` checksum `49598`, library returned `{checksum}`");
@@ -1208,14 +1224,14 @@ static class _UniFFILib {
         }
         {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_send();
-            if (checksum != 50820) {
-                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_send` checksum `50820`, library returned `{checksum}`");
+            if (checksum != 8055) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_send` checksum `8055`, library returned `{checksum}`");
             }
         }
         {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_settle();
-            if (checksum != 11110) {
-                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_settle` checksum `11110`, library returned `{checksum}`");
+            if (checksum != 53054) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_settle` checksum `53054`, library returned `{checksum}`");
             }
         }
         {
@@ -1226,8 +1242,8 @@ static class _UniFFILib {
         }
         {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_claim();
-            if (checksum != 56598) {
-                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_claim` checksum `56598`, library returned `{checksum}`");
+            if (checksum != 58501) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_claim` checksum `58501`, library returned `{checksum}`");
             }
         }
         {
@@ -1244,8 +1260,8 @@ static class _UniFFILib {
         }
         {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_swap();
-            if (checksum != 44192) {
-                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_swap` checksum `44192`, library returned `{checksum}`");
+            if (checksum != 42334) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_swap` checksum `42334`, library returned `{checksum}`");
             }
         }
         {
@@ -1274,14 +1290,14 @@ static class _UniFFILib {
         }
         {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_wait_for_deposit_funding();
-            if (checksum != 64852) {
-                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_wait_for_deposit_funding` checksum `64852`, library returned `{checksum}`");
+            if (checksum != 7255) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_wait_for_deposit_funding` checksum `7255`, library returned `{checksum}`");
             }
         }
         {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_wait_for_swap_status();
-            if (checksum != 55186) {
-                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_wait_for_swap_status` checksum `55186`, library returned `{checksum}`");
+            if (checksum != 58386) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_wait_for_swap_status` checksum `58386`, library returned `{checksum}`");
             }
         }
         {
@@ -1298,8 +1314,8 @@ static class _UniFFILib {
         }
         {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_constructor_satoraclient_new_with_arkade();
-            if (checksum != 29393) {
-                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_constructor_satoraclient_new_with_arkade` checksum `29393`, library returned `{checksum}`");
+            if (checksum != 28839) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_constructor_satoraclient_new_with_arkade` checksum `28839`, library returned `{checksum}`");
             }
         }
     }
@@ -1472,8 +1488,8 @@ class FfiConverterString: FfiConverter<string, RustBuffer> {
 /// Constructed via [`Self::new`] (read-only, supports version + quote
 /// only) or [`Self::new_signing`] (full surface — required for
 /// `create_swap`, funding, and claim). Both forms use the default
-/// in-memory swap storage; the FFI doesn't expose a way to plug in a
-/// custom backend yet.
+/// in-memory swap storage; [`Self::new_with_arkade`] can persist it to
+/// SQLite instead.
 /// </summary>
 public interface ISatoraClient {
     /// <summary>
@@ -1507,13 +1523,24 @@ public interface ISatoraClient {
     ///
     /// Primary use case: funding the Arkade VHTLC returned by
     /// [`Self::create_arkade_to_lightning_swap`].
+    ///
+    /// A `Transport` error, or `Timeout` after 120 seconds, leaves the
+    /// outcome unknown: arkd may have accepted the payment, so check the
+    /// destination or the balance before sending again. The 120 seconds
+    /// start once any wallet spend in progress has finished.
     /// </summary>
     /// <exception cref="SdkException"></exception>
     string ArkadeSend(string @destination, ulong @amountSats);
     /// <summary>
-    /// Roll over all spendable VTXOs + boarding outputs into the next
-    /// Arkade batch. `None` => nothing to settle; `Some(txid)` => hex
+    /// Roll the wallet's recoverable VTXOs (expired, swept or below dust)
+    /// and its boarding outputs into the next Arkade batch; healthy VTXOs
+    /// are left alone. `None` => nothing to settle; `Some(txid)` => hex
     /// commitment txid (`0x…`) of the batch that absorbed them.
+    ///
+    /// A `Transport` error, or `Timeout` after 300 seconds, leaves the
+    /// outcome unknown: the batch may still settle. Settling again is
+    /// safe, since it only pays the wallet itself. The 300 seconds start
+    /// once any wallet spend in progress has finished.
     /// </summary>
     /// <exception cref="SdkException"></exception>
     string? ArkadeSettle();
@@ -1533,6 +1560,10 @@ public interface ISatoraClient {
     /// `destination`. Requires a signing client; the Arkade identity
     /// mnemonic is provided separately via [`ArkadeConfig`] because
     /// it's distinct from the lendaswap signing mnemonic.
+    ///
+    /// A `Transport` or `Timeout` error leaves the outcome unknown, and so
+    /// does `Storage` once arkd may hold the claim: call this again, which
+    /// resumes from the journal.
     /// </summary>
     /// <exception cref="SdkException"></exception>
     ClaimReceipt Claim(string @swapId, string @destination);
@@ -1583,8 +1614,8 @@ public interface ISatoraClient {
     /// State note: `create_swap` writes the per-swap `key_index` into
     /// the inner client's storage. Subsequent [`Self::fund_swap_gasless`]
     /// / [`Self::claim`] calls on THIS instance recover it. A new
-    /// `SatoraClient` instance won't see it — the FFI doesn't
-    /// expose a persistent storage backend yet.
+    /// `SatoraClient` instance sees it only when both were built with
+    /// the same `storage_path`.
     /// </summary>
     /// <exception cref="SdkException"></exception>
     Swap CreateSwap(ChainId @sourceChain, TokenId @sourceToken, ChainId @targetChain, TokenId @targetToken, QuoteAmount @amount, Address? @receiveTo, bool @gasless, ushort? @extraFeesBps);
@@ -1630,16 +1661,15 @@ public interface ISatoraClient {
     /// For an unsponsored userOp (no paymaster), ~0.001 ETH (= 1e15
     /// wei) is enough headroom on Arbitrum. With a paymaster, pass 0.
     ///
-    /// Returns an `Internal` error wrapping the SDK's `Error::Timeout`
-    /// if `timeout_seconds` elapses before both thresholds are met.
+    /// Returns `SdkError::Timeout` if `timeout_seconds` elapses before
+    /// both thresholds are met.
     /// </summary>
     /// <exception cref="SdkException"></exception>
     void WaitForDepositFunding(string @swapId, string @nodeRpcUrl, ulong @minEthWei, ulong @timeoutSeconds);
     /// <summary>
     /// Poll `GET /swap/{id}` until the status matches one of `targets`
-    /// or `timeout_seconds` elapses (returns `SdkError::Internal` with
-    /// the SDK's `Error::Timeout` message in that case). 3s poll
-    /// interval, fixed inside the SDK.
+    /// or `timeout_seconds` elapses (returns `SdkError::Timeout` in that
+    /// case). 3s poll interval, fixed inside the SDK.
     ///
     /// `timeout_seconds: u64` because uniffi's `Duration` support is
     /// patchy across foreign bindgens; seconds is precise enough for
@@ -1657,8 +1687,8 @@ public interface ISatoraClient {
 /// Constructed via [`Self::new`] (read-only, supports version + quote
 /// only) or [`Self::new_signing`] (full surface — required for
 /// `create_swap`, funding, and claim). Both forms use the default
-/// in-memory swap storage; the FFI doesn't expose a way to plug in a
-/// custom backend yet.
+/// in-memory swap storage; [`Self::new_with_arkade`] can persist it to
+/// SQLite instead.
 /// </summary>
 public class SatoraClient : ISatoraClient, IDisposable {
     protected IntPtr pointer;
@@ -1816,6 +1846,11 @@ public class SatoraClient : ISatoraClient, IDisposable {
     ///
     /// Primary use case: funding the Arkade VHTLC returned by
     /// [`Self::create_arkade_to_lightning_swap`].
+    ///
+    /// A `Transport` error, or `Timeout` after 120 seconds, leaves the
+    /// outcome unknown: arkd may have accepted the payment, so check the
+    /// destination or the balance before sending again. The 120 seconds
+    /// start once any wallet spend in progress has finished.
     /// </summary>
     /// <exception cref="SdkException"></exception>
     public string ArkadeSend(string @destination, ulong @amountSats) {
@@ -1827,9 +1862,15 @@ public class SatoraClient : ISatoraClient, IDisposable {
     
     
     /// <summary>
-    /// Roll over all spendable VTXOs + boarding outputs into the next
-    /// Arkade batch. `None` => nothing to settle; `Some(txid)` => hex
+    /// Roll the wallet's recoverable VTXOs (expired, swept or below dust)
+    /// and its boarding outputs into the next Arkade batch; healthy VTXOs
+    /// are left alone. `None` => nothing to settle; `Some(txid)` => hex
     /// commitment txid (`0x…`) of the batch that absorbed them.
+    ///
+    /// A `Transport` error, or `Timeout` after 300 seconds, leaves the
+    /// outcome unknown: the batch may still settle. Settling again is
+    /// safe, since it only pays the wallet itself. The 300 seconds start
+    /// once any wallet spend in progress has finished.
     /// </summary>
     /// <exception cref="SdkException"></exception>
     public string? ArkadeSettle() {
@@ -1863,6 +1904,10 @@ public class SatoraClient : ISatoraClient, IDisposable {
     /// `destination`. Requires a signing client; the Arkade identity
     /// mnemonic is provided separately via [`ArkadeConfig`] because
     /// it's distinct from the lendaswap signing mnemonic.
+    ///
+    /// A `Transport` or `Timeout` error leaves the outcome unknown, and so
+    /// does `Storage` once arkd may hold the claim: call this again, which
+    /// resumes from the journal.
     /// </summary>
     /// <exception cref="SdkException"></exception>
     public ClaimReceipt Claim(string @swapId, string @destination) {
@@ -1934,8 +1979,8 @@ public class SatoraClient : ISatoraClient, IDisposable {
     /// State note: `create_swap` writes the per-swap `key_index` into
     /// the inner client's storage. Subsequent [`Self::fund_swap_gasless`]
     /// / [`Self::claim`] calls on THIS instance recover it. A new
-    /// `SatoraClient` instance won't see it — the FFI doesn't
-    /// expose a persistent storage backend yet.
+    /// `SatoraClient` instance sees it only when both were built with
+    /// the same `storage_path`.
     /// </summary>
     /// <exception cref="SdkException"></exception>
     public Swap CreateSwap(ChainId @sourceChain, TokenId @sourceToken, ChainId @targetChain, TokenId @targetToken, QuoteAmount @amount, Address? @receiveTo, bool @gasless, ushort? @extraFeesBps) {
@@ -2016,8 +2061,8 @@ public class SatoraClient : ISatoraClient, IDisposable {
     /// For an unsponsored userOp (no paymaster), ~0.001 ETH (= 1e15
     /// wei) is enough headroom on Arbitrum. With a paymaster, pass 0.
     ///
-    /// Returns an `Internal` error wrapping the SDK's `Error::Timeout`
-    /// if `timeout_seconds` elapses before both thresholds are met.
+    /// Returns `SdkError::Timeout` if `timeout_seconds` elapses before
+    /// both thresholds are met.
     /// </summary>
     /// <exception cref="SdkException"></exception>
     public void WaitForDepositFunding(string @swapId, string @nodeRpcUrl, ulong @minEthWei, ulong @timeoutSeconds) {
@@ -2031,9 +2076,8 @@ public class SatoraClient : ISatoraClient, IDisposable {
     
     /// <summary>
     /// Poll `GET /swap/{id}` until the status matches one of `targets`
-    /// or `timeout_seconds` elapses (returns `SdkError::Internal` with
-    /// the SDK's `Error::Timeout` message in that case). 3s poll
-    /// interval, fixed inside the SDK.
+    /// or `timeout_seconds` elapses (returns `SdkError::Timeout` in that
+    /// case). 3s poll interval, fixed inside the SDK.
     ///
     /// `timeout_seconds: u64` because uniffi's `Duration` support is
     /// patchy across foreign bindgens; seconds is precise enough for
@@ -2076,12 +2120,25 @@ public class SatoraClient : ISatoraClient, IDisposable {
     ///
     /// `referral_code` (optional) is attached to every swap/quote
     /// originated through this client.
+    ///
+    /// `storage_path` (optional) keeps swap records in that SQLite file,
+    /// partitioned by wallet, so a later client over the same file can
+    /// still fund and claim them; its directory must exist. `None` keeps
+    /// them in memory for this client's lifetime. A
+    /// `arkade_config.contract_db_path` naming the same file is refused
+    /// with `SdkError::Storage`: both paths are compared after resolving
+    /// symlinks, `.` and `..`, and on macOS and Windows letter case.
+    ///
+    /// Each kind of execution through one client, such as wallet spends or
+    /// swap claims, runs one at a time, and different kinds can overlap.
+    /// Separate clients are not coordinated, even over the same
+    /// `storage_path`: keep one client per wallet per process.
     /// </summary>
     /// <exception cref="SdkException"></exception>
-    public static SatoraClient NewWithArkade(string @baseUrl, string @mnemonic, ArkadeConfig @arkadeConfig, string? @referralCode) {
+    public static SatoraClient NewWithArkade(string @baseUrl, string @mnemonic, ArkadeConfig @arkadeConfig, string? @referralCode, string? @storagePath) {
         return new SatoraClient(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
-    _UniFFILib.uniffi_satora_sdk_ffi_fn_constructor_satoraclient_new_with_arkade(FfiConverterString.INSTANCE.Lower(@baseUrl), FfiConverterString.INSTANCE.Lower(@mnemonic), FfiConverterTypeArkadeConfig.INSTANCE.Lower(@arkadeConfig), FfiConverterOptionalString.INSTANCE.Lower(@referralCode), ref _status)
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_constructor_satoraclient_new_with_arkade(FfiConverterString.INSTANCE.Lower(@baseUrl), FfiConverterString.INSTANCE.Lower(@mnemonic), FfiConverterTypeArkadeConfig.INSTANCE.Lower(@arkadeConfig), FfiConverterOptionalString.INSTANCE.Lower(@referralCode), FfiConverterOptionalString.INSTANCE.Lower(@storagePath), ref _status)
 ));
     }
     
@@ -3151,19 +3208,176 @@ class FfiConverterTypeQuoteAmount : FfiConverterRustBuffer<QuoteAmount>{
 
 
 /// <summary>
-/// FFI-visible error variants. Flattens the Rust `Error` enum to one
-/// `Internal { message }` variant for now — the goal is to keep the C#
-/// surface tiny while we settle on which errors callers actually need
-/// to discriminate. We can split out specific variants
-/// (`InvalidBaseUrl`, `Transport`, `Api { status }`) later without
-/// breaking match exhaustiveness on the C# side, which has to handle
-/// the catch-all anyway.
+/// FFI-visible errors: one variant per [`lendaswap_sdk::Error`] variant, plus
+/// `Internal` for failures on this side of the boundary and for SDK variants
+/// not mirrored here yet. Each carries the SDK variant's own payload: `Api`
+/// the HTTP status and the server's message, the others their message text.
+/// `Cancelled`, which has no payload, and `Internal` carry a description.
 /// </summary>
 public class SdkException: UniffiException {
     SdkException() : base() {}
     SdkException(String @Message) : base(@Message) {}
 
     // Each variant is a nested class
+    
+    
+    public class Cancelled : SdkException {
+        // Members
+        public string @message;
+
+        // Constructor
+        public Cancelled(
+                string @message) : base(
+                "@message" + "=" + @message) {
+
+            this.@message = @message;
+        }
+    }
+    
+    
+    public class InvalidBaseUrl : SdkException {
+        // Members
+        public string @message;
+
+        // Constructor
+        public InvalidBaseUrl(
+                string @message) : base(
+                "@message" + "=" + @message) {
+
+            this.@message = @message;
+        }
+    }
+    
+    
+    public class Transport : SdkException {
+        // Members
+        public string @message;
+
+        // Constructor
+        public Transport(
+                string @message) : base(
+                "@message" + "=" + @message) {
+
+            this.@message = @message;
+        }
+    }
+    
+    
+    public class Decode : SdkException {
+        // Members
+        public string @message;
+
+        // Constructor
+        public Decode(
+                string @message) : base(
+                "@message" + "=" + @message) {
+
+            this.@message = @message;
+        }
+    }
+    
+    
+    public class Api : SdkException {
+        // Members
+        public ushort @status;
+        public string @message;
+
+        // Constructor
+        public Api(
+                ushort @status, 
+                string @message) : base(
+                "@status" + "=" + @status+ ", " +
+                "@message" + "=" + @message) {
+
+            this.@status = @status;
+
+            this.@message = @message;
+        }
+    }
+    
+    
+    public class InvalidSigner : SdkException {
+        // Members
+        public string @message;
+
+        // Constructor
+        public InvalidSigner(
+                string @message) : base(
+                "@message" + "=" + @message) {
+
+            this.@message = @message;
+        }
+    }
+    
+    
+    public class InvalidSwap : SdkException {
+        // Members
+        public string @message;
+
+        // Constructor
+        public InvalidSwap(
+                string @message) : base(
+                "@message" + "=" + @message) {
+
+            this.@message = @message;
+        }
+    }
+    
+    
+    public class UnsupportedQuotePath : SdkException {
+        // Members
+        public string @message;
+
+        // Constructor
+        public UnsupportedQuotePath(
+                string @message) : base(
+                "@message" + "=" + @message) {
+
+            this.@message = @message;
+        }
+    }
+    
+    
+    public class Timeout : SdkException {
+        // Members
+        public string @message;
+
+        // Constructor
+        public Timeout(
+                string @message) : base(
+                "@message" + "=" + @message) {
+
+            this.@message = @message;
+        }
+    }
+    
+    
+    public class Storage : SdkException {
+        // Members
+        public string @message;
+
+        // Constructor
+        public Storage(
+                string @message) : base(
+                "@message" + "=" + @message) {
+
+            this.@message = @message;
+        }
+    }
+    
+    
+    public class UnresolvedFunding : SdkException {
+        // Members
+        public string @message;
+
+        // Constructor
+        public UnresolvedFunding(
+                string @message) : base(
+                "@message" + "=" + @message) {
+
+            this.@message = @message;
+        }
+    }
     
     
     public class Internal : SdkException {
@@ -3190,6 +3404,40 @@ class FfiConverterTypeSdkError : FfiConverterRustBuffer<SdkException>, CallStatu
         var value = stream.ReadInt();
         switch (value) {
             case 1:
+                return new SdkException.Cancelled(
+                    FfiConverterString.INSTANCE.Read(stream));
+            case 2:
+                return new SdkException.InvalidBaseUrl(
+                    FfiConverterString.INSTANCE.Read(stream));
+            case 3:
+                return new SdkException.Transport(
+                    FfiConverterString.INSTANCE.Read(stream));
+            case 4:
+                return new SdkException.Decode(
+                    FfiConverterString.INSTANCE.Read(stream));
+            case 5:
+                return new SdkException.Api(
+                    FfiConverterUInt16.INSTANCE.Read(stream),
+                    FfiConverterString.INSTANCE.Read(stream));
+            case 6:
+                return new SdkException.InvalidSigner(
+                    FfiConverterString.INSTANCE.Read(stream));
+            case 7:
+                return new SdkException.InvalidSwap(
+                    FfiConverterString.INSTANCE.Read(stream));
+            case 8:
+                return new SdkException.UnsupportedQuotePath(
+                    FfiConverterString.INSTANCE.Read(stream));
+            case 9:
+                return new SdkException.Timeout(
+                    FfiConverterString.INSTANCE.Read(stream));
+            case 10:
+                return new SdkException.Storage(
+                    FfiConverterString.INSTANCE.Read(stream));
+            case 11:
+                return new SdkException.UnresolvedFunding(
+                    FfiConverterString.INSTANCE.Read(stream));
+            case 12:
                 return new SdkException.Internal(
                     FfiConverterString.INSTANCE.Read(stream));
             default:
@@ -3199,6 +3447,51 @@ class FfiConverterTypeSdkError : FfiConverterRustBuffer<SdkException>, CallStatu
 
     public override int AllocationSize(SdkException value) {
         switch (value) {
+
+            case SdkException.Cancelled variant_value:
+                return 4
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@message);
+
+            case SdkException.InvalidBaseUrl variant_value:
+                return 4
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@message);
+
+            case SdkException.Transport variant_value:
+                return 4
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@message);
+
+            case SdkException.Decode variant_value:
+                return 4
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@message);
+
+            case SdkException.Api variant_value:
+                return 4
+                    + FfiConverterUInt16.INSTANCE.AllocationSize(variant_value.@status)
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@message);
+
+            case SdkException.InvalidSigner variant_value:
+                return 4
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@message);
+
+            case SdkException.InvalidSwap variant_value:
+                return 4
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@message);
+
+            case SdkException.UnsupportedQuotePath variant_value:
+                return 4
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@message);
+
+            case SdkException.Timeout variant_value:
+                return 4
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@message);
+
+            case SdkException.Storage variant_value:
+                return 4
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@message);
+
+            case SdkException.UnresolvedFunding variant_value:
+                return 4
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@message);
 
             case SdkException.Internal variant_value:
                 return 4
@@ -3210,8 +3503,53 @@ class FfiConverterTypeSdkError : FfiConverterRustBuffer<SdkException>, CallStatu
 
     public override void Write(SdkException value, BigEndianStream stream) {
         switch (value) {
-            case SdkException.Internal variant_value:
+            case SdkException.Cancelled variant_value:
                 stream.WriteInt(1);
+                FfiConverterString.INSTANCE.Write(variant_value.@message, stream);
+                break;
+            case SdkException.InvalidBaseUrl variant_value:
+                stream.WriteInt(2);
+                FfiConverterString.INSTANCE.Write(variant_value.@message, stream);
+                break;
+            case SdkException.Transport variant_value:
+                stream.WriteInt(3);
+                FfiConverterString.INSTANCE.Write(variant_value.@message, stream);
+                break;
+            case SdkException.Decode variant_value:
+                stream.WriteInt(4);
+                FfiConverterString.INSTANCE.Write(variant_value.@message, stream);
+                break;
+            case SdkException.Api variant_value:
+                stream.WriteInt(5);
+                FfiConverterUInt16.INSTANCE.Write(variant_value.@status, stream);
+                FfiConverterString.INSTANCE.Write(variant_value.@message, stream);
+                break;
+            case SdkException.InvalidSigner variant_value:
+                stream.WriteInt(6);
+                FfiConverterString.INSTANCE.Write(variant_value.@message, stream);
+                break;
+            case SdkException.InvalidSwap variant_value:
+                stream.WriteInt(7);
+                FfiConverterString.INSTANCE.Write(variant_value.@message, stream);
+                break;
+            case SdkException.UnsupportedQuotePath variant_value:
+                stream.WriteInt(8);
+                FfiConverterString.INSTANCE.Write(variant_value.@message, stream);
+                break;
+            case SdkException.Timeout variant_value:
+                stream.WriteInt(9);
+                FfiConverterString.INSTANCE.Write(variant_value.@message, stream);
+                break;
+            case SdkException.Storage variant_value:
+                stream.WriteInt(10);
+                FfiConverterString.INSTANCE.Write(variant_value.@message, stream);
+                break;
+            case SdkException.UnresolvedFunding variant_value:
+                stream.WriteInt(11);
+                FfiConverterString.INSTANCE.Write(variant_value.@message, stream);
+                break;
+            case SdkException.Internal variant_value:
+                stream.WriteInt(12);
                 FfiConverterString.INSTANCE.Write(variant_value.@message, stream);
                 break;
             default:
@@ -3935,5 +4273,22 @@ class FfiConverterSequenceTypeSwapStatus: FfiConverterRustBuffer<SwapStatus[]> {
 }
 #pragma warning restore 8625
 public static class SatoraSdkFfiMethods {
+    /// <summary>
+    /// Name component for this wallet's Arkade contract store, so wallets sharing a
+    /// data directory never share a store: ark-rs keys contracts by script alone,
+    /// and a store holding another wallet's contracts feeds that wallet's coins
+    /// into balance and coin selection. It is the first 16 hex characters of the
+    /// SHA-256 of the user-id xpub that swap storage is partitioned by, which keeps
+    /// the xpub itself out of file names.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public static string ContractStoreId(string @mnemonic) {
+        return FfiConverterString.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_func_contract_store_id(FfiConverterString.INSTANCE.Lower(@mnemonic), ref _status)
+));
+    }
+
+
 }
 

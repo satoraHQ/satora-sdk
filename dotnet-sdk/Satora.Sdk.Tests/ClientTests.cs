@@ -6,6 +6,7 @@
 using Satora.Sdk;
 using Xunit;
 using BitcoinNetwork = uniffi.satora_sdk_ffi.BitcoinNetwork;
+using Ffi = uniffi.satora_sdk_ffi;
 
 namespace Satora.Sdk.Tests;
 
@@ -15,6 +16,8 @@ public class ClientTests
     // for the construction-only tests below.
     private const string TestMnemonic =
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+    private const string OtherMnemonic = "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong";
 
     // Nothing listens on port 1, so calls through it fail fast without
     // leaving the machine.
@@ -103,9 +106,93 @@ public class ClientTests
     {
         // The base URL is parsed eagerly when the client is constructed
         // (Rust `Client::new` → `Url::parse`), so an invalid URL surfaces
-        // here as Error::InvalidBaseUrl, which the FFI maps to
-        // SdkException.Internal and the facade re-wraps as SdkException.
-        // The message format is an implementation detail.
-        Assert.Throws<SdkException>(() => new Client(TestMnemonic, baseUrl: "not a url"));
+        // here as Error::InvalidBaseUrl.
+        var ex = Assert.Throws<SdkException>(() => new Client(TestMnemonic, baseUrl: "not a url"));
+        Assert.Equal(SdkErrorKind.InvalidBaseUrl, ex.Kind);
+        Assert.Null(ex.StatusCode);
+        // The url crate's parse error: the payload, without the Rust SDK's
+        // "invalid base URL" display prefix.
+        Assert.Equal("relative URL without a base", ex.Message);
+    }
+
+    public static TheoryData<Exception, SdkErrorKind> BindingErrors => new()
+    {
+        { new Ffi.SdkException.Cancelled("detail"), SdkErrorKind.Cancelled },
+        { new Ffi.SdkException.InvalidBaseUrl("detail"), SdkErrorKind.InvalidBaseUrl },
+        { new Ffi.SdkException.Transport("detail"), SdkErrorKind.Transport },
+        { new Ffi.SdkException.Decode("detail"), SdkErrorKind.Decode },
+        { new Ffi.SdkException.Api(503, "detail"), SdkErrorKind.Api },
+        { new Ffi.SdkException.InvalidSigner("detail"), SdkErrorKind.InvalidSigner },
+        { new Ffi.SdkException.InvalidSwap("detail"), SdkErrorKind.InvalidSwap },
+        { new Ffi.SdkException.UnsupportedQuotePath("detail"), SdkErrorKind.UnsupportedQuotePath },
+        { new Ffi.SdkException.Timeout("detail"), SdkErrorKind.Timeout },
+        { new Ffi.SdkException.Storage("detail"), SdkErrorKind.Storage },
+        { new Ffi.SdkException.UnresolvedFunding("detail"), SdkErrorKind.UnresolvedFunding },
+        { new Ffi.SdkException.Internal("detail"), SdkErrorKind.Internal },
+        { new Ffi.PanicException("detail"), SdkErrorKind.Internal },
+    };
+
+    [Theory]
+    [MemberData(nameof(BindingErrors))]
+    public void BindingErrorsBecomeSdkExceptionsWithACleanMessage(Exception error, SdkErrorKind kind)
+    {
+        var ex = Assert.Throws<SdkException>(() => Client.TryOrThrow<int>(() => throw error));
+        Assert.Equal(kind, ex.Kind);
+        Assert.Equal("detail", ex.Message);
+        Assert.Same(error, ex.InnerException);
+        Assert.Equal(kind == SdkErrorKind.Api ? 503 : null, ex.StatusCode);
+    }
+
+    [Fact]
+    public void DataDirectoryHoldsTheSwapStoreFromConstruction()
+    {
+        using var temp = new TempDirectory();
+        var dataDirectory = Path.Combine(temp.Path, "store");
+        using (new Client(TestMnemonic, BitcoinNetwork.Regtest, dataDirectory: dataDirectory))
+        {
+            Assert.True(File.Exists(Path.Combine(dataDirectory, "swaps.sqlite")));
+        }
+    }
+
+    [Fact]
+    public async Task ClientsOverDifferentSeedsGetSeparateContractStores()
+    {
+        using var temp = new TempDirectory();
+        foreach (var mnemonic in new[] { TestMnemonic, OtherMnemonic })
+        {
+            using var client = new Client(
+                mnemonic, BitcoinNetwork.Regtest, Unreachable, Unreachable, Unreachable, dataDirectory: temp.Path);
+            // The contract store opens before arkd is dialled, so the
+            // failed call still creates it.
+            var ex = await Assert.ThrowsAsync<SdkException>(() => client.GetArkadeAddressAsync());
+            Assert.Equal(SdkErrorKind.Transport, ex.Kind);
+        }
+        Assert.Equal(2, Directory.GetFiles(temp.Path, "contracts-*.sqlite").Length);
+    }
+
+    [Fact]
+    public void ContractDbPathMustNotBeTheSwapStore()
+    {
+        using var temp = new TempDirectory();
+        var ex = Assert.Throws<SdkException>(() => new Client(
+            TestMnemonic,
+            BitcoinNetwork.Regtest,
+            contractDbPath: Path.Combine(temp.Path, ".", "swaps.sqlite"),
+            dataDirectory: temp.Path));
+        Assert.Equal(SdkErrorKind.Storage, ex.Kind);
+    }
+
+    private sealed class TempDirectory : IDisposable
+    {
+        public string Path { get; } =
+            System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"satora-sdk-tests-{Guid.NewGuid():N}");
+
+        public void Dispose()
+        {
+            if (Directory.Exists(Path))
+            {
+                Directory.Delete(Path, recursive: true);
+            }
+        }
     }
 }

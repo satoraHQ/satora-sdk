@@ -18,14 +18,85 @@ using Ffi = uniffi.satora_sdk_ffi;
 // (Aliases live in Satora.Sdk.csproj — see <ItemGroup><Using…/>.)
 
 /// <summary>
+/// Which Rust SDK error an <see cref="SdkException"/> carries. Except for
+/// <see cref="UnresolvedFunding"/>, it names the failure, not whether a retry
+/// is safe: <see cref="Transport"/> and
+/// <see cref="Timeout"/> cover both requests that never reached the server
+/// and spends whose outcome is unknown, and <see cref="Storage"/> from
+/// <see cref="Client.ClaimAsync"/> once arkd may hold the spend, or from
+/// <see cref="Client.FundSwapAsync(string, GaslessOpts, CancellationToken)"/>
+/// at any point, leaves the outcome unknown too. Each method's remarks
+/// say what to do next.
+/// </summary>
+public enum SdkErrorKind
+{
+    Cancelled,
+    InvalidBaseUrl,
+    Transport,
+    Decode,
+    /// <summary>The backend answered with an error; <see cref="SdkException.StatusCode"/> holds the HTTP status.</summary>
+    Api,
+    InvalidSigner,
+    /// <summary>Invalid arguments, including ones the bindings could not parse.</summary>
+    InvalidSwap,
+    UnsupportedQuotePath,
+    Timeout,
+    Storage,
+    /// <summary>
+    /// An earlier funding of the swap may have gone out, and the SDK cannot
+    /// tell. Never fund the swap by other means and do not treat it as
+    /// unfunded: follow its status meanwhile, and give it up only once a
+    /// check by hand shows where the funds went.
+    /// </summary>
+    UnresolvedFunding,
+    /// <summary>
+    /// A failure in the bindings themselves, a Rust panic included, or a Rust
+    /// SDK error this version does not name yet; <see cref="Exception.InnerException"/>
+    /// keeps the original.
+    /// </summary>
+    Internal,
+}
+
+/// <summary>
 /// Wraps every error surfaced by the Satora SDK across the FFI
 /// boundary, so callers catch one type without importing the generated
-/// namespace.
+/// namespace. <see cref="Exception.Message"/> is the Rust error's own
+/// text, for <see cref="SdkErrorKind.Api"/> the server's message.
 /// </summary>
 public sealed class SdkException : Exception
 {
-    public SdkException(string message) : base(message) { }
-    public SdkException(string message, Exception inner) : base(message, inner) { }
+    public SdkException(
+        SdkErrorKind kind,
+        string message,
+        int? statusCode = null,
+        Exception? innerException = null)
+        : base(message, innerException)
+    {
+        Kind = kind;
+        StatusCode = statusCode;
+    }
+
+    public SdkErrorKind Kind { get; }
+
+    /// <summary>HTTP status of an <see cref="SdkErrorKind.Api"/> error; null for every other kind.</summary>
+    public int? StatusCode { get; }
+
+    internal static SdkException FromFfi(Ffi.UniffiException ex) => ex switch
+    {
+        Ffi.SdkException.Cancelled e => new(SdkErrorKind.Cancelled, e.@message, innerException: ex),
+        Ffi.SdkException.InvalidBaseUrl e => new(SdkErrorKind.InvalidBaseUrl, e.@message, innerException: ex),
+        Ffi.SdkException.Transport e => new(SdkErrorKind.Transport, e.@message, innerException: ex),
+        Ffi.SdkException.Decode e => new(SdkErrorKind.Decode, e.@message, innerException: ex),
+        Ffi.SdkException.Api e => new(SdkErrorKind.Api, e.@message, e.@status, ex),
+        Ffi.SdkException.InvalidSigner e => new(SdkErrorKind.InvalidSigner, e.@message, innerException: ex),
+        Ffi.SdkException.InvalidSwap e => new(SdkErrorKind.InvalidSwap, e.@message, innerException: ex),
+        Ffi.SdkException.UnsupportedQuotePath e => new(SdkErrorKind.UnsupportedQuotePath, e.@message, innerException: ex),
+        Ffi.SdkException.Timeout e => new(SdkErrorKind.Timeout, e.@message, innerException: ex),
+        Ffi.SdkException.Storage e => new(SdkErrorKind.Storage, e.@message, innerException: ex),
+        Ffi.SdkException.UnresolvedFunding e => new(SdkErrorKind.UnresolvedFunding, e.@message, innerException: ex),
+        Ffi.SdkException.Internal e => new(SdkErrorKind.Internal, e.@message, innerException: ex),
+        _ => new(SdkErrorKind.Internal, ex.Message, innerException: ex),
+    };
 }
 
 /// <summary>
@@ -172,6 +243,12 @@ public sealed record ClaimReceipt(string ArkTxid, ulong ClaimAmountSats)
 /// — the underlying Rust resources are released by the handle's
 /// <c>IDisposable</c>.
 /// </summary>
+/// <remarks>
+/// Every async method runs its native call on the thread pool. Its
+/// <see cref="CancellationToken"/> only stops a call that has not started;
+/// a running native call is not interrupted and runs until it completes or
+/// hits its own timeout.
+/// </remarks>
 public sealed class Client : IDisposable
 {
     /// <summary>
@@ -200,7 +277,27 @@ public sealed class Client : IDisposable
     /// </param>
     /// <param name="contractDbPath">
     /// Optional SQLite DB path for ark-rs contract-manager state. If null,
-    /// ark-rs uses its default <c>contracts.db</c> path.
+    /// it goes in <paramref name="dataDirectory"/> when that is set, and
+    /// otherwise in ark-rs's default <c>contracts.db</c> in the working
+    /// directory, shared by every client in the process. A path naming the
+    /// <c>swaps.sqlite</c> file of <paramref name="dataDirectory"/> (after
+    /// resolving symlinks, <c>.</c> and <c>..</c>, and on macOS and Windows
+    /// letter case) throws <see cref="SdkException"/> with
+    /// <see cref="SdkErrorKind.Storage"/>.
+    /// </param>
+    /// <param name="dataDirectory">
+    /// Optional directory for durable state, created if missing; use one
+    /// per wallet and network, as neither file in it is partitioned by
+    /// network. Swaps are kept in <c>swaps.sqlite</c>, so a client built
+    /// later over the same directory can still fund and claim them. The
+    /// Arkade contract store is <c>contracts-&lt;wallet id&gt;.sqlite</c>,
+    /// so a different seed restored over the same directory never shares
+    /// it. If null, swaps live only as long as this client. Each kind of
+    /// execution through one client, such as wallet spends or swap claims,
+    /// runs one at a time, and different kinds can overlap. Separate
+    /// instances are not coordinated, even over the same directory: keep one
+    /// client per wallet per process, and build a replacement only once the
+    /// calls still running on a disposed one have returned or timed out.
     /// </param>
     /// <exception cref="ArgumentException">
     /// <paramref name="network"/> has no default endpoints
@@ -213,7 +310,8 @@ public sealed class Client : IDisposable
         string? arkadeServerUrl = null,
         string? esploraUrl = null,
         string? referralCode = null,
-        string? contractDbPath = null)
+        string? contractDbPath = null,
+        string? dataDirectory = null)
     {
         var defaults = Defaults.For(network);
         var resolvedBaseUrl = baseUrl
@@ -226,6 +324,16 @@ public sealed class Client : IDisposable
             ?? defaults?.EsploraUrl
             ?? throw NoDefault(network, nameof(esploraUrl));
 
+        string? storagePath = null;
+        if (dataDirectory is not null)
+        {
+            storagePath = Path.Combine(dataDirectory, "swaps.sqlite");
+            contractDbPath ??= Path.Combine(
+                dataDirectory,
+                $"contracts-{TryOrThrow(() => Ffi.SatoraSdkFfiMethods.ContractStoreId(mnemonic))}.sqlite");
+            Directory.CreateDirectory(dataDirectory);
+        }
+
         var arkadeConfig = new Ffi.ArkadeConfig(
             resolvedArkadeServerUrl,
             resolvedEsploraUrl,
@@ -233,25 +341,30 @@ public sealed class Client : IDisposable
             network,
             contractDbPath);
         _ffi = TryOrThrow(() => Ffi.SatoraClient.NewWithArkade(
-            resolvedBaseUrl, mnemonic, arkadeConfig, referralCode));
+            resolvedBaseUrl, mnemonic, arkadeConfig, referralCode, storagePath));
     }
 
     /// <summary>Releases the FFI handle. Idempotent.</summary>
+    /// <remarks>
+    /// Calls already running keep going until they return or hit their own
+    /// timeout, and only then is the Rust client freed. Build no replacement
+    /// client over the same <c>dataDirectory</c> before then.
+    /// </remarks>
     public void Dispose() => _ffi.Dispose();
 
     private static ArgumentException NoDefault(BitcoinNetwork network, string parameter) =>
         new($"{network} has no default endpoints; pass {parameter}.", parameter);
 
     /// <summary>
-    /// Shared helper: invoke an FFI call and re-wrap its tagged-enum
-    /// error as the public <see cref="SdkException"/>. Used by both the
-    /// constructor (which can fail on invalid base URL) and the method
-    /// bodies below.
+    /// Shared helper: invoke an FFI call and rethrow anything the bindings
+    /// raise, a Rust panic included, as the public
+    /// <see cref="SdkException"/>. Used by both the constructor (which can
+    /// fail on invalid base URL) and the method bodies below.
     /// </summary>
-    private static T TryOrThrow<T>(Func<T> call)
+    internal static T TryOrThrow<T>(Func<T> call)
     {
         try { return call(); }
-        catch (Ffi.SdkException.Internal ex) { throw new SdkException(ex.Message, ex); }
+        catch (Ffi.UniffiException ex) { throw SdkException.FromFfi(ex); }
     }
 
     /// <summary>
@@ -377,11 +490,18 @@ public sealed class Client : IDisposable
     }
 
     /// <summary>
-    /// Roll over all spendable VTXOs + boarding outputs into the next
-    /// Arkade batch — what users do before their VTXOs expire. Returns
-    /// the hex commitment txid of the batch that absorbed them, or
-    /// <c>null</c> if the wallet had nothing to settle.
+    /// Roll the wallet's recoverable VTXOs (expired, swept or below dust)
+    /// and its boarding outputs into the next Arkade batch; healthy VTXOs
+    /// are left alone. Returns the hex commitment txid of the batch that
+    /// absorbed them, or <c>null</c> if the wallet had nothing to settle.
     /// </summary>
+    /// <remarks>
+    /// A <see cref="SdkErrorKind.Transport"/> error, or
+    /// <see cref="SdkErrorKind.Timeout"/> after 300 seconds, leaves the
+    /// outcome unknown; the balance shows whether the batch went through.
+    /// The 300 seconds start once any wallet spend in progress on this
+    /// client has finished.
+    /// </remarks>
     public Task<string?> SettleArkadeAsync(CancellationToken cancellationToken = default)
     {
         var ffi = _ffi;
@@ -409,6 +529,13 @@ public sealed class Client : IDisposable
     /// Primary use case: funding the Arkade VHTLC returned by
     /// <see cref="CreateArkadeToLightningSwapAsync"/>.
     /// </summary>
+    /// <remarks>
+    /// A <see cref="SdkErrorKind.Transport"/> error, or
+    /// <see cref="SdkErrorKind.Timeout"/> after 120 seconds, leaves the
+    /// outcome unknown: the payment may have gone out, so check the balance
+    /// or the recipient before sending again. The 120 seconds start once any
+    /// wallet spend in progress on this client has finished.
+    /// </remarks>
     public Task<string> SendArkadeAsync(
         string destination,
         ulong amountSats,
@@ -508,7 +635,7 @@ public sealed class Client : IDisposable
     /// <param name="swapId">UUID returned by <see cref="CreateSwapAsync"/>.</param>
     /// <param name="nodeRpcUrl">EVM node RPC URL (e.g. Alchemy / Infura).</param>
     /// <param name="minEthWei">Native gas headroom in wei. ~1e15 (0.001 ETH) on Arbitrum without a paymaster; 0 with.</param>
-    /// <param name="timeout">Total wait budget. Throws <see cref="SdkException"/> on timeout.</param>
+    /// <param name="timeout">Total wait budget. Throws <see cref="SdkException"/> with <see cref="SdkErrorKind.Timeout"/> on timeout.</param>
     public Task WaitForDepositFundingAsync(
         string swapId,
         string nodeRpcUrl,
@@ -538,6 +665,15 @@ public sealed class Client : IDisposable
     /// </summary>
     /// <param name="swapId">UUID returned by <see cref="CreateSwapAsync"/>.</param>
     /// <param name="opts">Node-RPC URL + optional paymaster context / gas overrides.</param>
+    /// <remarks>
+    /// A <see cref="SdkErrorKind.Transport"/> or
+    /// <see cref="SdkErrorKind.Timeout"/> error leaves the outcome unknown:
+    /// the userOp may have been submitted. So does any
+    /// <see cref="SdkErrorKind.Storage"/> error, which may follow the
+    /// submission. The operation is stored before submission and a later
+    /// call is refused while it is unresolved, so checking the swap status
+    /// before acting is safe.
+    /// </remarks>
     public Task<FundReceipt> FundSwapAsync(
         string swapId,
         GaslessOpts opts,
@@ -620,7 +756,7 @@ public sealed class Client : IDisposable
     /// Poll <c>GET /swap/{id}</c> until the backend reaches one of
     /// <paramref name="targets"/> or <paramref name="timeout"/> elapses
     /// (in which case the SDK throws <see cref="SdkException"/> with
-    /// its internal `Error::Timeout` message). 3s poll interval is
+    /// <see cref="SdkErrorKind.Timeout"/>). 3s poll interval is
     /// hard-coded on the Rust side.
     /// </summary>
     /// <param name="swapId">UUID of a previously-created swap.</param>
@@ -651,6 +787,13 @@ public sealed class Client : IDisposable
     /// </summary>
     /// <param name="swapId">UUID of a swap whose backend state is at least <see cref="SwapStatus.ServerFunded"/>.</param>
     /// <param name="destination">Arkade address (`tark1…`) to receive the BTC.</param>
+    /// <remarks>
+    /// A <see cref="SdkErrorKind.Transport"/> or
+    /// <see cref="SdkErrorKind.Timeout"/> error leaves the outcome unknown,
+    /// and so does <see cref="SdkErrorKind.Storage"/> once arkd may hold the
+    /// claim. The claim's progress is stored before submission, so calling
+    /// this again with the same storage resumes it instead of claiming twice.
+    /// </remarks>
     public Task<ClaimReceipt> ClaimAsync(
         string swapId,
         string destination,
