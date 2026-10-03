@@ -31,13 +31,16 @@ core (`../rust-sdk`) via [UniFFI](https://github.com/mozilla/uniffi-rs).
 
 ## Supported swap pairs
 
-`Client::CreateSwapAsync` currently routes only **EVM-stablecoin → BTC
-on Arkade** — the dispatcher in `client.rs` rejects anything else with
-`Error::InvalidSwap`. Sources: USDC / USDT / USDT0 / WBTC on Polygon,
-Arbitrum, or Ethereum (whichever pairs are wired in `TokenId` —
-canonical list in `client-sdk/rust-sdk/src/types/token.rs`). The full
-matrix lives in the nuget README (`Satora.Sdk/README.md`); update both
-in lockstep when you add a direction.
+`Client::CreateSwapAsync` routes **EVM-stablecoin → BTC on Arkade**,
+Lightning → BTC on Arkade and **on-chain Bitcoin → BTC on Arkade**; the
+dispatcher in `client.rs` rejects anything else with
+`Error::InvalidSwap`. EVM sources: USDC / USDT / USDT0 / WBTC on Polygon,
+Arbitrum, or Ethereum (whichever pairs are wired in `TokenId`, canonical
+list in `client-sdk/rust-sdk/src/types/token.rs`). Bitcoin → Arkade also
+has `CreateBitcoinToArkadeSwapAsync`, and `RefundBitcoinAsync` returns
+the on-chain deposit of one that did not complete. The full matrix lives
+in the nuget README (`Satora.Sdk/README.md`); update both in lockstep
+when you add a direction.
 
 ## Prerequisites
 

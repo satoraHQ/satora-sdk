@@ -88,13 +88,16 @@ replacement over the same directory only after that.
 
 ## Supported swap pairs
 
-The SDK currently exposes **EVM-stablecoin → BTC on Arkade** through
-`CreateSwapAsync`. Other directions the backend supports (Lightning ↔
-Arkade, Bitcoin ↔ EVM, Arkade → EVM, etc.) will land as we add
-direction-specific entry points — open an issue if you need one
+`CreateSwapAsync` routes **EVM-stablecoin → BTC on Arkade**, **on-chain
+Bitcoin → BTC on Arkade** (see [Bitcoin → Arkade](#bitcoin--arkade)
+below) and **Lightning → BTC on Arkade**; Arkade → Lightning has its own
+entry point, `CreateArkadeToLightningSwapAsync`. Other directions the
+backend supports (Bitcoin ↔ EVM, Arkade → EVM, etc.) will land as we add
+direction-specific entry points; open an issue if you need one
 prioritised.
 
-Source tokens (use as `sourceToken` with the matching `sourceChain`):
+EVM source tokens (use as `sourceToken` with the matching
+`sourceChain`):
 
 | Token | Chain    | TokenId                 | ChainId            |
 | ----- | -------- | ----------------------- | ------------------ |
@@ -109,7 +112,8 @@ Source tokens (use as `sourceToken` with the matching `sourceChain`):
 | WBTC  | Ethereum | `TokenId.WbtcEthereum`  | `ChainId.Ethereum` |
 
 Target is always `TokenId.Btc` on `ChainId.Arkade`. `gasless: true` is
-supported on every pair.
+supported on every EVM source above; Bitcoin and Lightning sources ignore
+it.
 
 Notes:
 
@@ -156,6 +160,33 @@ var receipt = await client.FundSwapAsync(
         nodeRpcUrl: "https://your-private-rpc.example/v3/<key>",
         paymasterContextJson: null,
         gasOverrides: null));
+```
+
+## Bitcoin → Arkade
+
+`CreateBitcoinToArkadeSwapAsync(satsReceive)` creates a swap that pays
+exactly `satsReceive` sats on Arkade, to the SDK's own Arkade wallet
+unless `receiveTo` is given. `CreateSwapAsync` with `ChainId.Bitcoin`,
+`TokenId.Btc` and a `QuoteAmount.Target` does the same.
+
+1. The payer sends `DepositAmount` sats to the on-chain HTLC address in
+   `SwapFunding.BitcoinAddress`.
+2. Once the server has funded the Arkade VHTLC
+   (`SwapStatus.ServerFunded`), `ClaimAsync` sweeps it.
+3. If the swap does not complete, `RefundBitcoinAsync` sends the deposit
+   to a Bitcoin address of yours once the HTLC's refund locktime has
+   matured. It reads the chain through the client's `esploraUrl`.
+
+```csharp
+var swap = await client.CreateBitcoinToArkadeSwapAsync(satsReceive: 100_000);
+if (swap.Funding is SwapFunding.BitcoinAddress htlc)
+{
+    Console.WriteLine($"send {swap.DepositAmount} sats to {htlc.address}");
+}
+
+// Later, if the swap failed and the refund locktime has passed:
+var refund = await client.RefundBitcoinAsync(
+    swap.Id, "bc1q…", feeRateSatVb: null, maximumFeeSats: 5_000);
 ```
 
 ## Supported runtimes
@@ -209,6 +240,12 @@ swap status or the balance before trying again (a `FundSwapAsync` retry
 is refused while its stored operation is unresolved, so checking first is
 safe). After one from `ClaimAsync`, or a `Storage` error from it once
 arkd may hold the claim, call it again, which resumes from its journal.
+After one from `RefundBitcoinAsync`, or a `Storage` error from it after a
+fee bump, call it again with the same destination, which returns the
+pending or confirmed refund instead of building another. A chain read
+that straddled a new block, such as
+`Bitcoin tip changed during observation`, is a `Transport` error too, so
+the same retry applies.
 
 The Arkade wallet's own spends (`SendArkadeAsync` and `SettleArkadeAsync`)
 take one lock per `Client`, which claims and refunds never wait for. Each

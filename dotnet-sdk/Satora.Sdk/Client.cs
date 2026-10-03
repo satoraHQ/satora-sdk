@@ -23,7 +23,8 @@ using Ffi = uniffi.satora_sdk_ffi;
 /// is safe: <see cref="Transport"/> and
 /// <see cref="Timeout"/> cover both requests that never reached the server
 /// and spends whose outcome is unknown, and <see cref="Storage"/> from
-/// <see cref="Client.ClaimAsync"/> once arkd may hold the spend, or from
+/// <see cref="Client.ClaimAsync"/> once arkd may hold the spend, from
+/// <see cref="Client.RefundBitcoinAsync"/> after a fee bump, or from
 /// <see cref="Client.FundSwapAsync(string, GaslessOpts, CancellationToken)"/>
 /// at any point, leaves the outcome unknown too. Each method's remarks
 /// say what to do next.
@@ -162,7 +163,14 @@ public sealed record Quote(
 /// </summary>
 /// <param name="Id">Swap UUID. Persist this to drive funding / claim.</param>
 /// <param name="Status">Current backend state; see <see cref="SwapStatus"/>.</param>
-/// <param name="Funding">Funding instructions; depends on whether the swap was created with gasless on/off.</param>
+/// <param name="Funding">
+/// Funding instructions, by direction: <c>SwapFunding.Gasless</c> or
+/// <c>SwapFunding.UserSubmitted</c> for EVM sources (gasless on or off),
+/// <c>SwapFunding.BitcoinAddress</c> for on-chain Bitcoin,
+/// <c>SwapFunding.Bolt11Invoice</c> for Lightning and
+/// <c>SwapFunding.ArkadeAddress</c> for Arkade. <c>SwapFunding.Unknown</c>
+/// is a variant of the Rust SDK this version does not name yet.
+/// </param>
 /// <param name="DepositAmount">Amount the user must deposit, in the smallest unit of <paramref name="DepositToken"/>.</param>
 /// <param name="DepositToken">Source token the user pays in.</param>
 /// <param name="ReceiveAddress">Where the user receives the target asset.</param>
@@ -234,6 +242,16 @@ public sealed record DepositStatus(
 public sealed record ClaimReceipt(string ArkTxid, ulong ClaimAmountSats)
 {
     internal static ClaimReceipt FromFfi(ClaimReceiptRaw r) => new(r.@arkTxid, r.@claimAmountSats);
+}
+
+/// <summary>
+/// Result of an on-chain Bitcoin HTLC refund.
+/// </summary>
+/// <param name="Txid">Refund transaction ID, hex as block explorers show it (no <c>0x</c>).</param>
+/// <param name="FeeSats">Fee the refund transaction pays, in satoshis.</param>
+public sealed record BitcoinRefundReceipt(string Txid, ulong FeeSats)
+{
+    internal static BitcoinRefundReceipt FromFfi(Ffi.BitcoinRefundReceipt r) => new(r.@txid, r.@feeSats);
 }
 
 /// <summary>
@@ -415,20 +433,21 @@ public sealed class Client : IDisposable
     /// <summary>
     /// Create a swap. The direction is resolved from
     /// <paramref name="sourceChain"/>: EVM stablecoin → BTC on Arkade,
-    /// or Lightning → BTC on Arkade. For the Lightning direction prefer
-    /// the dedicated, single-purpose
-    /// <see cref="CreateLightningToArkadeSwapAsync"/> — it's the same
-    /// routing with a clearer signature. Other direction combos return
+    /// Lightning → BTC on Arkade, or on-chain Bitcoin → BTC on Arkade.
+    /// For the Lightning and Bitcoin directions prefer the dedicated
+    /// <see cref="CreateLightningToArkadeSwapAsync"/> and
+    /// <see cref="CreateBitcoinToArkadeSwapAsync"/>: the same routing
+    /// with a clearer signature. Other direction combos return
     /// an <see cref="SdkException"/>.
-    /// Requires the client to be constructed with a mnemonic (see
-    /// <see cref="Client(string, string)"/>) — the signer derives the
-    /// per-swap preimage and EVM EOA from it.
     /// </summary>
     /// <param name="sourceChain">Source chain enum.</param>
     /// <param name="sourceToken">Source token enum.</param>
     /// <param name="targetChain">Target chain enum.</param>
     /// <param name="targetToken">Target token enum.</param>
-    /// <param name="amount">Source / target amount mutex.</param>
+    /// <param name="amount">
+    /// Source / target amount mutex. Bitcoin sources take only
+    /// <c>QuoteAmount.Target</c>.
+    /// </param>
     /// <param name="receiveTo">
     /// Destination address tagged with its rail. Pass <c>null</c> to
     /// route to the SDK's own internal Arkade wallet — only valid when
@@ -600,6 +619,94 @@ public sealed class Client : IDisposable
     }
 
     /// <summary>
+    /// Create an on-chain Bitcoin → Arkade swap. The payer sends
+    /// <c>swap.DepositAmount</c> sats to the HTLC address in
+    /// <c>swap.Funding</c> (<c>SwapFunding.BitcoinAddress</c>); once the
+    /// server funds the Arkade VHTLC, the user sweeps it with
+    /// <see cref="ClaimAsync"/>. If the swap does not complete,
+    /// <see cref="RefundBitcoinAsync"/> returns the deposit once the
+    /// HTLC's refund locktime has matured.
+    ///
+    /// This routes the same direction as <see cref="CreateSwapAsync"/>
+    /// with <c>sourceChain = ChainId.Bitcoin</c>. Either way, a server HTLC
+    /// address that differs from the one the client's keys rebuild throws
+    /// <see cref="SdkException"/> with <see cref="SdkErrorKind.InvalidSwap"/>.
+    /// </summary>
+    /// <param name="satsReceive">Exact amount to <b>receive</b> on Arkade, in satoshis.</param>
+    /// <param name="receiveTo">
+    /// Arkade address (<c>tark1…</c>) that receives the BTC. Pass
+    /// <c>null</c> to route to the SDK's own internal Arkade wallet.
+    /// </param>
+    /// <param name="extraFeesBps">
+    /// Optional per-swap fee surcharge in basis points, as for
+    /// <see cref="CreateSwapAsync"/>.
+    /// </param>
+    public Task<SwapDetails> CreateBitcoinToArkadeSwapAsync(
+        ulong satsReceive,
+        Address? receiveTo = null,
+        ushort? extraFeesBps = null,
+        CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        return Task.Run(
+            () => TryOrThrow(() => SwapDetails.FromFfi(
+                ffi.CreateBitcoinToArkadeSwap(satsReceive, receiveTo, extraFeesBps))),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Refund the on-chain HTLC of a Bitcoin → Arkade swap to
+    /// <paramref name="destination"/> once the HTLC's refund locktime has
+    /// matured. Chain data comes from the client's esplora endpoint;
+    /// unconfirmed HTLC outputs are refunded too, and the call gives up
+    /// with <see cref="SdkErrorKind.Timeout"/> after 60 seconds.
+    /// </summary>
+    /// <param name="swapId">UUID returned by <see cref="CreateBitcoinToArkadeSwapAsync"/>.</param>
+    /// <param name="destination">Bitcoin address on the client's network that receives the refund.</param>
+    /// <param name="feeRateSatVb">
+    /// Fee rate in sat/vB. Pass <c>null</c> to take the esplora estimate
+    /// for confirmation within six blocks.
+    /// </param>
+    /// <param name="maximumFeeSats">
+    /// Upper bound on the fee, in satoshis, whatever the rate. HTLC outputs
+    /// whose fee would push the refund over it are left for a later call;
+    /// if not even one fits, the call throws <see cref="SdkException"/>
+    /// with <see cref="SdkErrorKind.InvalidSwap"/>.
+    /// </param>
+    /// <remarks>
+    /// <para>
+    /// Once a refund is pending, a call returns it unchanged unless
+    /// <paramref name="feeRateSatVb"/> is at least 1 sat/vB above its rate
+    /// and the replacement's fee stays within
+    /// <paramref name="maximumFeeSats"/>; compare the returned txid or fee
+    /// to see whether it was bumped. Once a refund to one address exists, a
+    /// different <paramref name="destination"/> throws
+    /// <see cref="SdkException"/> with <see cref="SdkErrorKind.InvalidSwap"/>.
+    /// </para>
+    /// <para>
+    /// A <see cref="SdkErrorKind.Transport"/> or
+    /// <see cref="SdkErrorKind.Timeout"/> error, or a
+    /// <see cref="SdkErrorKind.Storage"/> error after a fee bump, leaves
+    /// the outcome unknown: the refund may have been broadcast. Call again
+    /// with the same <paramref name="destination"/>, which returns the
+    /// pending or confirmed refund instead of building another.
+    /// </para>
+    /// </remarks>
+    public Task<BitcoinRefundReceipt> RefundBitcoinAsync(
+        string swapId,
+        string destination,
+        ulong? feeRateSatVb,
+        ulong maximumFeeSats,
+        CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        return Task.Run(
+            () => TryOrThrow(() => BitcoinRefundReceipt.FromFfi(
+                ffi.RefundBitcoin(swapId, destination, feeRateSatVb, maximumFeeSats))),
+            cancellationToken);
+    }
+
+    /// <summary>
     /// Create an Arkade → Lightning swap. The user funds the returned
     /// Arkade VHTLC address (in <c>swap.Funding</c> as
     /// <c>SwapFunding.ArkadeAddress</c>); the server pays the
@@ -739,10 +846,9 @@ public sealed class Client : IDisposable
     }
 
     /// <summary>
-    /// Fetch a swap's current state. Works on any client (signing or
-    /// read-only). Returns the same shape <see cref="CreateSwapAsync"/>
-    /// does, so callers can re-read after the backend transitions
-    /// states (e.g. ServerFunded).
+    /// Fetch a swap's current state. Returns the same shape
+    /// <see cref="CreateSwapAsync"/> does, so callers can re-read after the
+    /// backend transitions states (e.g. ServerFunded).
     /// </summary>
     public Task<SwapDetails> GetSwapAsync(string swapId, CancellationToken cancellationToken = default)
     {
@@ -782,8 +888,9 @@ public sealed class Client : IDisposable
     }
 
     /// <summary>
-    /// Redeem the Arkade VHTLC for an EVM→Arkade swap that has reached
-    /// (or passed) ServerFunded. Sweeps the BTC to <paramref name="destination"/>.
+    /// Redeem the Arkade VHTLC for a Bitcoin, EVM or Lightning to Arkade
+    /// swap that has reached (or passed) ServerFunded. Sweeps the BTC to
+    /// <paramref name="destination"/>.
     /// </summary>
     /// <param name="swapId">UUID of a swap whose backend state is at least <see cref="SwapStatus.ServerFunded"/>.</param>
     /// <param name="destination">Arkade address (`tark1…`) to receive the BTC.</param>

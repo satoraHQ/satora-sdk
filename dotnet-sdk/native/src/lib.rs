@@ -26,6 +26,9 @@ use lendaswap_sdk::SwapFunding as SdkSwapFunding;
 use lendaswap_sdk::aa::GasOverrides as SdkGasOverrides;
 use lendaswap_sdk::aa::GaslessOpts as SdkGaslessOpts;
 use lendaswap_sdk::arkade::ArkadeConfig as SdkArkadeConfig;
+use lendaswap_sdk::bitcoin::BitcoinSpendOptions;
+use lendaswap_sdk::bitcoin::BitcoinSpendReceipt as SdkBitcoinSpendReceipt;
+use lendaswap_sdk::bitcoin::EsploraBackend;
 use lendaswap_sdk::types::Address as SdkAddress;
 use lendaswap_sdk::types::Chain as SdkChain;
 use lendaswap_sdk::types::KnownChain as SdkKnownChain;
@@ -178,6 +181,11 @@ pub fn contract_store_id(mnemonic: String) -> Result<String, SdkError> {
 #[derive(uniffi::Object)]
 pub struct SatoraClient {
     inner: Client,
+    /// Esplora URL and network of the `arkade_config`
+    /// [`Self::new_with_arkade`] was built with, kept because the SDK
+    /// client does not expose them and [`Self::refund_bitcoin`] reads chain
+    /// data there.
+    esplora: Option<(String, bitcoin::Network)>,
 }
 
 #[uniffi::export]
@@ -197,7 +205,10 @@ impl SatoraClient {
     ) -> Result<std::sync::Arc<Self>, SdkError> {
         let mut inner = Client::new(&base_url)?;
         inner.set_referral_code(referral_code);
-        Ok(std::sync::Arc::new(Self { inner }))
+        Ok(std::sync::Arc::new(Self {
+            inner,
+            esplora: None,
+        }))
     }
 
     /// Signing client. Required for any method that derives per-swap
@@ -219,13 +230,15 @@ impl SatoraClient {
             builder = builder.referral_code(code);
         }
         let inner = builder.build()?;
-        Ok(std::sync::Arc::new(Self { inner }))
+        Ok(std::sync::Arc::new(Self {
+            inner,
+            esplora: None,
+        }))
     }
 
-    /// Signing client + Arkade config. Required for every Arkade-side
-    /// method (`claim`, `arkade_balance_sats`, `arkade_settle`,
-    /// `arkade_offchain_address`, and `create_swap` with
-    /// `receive_to = None`).
+    /// Signing client + Arkade config. Required for every Arkade method,
+    /// such as `claim`, `arkade_balance`, `arkade_settle` and `create_swap`
+    /// with `receive_to = None`, and for `refund_bitcoin`.
     ///
     /// `referral_code` (optional) is attached to every swap/quote
     /// originated through this client.
@@ -251,6 +264,10 @@ impl SatoraClient {
         storage_path: Option<String>,
     ) -> Result<std::sync::Arc<Self>, SdkError> {
         let contract_db_path = arkade_config.contract_db_path.clone();
+        let esplora = (
+            arkade_config.esplora_url.clone(),
+            arkade_config.network.clone().into(),
+        );
         let mut builder = Client::builder()
             .base_url(&base_url)
             .mnemonic(&mnemonic)
@@ -273,7 +290,10 @@ impl SatoraClient {
             )
             .into());
         }
-        Ok(std::sync::Arc::new(Self { inner }))
+        Ok(std::sync::Arc::new(Self {
+            inner,
+            esplora: Some(esplora),
+        }))
     }
 
     /// `GET /version` — canary endpoint. Exercises the full build
@@ -536,20 +556,31 @@ impl From<SdkSwapStatus> for SwapStatus {
 /// the SDK relays into the HTLC via a Permit2-signed userOp.
 /// `UserSubmitted` is the non-gasless path — caller fetches HTLC calldata
 /// out-of-band and broadcasts the funding tx themselves.
-/// `Bolt11Invoice` is the Lightning → Arkade path — caller pays the
-/// invoice over their Lightning wallet, then claims the Arkade VHTLC.
+/// `Bolt11Invoice` is the Lightning to Arkade or EVM path: the caller
+/// pays the invoice from their Lightning wallet, then claims the Arkade
+/// VHTLC or the EVM HTLC.
 #[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SwapFunding {
     Gasless {
         deposit_address: String,
     },
     UserSubmitted,
+    /// On-chain Bitcoin HTLC address the payer funds with the deposit
+    /// amount.
+    BitcoinAddress {
+        address: String,
+    },
     Bolt11Invoice {
         invoice: String,
     },
-    /// Arkade → Lightning: user funds this Arkade VHTLC address.
+    /// Arkade to Lightning or EVM: user funds this Arkade VHTLC address.
     ArkadeAddress {
         address: String,
+    },
+    /// A funding variant of the Rust SDK this binding does not name yet,
+    /// carrying its debug output.
+    Unknown {
+        description: String,
     },
 }
 
@@ -558,14 +589,15 @@ impl From<SdkSwapFunding> for SwapFunding {
         match f {
             SdkSwapFunding::Gasless { deposit_address } => Self::Gasless { deposit_address },
             SdkSwapFunding::UserSubmitted { .. } => Self::UserSubmitted,
+            SdkSwapFunding::BitcoinAddress { address } => Self::BitcoinAddress { address },
             SdkSwapFunding::Bolt11Invoice { invoice } => Self::Bolt11Invoice { invoice },
             SdkSwapFunding::ArkadeAddress { address } => Self::ArkadeAddress { address },
-            // `SdkSwapFunding` is `#[non_exhaustive]` upstream. Mapping
-            // an unknown variant to `UserSubmitted` is wrong, but the
-            // closed-set today makes the arm unreachable; keep the
-            // catch-all so the FFI build doesn't break when a new
-            // variant lands.
-            other => panic!("unhandled SwapFunding variant: {other:?}"),
+            // `SdkSwapFunding` is `#[non_exhaustive]` upstream: a swap
+            // read back with a variant added there must not panic across
+            // the FFI boundary.
+            other => Self::Unknown {
+                description: format!("{other:?}"),
+            },
         }
     }
 }
@@ -624,6 +656,20 @@ fn token_id_from_sdk(t: SdkTokenId) -> TokenId {
     }
 }
 
+impl SatoraClient {
+    async fn resolve_receive_to(
+        &self,
+        receive_to: Option<Address>,
+    ) -> Result<SdkAddress, SdkError> {
+        match receive_to {
+            Some(address) => Ok(address.into()),
+            None => Ok(SdkAddress::Arkade(
+                self.inner.arkade_offchain_address().await?,
+            )),
+        }
+    }
+}
+
 /// Create a swap.
 ///
 /// Create-swap method block — kept separate from the constructor /
@@ -633,8 +679,9 @@ fn token_id_from_sdk(t: SdkTokenId) -> TokenId {
 impl SatoraClient {
     /// Create a swap. Thin forward to the Rust SDK's dispatcher
     /// ([`lendaswap_sdk::Client::create_swap`]). Direction is resolved
-    /// from `source_chain` (Lightning vs EVM) plus the target. See the
-    /// underlying SDK doc for the supported directions today.
+    /// from `source_chain` (Lightning, Bitcoin or EVM) plus the target.
+    /// Bitcoin needs `QuoteAmount::Target`. See the underlying SDK doc
+    /// for the supported directions today.
     ///
     /// `gasless` is honoured only when the routed direction is EVM →
     /// Arkade — the Lightning rail doesn't model gasless funding (the
@@ -664,9 +711,9 @@ impl SatoraClient {
         receive_to: Option<Address>,
         gasless: bool,
         // Optional per-swap fee surcharge in basis points
-        // (0..=max_extra_fee_bps configured on the matching dev key).
-        // `None` => the key's configured default applies server-side.
-        // Currently EVM-only — ignored for the Lightning rail.
+        // (0..=max_extra_fee_bps configured on the matching dev key),
+        // forwarded for every routed direction. `None` => the key's
+        // configured default applies server-side.
         extra_fees_bps: Option<u16>,
     ) -> Result<Swap, SdkError> {
         // target_chain / target_token are accepted for FFI symmetry but
@@ -674,8 +721,8 @@ impl SatoraClient {
         let _ = (target_chain, target_token);
         // The dispatcher hard-codes `gasless = false`. To preserve the
         // FFI's `gasless` knob we drop to the direction-specific EVM
-        // method for the EVM rail; Lightning routes through the
-        // dispatcher (which doesn't take `gasless`).
+        // method for the EVM rail; Lightning and Bitcoin route through
+        // the dispatcher (which doesn't take `gasless`).
         let sdk_source_chain = match source_chain {
             ChainId::Polygon => SdkKnownChain::Polygon,
             ChainId::Ethereum => SdkKnownChain::Ethereum,
@@ -691,7 +738,7 @@ impl SatoraClient {
             }
         };
         runtime().block_on(async {
-            let swap = if matches!(source_chain, ChainId::Lightning) {
+            let swap = if matches!(source_chain, ChainId::Lightning | ChainId::Bitcoin) {
                 self.inner
                     .create_swap(
                         sdk_source_chain,
@@ -703,13 +750,7 @@ impl SatoraClient {
                     )
                     .await?
             } else {
-                let resolved: SdkAddress = match receive_to {
-                    Some(addr) => addr.into(),
-                    None => {
-                        let addr = self.inner.arkade_offchain_address().await?;
-                        SdkAddress::Arkade(addr)
-                    }
-                };
+                let resolved = self.resolve_receive_to(receive_to).await?;
                 self.inner
                     .create_evm_to_arkade_swap(
                         source_token.into(),
@@ -754,18 +795,129 @@ impl SatoraClient {
         receive_to: Option<Address>,
     ) -> Result<Swap, SdkError> {
         runtime().block_on(async {
-            let resolved: SdkAddress = match receive_to {
-                Some(addr) => addr.into(),
-                None => {
-                    let addr = self.inner.arkade_offchain_address().await?;
-                    SdkAddress::Arkade(addr)
-                }
-            };
+            let resolved = self.resolve_receive_to(receive_to).await?;
             let swap = self
                 .inner
                 .create_lightning_to_arkade_swap(sats_receive, resolved)
                 .await?;
             Ok(swap.into())
+        })
+    }
+}
+
+// ─── Bitcoin → Arkade ─────────────────────────────────────────────────
+
+/// Result of an on-chain Bitcoin HTLC refund.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct BitcoinRefundReceipt {
+    /// Refund transaction ID, hex as block explorers show it (no `0x`).
+    pub txid: String,
+    pub fee_sats: u64,
+}
+
+impl From<SdkBitcoinSpendReceipt> for BitcoinRefundReceipt {
+    fn from(r: SdkBitcoinSpendReceipt) -> Self {
+        Self {
+            txid: r.transaction.compute_txid().to_string(),
+            fee_sats: r.fee.to_sat(),
+        }
+    }
+}
+
+#[uniffi::export]
+impl SatoraClient {
+    /// Create an on-chain Bitcoin → Arkade swap. The payer sends the
+    /// deposit amount to the HTLC address in `swap.funding`
+    /// (`SwapFunding::BitcoinAddress`); once the server funds the Arkade
+    /// VHTLC, the user claims it via [`Self::claim`]. If the swap does
+    /// not complete, [`Self::refund_bitcoin`] returns the deposit once
+    /// the HTLC's refund locktime has matured.
+    ///
+    /// `sats_receive` is the exact amount to receive on Arkade.
+    /// `receive_to` `None` routes to the SDK's own internal Arkade wallet
+    /// (requires the client to have been built via `new_with_arkade`),
+    /// like [`Self::create_lightning_to_arkade_swap`]. `extra_fees_bps`
+    /// is the optional per-swap fee surcharge [`Self::create_swap`] takes.
+    ///
+    /// A server HTLC address that differs from the one the client's keys
+    /// rebuild is refused with `SdkError::InvalidSwap`, here and through
+    /// [`Self::create_swap`] alike.
+    pub fn create_bitcoin_to_arkade_swap(
+        &self,
+        sats_receive: u64,
+        receive_to: Option<Address>,
+        extra_fees_bps: Option<u16>,
+    ) -> Result<Swap, SdkError> {
+        runtime().block_on(async {
+            let resolved = self.resolve_receive_to(receive_to).await?;
+            let swap = self
+                .inner
+                .create_bitcoin_to_arkade_swap(sats_receive, resolved, extra_fees_bps)
+                .await?;
+            Ok(swap.into())
+        })
+    }
+
+    /// Refund the on-chain HTLC of a Bitcoin → Arkade swap to
+    /// `destination`, a Bitcoin address on the client's network, once the
+    /// HTLC's refund locktime has matured. Wraps
+    /// [`lendaswap_sdk::Client::refund_bitcoin`] over the Esplora endpoint
+    /// of `arkade_config`, so only a client built via
+    /// [`Self::new_with_arkade`] can refund; others get
+    /// `SdkError::InvalidSwap`.
+    ///
+    /// `fee_rate_sat_vb` `None` takes the endpoint's estimate for
+    /// confirmation within six blocks. HTLC outputs whose fee would push
+    /// the refund over `maximum_fee_sats` are left for a later call; if
+    /// not even one fits, the call is refused with `SdkError::InvalidSwap`.
+    /// Unconfirmed HTLC outputs are refunded too, and the call gives up
+    /// with `SdkError::Timeout` after 60 seconds.
+    ///
+    /// Once a refund is pending, a call returns it unchanged unless
+    /// `fee_rate_sat_vb` is at least 1 sat/vB above its rate and the
+    /// replacement's fee stays within `maximum_fee_sats`; compare the
+    /// returned txid or fee to see whether it was bumped. Once a refund to
+    /// one address exists, a different `destination` is refused with
+    /// `SdkError::InvalidSwap`.
+    ///
+    /// A `Transport` or `Timeout` error, or a `Storage` error after a fee
+    /// bump, leaves the outcome unknown: the refund may have been
+    /// broadcast. Call again with the same `destination`, which returns
+    /// the pending or confirmed refund instead of building another.
+    pub fn refund_bitcoin(
+        &self,
+        swap_id: String,
+        destination: String,
+        fee_rate_sat_vb: Option<u64>,
+        maximum_fee_sats: u64,
+    ) -> Result<BitcoinRefundReceipt, SdkError> {
+        let (esplora_url, network) = self.esplora.as_ref().ok_or_else(|| {
+            SdkError::from(SdkErrorInner::InvalidSwap(
+                "refund_bitcoin needs a client built with new_with_arkade".into(),
+            ))
+        })?;
+        let fee_rate = fee_rate_sat_vb
+            .map(|rate| {
+                bitcoin::FeeRate::from_sat_per_vb(rate)
+                    .ok_or_else(|| invalid_argument(format!("fee_rate_sat_vb {rate} overflows")))
+            })
+            .transpose()?;
+        let options = BitcoinSpendOptions {
+            destination,
+            fee_rate,
+            maximum_fee: bitcoin::Amount::from_sat(maximum_fee_sats),
+            minimum_confirmations: 0,
+            minimum_remaining_blocks: 0,
+            confirmation_target: 6,
+            timeout: std::time::Duration::from_secs(60),
+        };
+        runtime().block_on(async {
+            let backend = EsploraBackend::new(esplora_url, *network)?;
+            let receipt = self
+                .inner
+                .refund_bitcoin(&swap_id, &backend, options)
+                .await?;
+            Ok(receipt.into())
         })
     }
 }
@@ -1151,8 +1303,8 @@ pub struct ArkadeBalance {
 
 #[uniffi::export]
 impl SatoraClient {
-    /// Redeem the Arkade VHTLC for an EVM→Arkade swap that has
-    /// reached (or passed) ServerFunded. Sweeps the BTC to
+    /// Redeem the Arkade VHTLC for a Bitcoin, EVM or Lightning to Arkade
+    /// swap that has reached (or passed) ServerFunded. Sweeps the BTC to
     /// `destination`. Requires a signing client; the Arkade identity
     /// mnemonic is provided separately via [`ArkadeConfig`] because
     /// it's distinct from the lendaswap signing mnemonic.
@@ -1282,6 +1434,8 @@ mod tests {
     const MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
     const OTHER_MNEMONIC: &str = "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong";
     const UNREACHABLE: &str = "http://127.0.0.1:1";
+    const ARKADE_ADDRESS: &str = "tark1qqellv77udfmr20tun8dvju5vgudpf9vxe8jwhthrkn26fz96pawqfdy8nk05rsmrf8h94j26905e7n6sng8y059z8ykn2j5xcuw4xt846qj6x";
+    const REGTEST_ADDRESS: &str = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080";
 
     fn client_with_storage(
         path: &std::path::Path,
@@ -1444,6 +1598,139 @@ mod tests {
                 contracts.display()
             );
         }
+    }
+
+    #[test]
+    fn swap_funding_keeps_each_variant_and_its_payload() {
+        // `UserSubmitted` is `#[non_exhaustive]` upstream and cannot be built
+        // here, and every variant the SDK has is named, so no input reaches
+        // `Unknown`.
+        let cases = [
+            (
+                SdkSwapFunding::Gasless {
+                    deposit_address: "0xdeposit".into(),
+                },
+                SwapFunding::Gasless {
+                    deposit_address: "0xdeposit".into(),
+                },
+            ),
+            (
+                SdkSwapFunding::BitcoinAddress {
+                    address: "bcrt1phtlc".into(),
+                },
+                SwapFunding::BitcoinAddress {
+                    address: "bcrt1phtlc".into(),
+                },
+            ),
+            (
+                SdkSwapFunding::Bolt11Invoice {
+                    invoice: "lnbcrt1invoice".into(),
+                },
+                SwapFunding::Bolt11Invoice {
+                    invoice: "lnbcrt1invoice".into(),
+                },
+            ),
+            (
+                SdkSwapFunding::ArkadeAddress {
+                    address: "tark1vhtlc".into(),
+                },
+                SwapFunding::ArkadeAddress {
+                    address: "tark1vhtlc".into(),
+                },
+            ),
+        ];
+        for (funding, expected) in cases {
+            assert_eq!(SwapFunding::from(funding), expected);
+        }
+    }
+
+    #[test]
+    fn create_swap_routes_bitcoin_sources_to_the_dispatcher() {
+        // The EVM path refuses a BTC source locally; the dispatcher accepts
+        // it and only fails on dialling the server.
+        let client = SatoraClient::new_signing(UNREACHABLE.into(), MNEMONIC.into(), None).unwrap();
+        let result = client.create_swap(
+            ChainId::Bitcoin,
+            TokenId::Btc,
+            ChainId::Arkade,
+            TokenId::Btc,
+            QuoteAmount::Target { units: 100_000 },
+            Some(Address::Arkade {
+                address: ARKADE_ADDRESS.into(),
+            }),
+            false,
+            None,
+        );
+        assert!(
+            matches!(result, Err(SdkError::Transport { .. })),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn bitcoin_refund_receipt_carries_the_explorer_txid_and_fee() {
+        let transaction = bitcoin::Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::TxIn {
+                witness: bitcoin::Witness::from_slice(&[[7u8; 64]]),
+                ..bitcoin::TxIn::default()
+            }],
+            output: vec![bitcoin::TxOut {
+                value: bitcoin::Amount::from_sat(1_000),
+                script_pubkey: bitcoin::ScriptBuf::new(),
+            }],
+        };
+        let receipt = BitcoinRefundReceipt::from(SdkBitcoinSpendReceipt {
+            transaction,
+            fee: bitcoin::Amount::from_sat(321),
+        });
+        // The txid without the witness, in display order as explorers and
+        // `bitcoin-cli` take it, not the `0x` form the Ark txids here use.
+        assert_eq!(
+            receipt,
+            BitcoinRefundReceipt {
+                txid: "e4a6e5298645a8d4276bf11dc1257805015e4a35414482d51f9bcdaf57c3badc".into(),
+                fee_sats: 321
+            }
+        );
+    }
+
+    #[test]
+    fn refund_bitcoin_refuses_a_client_without_arkade_config() {
+        let refund = |client: &SatoraClient| {
+            client.refund_bitcoin("missing".into(), REGTEST_ADDRESS.into(), None, 1_000)
+        };
+        let signing = SatoraClient::new_signing(UNREACHABLE.into(), MNEMONIC.into(), None).unwrap();
+        let result = refund(&signing);
+        assert!(
+            matches!(&result, Err(SdkError::InvalidSwap { message }) if message.contains("new_with_arkade")),
+            "{result:?}"
+        );
+        // With the config, the unknown swap is what gets refused.
+        let dir = tempfile::tempdir().unwrap();
+        let arkade = client_with_storage(&dir.path().join("swaps.sqlite"), None).unwrap();
+        let result = refund(&arkade);
+        assert!(
+            matches!(&result, Err(SdkError::InvalidSwap { message }) if !message.contains("new_with_arkade")),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn refund_bitcoin_rejects_an_overflowing_fee_rate() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = client_with_storage(&dir.path().join("swaps.sqlite"), None).unwrap();
+        let result = client.refund_bitcoin(
+            "missing".into(),
+            REGTEST_ADDRESS.into(),
+            Some(u64::MAX),
+            1_000,
+        );
+        assert!(
+            matches!(&result, Err(SdkError::InvalidSwap { message }) if message.contains("fee_rate_sat_vb")),
+            "{result:?}"
+        );
     }
 
     #[test]

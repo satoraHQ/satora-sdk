@@ -785,6 +785,10 @@ static class _UniFFILib {
     
     
     
+    
+    
+    
+    
 
     static _UniFFILib() {
         _UniFFILib.uniffiCheckContractApiVersion();
@@ -845,6 +849,10 @@ static class _UniFFILib {
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_create_bitcoin_to_arkade_swap(IntPtr @ptr,ulong @satsReceive,RustBuffer @receiveTo,RustBuffer @extraFeesBps,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_create_lightning_to_arkade_swap(IntPtr @ptr,ulong @satsReceive,RustBuffer @receiveTo,ref UniffiRustCallStatus _uniffi_out_err
     );
 
@@ -862,6 +870,10 @@ static class _UniFFILib {
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_quote(IntPtr @ptr,RustBuffer @sourceChain,RustBuffer @sourceToken,RustBuffer @targetChain,RustBuffer @targetToken,RustBuffer @amount,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_refund_bitcoin(IntPtr @ptr,RustBuffer @swapId,RustBuffer @destination,RustBuffer @feeRateSatVb,ulong @maximumFeeSats,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -1141,6 +1153,10 @@ static class _UniFFILib {
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_bitcoin_to_arkade_swap(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_lightning_to_arkade_swap(
     );
 
@@ -1158,6 +1174,10 @@ static class _UniFFILib {
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_quote(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_refund_bitcoin(
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -1242,14 +1262,20 @@ static class _UniFFILib {
         }
         {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_claim();
-            if (checksum != 58501) {
-                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_claim` checksum `58501`, library returned `{checksum}`");
+            if (checksum != 34600) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_claim` checksum `34600`, library returned `{checksum}`");
             }
         }
         {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_arkade_to_lightning_swap();
             if (checksum != 55337) {
                 throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_arkade_to_lightning_swap` checksum `55337`, library returned `{checksum}`");
+            }
+        }
+        {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_bitcoin_to_arkade_swap();
+            if (checksum != 11201) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_bitcoin_to_arkade_swap` checksum `11201`, library returned `{checksum}`");
             }
         }
         {
@@ -1260,8 +1286,8 @@ static class _UniFFILib {
         }
         {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_swap();
-            if (checksum != 42334) {
-                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_swap` checksum `42334`, library returned `{checksum}`");
+            if (checksum != 9195) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_swap` checksum `9195`, library returned `{checksum}`");
             }
         }
         {
@@ -1280,6 +1306,12 @@ static class _UniFFILib {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_quote();
             if (checksum != 423) {
                 throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_quote` checksum `423`, library returned `{checksum}`");
+            }
+        }
+        {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_refund_bitcoin();
+            if (checksum != 31945) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_refund_bitcoin` checksum `31945`, library returned `{checksum}`");
             }
         }
         {
@@ -1314,8 +1346,8 @@ static class _UniFFILib {
         }
         {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_constructor_satoraclient_new_with_arkade();
-            if (checksum != 28839) {
-                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_constructor_satoraclient_new_with_arkade` checksum `28839`, library returned `{checksum}`");
+            if (checksum != 53439) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_constructor_satoraclient_new_with_arkade` checksum `53439`, library returned `{checksum}`");
             }
         }
     }
@@ -1555,8 +1587,8 @@ public interface ISatoraClient {
     /// <exception cref="SdkException"></exception>
     DepositStatus CheckDepositFunding(string @swapId, string? @nodeRpcUrl);
     /// <summary>
-    /// Redeem the Arkade VHTLC for an EVM→Arkade swap that has
-    /// reached (or passed) ServerFunded. Sweeps the BTC to
+    /// Redeem the Arkade VHTLC for a Bitcoin, EVM or Lightning to Arkade
+    /// swap that has reached (or passed) ServerFunded. Sweeps the BTC to
     /// `destination`. Requires a signing client; the Arkade identity
     /// mnemonic is provided separately via [`ArkadeConfig`] because
     /// it's distinct from the lendaswap signing mnemonic.
@@ -1576,6 +1608,26 @@ public interface ISatoraClient {
     /// </summary>
     /// <exception cref="SdkException"></exception>
     Swap CreateArkadeToLightningSwap(LightningDestination @destination);
+    /// <summary>
+    /// Create an on-chain Bitcoin → Arkade swap. The payer sends the
+    /// deposit amount to the HTLC address in `swap.funding`
+    /// (`SwapFunding::BitcoinAddress`); once the server funds the Arkade
+    /// VHTLC, the user claims it via [`Self::claim`]. If the swap does
+    /// not complete, [`Self::refund_bitcoin`] returns the deposit once
+    /// the HTLC's refund locktime has matured.
+    ///
+    /// `sats_receive` is the exact amount to receive on Arkade.
+    /// `receive_to` `None` routes to the SDK's own internal Arkade wallet
+    /// (requires the client to have been built via `new_with_arkade`),
+    /// like [`Self::create_lightning_to_arkade_swap`]. `extra_fees_bps`
+    /// is the optional per-swap fee surcharge [`Self::create_swap`] takes.
+    ///
+    /// A server HTLC address that differs from the one the client's keys
+    /// rebuild is refused with `SdkError::InvalidSwap`, here and through
+    /// [`Self::create_swap`] alike.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    Swap CreateBitcoinToArkadeSwap(ulong @satsReceive, Address? @receiveTo, ushort? @extraFeesBps);
     /// <summary>
     /// Create a Lightning → Arkade swap. Dedicated counterpart to
     /// [`Self::create_arkade_to_lightning_swap`]: the server returns a
@@ -1602,8 +1654,9 @@ public interface ISatoraClient {
     /// <summary>
     /// Create a swap. Thin forward to the Rust SDK's dispatcher
     /// ([`lendaswap_sdk::Client::create_swap`]). Direction is resolved
-    /// from `source_chain` (Lightning vs EVM) plus the target. See the
-    /// underlying SDK doc for the supported directions today.
+    /// from `source_chain` (Lightning, Bitcoin or EVM) plus the target.
+    /// Bitcoin needs `QuoteAmount::Target`. See the underlying SDK doc
+    /// for the supported directions today.
     ///
     /// `gasless` is honoured only when the routed direction is EVM →
     /// Arkade — the Lightning rail doesn't model gasless funding (the
@@ -1645,6 +1698,36 @@ public interface ISatoraClient {
     /// </summary>
     /// <exception cref="SdkException"></exception>
     QuoteResult Quote(ChainId @sourceChain, TokenId @sourceToken, ChainId @targetChain, TokenId @targetToken, QuoteAmount @amount);
+    /// <summary>
+    /// Refund the on-chain HTLC of a Bitcoin → Arkade swap to
+    /// `destination`, a Bitcoin address on the client's network, once the
+    /// HTLC's refund locktime has matured. Wraps
+    /// [`lendaswap_sdk::Client::refund_bitcoin`] over the Esplora endpoint
+    /// of `arkade_config`, so only a client built via
+    /// [`Self::new_with_arkade`] can refund; others get
+    /// `SdkError::InvalidSwap`.
+    ///
+    /// `fee_rate_sat_vb` `None` takes the endpoint's estimate for
+    /// confirmation within six blocks. HTLC outputs whose fee would push
+    /// the refund over `maximum_fee_sats` are left for a later call; if
+    /// not even one fits, the call is refused with `SdkError::InvalidSwap`.
+    /// Unconfirmed HTLC outputs are refunded too, and the call gives up
+    /// with `SdkError::Timeout` after 60 seconds.
+    ///
+    /// Once a refund is pending, a call returns it unchanged unless
+    /// `fee_rate_sat_vb` is at least 1 sat/vB above its rate and the
+    /// replacement's fee stays within `maximum_fee_sats`; compare the
+    /// returned txid or fee to see whether it was bumped. Once a refund to
+    /// one address exists, a different `destination` is refused with
+    /// `SdkError::InvalidSwap`.
+    ///
+    /// A `Transport` or `Timeout` error, or a `Storage` error after a fee
+    /// bump, leaves the outcome unknown: the refund may have been
+    /// broadcast. Call again with the same `destination`, which returns
+    /// the pending or confirmed refund instead of building another.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    BitcoinRefundReceipt RefundBitcoin(string @swapId, string @destination, ulong? @feeRateSatVb, ulong @maximumFeeSats);
     /// <summary>
     /// `GET /version` — canary endpoint. Exercises the full build
     /// chain (Rust → cdylib → uniffi-generated C# → managed test)
@@ -1899,8 +1982,8 @@ public class SatoraClient : ISatoraClient, IDisposable {
     
     
     /// <summary>
-    /// Redeem the Arkade VHTLC for an EVM→Arkade swap that has
-    /// reached (or passed) ServerFunded. Sweeps the BTC to
+    /// Redeem the Arkade VHTLC for a Bitcoin, EVM or Lightning to Arkade
+    /// swap that has reached (or passed) ServerFunded. Sweeps the BTC to
     /// `destination`. Requires a signing client; the Arkade identity
     /// mnemonic is provided separately via [`ArkadeConfig`] because
     /// it's distinct from the lendaswap signing mnemonic.
@@ -1930,6 +2013,33 @@ public class SatoraClient : ISatoraClient, IDisposable {
         return CallWithPointer(thisPtr => FfiConverterTypeSwap.INSTANCE.Lift(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
     _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_create_arkade_to_lightning_swap(thisPtr, FfiConverterTypeLightningDestination.INSTANCE.Lower(@destination), ref _status)
+)));
+    }
+    
+    
+    /// <summary>
+    /// Create an on-chain Bitcoin → Arkade swap. The payer sends the
+    /// deposit amount to the HTLC address in `swap.funding`
+    /// (`SwapFunding::BitcoinAddress`); once the server funds the Arkade
+    /// VHTLC, the user claims it via [`Self::claim`]. If the swap does
+    /// not complete, [`Self::refund_bitcoin`] returns the deposit once
+    /// the HTLC's refund locktime has matured.
+    ///
+    /// `sats_receive` is the exact amount to receive on Arkade.
+    /// `receive_to` `None` routes to the SDK's own internal Arkade wallet
+    /// (requires the client to have been built via `new_with_arkade`),
+    /// like [`Self::create_lightning_to_arkade_swap`]. `extra_fees_bps`
+    /// is the optional per-swap fee surcharge [`Self::create_swap`] takes.
+    ///
+    /// A server HTLC address that differs from the one the client's keys
+    /// rebuild is refused with `SdkError::InvalidSwap`, here and through
+    /// [`Self::create_swap`] alike.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public Swap CreateBitcoinToArkadeSwap(ulong @satsReceive, Address? @receiveTo, ushort? @extraFeesBps) {
+        return CallWithPointer(thisPtr => FfiConverterTypeSwap.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_create_bitcoin_to_arkade_swap(thisPtr, FfiConverterUInt64.INSTANCE.Lower(@satsReceive), FfiConverterOptionalTypeAddress.INSTANCE.Lower(@receiveTo), FfiConverterOptionalUInt16.INSTANCE.Lower(@extraFeesBps), ref _status)
 )));
     }
     
@@ -1967,8 +2077,9 @@ public class SatoraClient : ISatoraClient, IDisposable {
     /// <summary>
     /// Create a swap. Thin forward to the Rust SDK's dispatcher
     /// ([`lendaswap_sdk::Client::create_swap`]). Direction is resolved
-    /// from `source_chain` (Lightning vs EVM) plus the target. See the
-    /// underlying SDK doc for the supported directions today.
+    /// from `source_chain` (Lightning, Bitcoin or EVM) plus the target.
+    /// Bitcoin needs `QuoteAmount::Target`. See the underlying SDK doc
+    /// for the supported directions today.
     ///
     /// `gasless` is honoured only when the routed direction is EVM →
     /// Arkade — the Lightning rail doesn't model gasless funding (the
@@ -2034,6 +2145,43 @@ public class SatoraClient : ISatoraClient, IDisposable {
         return CallWithPointer(thisPtr => FfiConverterTypeQuoteResult.INSTANCE.Lift(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
     _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_quote(thisPtr, FfiConverterTypeChainId.INSTANCE.Lower(@sourceChain), FfiConverterTypeTokenId.INSTANCE.Lower(@sourceToken), FfiConverterTypeChainId.INSTANCE.Lower(@targetChain), FfiConverterTypeTokenId.INSTANCE.Lower(@targetToken), FfiConverterTypeQuoteAmount.INSTANCE.Lower(@amount), ref _status)
+)));
+    }
+    
+    
+    /// <summary>
+    /// Refund the on-chain HTLC of a Bitcoin → Arkade swap to
+    /// `destination`, a Bitcoin address on the client's network, once the
+    /// HTLC's refund locktime has matured. Wraps
+    /// [`lendaswap_sdk::Client::refund_bitcoin`] over the Esplora endpoint
+    /// of `arkade_config`, so only a client built via
+    /// [`Self::new_with_arkade`] can refund; others get
+    /// `SdkError::InvalidSwap`.
+    ///
+    /// `fee_rate_sat_vb` `None` takes the endpoint's estimate for
+    /// confirmation within six blocks. HTLC outputs whose fee would push
+    /// the refund over `maximum_fee_sats` are left for a later call; if
+    /// not even one fits, the call is refused with `SdkError::InvalidSwap`.
+    /// Unconfirmed HTLC outputs are refunded too, and the call gives up
+    /// with `SdkError::Timeout` after 60 seconds.
+    ///
+    /// Once a refund is pending, a call returns it unchanged unless
+    /// `fee_rate_sat_vb` is at least 1 sat/vB above its rate and the
+    /// replacement's fee stays within `maximum_fee_sats`; compare the
+    /// returned txid or fee to see whether it was bumped. Once a refund to
+    /// one address exists, a different `destination` is refused with
+    /// `SdkError::InvalidSwap`.
+    ///
+    /// A `Transport` or `Timeout` error, or a `Storage` error after a fee
+    /// bump, leaves the outcome unknown: the refund may have been
+    /// broadcast. Call again with the same `destination`, which returns
+    /// the pending or confirmed refund instead of building another.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public BitcoinRefundReceipt RefundBitcoin(string @swapId, string @destination, ulong? @feeRateSatVb, ulong @maximumFeeSats) {
+        return CallWithPointer(thisPtr => FfiConverterTypeBitcoinRefundReceipt.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_refund_bitcoin(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterString.INSTANCE.Lower(@destination), FfiConverterOptionalUInt64.INSTANCE.Lower(@feeRateSatVb), FfiConverterUInt64.INSTANCE.Lower(@maximumFeeSats), ref _status)
 )));
     }
     
@@ -2113,10 +2261,9 @@ public class SatoraClient : ISatoraClient, IDisposable {
     }
     
     /// <summary>
-    /// Signing client + Arkade config. Required for every Arkade-side
-    /// method (`claim`, `arkade_balance_sats`, `arkade_settle`,
-    /// `arkade_offchain_address`, and `create_swap` with
-    /// `receive_to = None`).
+    /// Signing client + Arkade config. Required for every Arkade method,
+    /// such as `claim`, `arkade_balance`, `arkade_settle` and `create_swap`
+    /// with `receive_to = None`, and for `refund_bitcoin`.
     ///
     /// `referral_code` (optional) is attached to every swap/quote
     /// originated through this client.
@@ -2297,6 +2444,45 @@ class FfiConverterTypeArkadeConfig: FfiConverterRustBuffer<ArkadeConfig> {
             FfiConverterString.INSTANCE.Write(value.@identityMnemonic, stream);
             FfiConverterTypeBitcoinNetwork.INSTANCE.Write(value.@network, stream);
             FfiConverterOptionalString.INSTANCE.Write(value.@contractDbPath, stream);
+    }
+}
+
+
+
+/// <summary>
+/// Result of an on-chain Bitcoin HTLC refund.
+/// </summary>
+/// <param name="txid">
+/// Refund transaction ID, hex as block explorers show it (no `0x`).
+/// </param>
+public record BitcoinRefundReceipt (
+    /// <summary>
+    /// Refund transaction ID, hex as block explorers show it (no `0x`).
+    /// </summary>
+    string @txid, 
+    ulong @feeSats
+) {
+}
+
+class FfiConverterTypeBitcoinRefundReceipt: FfiConverterRustBuffer<BitcoinRefundReceipt> {
+    public static FfiConverterTypeBitcoinRefundReceipt INSTANCE = new FfiConverterTypeBitcoinRefundReceipt();
+
+    public override BitcoinRefundReceipt Read(BigEndianStream stream) {
+        return new BitcoinRefundReceipt(
+            @txid: FfiConverterString.INSTANCE.Read(stream),
+            @feeSats: FfiConverterUInt64.INSTANCE.Read(stream)
+        );
+    }
+
+    public override int AllocationSize(BitcoinRefundReceipt value) {
+        return 0
+            + FfiConverterString.INSTANCE.AllocationSize(value.@txid)
+            + FfiConverterUInt64.INSTANCE.AllocationSize(value.@feeSats);
+    }
+
+    public override void Write(BitcoinRefundReceipt value, BigEndianStream stream) {
+            FfiConverterString.INSTANCE.Write(value.@txid, stream);
+            FfiConverterUInt64.INSTANCE.Write(value.@feeSats, stream);
     }
 }
 
@@ -3569,8 +3755,9 @@ class FfiConverterTypeSdkError : FfiConverterRustBuffer<SdkException>, CallStatu
 /// the SDK relays into the HTLC via a Permit2-signed userOp.
 /// `UserSubmitted` is the non-gasless path — caller fetches HTLC calldata
 /// out-of-band and broadcasts the funding tx themselves.
-/// `Bolt11Invoice` is the Lightning → Arkade path — caller pays the
-/// invoice over their Lightning wallet, then claims the Arkade VHTLC.
+/// `Bolt11Invoice` is the Lightning to Arkade or EVM path: the caller
+/// pays the invoice from their Lightning wallet, then claims the Arkade
+/// VHTLC or the EVM HTLC.
 /// </summary>
 public record SwapFunding {
     
@@ -3581,15 +3768,31 @@ public record SwapFunding {
     public record UserSubmitted: SwapFunding {}
     
     
+    /// <summary>
+    /// On-chain Bitcoin HTLC address the payer funds with the deposit
+    /// amount.
+    /// </summary>
+    public record BitcoinAddress (
+        string @address
+    ) : SwapFunding {}
+    
     public record Bolt11Invoice (
         string @invoice
     ) : SwapFunding {}
     
     /// <summary>
-    /// Arkade → Lightning: user funds this Arkade VHTLC address.
+    /// Arkade to Lightning or EVM: user funds this Arkade VHTLC address.
     /// </summary>
     public record ArkadeAddress (
         string @address
+    ) : SwapFunding {}
+    
+    /// <summary>
+    /// A funding variant of the Rust SDK this binding does not name yet,
+    /// carrying its debug output.
+    /// </summary>
+    public record Unknown (
+        string @description
     ) : SwapFunding {}
     
 
@@ -3610,11 +3813,19 @@ class FfiConverterTypeSwapFunding : FfiConverterRustBuffer<SwapFunding>{
                 return new SwapFunding.UserSubmitted(
                 );
             case 3:
-                return new SwapFunding.Bolt11Invoice(
+                return new SwapFunding.BitcoinAddress(
                     FfiConverterString.INSTANCE.Read(stream)
                 );
             case 4:
+                return new SwapFunding.Bolt11Invoice(
+                    FfiConverterString.INSTANCE.Read(stream)
+                );
+            case 5:
                 return new SwapFunding.ArkadeAddress(
+                    FfiConverterString.INSTANCE.Read(stream)
+                );
+            case 6:
+                return new SwapFunding.Unknown(
                     FfiConverterString.INSTANCE.Read(stream)
                 );
             default:
@@ -3629,12 +3840,18 @@ class FfiConverterTypeSwapFunding : FfiConverterRustBuffer<SwapFunding>{
                     + FfiConverterString.INSTANCE.AllocationSize(variant_value.@depositAddress);
             case SwapFunding.UserSubmitted variant_value:
                 return 4;
+            case SwapFunding.BitcoinAddress variant_value:
+                return 4
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@address);
             case SwapFunding.Bolt11Invoice variant_value:
                 return 4
                     + FfiConverterString.INSTANCE.AllocationSize(variant_value.@invoice);
             case SwapFunding.ArkadeAddress variant_value:
                 return 4
                     + FfiConverterString.INSTANCE.AllocationSize(variant_value.@address);
+            case SwapFunding.Unknown variant_value:
+                return 4
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@description);
             default:
                 throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeSwapFunding.AllocationSize()", value));
         }
@@ -3649,13 +3866,21 @@ class FfiConverterTypeSwapFunding : FfiConverterRustBuffer<SwapFunding>{
             case SwapFunding.UserSubmitted variant_value:
                 stream.WriteInt(2);
                 break;
-            case SwapFunding.Bolt11Invoice variant_value:
+            case SwapFunding.BitcoinAddress variant_value:
                 stream.WriteInt(3);
+                FfiConverterString.INSTANCE.Write(variant_value.@address, stream);
+                break;
+            case SwapFunding.Bolt11Invoice variant_value:
+                stream.WriteInt(4);
                 FfiConverterString.INSTANCE.Write(variant_value.@invoice, stream);
                 break;
             case SwapFunding.ArkadeAddress variant_value:
-                stream.WriteInt(4);
+                stream.WriteInt(5);
                 FfiConverterString.INSTANCE.Write(variant_value.@address, stream);
+                break;
+            case SwapFunding.Unknown variant_value:
+                stream.WriteInt(6);
+                FfiConverterString.INSTANCE.Write(variant_value.@description, stream);
                 break;
             default:
                 throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeSwapFunding.Write()", value));
