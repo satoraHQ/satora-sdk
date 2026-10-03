@@ -292,8 +292,11 @@ accepts creation may require swap recovery before attempting continuation again.
 On-chain Bitcoin execution uses `bitcoin_htlc`, `claim_bitcoin`, and
 `refund_bitcoin`. Configure an `EsploraBackend`, or enable `electrum` and connect
 an `ElectrumBackend`. Both verify the configured network's genesis block and
-reject observations spanning a tip change. The injectable `BitcoinBackend` trait
-also supports private chain readers and offline integration tests.
+reject observations spanning a tip change. `EsploraBackend` also reads Mempool on
+an electrum backend, which serves no `/txs/chain`: history then pages its `/txs`
+through `after_txid`, one request per ten transactions. The injectable
+`BitcoinBackend` trait also supports private chain readers and offline integration
+tests.
 
 `BitcoinSpendOptions` requires a destination, confirmation policy, maximum fee,
 and timeout. A `minimum_confirmations` of 0 claims against a mempool funding.

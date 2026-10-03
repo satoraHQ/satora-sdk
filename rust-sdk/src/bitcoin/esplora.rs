@@ -108,35 +108,59 @@ pub(crate) async fn scripthash_history(
         .await
         .map_err(transport)?;
     let hash = bitcoin::hashes::sha256::Hash::hash(script.as_bytes());
-    let mut last_seen = None;
-    loop {
-        let page: Vec<esplora_client::Tx> = match last_seen {
-            // esplora-client only wraps the continuation form of /txs/chain.
-            None => http
-                .get(format!("{base_url}/scripthash/{hash:x}/txs/chain"))
-                .send()
-                .await
-                .map_err(transport)?
+    // esplora-client only wraps the continuation form of /txs/chain.
+    let chain = http
+        .get(format!("{base_url}/scripthash/{hash:x}/txs/chain"))
+        .send()
+        .await
+        .map_err(transport)?;
+    // Mempool on an electrum backend serves no /txs/chain. Its /txs pages the whole
+    // history, mempool first, ten transactions a request through after_txid, so the
+    // first page is continued to the end: one request per ten transactions.
+    let electrum = chain.status() == reqwest::StatusCode::NOT_FOUND;
+    let (mut page, page_size): (Vec<esplora_client::Tx>, _) = if electrum {
+        (std::mem::take(&mut entries), 10)
+    } else {
+        (
+            chain
                 .error_for_status()
                 .map_err(transport)?
                 .json()
                 .await
                 .map_err(decode)?,
-            Some(last) => client
-                .scripthash_txs(script, Some(last))
-                .await
-                .map_err(transport)?,
-        };
+            25,
+        )
+    };
+    let mut last_seen = None;
+    loop {
         let next = page.last().map(|tx| tx.txid);
-        let full = page.len() >= 25;
+        let full = page.len() >= page_size;
         entries.extend(page);
         if !full {
             break;
         }
-        if next.is_none() || next == last_seen {
+        let Some(last) = next.filter(|next| Some(*next) != last_seen) else {
             return Err(invalid("Esplora history pagination did not advance"));
-        }
-        last_seen = next;
+        };
+        last_seen = Some(last);
+        page = if electrum {
+            http.get(format!(
+                "{base_url}/scripthash/{hash:x}/txs?after_txid={last}"
+            ))
+            .send()
+            .await
+            .map_err(transport)?
+            .error_for_status()
+            .map_err(transport)?
+            .json()
+            .await
+            .map_err(decode)?
+        } else {
+            client
+                .scripthash_txs(script, Some(last))
+                .await
+                .map_err(transport)?
+        };
     }
     let mut seen = HashSet::new();
     entries.retain(|tx| seen.insert(tx.txid));

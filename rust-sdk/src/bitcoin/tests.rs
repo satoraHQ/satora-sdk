@@ -964,89 +964,130 @@ async fn esplora_confirmed_funding_survives_mempool_spam() {
         }],
     };
     let spender_txid = spender.compute_txid();
-    // 0 unspent, 1 spent in the mempool, 2 spent in a block the listing missed.
-    let spent = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
-    let funding_spent = spent.clone();
-    let server = MockServer::start().await;
-    Mock::given(wiremock::matchers::method("GET"))
-        .respond_with(move |request: &wiremock::Request| {
-            let path = request.url.path();
-            if path == "/block-height/0" || path == "/blocks/tip/hash" {
-                return ResponseTemplate::new(200).set_body_string(hash.to_string());
-            }
-            if path == "/blocks/tip/height" {
-                return ResponseTemplate::new(200).set_body_string("0");
-            }
-            if path == format!("/block/{hash}/header") {
-                return ResponseTemplate::new(200)
-                    .set_body_string(bitcoin::consensus::encode::serialize_hex(&genesis.header));
-            }
-            if path == format!("/scripthash/{script_hash:x}/txs") {
-                return ResponseTemplate::new(200).set_body_json(&mempool);
-            }
-            if path == format!("/scripthash/{script_hash:x}/txs/chain") {
-                return ResponseTemplate::new(200).set_body_json(&decoys);
-            }
-            if path == format!("/scripthash/{script_hash:x}/txs/chain/{last_decoy}") {
-                return ResponseTemplate::new(200).set_body_json(&funding);
-            }
-            if path == format!("/tx/{spender_txid}/raw") {
-                return ResponseTemplate::new(200)
-                    .set_body_bytes(bitcoin::consensus::serialize(&spender));
-            }
-            let state = funding_spent.load(std::sync::atomic::Ordering::Relaxed);
-            if path == format!("/tx/{funding_txid}/outspend/0") && state > 0 {
-                return ResponseTemplate::new(200).set_body_json(json!({
-                    "spent": true,
-                    "txid": spender_txid,
-                    "vin": 0,
-                    "status": if state == 1 {
-                        json!({"confirmed": false})
-                    } else {
-                        json!({"confirmed": true, "block_height": 0, "block_hash": hash})
+    // Mempool on an electrum backend serves no /txs/chain; its /txs pages the whole
+    // history, mempool first, ten at a time through after_txid.
+    let listing: Vec<_> = mempool
+        .iter()
+        .chain(&decoys)
+        .chain(&funding)
+        .cloned()
+        .collect();
+    for electrum in [false, true] {
+        // 0 unspent, 1 spent in the mempool, 2 spent in a block the listing missed.
+        let spent = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let funding_spent = spent.clone();
+        let ignores_cursor = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stale = ignores_cursor.clone();
+        let (mempool, decoys, funding, listing) = (
+            mempool.clone(),
+            decoys.clone(),
+            funding.clone(),
+            listing.clone(),
+        );
+        let (transactions, spender) = (transactions.clone(), spender.clone());
+        let server = MockServer::start().await;
+        Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(move |request: &wiremock::Request| {
+                let path = request.url.path();
+                if path == "/block-height/0" || path == "/blocks/tip/hash" {
+                    return ResponseTemplate::new(200).set_body_string(hash.to_string());
+                }
+                if path == "/blocks/tip/height" {
+                    return ResponseTemplate::new(200).set_body_string("0");
+                }
+                if path == format!("/block/{hash}/header") {
+                    return ResponseTemplate::new(200).set_body_string(
+                        bitcoin::consensus::encode::serialize_hex(&genesis.header),
+                    );
+                }
+                if electrum && path == format!("/scripthash/{script_hash:x}/txs") {
+                    let after = request
+                        .url
+                        .query_pairs()
+                        .find(|(key, _)| key == "after_txid")
+                        .map(|(_, txid)| txid.into_owned())
+                        .filter(|_| !stale.load(std::sync::atomic::Ordering::Relaxed));
+                    let start = after
+                        .and_then(|txid| listing.iter().position(|e| e["txid"] == txid))
+                        .map_or(0, |position| position + 1);
+                    let end = listing.len().min(start + 10);
+                    return ResponseTemplate::new(200).set_body_json(&listing[start..end]);
+                }
+                if !electrum {
+                    if path == format!("/scripthash/{script_hash:x}/txs") {
+                        return ResponseTemplate::new(200).set_body_json(&mempool);
                     }
-                }));
-            }
-            for tx in &transactions {
-                if path == format!("/tx/{}/raw", tx.compute_txid()) {
+                    if path == format!("/scripthash/{script_hash:x}/txs/chain") {
+                        return ResponseTemplate::new(200).set_body_json(&decoys);
+                    }
+                    if path == format!("/scripthash/{script_hash:x}/txs/chain/{last_decoy}") {
+                        return ResponseTemplate::new(200).set_body_json(&funding);
+                    }
+                }
+                if path == format!("/tx/{spender_txid}/raw") {
                     return ResponseTemplate::new(200)
-                        .set_body_bytes(bitcoin::consensus::serialize(tx));
+                        .set_body_bytes(bitcoin::consensus::serialize(&spender));
                 }
-                if path == format!("/tx/{}/outspend/0", tx.compute_txid()) {
-                    return ResponseTemplate::new(200).set_body_json(json!({"spent":false}));
+                let state = funding_spent.load(std::sync::atomic::Ordering::Relaxed);
+                if path == format!("/tx/{funding_txid}/outspend/0") && state > 0 {
+                    return ResponseTemplate::new(200).set_body_json(json!({
+                        "spent": true,
+                        "txid": spender_txid,
+                        "vin": 0,
+                        "status": if state == 1 {
+                            json!({"confirmed": false})
+                        } else {
+                            json!({"confirmed": true, "block_height": 0, "block_hash": hash})
+                        }
+                    }));
                 }
-            }
-            ResponseTemplate::new(404)
-        })
-        .mount(&server)
-        .await;
-    let backend = EsploraBackend::new(&server.uri(), Network::Regtest).unwrap();
-    // The same spam must not hide our pending spend of the funding either.
-    spent.store(1, std::sync::atomic::Ordering::Relaxed);
-    let history = backend.history(&address).await.unwrap();
-    assert_eq!(history.observation.utxos.len(), 75);
-    let pending = history
-        .transactions
-        .iter()
-        .find(|entry| entry.transaction.compute_txid() == spender_txid)
-        .expect("pending spend hidden by mempool spam");
-    assert_eq!(pending.confirmed_height, None);
-    spent.store(2, std::sync::atomic::Ordering::Relaxed);
-    let error = backend.history(&address).await.unwrap_err();
-    assert!(
-        error.to_string().contains("changed during observation"),
-        "{error}"
-    );
-    spent.store(0, std::sync::atomic::Ordering::Relaxed);
-    let observed = backend.observe(&address).await.unwrap();
-    assert_eq!(observed.utxos.len(), 76);
-    let funded = observed
-        .utxos
-        .iter()
-        .find(|utxo| utxo.outpoint.txid == funding_txid)
-        .expect("confirmed funding hidden by mempool spam");
-    assert_eq!(funded.confirmed_height, Some(0));
-    assert_eq!(funded.output.value, Amount::from_sat(50_000));
+                for tx in &transactions {
+                    if path == format!("/tx/{}/raw", tx.compute_txid()) {
+                        return ResponseTemplate::new(200)
+                            .set_body_bytes(bitcoin::consensus::serialize(tx));
+                    }
+                    if path == format!("/tx/{}/outspend/0", tx.compute_txid()) {
+                        return ResponseTemplate::new(200).set_body_json(json!({"spent":false}));
+                    }
+                }
+                ResponseTemplate::new(404)
+            })
+            .mount(&server)
+            .await;
+        let backend = EsploraBackend::new(&server.uri(), Network::Regtest).unwrap();
+        // The same spam must not hide our pending spend of the funding either.
+        spent.store(1, std::sync::atomic::Ordering::Relaxed);
+        let history = backend.history(&address).await.unwrap();
+        assert_eq!(history.observation.utxos.len(), 75, "electrum {electrum}");
+        let pending = history
+            .transactions
+            .iter()
+            .find(|entry| entry.transaction.compute_txid() == spender_txid)
+            .expect("pending spend hidden by mempool spam");
+        assert_eq!(pending.confirmed_height, None);
+        spent.store(2, std::sync::atomic::Ordering::Relaxed);
+        let error = backend.history(&address).await.unwrap_err();
+        assert!(
+            error.to_string().contains("changed during observation"),
+            "{error}"
+        );
+        spent.store(0, std::sync::atomic::Ordering::Relaxed);
+        let observed = backend.observe(&address).await.unwrap();
+        assert_eq!(observed.utxos.len(), 76, "electrum {electrum}");
+        let funded = observed
+            .utxos
+            .iter()
+            .find(|utxo| utxo.outpoint.txid == funding_txid)
+            .expect("confirmed funding hidden by mempool spam");
+        assert_eq!(funded.confirmed_height, Some(0));
+        assert_eq!(funded.output.value, Amount::from_sat(50_000));
+        if electrum {
+            // A server that ignores the cursor would repeat the first page forever.
+            ignores_cursor.store(true, std::sync::atomic::Ordering::Relaxed);
+            let error = backend.observe(&address).await.unwrap_err();
+            assert!(error.to_string().contains("did not advance"), "{error}");
+        }
+    }
 }
 
 /// Line-delimited JSON-RPC server for `connections` sequential sockets. It answers the
