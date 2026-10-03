@@ -161,8 +161,22 @@ public sealed record Quote(
 /// <c>lendaswap_sdk::Swap</c> — amount fields stay as strings to
 /// preserve precision for large EVM token amounts.
 /// </summary>
+/// <remarks>
+/// Locktimes and expiries are unix seconds, null when the direction has
+/// no such leg. A locktime on the leg the client funds is when the
+/// client's refund unlocks. On the leg the server funds, the server can
+/// refund from then, so it is the client's deadline to claim. Bitcoin and
+/// Arkade locks mature on median time past, which trails wall clock by
+/// about an hour, so a refund at the locktime can still be refused;
+/// <see cref="Client.ClaimAsync"/> refuses within 300 seconds of the
+/// VHTLC locktime.
+/// </remarks>
 /// <param name="Id">Swap UUID. Persist this to drive funding / claim.</param>
 /// <param name="Status">Current backend state; see <see cref="SwapStatus"/>.</param>
+/// <param name="Direction">
+/// Route of the swap. <c>SwapDirection.Unknown</c> is a direction of the
+/// Rust SDK this version does not name yet.
+/// </param>
 /// <param name="Funding">
 /// Funding instructions, by direction: <c>SwapFunding.Gasless</c> or
 /// <c>SwapFunding.UserSubmitted</c> for EVM sources (gasless on or off),
@@ -176,25 +190,61 @@ public sealed record Quote(
 /// <param name="ReceiveAddress">Where the user receives the target asset.</param>
 /// <param name="ReceiveAmount">Amount the user will receive, in the smallest unit of <paramref name="ReceiveToken"/>.</param>
 /// <param name="ReceiveToken">Target token the user receives.</param>
+/// <param name="CreatedAt">Server creation time as sent on the wire (RFC 3339).</param>
+/// <param name="VhtlcRefundLocktime">
+/// Arkade VHTLC refund locktime. Bitcoin, EVM or Lightning to Arkade: the
+/// claim deadline. Arkade to EVM or Lightning: when the client's refund
+/// unlocks.
+/// </param>
+/// <param name="BtcRefundLocktime">
+/// On-chain Bitcoin HTLC refund locktime. Bitcoin to Arkade or EVM: when
+/// the client's refund unlocks. EVM to Bitcoin: the claim deadline.
+/// </param>
+/// <param name="EvmRefundLocktime">
+/// EVM HTLC refund locktime. EVM to Arkade, Bitcoin or Lightning: when the
+/// client's refund unlocks. Bitcoin, Arkade or Lightning to EVM: the claim
+/// deadline.
+/// </param>
+/// <param name="InvoiceExpiresAt">
+/// Expiry of the invoice the payer pays (Lightning to Arkade or EVM) or
+/// the server pays (Arkade or EVM to Lightning). Null also when the server
+/// reports no expiry, which it sends as 0. A payer must pay before both
+/// this expiry and the claim cutoff on the server-funded leg
+/// (<paramref name="VhtlcRefundLocktime"/> for Lightning to Arkade,
+/// <paramref name="EvmRefundLocktime"/> for Lightning to EVM); the server
+/// does not guarantee which comes first.
+/// </param>
 public sealed record SwapDetails(
     string Id,
     SwapStatus Status,
+    SwapDirection Direction,
     SwapFunding Funding,
     string DepositAmount,
     TokenId DepositToken,
     string ReceiveAddress,
     string ReceiveAmount,
-    TokenId ReceiveToken)
+    TokenId ReceiveToken,
+    string CreatedAt,
+    long? VhtlcRefundLocktime,
+    long? BtcRefundLocktime,
+    long? EvmRefundLocktime,
+    long? InvoiceExpiresAt)
 {
     internal static SwapDetails FromFfi(Ffi.Swap s) => new(
         s.@id,
         s.@status,
+        s.@direction,
         s.@funding,
         s.@depositAmount,
         s.@depositToken,
         s.@receiveAddress,
         s.@receiveAmount,
-        s.@receiveToken);
+        s.@receiveToken,
+        s.@createdAt,
+        s.@vhtlcRefundLocktime,
+        s.@btcRefundLocktime,
+        s.@evmRefundLocktime,
+        s.@invoiceExpiresAt);
 }
 
 /// <summary>

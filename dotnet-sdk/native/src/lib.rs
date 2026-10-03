@@ -35,6 +35,7 @@ use lendaswap_sdk::types::KnownChain as SdkKnownChain;
 use lendaswap_sdk::types::LightningDestination as SdkLightningDestination;
 use lendaswap_sdk::types::QuoteAmount as SdkQuoteAmount;
 use lendaswap_sdk::types::QuoteRequest;
+use lendaswap_sdk::types::SwapDirection as SdkSwapDirection;
 use lendaswap_sdk::types::SwapStatus as SdkSwapStatus;
 use lendaswap_sdk::types::TokenId as SdkTokenId;
 use std::io::IsTerminal;
@@ -602,19 +603,90 @@ impl From<SdkSwapFunding> for SwapFunding {
     }
 }
 
+/// Route of a swap. Mirrors `lendaswap_sdk::types::SwapDirection`.
+#[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum SwapDirection {
+    BtcToArkade,
+    BitcoinToEvm,
+    ArkadeToEvm,
+    LightningToEvm,
+    EvmToBitcoin,
+    EvmToLightning,
+    EvmToArkade,
+    LightningToArkade,
+    ArkadeToLightning,
+    /// A direction of the Rust SDK this binding does not name yet,
+    /// carrying its debug output.
+    Unknown {
+        description: String,
+    },
+}
+
+impl From<SdkSwapDirection> for SwapDirection {
+    fn from(d: SdkSwapDirection) -> Self {
+        match d {
+            SdkSwapDirection::BtcToArkade => Self::BtcToArkade,
+            SdkSwapDirection::BitcoinToEvm => Self::BitcoinToEvm,
+            SdkSwapDirection::ArkadeToEvm => Self::ArkadeToEvm,
+            SdkSwapDirection::LightningToEvm => Self::LightningToEvm,
+            SdkSwapDirection::EvmToBitcoin => Self::EvmToBitcoin,
+            SdkSwapDirection::EvmToLightning => Self::EvmToLightning,
+            SdkSwapDirection::EvmToArkade => Self::EvmToArkade,
+            SdkSwapDirection::LightningToArkade => Self::LightningToArkade,
+            SdkSwapDirection::ArkadeToLightning => Self::ArkadeToLightning,
+            // `SdkSwapDirection` is `#[non_exhaustive]` upstream.
+            other => Self::Unknown {
+                description: format!("{other:?}"),
+            },
+        }
+    }
+}
+
 /// Compact, user-facing view of a created swap. Mirrors
 /// `lendaswap_sdk::Swap` — amounts stay as strings to preserve
 /// precision for large EVM token amounts.
+///
+/// Locktimes and expiries are unix seconds, `None` when the direction
+/// has no such leg. A locktime on the leg the client funds is when the
+/// client's refund unlocks. On the leg the server funds, the server can
+/// refund from then, so it is the client's deadline to claim. Bitcoin and
+/// Arkade locks mature on median time past, which trails wall clock by
+/// about an hour, so a refund at the locktime can still be refused;
+/// [`SatoraClient::claim`] refuses within 300 seconds of the VHTLC
+/// locktime.
 #[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
 pub struct Swap {
     pub id: String,
     pub status: SwapStatus,
+    pub direction: SwapDirection,
     pub funding: SwapFunding,
     pub deposit_amount: String,
     pub deposit_token: TokenId,
     pub receive_address: String,
     pub receive_amount: String,
     pub receive_token: TokenId,
+    /// Server creation time as sent on the wire (RFC 3339).
+    pub created_at: String,
+    /// Arkade VHTLC refund locktime. Bitcoin, EVM or Lightning to Arkade:
+    /// the claim deadline. Arkade to EVM or Lightning: when the client's
+    /// refund unlocks.
+    pub vhtlc_refund_locktime: Option<i64>,
+    /// On-chain Bitcoin HTLC refund locktime. Bitcoin to Arkade or EVM:
+    /// when the client's refund unlocks. EVM to Bitcoin: the claim
+    /// deadline.
+    pub btc_refund_locktime: Option<i64>,
+    /// EVM HTLC refund locktime. EVM to Arkade, Bitcoin or Lightning: when
+    /// the client's refund unlocks. Bitcoin, Arkade or Lightning to EVM:
+    /// the claim deadline.
+    pub evm_refund_locktime: Option<i64>,
+    /// Expiry of the invoice the payer pays (Lightning to Arkade or EVM)
+    /// or the server pays (Arkade or EVM to Lightning). `None` also when
+    /// the server reports no expiry, which it sends as 0. A payer must pay
+    /// before both this expiry and the claim cutoff on the server-funded
+    /// leg (`vhtlc_refund_locktime` for Lightning to Arkade,
+    /// `evm_refund_locktime` for Lightning to EVM); the server does not
+    /// guarantee which comes first.
+    pub invoice_expires_at: Option<i64>,
 }
 
 impl From<SdkSwap> for Swap {
@@ -622,12 +694,18 @@ impl From<SdkSwap> for Swap {
         Self {
             id: s.id,
             status: s.status.into(),
+            direction: s.direction.into(),
             funding: s.funding.into(),
             deposit_amount: s.deposit_amount,
             deposit_token: token_id_from_sdk(s.deposit_token),
             receive_address: s.receive_address,
             receive_amount: s.receive_amount,
             receive_token: token_id_from_sdk(s.receive_token),
+            created_at: s.created_at,
+            vhtlc_refund_locktime: s.vhtlc_refund_locktime,
+            btc_refund_locktime: s.btc_refund_locktime,
+            evm_refund_locktime: s.evm_refund_locktime,
+            invoice_expires_at: s.invoice_expires_at,
         }
     }
 }
@@ -1430,12 +1508,28 @@ fn swap_status_into_sdk(s: SwapStatus) -> SdkSwapStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lendaswap_sdk::types::GetSwapResponse;
+    use serde_json::json;
 
     const MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
     const OTHER_MNEMONIC: &str = "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong";
     const UNREACHABLE: &str = "http://127.0.0.1:1";
     const ARKADE_ADDRESS: &str = "tark1qqellv77udfmr20tun8dvju5vgudpf9vxe8jwhthrkn26fz96pawqfdy8nk05rsmrf8h94j26905e7n6sng8y059z8ykn2j5xcuw4xt846qj6x";
     const REGTEST_ADDRESS: &str = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080";
+
+    /// A server response from the Rust SDK's shared fixtures, with
+    /// `overrides` applied.
+    fn swap_response(direction: &str, overrides: serde_json::Value) -> GetSwapResponse {
+        let mut fixtures: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../rust-sdk/tests/fixtures/swap-responses.json"
+        ))
+        .unwrap();
+        let mut response = fixtures[direction].take();
+        for (field, value) in overrides.as_object().unwrap() {
+            response[field] = value.clone();
+        }
+        serde_json::from_value(response).unwrap()
+    }
 
     fn client_with_storage(
         path: &std::path::Path,
@@ -1730,6 +1824,76 @@ mod tests {
         assert!(
             matches!(&result, Err(SdkError::InvalidSwap { message }) if message.contains("fee_rate_sat_vb")),
             "{result:?}"
+        );
+    }
+
+    #[test]
+    fn swap_direction_keeps_each_variant() {
+        // Every variant the SDK has is named, so no input reaches `Unknown`.
+        let cases = [
+            (SdkSwapDirection::BtcToArkade, SwapDirection::BtcToArkade),
+            (SdkSwapDirection::BitcoinToEvm, SwapDirection::BitcoinToEvm),
+            (SdkSwapDirection::ArkadeToEvm, SwapDirection::ArkadeToEvm),
+            (
+                SdkSwapDirection::LightningToEvm,
+                SwapDirection::LightningToEvm,
+            ),
+            (SdkSwapDirection::EvmToBitcoin, SwapDirection::EvmToBitcoin),
+            (
+                SdkSwapDirection::EvmToLightning,
+                SwapDirection::EvmToLightning,
+            ),
+            (SdkSwapDirection::EvmToArkade, SwapDirection::EvmToArkade),
+            (
+                SdkSwapDirection::LightningToArkade,
+                SwapDirection::LightningToArkade,
+            ),
+            (
+                SdkSwapDirection::ArkadeToLightning,
+                SwapDirection::ArkadeToLightning,
+            ),
+        ];
+        for (direction, expected) in cases {
+            assert_eq!(SwapDirection::from(direction), expected);
+        }
+    }
+
+    #[test]
+    fn swap_carries_its_direction_creation_time_and_deadlines() {
+        // No direction has all four deadlines, so two directions cover them,
+        // each deadline with its own value.
+        let bitcoin = Swap::from(SdkSwap::from(swap_response(
+            "btc_to_arkade",
+            json!({
+                "created_at": "2026-09-01T00:00:07Z",
+                "vhtlc_refund_locktime": 1_001,
+                "btc_refund_locktime": 1_002,
+            }),
+        )));
+        assert_eq!(bitcoin.direction, SwapDirection::BtcToArkade);
+        assert_eq!(bitcoin.created_at, "2026-09-01T00:00:07Z");
+        assert_eq!(
+            (
+                bitcoin.vhtlc_refund_locktime,
+                bitcoin.btc_refund_locktime,
+                bitcoin.evm_refund_locktime,
+                bitcoin.invoice_expires_at,
+            ),
+            (Some(1_001), Some(1_002), None, None)
+        );
+        let lightning = Swap::from(SdkSwap::from(swap_response(
+            "evm_to_lightning",
+            json!({ "evm_refund_locktime": 1_003, "invoice_expires_at": 1_004 }),
+        )));
+        assert_eq!(lightning.direction, SwapDirection::EvmToLightning);
+        assert_eq!(
+            (
+                lightning.vhtlc_refund_locktime,
+                lightning.btc_refund_locktime,
+                lightning.evm_refund_locktime,
+                lightning.invoice_expires_at,
+            ),
+            (None, None, Some(1_003), Some(1_004))
         );
     }
 

@@ -1412,6 +1412,32 @@ class FfiConverterUInt64: FfiConverter<ulong, ulong> {
 
 
 
+class FfiConverterInt64: FfiConverter<long, long> {
+    public static FfiConverterInt64 INSTANCE = new FfiConverterInt64();
+
+    public override long Lift(long value) {
+        return value;
+    }
+
+    public override long Read(BigEndianStream stream) {
+        return stream.ReadLong();
+    }
+
+    public override long Lower(long value) {
+        return value;
+    }
+
+    public override int AllocationSize(long value) {
+        return 8;
+    }
+
+    public override void Write(long value, BigEndianStream stream) {
+        stream.WriteLong(value);
+    }
+}
+
+
+
 class FfiConverterDouble: FfiConverter<double, double> {
     public static FfiConverterDouble INSTANCE = new FfiConverterDouble();
 
@@ -2830,16 +2856,85 @@ class FfiConverterTypeQuoteResult: FfiConverterRustBuffer<QuoteResult> {
 /// Compact, user-facing view of a created swap. Mirrors
 /// `lendaswap_sdk::Swap` — amounts stay as strings to preserve
 /// precision for large EVM token amounts.
+///
+/// Locktimes and expiries are unix seconds, `None` when the direction
+/// has no such leg. A locktime on the leg the client funds is when the
+/// client's refund unlocks. On the leg the server funds, the server can
+/// refund from then, so it is the client's deadline to claim. Bitcoin and
+/// Arkade locks mature on median time past, which trails wall clock by
+/// about an hour, so a refund at the locktime can still be refused;
+/// [`SatoraClient::claim`] refuses within 300 seconds of the VHTLC
+/// locktime.
 /// </summary>
+/// <param name="created_at">
+/// Server creation time as sent on the wire (RFC 3339).
+/// </param>
+/// <param name="vhtlc_refund_locktime">
+/// Arkade VHTLC refund locktime. Bitcoin, EVM or Lightning to Arkade:
+/// the claim deadline. Arkade to EVM or Lightning: when the client's
+/// refund unlocks.
+/// </param>
+/// <param name="btc_refund_locktime">
+/// On-chain Bitcoin HTLC refund locktime. Bitcoin to Arkade or EVM:
+/// when the client's refund unlocks. EVM to Bitcoin: the claim
+/// deadline.
+/// </param>
+/// <param name="evm_refund_locktime">
+/// EVM HTLC refund locktime. EVM to Arkade, Bitcoin or Lightning: when
+/// the client's refund unlocks. Bitcoin, Arkade or Lightning to EVM:
+/// the claim deadline.
+/// </param>
+/// <param name="invoice_expires_at">
+/// Expiry of the invoice the payer pays (Lightning to Arkade or EVM)
+/// or the server pays (Arkade or EVM to Lightning). `None` also when
+/// the server reports no expiry, which it sends as 0. A payer must pay
+/// before both this expiry and the claim cutoff on the server-funded
+/// leg (`vhtlc_refund_locktime` for Lightning to Arkade,
+/// `evm_refund_locktime` for Lightning to EVM); the server does not
+/// guarantee which comes first.
+/// </param>
 public record Swap (
     string @id, 
     SwapStatus @status, 
+    SwapDirection @direction, 
     SwapFunding @funding, 
     string @depositAmount, 
     TokenId @depositToken, 
     string @receiveAddress, 
     string @receiveAmount, 
-    TokenId @receiveToken
+    TokenId @receiveToken, 
+    /// <summary>
+    /// Server creation time as sent on the wire (RFC 3339).
+    /// </summary>
+    string @createdAt, 
+    /// <summary>
+    /// Arkade VHTLC refund locktime. Bitcoin, EVM or Lightning to Arkade:
+    /// the claim deadline. Arkade to EVM or Lightning: when the client's
+    /// refund unlocks.
+    /// </summary>
+    long? @vhtlcRefundLocktime, 
+    /// <summary>
+    /// On-chain Bitcoin HTLC refund locktime. Bitcoin to Arkade or EVM:
+    /// when the client's refund unlocks. EVM to Bitcoin: the claim
+    /// deadline.
+    /// </summary>
+    long? @btcRefundLocktime, 
+    /// <summary>
+    /// EVM HTLC refund locktime. EVM to Arkade, Bitcoin or Lightning: when
+    /// the client's refund unlocks. Bitcoin, Arkade or Lightning to EVM:
+    /// the claim deadline.
+    /// </summary>
+    long? @evmRefundLocktime, 
+    /// <summary>
+    /// Expiry of the invoice the payer pays (Lightning to Arkade or EVM)
+    /// or the server pays (Arkade or EVM to Lightning). `None` also when
+    /// the server reports no expiry, which it sends as 0. A payer must pay
+    /// before both this expiry and the claim cutoff on the server-funded
+    /// leg (`vhtlc_refund_locktime` for Lightning to Arkade,
+    /// `evm_refund_locktime` for Lightning to EVM); the server does not
+    /// guarantee which comes first.
+    /// </summary>
+    long? @invoiceExpiresAt
 ) {
 }
 
@@ -2850,12 +2945,18 @@ class FfiConverterTypeSwap: FfiConverterRustBuffer<Swap> {
         return new Swap(
             @id: FfiConverterString.INSTANCE.Read(stream),
             @status: FfiConverterTypeSwapStatus.INSTANCE.Read(stream),
+            @direction: FfiConverterTypeSwapDirection.INSTANCE.Read(stream),
             @funding: FfiConverterTypeSwapFunding.INSTANCE.Read(stream),
             @depositAmount: FfiConverterString.INSTANCE.Read(stream),
             @depositToken: FfiConverterTypeTokenId.INSTANCE.Read(stream),
             @receiveAddress: FfiConverterString.INSTANCE.Read(stream),
             @receiveAmount: FfiConverterString.INSTANCE.Read(stream),
-            @receiveToken: FfiConverterTypeTokenId.INSTANCE.Read(stream)
+            @receiveToken: FfiConverterTypeTokenId.INSTANCE.Read(stream),
+            @createdAt: FfiConverterString.INSTANCE.Read(stream),
+            @vhtlcRefundLocktime: FfiConverterOptionalInt64.INSTANCE.Read(stream),
+            @btcRefundLocktime: FfiConverterOptionalInt64.INSTANCE.Read(stream),
+            @evmRefundLocktime: FfiConverterOptionalInt64.INSTANCE.Read(stream),
+            @invoiceExpiresAt: FfiConverterOptionalInt64.INSTANCE.Read(stream)
         );
     }
 
@@ -2863,23 +2964,35 @@ class FfiConverterTypeSwap: FfiConverterRustBuffer<Swap> {
         return 0
             + FfiConverterString.INSTANCE.AllocationSize(value.@id)
             + FfiConverterTypeSwapStatus.INSTANCE.AllocationSize(value.@status)
+            + FfiConverterTypeSwapDirection.INSTANCE.AllocationSize(value.@direction)
             + FfiConverterTypeSwapFunding.INSTANCE.AllocationSize(value.@funding)
             + FfiConverterString.INSTANCE.AllocationSize(value.@depositAmount)
             + FfiConverterTypeTokenId.INSTANCE.AllocationSize(value.@depositToken)
             + FfiConverterString.INSTANCE.AllocationSize(value.@receiveAddress)
             + FfiConverterString.INSTANCE.AllocationSize(value.@receiveAmount)
-            + FfiConverterTypeTokenId.INSTANCE.AllocationSize(value.@receiveToken);
+            + FfiConverterTypeTokenId.INSTANCE.AllocationSize(value.@receiveToken)
+            + FfiConverterString.INSTANCE.AllocationSize(value.@createdAt)
+            + FfiConverterOptionalInt64.INSTANCE.AllocationSize(value.@vhtlcRefundLocktime)
+            + FfiConverterOptionalInt64.INSTANCE.AllocationSize(value.@btcRefundLocktime)
+            + FfiConverterOptionalInt64.INSTANCE.AllocationSize(value.@evmRefundLocktime)
+            + FfiConverterOptionalInt64.INSTANCE.AllocationSize(value.@invoiceExpiresAt);
     }
 
     public override void Write(Swap value, BigEndianStream stream) {
             FfiConverterString.INSTANCE.Write(value.@id, stream);
             FfiConverterTypeSwapStatus.INSTANCE.Write(value.@status, stream);
+            FfiConverterTypeSwapDirection.INSTANCE.Write(value.@direction, stream);
             FfiConverterTypeSwapFunding.INSTANCE.Write(value.@funding, stream);
             FfiConverterString.INSTANCE.Write(value.@depositAmount, stream);
             FfiConverterTypeTokenId.INSTANCE.Write(value.@depositToken, stream);
             FfiConverterString.INSTANCE.Write(value.@receiveAddress, stream);
             FfiConverterString.INSTANCE.Write(value.@receiveAmount, stream);
             FfiConverterTypeTokenId.INSTANCE.Write(value.@receiveToken, stream);
+            FfiConverterString.INSTANCE.Write(value.@createdAt, stream);
+            FfiConverterOptionalInt64.INSTANCE.Write(value.@vhtlcRefundLocktime, stream);
+            FfiConverterOptionalInt64.INSTANCE.Write(value.@btcRefundLocktime, stream);
+            FfiConverterOptionalInt64.INSTANCE.Write(value.@evmRefundLocktime, stream);
+            FfiConverterOptionalInt64.INSTANCE.Write(value.@invoiceExpiresAt, stream);
     }
 }
 
@@ -3749,6 +3862,165 @@ class FfiConverterTypeSdkError : FfiConverterRustBuffer<SdkException>, CallStatu
 
 
 /// <summary>
+/// Route of a swap. Mirrors `lendaswap_sdk::types::SwapDirection`.
+/// </summary>
+public record SwapDirection {
+    
+    public record BtcToArkade: SwapDirection {}
+    
+    
+    public record BitcoinToEvm: SwapDirection {}
+    
+    
+    public record ArkadeToEvm: SwapDirection {}
+    
+    
+    public record LightningToEvm: SwapDirection {}
+    
+    
+    public record EvmToBitcoin: SwapDirection {}
+    
+    
+    public record EvmToLightning: SwapDirection {}
+    
+    
+    public record EvmToArkade: SwapDirection {}
+    
+    
+    public record LightningToArkade: SwapDirection {}
+    
+    
+    public record ArkadeToLightning: SwapDirection {}
+    
+    
+    /// <summary>
+    /// A direction of the Rust SDK this binding does not name yet,
+    /// carrying its debug output.
+    /// </summary>
+    public record Unknown (
+        string @description
+    ) : SwapDirection {}
+    
+
+    
+}
+
+class FfiConverterTypeSwapDirection : FfiConverterRustBuffer<SwapDirection>{
+    public static FfiConverterRustBuffer<SwapDirection> INSTANCE = new FfiConverterTypeSwapDirection();
+
+    public override SwapDirection Read(BigEndianStream stream) {
+        var value = stream.ReadInt();
+        switch (value) {
+            case 1:
+                return new SwapDirection.BtcToArkade(
+                );
+            case 2:
+                return new SwapDirection.BitcoinToEvm(
+                );
+            case 3:
+                return new SwapDirection.ArkadeToEvm(
+                );
+            case 4:
+                return new SwapDirection.LightningToEvm(
+                );
+            case 5:
+                return new SwapDirection.EvmToBitcoin(
+                );
+            case 6:
+                return new SwapDirection.EvmToLightning(
+                );
+            case 7:
+                return new SwapDirection.EvmToArkade(
+                );
+            case 8:
+                return new SwapDirection.LightningToArkade(
+                );
+            case 9:
+                return new SwapDirection.ArkadeToLightning(
+                );
+            case 10:
+                return new SwapDirection.Unknown(
+                    FfiConverterString.INSTANCE.Read(stream)
+                );
+            default:
+                throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeSwapDirection.Read()", value));
+        }
+    }
+
+    public override int AllocationSize(SwapDirection value) {
+        switch (value) {
+            case SwapDirection.BtcToArkade variant_value:
+                return 4;
+            case SwapDirection.BitcoinToEvm variant_value:
+                return 4;
+            case SwapDirection.ArkadeToEvm variant_value:
+                return 4;
+            case SwapDirection.LightningToEvm variant_value:
+                return 4;
+            case SwapDirection.EvmToBitcoin variant_value:
+                return 4;
+            case SwapDirection.EvmToLightning variant_value:
+                return 4;
+            case SwapDirection.EvmToArkade variant_value:
+                return 4;
+            case SwapDirection.LightningToArkade variant_value:
+                return 4;
+            case SwapDirection.ArkadeToLightning variant_value:
+                return 4;
+            case SwapDirection.Unknown variant_value:
+                return 4
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@description);
+            default:
+                throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeSwapDirection.AllocationSize()", value));
+        }
+    }
+
+    public override void Write(SwapDirection value, BigEndianStream stream) {
+        switch (value) {
+            case SwapDirection.BtcToArkade variant_value:
+                stream.WriteInt(1);
+                break;
+            case SwapDirection.BitcoinToEvm variant_value:
+                stream.WriteInt(2);
+                break;
+            case SwapDirection.ArkadeToEvm variant_value:
+                stream.WriteInt(3);
+                break;
+            case SwapDirection.LightningToEvm variant_value:
+                stream.WriteInt(4);
+                break;
+            case SwapDirection.EvmToBitcoin variant_value:
+                stream.WriteInt(5);
+                break;
+            case SwapDirection.EvmToLightning variant_value:
+                stream.WriteInt(6);
+                break;
+            case SwapDirection.EvmToArkade variant_value:
+                stream.WriteInt(7);
+                break;
+            case SwapDirection.LightningToArkade variant_value:
+                stream.WriteInt(8);
+                break;
+            case SwapDirection.ArkadeToLightning variant_value:
+                stream.WriteInt(9);
+                break;
+            case SwapDirection.Unknown variant_value:
+                stream.WriteInt(10);
+                FfiConverterString.INSTANCE.Write(variant_value.@description, stream);
+                break;
+            default:
+                throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeSwapDirection.Write()", value));
+        }
+    }
+}
+
+
+
+
+
+
+
+/// <summary>
 /// How the user has to fund the swap. Mirrors `lendaswap_sdk::SwapFunding`.
 ///
 /// `Gasless` carries the depositor EOA the user sends source-token to;
@@ -4354,6 +4626,37 @@ class FfiConverterOptionalUInt64: FfiConverterRustBuffer<ulong?> {
         } else {
             stream.WriteByte(1);
             FfiConverterUInt64.INSTANCE.Write((ulong)value, stream);
+        }
+    }
+}
+
+
+
+
+class FfiConverterOptionalInt64: FfiConverterRustBuffer<long?> {
+    public static FfiConverterOptionalInt64 INSTANCE = new FfiConverterOptionalInt64();
+
+    public override long? Read(BigEndianStream stream) {
+        if (stream.ReadByte() == 0) {
+            return null;
+        }
+        return FfiConverterInt64.INSTANCE.Read(stream);
+    }
+
+    public override int AllocationSize(long? value) {
+        if (value == null) {
+            return 1;
+        } else {
+            return 1 + FfiConverterInt64.INSTANCE.AllocationSize((long)value);
+        }
+    }
+
+    public override void Write(long? value, BigEndianStream stream) {
+        if (value == null) {
+            stream.WriteByte(0);
+        } else {
+            stream.WriteByte(1);
+            FfiConverterInt64.INSTANCE.Write((long)value, stream);
         }
     }
 }
