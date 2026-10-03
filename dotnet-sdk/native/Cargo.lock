@@ -4815,6 +4815,7 @@ dependencies = [
  "alloy-dyn-abi",
  "alloy-provider",
  "ark-bdk-wallet",
+ "ark-fees",
  "ark-rs",
  "bip39",
  "bitcoin",

@@ -85,6 +85,8 @@ tokio = { version = "1", features = ["sync", "time", "rt", "macros"] }
 # wallet plumbing ark-client demands, `esplora-client` for chain
 # queries. Versions track `scripts/e2e-rust/Cargo.toml`.
 ark-bdk-wallet = "0.11.0"
+# The offboard fee estimator; ark-client uses it without re-exporting it.
+ark-fees = "0.11.0"
 ark-rs = { version = "0.11.0", features = ["client", "grpc", "sqlite"] }
 esplora-client = { version = "0.11", default-features = false, features = ["async", "async-https", "tokio"] }
 

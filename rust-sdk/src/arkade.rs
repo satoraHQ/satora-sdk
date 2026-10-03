@@ -122,22 +122,21 @@ impl std::fmt::Debug for ArkadeConfig {
 }
 
 /// Offchain VTXO balance broken into the three buckets `ark-client`
-/// distinguishes — what coin selection (`send_offchain`) can use,
-/// what's still in-flight, and what can only be recovered via settle.
+/// distinguishes. Offchain sends ([`crate::Client::arkade_send`] and
+/// [`crate::Client::fund_arkade_swap`]) and offboards
+/// ([`crate::Client::arkade_offboard`]) select from `confirmed_sats` and
+/// `pre_confirmed_sats`; `recoverable_sats` moves only in a batch, through
+/// [`crate::Client::arkade_settle`].
 ///
-/// Returning all three separately (rather than just `total`) is
-/// deliberate: callers that try to send must look at `confirmed_sats`
-/// since pre-confirmed/recoverable VTXOs aren't selectable, so a
-/// "total"-only view silently bites you with `insufficient funds`
-/// even though the headline number looks fine.
+/// A total-only view would overstate what a send can spend while recoverable VTXOs
+/// wait for a batch.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ArkadeBalance {
-    /// VTXOs that have been included in a settled batch — the only
-    /// bucket coin selection draws from.
+    /// VTXOs that have been included in a settled batch. Offchain sends spend them.
     pub confirmed_sats: u64,
-    /// VTXOs that exist in an Ark transaction the server has
-    /// accepted but that hasn't been confirmed via a settle batch
-    /// yet. Become `confirmed_sats` after the next batch finalises.
+    /// VTXOs that exist in an Ark transaction the server has accepted but that no
+    /// batch has settled yet. Offchain sends spend them too; `arkade_settle` leaves
+    /// them alone.
     pub pre_confirmed_sats: u64,
     /// VTXOs past their settle window — spendable only by joining a
     /// settle batch (no forfeit-tx path). Call `Client::arkade_settle`
@@ -148,8 +147,8 @@ pub struct ArkadeBalance {
 impl ArkadeBalance {
     /// `confirmed + pre_confirmed + recoverable`. Useful for "did funds
     /// arrive at all?" assertions, but **not** the right number for
-    /// deciding whether a send will succeed — use `confirmed_sats` for
-    /// that.
+    /// deciding whether a send will succeed: use `confirmed_sats +
+    /// pre_confirmed_sats` for that.
     pub fn total_sats(&self) -> u64 {
         self.confirmed_sats + self.pre_confirmed_sats + self.recoverable_sats
     }
@@ -271,11 +270,10 @@ impl ArkadeWallet {
     /// `ark-client` distinguishes — see [`ArkadeBalance`] for details.
     /// Hits the Arkade server's gRPC indexer each call.
     ///
-    /// The headline number a caller usually wants is
-    /// `confirmed_sats` — that's what coin selection (e.g.
-    /// [`Self::send_offchain`]) actually spends. `total_sats()` adds
-    /// the in-flight + recoverable buckets so it can over-report what
-    /// the wallet can *do right now*.
+    /// Coin selection (e.g. [`Self::send_offchain`]) spends
+    /// `confirmed_sats + pre_confirmed_sats`. `total_sats()` adds the
+    /// recoverable bucket, so it can over-report what an offchain send
+    /// can spend right now.
     pub async fn offchain_balance(&self) -> Result<ArkadeBalance> {
         // Ensure the deterministic default offchain contract is present
         // in ark-rs' contract manager before listing active addresses.
@@ -543,6 +541,7 @@ impl Blockchain for EsploraBlockchain {
 mod delegate;
 mod execution;
 mod funding;
+mod offboard;
 pub use delegate::ArkadeDelegateState;
 pub use delegate::ArkadeSettlement;
 pub use execution::ArkadeBackend;
@@ -553,6 +552,7 @@ pub use execution::ArkadeSpend;
 pub use execution::ArkadeSpendOptions;
 pub use execution::VhtlcBalance;
 pub use funding::ArkadeFunding;
+pub use offboard::OffboardQuote;
 
 impl Client {
     /// Claim an EVM, Lightning, or Bitcoin to Arkade swap. Progress is persisted

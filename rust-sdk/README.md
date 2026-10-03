@@ -43,7 +43,7 @@ strings on the wire, while Bitcoin amounts must be positive and fit in `i64`.
 | EVM execution (`gasless`) | External and local wallets, Permit2 and EIP-2612, ERC-4337 and server funding/claims, timeout refunds, deposit recovery and refund continuation  |
 | Bitcoin execution         | Strict version 1 Taproot claims/refunds, multiple outputs, Esplora and optional Electrum                                                         |
 | Arkade execution          | All supported directions, offchain claims/refunds, cooperative refunds, delegated settlement, interrupted-batch recovery                         |
-| Arkade wallet             | Balance, boarding, sends and settlement, journaled VHTLC funding                                                                                 |
+| Arkade wallet             | Balance, boarding, sends and settlement, journaled VHTLC funding, collaborative offboard with a send-all mode                                    |
 | Bridges (`gasless`)       | CCTP v2 and USDT0 fees/messages, wallet/sponsored transfers, atomic inbound funding, outbound claims, delivery tracking and recovery             |
 | Status feed (`websocket`) | Reconnect/resubscribe, bounded queues, HTTP reconciliation, cancellation                                                                         |
 | Observations              | Bitcoin/Arkade/EVM HTLC readers, confirmation policy, verified preimages, reorg-aware bounded managers                                           |
@@ -336,14 +336,17 @@ refused whatever the lock shows. Without a reader for the chain the claim is
 refused. A record rebuilt from the server, by recovery or after a restart with an
 index-only store, takes the server's amounts at that time as its targets.
 
-The internal wallet's spends (`arkade_send`, `arkade_settle` and `fund_arkade_swap`) take
-one lock shared by every clone of a `Client`; claims and refunds never wait for it. Each
-holds it for at most 120 seconds (`arkade_send`, `fund_arkade_swap`) or 300 seconds
-(`arkade_settle`) and then fails with `Timeout`. A `Transport` or `Timeout` error from
-`arkade_send`, `arkade_settle` or `fund_arkade_swap` leaves the outcome unknown: check the
-balance or destination before sending again, settle again freely, and call
-`fund_arkade_swap` again, which resolves it from its journal (each method's docs say
-more).
+The internal wallet's spends (`arkade_send`, `arkade_settle`, `arkade_offboard` and
+`fund_arkade_swap`) take one lock shared by every clone of a `Client`, which
+`arkade_offboard_quote` also waits for; claims and refunds never wait for it. Each
+holds it for at most 120 seconds (`arkade_send`, `fund_arkade_swap`), 300 seconds
+(`arkade_settle` and the quote) or 600 seconds (`arkade_offboard`, whose batch join
+ark-client retries) and then fails with `Timeout`. A `Transport` or `Timeout` error
+from `arkade_send`, `arkade_settle`, `arkade_offboard` or `fund_arkade_swap` leaves
+the outcome unknown: check the balance or destination before sending or offboarding
+again, settle again freely, and call `fund_arkade_swap` again, which resolves it from
+its journal (each method's docs say more). Sends and offboards spend confirmed and
+pre-confirmed VTXOs; recoverable ones need `arkade_settle`.
 
 `fund_arkade_swap` pays an Arkade→Lightning or Arkade→EVM VHTLC. It finalizes the
 wallet's pending transactions, refuses with `InvalidSwap` a swap that is not pending,
@@ -378,6 +381,36 @@ refusal before the journal is read, leave an earlier payment possible. A swap
 recovered on another device has no journal, and an index-only store keeps it only
 for one `Client`'s life. Once arkd accepted the payment, a failure to journal its
 txid is logged and the txid returned.
+
+`arkade_offboard(address, amount)` joins a collaborative exit with the wallet's
+confirmed and pre-confirmed VTXOs, the soonest-expiring first. Recoverable VTXOs and
+boarding outputs need `arkade_settle` first: a batch that mixes an expired, unswept
+VTXO with healthy ones fails for every participant, as arkd builds no forfeit
+connector for it. For the same reason VTXOs that could expire before ark-client's
+four batch join attempts end (each can wait out its intent's 120 s validity plus an
+arkd session; at most the call's 600 s) stay out until they expire and turn
+recoverable. On a server whose VTXOs live minutes, such as regtest's 512 s, that
+margin is half the VTXO lifetime, read off the wallet's confirmed VTXOs since arkd's
+info does not announce it, so a retried exit there can still meet an expiring input.
+A wallet that has only received offchain gets the full margin until a settle or
+boarding gives it a confirmed VTXO. VTXOs carrying assets stay offchain. The fee
+comes from the server's intent fee program and out of change, as in ark-client, so
+the address receives the amount exactly (TypeScript's `withdrawToL1` deducts it from
+the amount).
+
+Every exit keeps at least the server's dust (330 sats today) as Arkade change.
+ark-client 0.11 registers a signing key for every exit but signs the batch's VTXO
+tree only for one that creates a VTXO, so arkd would fail any batch that an exit
+without change shares with others. `None` therefore sends everything except the
+recoverable balance and the change, at the most that leaves at least dust (less
+than dust plus one fee step when the server's fee program skips the amount that
+leaves exactly dust). A fixed amount draws further VTXOs until the change reaches
+dust and is refused when the wallet cannot keep it. `arkade_offboard_quote` prices
+either form without sending. Address, dust and balance checks fail with
+`InvalidSwap` before anything is sent (a short spendable balance names the sats
+left out as expiring or recoverable), and so does a server fee program that charges
+the inputs or the change, which ark-client's collaborative exit does not pay; a
+`Transport` or `Timeout` error from `arkade_offboard` leaves its outcome unknown.
 
 Offchain progress retains exact PSBTs with condition witnesses removed. Resume
 with the same operation and destination (a claim whose submit was attempted

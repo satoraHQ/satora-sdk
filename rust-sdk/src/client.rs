@@ -74,6 +74,8 @@ pub(crate) const WALLET_PAYMENT_TIMEOUT: Duration = Duration::from_secs(120);
 /// Bound on a batch join by the internal Arkade wallet. Ark batches run about every 60
 /// seconds on mainnet (arkd announces `sessionDuration` 60), so this covers a few.
 const WALLET_BATCH_TIMEOUT: Duration = Duration::from_secs(300);
+/// Bound on an offboard, whose batch join ark-client retries up to three times.
+pub(crate) const WALLET_OFFBOARD_TIMEOUT: Duration = Duration::from_secs(600);
 fn default_http() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(API_TIMEOUT)
@@ -862,13 +864,14 @@ impl Client {
             .await
     }
 
-    /// Run a spend of the internal wallet's own VTXOs under `wallet_execution`,
-    /// bounded so that a stalled arkd call cannot hold the lock for good. The bound
-    /// starts once the lock is held: bounding the wait too would report
-    /// [`Error::Timeout`] for a call that sent nothing. Expiry drops the spend and
-    /// fails with [`Error::Timeout`]; each caller documents what that leaves behind.
-    /// The spend is boxed because this future holds it while waiting for the lock,
-    /// and unboxed spends overflow a debug build's stack.
+    /// Run an operation on the internal wallet under `wallet_execution`: a spend of its
+    /// own VTXOs, or the offboard quote, which only reads them. It is bounded so that a
+    /// stalled arkd call cannot hold the lock for good. The bound starts once the lock
+    /// is held: bounding the wait too would report [`Error::Timeout`] for a call that
+    /// sent nothing. Expiry drops the operation and fails with [`Error::Timeout`]; what
+    /// that leaves behind differs per caller, and each documents it. The operation is
+    /// boxed because this future holds it while waiting for the lock, and unboxed
+    /// operations overflow a debug build's stack.
     pub(crate) async fn wallet_spend<T>(
         &self,
         timeout: Duration,
@@ -882,12 +885,12 @@ impl Client {
         })?
     }
 
-    /// Offchain VTXO balance of the internal Arkade wallet, broken
-    /// into confirmed / pre-confirmed / recoverable buckets — see
-    /// [`crate::arkade::ArkadeBalance`]. The headline number a caller
-    /// usually wants is `confirmed_sats` (what's actually spendable
-    /// via [`Self::arkade_send`]); `total_sats()` adds the other two
-    /// for "are funds in flight?" checks.
+    /// Offchain VTXO balance of the internal Arkade wallet, broken into confirmed,
+    /// pre-confirmed and recoverable buckets; see [`crate::arkade::ArkadeBalance`].
+    /// [`Self::arkade_send`] and [`Self::fund_arkade_swap`] spend
+    /// `confirmed_sats + pre_confirmed_sats`, and so does [`Self::arkade_offboard`],
+    /// less VTXOs about to expire and the dust it keeps as change; `total_sats()` adds
+    /// the recoverable bucket, which only [`Self::arkade_settle`] spends.
     pub async fn arkade_balance(&self) -> Result<crate::arkade::ArkadeBalance> {
         let wallet = self.arkade_wallet().await?;
         wallet.offchain_balance().await
@@ -941,6 +944,74 @@ impl Client {
             Box::pin(async {
                 let wallet = self.arkade_wallet().await?;
                 wallet.send_offchain(destination, amount_sats).await
+            }),
+        )
+        .await
+    }
+
+    /// Send `amount_sats` from the internal Arkade wallet to the on-chain `address`
+    /// in a collaborative exit, like the TypeScript escrow-client `withdrawToL1`, and
+    /// return the commitment txid. The fee comes out of change, so `address` receives
+    /// exactly `amount_sats` (TypeScript deducts it from the amount instead). Every
+    /// exit keeps at least the server's dust (330 sats today) in the wallet as Arkade
+    /// change: ark-client 0.11 registers a signing key for every exit but signs the
+    /// batch's VTXO tree only for one that creates a VTXO, so arkd would fail any batch
+    /// an exit without change shares with others. `None` therefore sends the most that
+    /// leaves at least dust as change (less than dust plus one fee step stays behind
+    /// when the server's fee program skips the amount that leaves exactly dust), and a
+    /// fixed amount that cannot leave dust is refused.
+    ///
+    /// The exit spends confirmed and pre-confirmed VTXOs only, the soonest-expiring
+    /// first, so `None` sends everything except the recoverable balance and the
+    /// change. Recoverable VTXOs (a batch that mixes them with healthy ones fails) and
+    /// boarding outputs need [`Self::arkade_settle`] first; VTXOs carrying an asset
+    /// stay offchain. VTXOs that expire before ark-client's four batch join attempts
+    /// could end (each can wait out its intent's 120 s validity plus an arkd session;
+    /// at most this call's 600 s) stay out too, since one that expires while the batch
+    /// is pending fails it; once expired they are recoverable. On a server whose VTXOs
+    /// live minutes, such as regtest's 512 s, that margin is half the VTXO lifetime,
+    /// so a retried exit there can still meet an expiring input. The lifetime is read
+    /// off the wallet's confirmed VTXOs, so a wallet that has only received offchain
+    /// gets the full margin until a settle or boarding gives it one.
+    ///
+    /// Address, dust and balance checks fail with [`Error::InvalidSwap`] before
+    /// anything is sent, naming the sats left out as expiring or recoverable when the
+    /// spendable balance falls short, and so does a server fee program that charges
+    /// the inputs or the change, which a collaborative exit does not pay.
+    /// [`Error::Transport`], or [`Error::Timeout`] after 600 seconds, leaves the
+    /// outcome unknown: the batch may still settle, so check the balance before
+    /// offboarding again. The 600 seconds start once any wallet spend in progress has
+    /// finished.
+    pub async fn arkade_offboard(
+        &self,
+        address: &str,
+        amount_sats: Option<u64>,
+    ) -> Result<bitcoin::Txid> {
+        self.wallet_spend(
+            WALLET_OFFBOARD_TIMEOUT,
+            Box::pin(async {
+                let wallet = self.arkade_wallet().await?;
+                wallet.offboard(address, amount_sats).await
+            }),
+        )
+        .await
+    }
+
+    /// The amount and fee [`Self::arkade_offboard`] would use, without sending. It
+    /// waits for a wallet spend in progress, so it prices what is left afterwards.
+    /// It fails as `arkade_offboard` does, except that nothing is ever sent: retry
+    /// [`Error::Transport`], or [`Error::Timeout`] after 300 seconds, freely. The 300
+    /// seconds start once that spend has finished.
+    pub async fn arkade_offboard_quote(
+        &self,
+        address: &str,
+        amount_sats: Option<u64>,
+    ) -> Result<crate::arkade::OffboardQuote> {
+        self.wallet_spend(
+            WALLET_BATCH_TIMEOUT,
+            Box::pin(async {
+                let wallet = self.arkade_wallet().await?;
+                wallet.offboard_quote(address, amount_sats).await
             }),
         )
         .await
@@ -1695,7 +1766,8 @@ mod tests {
         )
         .await
         .expect("the spend must be bounded");
-        // Only each method's docs can say whether a timeout leaves the outcome unknown.
+        // Quotes share the bound and send nothing, so only each method's docs can say
+        // whether the outcome is unknown.
         assert!(
             matches!(&stalled, Err(Error::Timeout(message)) if !message.contains("unknown")),
             "{stalled:?}"
@@ -1708,6 +1780,8 @@ mod tests {
         let client = Client::new("http://127.0.0.1:1").unwrap();
         waits_for_the_wallet_lock(&client, client.arkade_send("tark1", 1_000)).await;
         waits_for_the_wallet_lock(&client, client.arkade_settle()).await;
+        waits_for_the_wallet_lock(&client, client.arkade_offboard("bcrt1", None)).await;
+        waits_for_the_wallet_lock(&client, client.arkade_offboard_quote("bcrt1", None)).await;
         waits_for_the_wallet_lock(&client, client.fund_arkade_swap("missing")).await;
     }
 }
