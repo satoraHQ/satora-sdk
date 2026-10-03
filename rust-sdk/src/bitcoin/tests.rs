@@ -894,7 +894,11 @@ async fn esplora_observes_paginated_history_filters_spent_outputs_and_rejects_ti
     assert_eq!(observed.median_time_past, genesis.header.time);
     tips.store(0, Ordering::Relaxed);
     reorg.store(true, Ordering::Relaxed);
-    assert!(backend.observe(&address).await.is_err());
+    let error = backend.observe(&address).await.unwrap_err();
+    assert!(
+        matches!(&error, Error::Transport(message) if message.contains("tip changed")),
+        "{error:?}"
+    );
     let wrong_network = EsploraBackend::new(&server.uri(), Network::Bitcoin).unwrap();
     assert!(wrong_network.observe(&address).await.is_err());
 }
@@ -1068,8 +1072,8 @@ async fn esplora_confirmed_funding_survives_mempool_spam() {
         spent.store(2, std::sync::atomic::Ordering::Relaxed);
         let error = backend.history(&address).await.unwrap_err();
         assert!(
-            error.to_string().contains("changed during observation"),
-            "{error}"
+            matches!(&error, Error::Transport(message) if message.contains("changed during observation")),
+            "{error:?}"
         );
         spent.store(0, std::sync::atomic::Ordering::Relaxed);
         let observed = backend.observe(&address).await.unwrap();
@@ -1186,6 +1190,38 @@ async fn electrum_reads_actual_funding_outputs_and_converts_btc_per_kb_fees() {
     assert_eq!(
         backend.fee_rate(6).await.unwrap(),
         FeeRate::from_sat_per_vb(2).unwrap()
+    );
+    drop(backend);
+    server.join().unwrap();
+}
+
+#[cfg(feature = "electrum")]
+#[tokio::test]
+async fn electrum_reports_a_tip_change_during_observation_as_retryable() {
+    use serde_json::json;
+    let (htlc, _, _, _, _) = fixture();
+    let genesis = bitcoin::blockdata::constants::genesis_block(Network::Regtest).header;
+    let mut next = genesis;
+    next.nonce += 1;
+    let subscriptions = std::sync::atomic::AtomicUsize::new(0);
+    let (url, server) = electrum_mock(1, move |_, method| {
+        Some(Ok(match method {
+            "blockchain.headers.subscribe" => {
+                let first = subscriptions.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0;
+                let header = if first { genesis } else { next };
+                json!({"height":0,"hex":bitcoin::consensus::encode::serialize_hex(&header)})
+            }
+            "blockchain.scripthash.listunspent" => json!([]),
+            method => panic!("unexpected method {method}"),
+        }))
+    });
+    let backend = ElectrumBackend::connect(url, Network::Regtest, 3)
+        .await
+        .unwrap();
+    let error = backend.observe(&htlc.address().unwrap()).await.unwrap_err();
+    assert!(
+        matches!(&error, Error::Transport(message) if message.contains("tip changed")),
+        "{error:?}"
     );
     drop(backend);
     server.join().unwrap();

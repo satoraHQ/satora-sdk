@@ -186,7 +186,7 @@ impl BitcoinBackend for EsploraBackend {
                 .map_err(transport)?
                 != tip
             {
-                return Err(invalid("Bitcoin tip changed during observation"));
+                return Err(chain_changed("Bitcoin tip changed during observation"));
             }
             let mut times = vec![];
             let mut cursor = tip;
@@ -225,7 +225,7 @@ impl BitcoinBackend for EsploraBackend {
                         || Some(self.client.get_block_hash(h).await.map_err(transport)?)
                             != tx.status.block_hash
                     {
-                        return Err(invalid(
+                        return Err(chain_changed(
                             "Bitcoin funding block is not on the observed chain",
                         ));
                     }
@@ -270,7 +270,9 @@ impl BitcoinBackend for EsploraBackend {
                         if status.status.is_some_and(|s| s.confirmed)
                             || listed_spends.contains(&(tx.txid, vout))
                         {
-                            return Err(invalid("Bitcoin history changed during observation"));
+                            return Err(chain_changed(
+                                "Bitcoin history changed during observation",
+                            ));
                         }
                         if !unlisted_spenders.contains(&spender) {
                             unlisted_spenders.push(spender);
@@ -290,7 +292,7 @@ impl BitcoinBackend for EsploraBackend {
                 }
             }
             if self.client.get_tip_hash().await.map_err(transport)? != tip {
-                return Err(invalid("Bitcoin tip changed during observation"));
+                return Err(chain_changed("Bitcoin tip changed during observation"));
             }
             Ok(BitcoinHistory {
                 observation: BitcoinObservation {

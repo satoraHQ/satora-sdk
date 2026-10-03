@@ -292,8 +292,9 @@ accepts creation may require swap recovery before attempting continuation again.
 On-chain Bitcoin execution uses `bitcoin_htlc`, `claim_bitcoin`, and
 `refund_bitcoin`. Configure an `EsploraBackend`, or enable `electrum` and connect
 an `ElectrumBackend`. Both verify the configured network's genesis block and
-reject observations spanning a tip change. `EsploraBackend` also reads Mempool on
-an electrum backend, which serves no `/txs/chain`: history then pages its `/txs`
+reject observations spanning a tip change with `Transport`, like any read that
+straddled a new block, so call again. `EsploraBackend` also reads Mempool on an
+electrum backend, which serves no `/txs/chain`: history then pages its `/txs`
 through `after_txid`, one request per ten transactions. The injectable
 `BitcoinBackend` trait also supports private chain readers and offline integration
 tests.
@@ -615,7 +616,9 @@ Observers verify hash locks, funding amounts, spend inputs/scripts, EVM swap
 keys, canonical log blocks, and revealed preimages. An unclassified spend stays
 `SpentUnknown`. They do not latch terminal states across reorgs, except that a
 running `EvmRpcReader` keeps logs more than 256 blocks below its last pass and so
-misses a deeper reorg.
+misses a deeper reorg. Like the Bitcoin backends, `EvmRpcReader` fails a read whose
+chain changed before it finished (the tip replaced, a log's block orphaned or gone)
+with `Transport`, so call again.
 Bitcoin uses MTP/height and EVM uses block timestamps for expiry. Arkade funding
 uses the Ark server's signed VTXO model; its refund clock comes from Bitcoin.
 Readers trust the configured node/indexer rather than implementing consensus

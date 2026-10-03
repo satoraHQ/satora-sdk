@@ -1,4 +1,5 @@
 use super::*;
+use crate::bitcoin::chain_changed;
 use crate::evm::B256;
 use crate::evm::U256;
 use crate::evm::funding::SwapCreated;
@@ -128,12 +129,12 @@ impl ContractReader for EvmRpcReader {
                             .get_block_by_number(BlockNumberOrTag::Number(height))
                             .await
                             .map_err(transport)?
-                            .ok_or_else(|| invalid("EVM log block disappeared"))?;
+                            .ok_or_else(|| chain_changed("EVM log block disappeared"))?;
                         block_hashes.insert(height, block.header.hash);
                         block.header.hash
                     };
                     if log.block_hash != Some(canonical_hash) {
-                        return Err(invalid("EVM log belongs to an orphaned block"));
+                        return Err(chain_changed("EVM log belongs to an orphaned block"));
                     }
                     scan.logs.push((
                         height,
@@ -152,9 +153,9 @@ impl ContractReader for EvmRpcReader {
                 .get_block_by_number(BlockNumberOrTag::Number(point.height))
                 .await
                 .map_err(transport)?
-                .ok_or_else(|| invalid("observed EVM block disappeared"))?;
+                .ok_or_else(|| chain_changed("observed EVM block disappeared"))?;
             if canonical.header.hash != latest.header.hash {
-                return Err(invalid("EVM chain changed during observation"));
+                return Err(chain_changed("EVM chain changed during observation"));
             }
             classify(htlc, *confirmations, point, scan.logs)
         })
@@ -416,7 +417,85 @@ mod tests {
             })
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("orphaned"), "{error}");
+        assert!(
+            matches!(&error, Error::Transport(message) if message.contains("orphaned")),
+            "{error:?}"
+        );
+    }
+    #[tokio::test]
+    async fn a_chain_that_got_shorter_during_the_read_is_a_transport_error() {
+        let h = htlc();
+        let contract = h.address;
+        let creation = created(&h);
+        let log = json!([{"address":contract,"topics":creation.2,"data":format!("0x{}",hex::encode(&creation.3)),"blockNumber":"0x63","blockHash":B256::repeat_byte(8),"transactionHash":B256::repeat_byte(7),"transactionIndex":"0x0","logIndex":"0x0","removed":false}]);
+        // Only the tip read first exists: the log's block, or the tip itself when read
+        // again by number, is gone.
+        for (logs, message) in [
+            (log, "EVM log block disappeared"),
+            (json!([]), "observed EVM block disappeared"),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST")).respond_with(move |request:&wiremock::Request| {
+                let body:serde_json::Value=request.body_json().unwrap();
+                let result=match body["method"].as_str().unwrap() {
+                    "eth_chainId"=>json!("0xa4b1"),
+                    "eth_getBlockByNumber" if body["params"][0]=="latest"=>json!({"hash":B256::repeat_byte(9),"parentHash":B256::ZERO,"sha3Uncles":B256::ZERO,"miner":Address::ZERO,"stateRoot":B256::ZERO,"transactionsRoot":B256::ZERO,"receiptsRoot":B256::ZERO,"logsBloom":format!("0x{}","00".repeat(256)),"difficulty":"0x0","number":"0x64","gasLimit":"0x1000000","gasUsed":"0x0","timestamp":"0x713fb300","extraData":"0x","mixHash":B256::ZERO,"nonce":"0x0000000000000000","transactions":[],"uncles":[]}),
+                    "eth_getBlockByNumber"=>serde_json::Value::Null,
+                    "eth_getLogs"=>logs.clone(),
+                    method=>panic!("unexpected {method}"),
+                };
+                ResponseTemplate::new(200).set_body_json(json!({"jsonrpc":"2.0","id":body["id"],"result":result}))
+            }).mount(&server).await;
+            let reader = EvmRpcReader::connect(server.uri().parse().unwrap(), 42161, 100)
+                .await
+                .unwrap();
+            let error = reader
+                .observe(&ContractRef::Evm {
+                    htlc: h.clone(),
+                    from_block: 98,
+                    confirmations: 1,
+                })
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(&error, Error::Transport(text) if text.contains(message)),
+                "{error:?}"
+            );
+        }
+    }
+    #[tokio::test]
+    async fn a_tip_replaced_during_the_read_is_a_transport_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).respond_with(move |request:&wiremock::Request| {
+            let body:serde_json::Value=request.body_json().unwrap();
+            let result=match body["method"].as_str().unwrap() {
+                "eth_chainId"=>json!("0xa4b1"),
+                "eth_getBlockByNumber"=>{
+                    // The tip read first is no longer canonical by the time the reader
+                    // checks it again.
+                    let hash=if body["params"][0]=="latest" {B256::repeat_byte(9)} else {B256::repeat_byte(10)};
+                    json!({"hash":hash,"parentHash":B256::ZERO,"sha3Uncles":B256::ZERO,"miner":Address::ZERO,"stateRoot":B256::ZERO,"transactionsRoot":B256::ZERO,"receiptsRoot":B256::ZERO,"logsBloom":format!("0x{}","00".repeat(256)),"difficulty":"0x0","number":"0x64","gasLimit":"0x1000000","gasUsed":"0x0","timestamp":"0x713fb300","extraData":"0x","mixHash":B256::ZERO,"nonce":"0x0000000000000000","transactions":[],"uncles":[]})
+                },
+                "eth_getLogs"=>json!([]),
+                method=>panic!("unexpected {method}"),
+            };
+            ResponseTemplate::new(200).set_body_json(json!({"jsonrpc":"2.0","id":body["id"],"result":result}))
+        }).mount(&server).await;
+        let reader = EvmRpcReader::connect(server.uri().parse().unwrap(), 42161, 100)
+            .await
+            .unwrap();
+        let error = reader
+            .observe(&ContractRef::Evm {
+                htlc: htlc(),
+                from_block: 98,
+                confirmations: 1,
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, Error::Transport(message) if message.contains("EVM chain changed")),
+            "{error:?}"
+        );
     }
     #[test]
     fn exact_lock_wins_over_an_earlier_decoy_meeting_the_terms() {

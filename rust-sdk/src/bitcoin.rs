@@ -81,7 +81,8 @@ pub struct BitcoinHistoryTransaction {
 }
 
 /// Implementations must verify their network, exclude spent outputs, return
-/// actual transaction outputs, and reject an observation spanning a tip change.
+/// actual transaction outputs, and reject an observation spanning a tip change
+/// (the bundled backends with `Error::Transport`, as a retry reads a consistent chain).
 /// `history` must include every transaction spending the address, unconfirmed
 /// ones too: a pending claim or refund it leaves out cannot be resumed or bumped.
 pub trait BitcoinBackend: Send + Sync {
@@ -121,6 +122,12 @@ fn decode(error: impl std::fmt::Display) -> Error {
 }
 fn transport(error: impl std::fmt::Display) -> Error {
     Error::Transport(error.to_string())
+}
+/// A Bitcoin or EVM read that straddled a chain change, such as a block found
+/// mid-observation. It is `Transport` rather than `InvalidSwap` because the same call
+/// succeeds once the backend serves a consistent chain again.
+pub(crate) fn chain_changed(message: &str) -> Error {
+    Error::Transport(message.into())
 }
 
 impl BitcoinHtlc {

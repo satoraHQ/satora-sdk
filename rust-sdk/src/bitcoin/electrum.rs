@@ -72,7 +72,7 @@ impl BitcoinBackend for ElectrumBackend {
                 for h in (height.saturating_sub(10)..=height).rev() {
                     let header = client.block_header(h as usize).map_err(transport)?;
                     if header.block_hash() != expected {
-                        return Err(invalid("Electrum header chain changed"));
+                        return Err(chain_changed("Electrum header chain changed"));
                     }
                     times.push(header.time);
                     expected = header.prev_blockhash;
@@ -97,7 +97,7 @@ impl BitcoinBackend for ElectrumBackend {
                         Some(u32::try_from(u.height).map_err(decode)?)
                     };
                     if confirmed_height.is_some_and(|h| h > height) {
-                        return Err(invalid("Electrum funding height exceeds tip"));
+                        return Err(chain_changed("Electrum funding height exceeds tip"));
                     }
                     utxos.push(BitcoinUtxo {
                         outpoint: OutPoint {
@@ -115,7 +115,7 @@ impl BitcoinBackend for ElectrumBackend {
                     .block_hash()
                     != tip
                 {
-                    return Err(invalid("Electrum tip changed during observation"));
+                    return Err(chain_changed("Electrum tip changed during observation"));
                 }
                 Ok(BitcoinObservation {
                     tip,
@@ -145,7 +145,7 @@ impl BitcoinBackend for ElectrumBackend {
                         None
                     };
                     if confirmed_height.is_some_and(|h| h > height) {
-                        return Err(invalid("Electrum history height exceeds tip"));
+                        return Err(chain_changed("Electrum history height exceeds tip"));
                     }
                     let transaction = client.transaction_get(&entry.tx_hash).map_err(transport)?;
                     if transaction.compute_txid() != entry.tx_hash {
@@ -163,7 +163,7 @@ impl BitcoinBackend for ElectrumBackend {
                     .block_hash()
                     != tip
                 {
-                    return Err(invalid("Electrum tip changed during history read"));
+                    return Err(chain_changed("Electrum tip changed during history read"));
                 }
                 Ok(transactions)
             })
