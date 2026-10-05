@@ -931,7 +931,7 @@ impl ClientBuilder {
     }
 
     /// Arkade-side config. Required by every method that talks to arkd
-    /// (`claim`, `arkade_balance_sats`, `arkade_settle`,
+    /// (`claim`, `arkade_balance`, `arkade_settle`,
     /// `arkade_offchain_address`, and `create_swap` with no
     /// `receive_to`). Omit if the client will only do EVM-side
     /// operations. A blank `identity_mnemonic` is filled with the client's
