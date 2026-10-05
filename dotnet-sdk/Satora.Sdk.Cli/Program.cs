@@ -437,9 +437,9 @@ internal static class CreateSwapCommand
 }
 
 /// <summary>
-/// Implements the <c>status</c> subcommand — a one-shot read of a
-/// swap's current backend state. Doesn't need a mnemonic; uses the
-/// read-only client.
+/// Implements the <c>status</c> subcommand: a one-shot read of a
+/// swap's current backend state. Doesn't need a mnemonic; the client
+/// is built with <see cref="Cli.PlaceholderMnemonic"/>.
 /// </summary>
 internal static class StatusCommand
 {
