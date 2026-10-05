@@ -1372,6 +1372,26 @@ public sealed class Client : IDisposable
     }
 
     /// <summary>
+    /// Whether a claim of a swap's Arkade VHTLC can still complete, read
+    /// from the stored claim progress, the Arkade indexer and the claim
+    /// window, without sending anything that carries the preimage.
+    /// <c>false</c> is final: no later call can complete the claim.
+    /// <c>true</c> means <see cref="SettleAsync"/> finishes or resumes the
+    /// claim, or already has. Reads only the swap record in the client's
+    /// storage; a swap missing from it throws <see cref="SdkException"/>
+    /// with <see cref="SdkErrorKind.InvalidSwap"/>.
+    /// </summary>
+    public Task<bool> IsArkadeClaimPossibleAsync(
+        string swapId,
+        CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        return Task.Run(
+            () => TryOrThrow(() => ffi.ArkadeClaimPossible(swapId)),
+            cancellationToken);
+    }
+
+    /// <summary>
     /// Find this wallet's swaps on the server, from wallet key index
     /// <paramref name="startIndex"/> (null for 0) until the server's gap
     /// limit, and store each with its key index so this client can claim

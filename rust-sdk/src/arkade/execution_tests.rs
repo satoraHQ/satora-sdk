@@ -1918,7 +1918,41 @@ async fn a_dead_claim_journal_never_reaches_the_swap_server_after_the_claim_wind
 }
 
 #[tokio::test]
-async fn a_dead_journal_is_not_resubmitted_by_a_direct_claim() {
+async fn a_dead_or_lost_journal_is_not_resubmitted_by_a_direct_claim() {
+    let dead: fn(&mut Backend) = |backend| expire_vtxos(backend, 121);
+    let lost: fn(&mut Backend) = spent_offchain_elsewhere;
+    for (change, expected) in [
+        (dead, "use Client::settle"),
+        (lost, "spent by another transaction"),
+    ] {
+        let (client, mut backend, _, destination) = setup("btc_to_arkade");
+        backend.refuse_recoverable.store(true, Ordering::Relaxed);
+        let options = spend_options(destination);
+        assert!(
+            client
+                .spend_arkade(
+                    "arkade",
+                    &backend,
+                    None,
+                    ArkadeSpend::Claim,
+                    options.clone()
+                )
+                .await
+                .is_err()
+        );
+        change(&mut backend);
+        let error = client
+            .spend_arkade("arkade", &backend, None, ArkadeSpend::Claim, options)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(expected), "{error}");
+        assert_eq!(backend.submit_count.load(Ordering::Relaxed), 1);
+        assert_eq!(backend.pending_queries.load(Ordering::Relaxed), 0);
+    }
+}
+
+#[tokio::test]
+async fn a_lost_journal_is_refused_rather_than_resumed_by_a_delegation() {
     let (client, mut backend, _, destination) = setup("btc_to_arkade");
     backend.refuse_recoverable.store(true, Ordering::Relaxed);
     let options = spend_options(destination);
@@ -1934,14 +1968,22 @@ async fn a_dead_journal_is_not_resubmitted_by_a_direct_claim() {
             .await
             .is_err()
     );
-    expire_vtxos(&mut backend, 121);
+    spent_offchain_elsewhere(&mut backend);
     let error = client
-        .spend_arkade("arkade", &backend, None, ArkadeSpend::Claim, options)
+        .delegate_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            pair(5).public_key(),
+            options,
+        )
         .await
         .unwrap_err();
-    assert!(error.to_string().contains("use Client::settle"), "{error}");
-    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 1);
-    assert_eq!(backend.pending_queries.load(Ordering::Relaxed), 0);
+    assert!(
+        error.to_string().contains("spent by another transaction"),
+        "{error}"
+    );
 }
 
 #[tokio::test]
@@ -1995,7 +2037,7 @@ async fn journals_arkd_may_still_finish_stay_offchain_past_expiry() {
 }
 
 #[tokio::test]
-async fn journal_outcome_is_dead_only_for_unspent_inputs_arkd_refuses() {
+async fn journal_outcome_reads_what_arkd_can_still_accept() {
     let (client, backend, store, destination) = setup("btc_to_arkade");
     backend.refuse_recoverable.store(true, Ordering::Relaxed);
     assert!(
@@ -2030,6 +2072,7 @@ async fn journal_outcome_is_dead_only_for_unspent_inputs_arkd_refuses() {
     };
     use JournalOutcome::Dead;
     use JournalOutcome::Live;
+    use JournalOutcome::Lost;
     assert_eq!(case(&|_| {}), Live);
     assert_eq!(case(&|v| v[0].expires_at = at - 119), Live);
     assert_eq!(case(&|v| v[0].expires_at = at - 120), Dead);
@@ -2060,6 +2103,30 @@ async fn journal_outcome_is_dead_only_for_unspent_inputs_arkd_refuses() {
             v[0].is_swept = true;
             v[1].is_spent = true;
             v[1].ark_txid = Some(txid);
+        }),
+        Live
+    );
+    let other = Txid::from_byte_array([23; 32]);
+    assert_eq!(
+        case(&|v| {
+            v[1].is_spent = true;
+            v[1].ark_txid = Some(other);
+        }),
+        Lost
+    );
+    assert_eq!(
+        case(&|v| {
+            v[1].is_spent = true;
+            v[1].settled_by = Some(other);
+        }),
+        Lost
+    );
+    assert_eq!(
+        case(&|v| {
+            v[0].is_spent = true;
+            v[0].ark_txid = Some(txid);
+            v[1].is_spent = true;
+            v[1].ark_txid = Some(other);
         }),
         Live
     );
@@ -2230,6 +2297,286 @@ async fn delegated_settlement_forfeits_only_inputs_arkd_expects_a_forfeit_for() 
         forfeit.unsigned_tx.input[0].previous_output,
         backend.vtxos[1].outpoint
     );
+}
+
+/// Asks whether the claim can still complete, and checks the question sent nothing:
+/// no submit, no pending query carrying the preimage, no request to the server.
+async fn claim_possible(store: &Arc<InMemorySwapStorage>, backend: &Backend) -> bool {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::any())
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let sent = || {
+        (
+            backend.submit_count.load(Ordering::Relaxed),
+            backend.pending_queries.load(Ordering::Relaxed),
+        )
+    };
+    let before = sent();
+    let possible = api_client(store, &server)
+        .arkade_claim_possible_with("arkade", backend, None, super::super::CLAIM_MARGIN_SECS)
+        .await
+        .unwrap();
+    assert_eq!(sent(), before);
+    possible
+}
+
+const WINDOW_OPEN: u32 = 3600;
+/// Inside the claim margin but before the refund lock.
+const WINDOW_CLOSED: u32 = 60;
+
+/// A claim journal arkd refused, written with the window open whatever the lock.
+async fn refused_claim(lock: u32) -> (Backend, Arc<InMemorySwapStorage>, String) {
+    let (client, backend, store, destination) = setup_with_lock("btc_to_arkade", lock);
+    backend.refuse_recoverable.store(true, Ordering::Relaxed);
+    let risky = ArkadeSpendOptions {
+        minimum_remaining_seconds: 0,
+        ..spend_options(destination.clone())
+    };
+    assert!(
+        client
+            .spend_arkade("arkade", &backend, None, ArkadeSpend::Claim, risky)
+            .await
+            .is_err()
+    );
+    backend.refuse_recoverable.store(false, Ordering::Relaxed);
+    (backend, store, destination)
+}
+
+/// A delegated claim through the server at `url`, accepting a short window.
+async fn delegate_with(
+    url: &str,
+    store: &Arc<InMemorySwapStorage>,
+    backend: &Backend,
+    destination: &str,
+) -> Result<Txid> {
+    Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .base_url(url)
+        .build()
+        .unwrap()
+        .delegate_arkade(
+            "arkade",
+            backend,
+            None,
+            ArkadeSpend::Claim,
+            pair(5).public_key(),
+            ArkadeSpendOptions {
+                minimum_remaining_seconds: 0,
+                ..spend_options(destination.to_owned())
+            },
+        )
+        .await
+}
+
+#[tokio::test]
+async fn without_a_journal_a_claim_is_possible_only_while_settle_would_make_one() {
+    for (lock, possible) in [(now() + WINDOW_OPEN, true), (now() + WINDOW_CLOSED, false)] {
+        let (_, backend, store, _) = setup_with_lock("btc_to_arkade", lock);
+        assert_eq!(claim_possible(&store, &backend).await, possible);
+    }
+    // Before the lock only our claim spends the VHTLC offchain, and settle finishes
+    // it; past the lock the spend may be the server's refund.
+    for (lock, possible) in [(now() + WINDOW_CLOSED, true), (now() - 10, false)] {
+        let (_, mut backend, store, _) = setup_with_lock("btc_to_arkade", lock);
+        spent_offchain_elsewhere(&mut backend);
+        assert_eq!(claim_possible(&store, &backend).await, possible);
+    }
+    let (client, backend, _, _) = setup("arkade_to_lightning");
+    let error = client
+        .arkade_claim_possible_with("arkade", &backend, None, 300)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("receiver"), "{error}");
+}
+
+#[tokio::test]
+async fn an_offchain_claim_is_impossible_only_once_arkd_can_never_take_it() {
+    // arkd may still take the journal, whatever the window.
+    let (backend, store, _) = refused_claim(now() + WINDOW_CLOSED).await;
+    assert!(claim_possible(&store, &backend).await);
+    // Dead inside the window: settle falls back to a delegated batch.
+    let (mut backend, store, _) = refused_claim(now() + WINDOW_OPEN).await;
+    expire_vtxos(&mut backend, 121);
+    assert!(claim_possible(&store, &backend).await);
+    expire_vtxos(&mut backend, 3601);
+    assert!(claim_possible(&store, &backend).await);
+    // Dead past the window, at first recently enough that a lagging indexer may
+    // hide arkd's acceptance.
+    let (mut backend, store, _) = refused_claim(now() + WINDOW_CLOSED).await;
+    expire_vtxos(&mut backend, 121);
+    assert!(claim_possible(&store, &backend).await);
+    expire_vtxos(&mut backend, 3601);
+    assert!(!claim_possible(&store, &backend).await);
+    // Another transaction spent the inputs.
+    let (mut backend, store, _) = refused_claim(now() + WINDOW_OPEN).await;
+    spent_offchain_elsewhere(&mut backend);
+    assert!(!claim_possible(&store, &backend).await);
+    // arkd accepted the submit and only its response was lost.
+    let (client, mut backend, store, destination) =
+        setup_with_lock("btc_to_arkade", now() + WINDOW_CLOSED);
+    backend.fail_submit.store(true, Ordering::Relaxed);
+    let risky = ArkadeSpendOptions {
+        minimum_remaining_seconds: 0,
+        ..spend_options(destination)
+    };
+    assert!(
+        client
+            .spend_arkade("arkade", &backend, None, ArkadeSpend::Claim, risky)
+            .await
+            .is_err()
+    );
+    mark_submitted_inputs_spent(&mut backend);
+    expire_vtxos(&mut backend, 3601);
+    assert!(claim_possible(&store, &backend).await);
+    // A submitted journal only needs finalizing, also one written before journals
+    // recorded the attempt.
+    let (client, backend, store, destination) =
+        setup_with_lock("btc_to_arkade", now() + WINDOW_CLOSED);
+    backend.fail_finalize.store(true, Ordering::Relaxed);
+    let risky = ArkadeSpendOptions {
+        minimum_remaining_seconds: 0,
+        ..spend_options(destination)
+    };
+    assert!(
+        client
+            .spend_arkade("arkade", &backend, None, ArkadeSpend::Claim, risky)
+            .await
+            .is_err()
+    );
+    let mut stored = store.get_swap("arkade").unwrap().unwrap();
+    stored.metadata.arkade_pending.as_mut().unwrap().attempted = false;
+    store.store_swap(stored).unwrap();
+    assert!(claim_possible(&store, &backend).await);
+    // A journal never sent resumes only inside the window.
+    for (lock, possible) in [(now() + WINDOW_OPEN, true), (now() + WINDOW_CLOSED, false)] {
+        let (backend, store, _) = refused_claim(lock).await;
+        let mut stored = store.get_swap("arkade").unwrap().unwrap();
+        stored.metadata.arkade_pending.as_mut().unwrap().attempted = false;
+        store.store_swap(stored).unwrap();
+        assert_eq!(claim_possible(&store, &backend).await, possible);
+    }
+}
+
+#[tokio::test]
+async fn a_delegated_claim_is_impossible_only_once_no_batch_can_settle_it() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    let failing = MockServer::start().await;
+    Mock::given(wiremock::matchers::path("/api/delegate/settle"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&failing)
+        .await;
+    let settling = MockServer::start().await;
+    Mock::given(wiremock::matchers::path("/api/delegate/settle"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"commitment_txid":Txid::from_byte_array([24;32])})),
+        )
+        .mount(&settling)
+        .await;
+    let grace = super::super::delegate::INTENT_REPLACEMENT_GRACE_SECS + 1;
+    let closed = || now() + WINDOW_CLOSED;
+
+    // An intent a batch may still take, and one a batch settled.
+    let (_, backend, store, destination) = setup_with_lock("btc_to_arkade", closed());
+    assert!(
+        delegate_with(&failing.uri(), &store, &backend, &destination)
+            .await
+            .is_err()
+    );
+    assert!(claim_possible(&store, &backend).await);
+    let (_, backend, store, destination) = setup_with_lock("btc_to_arkade", closed());
+    delegate_with(&settling.uri(), &store, &backend, &destination)
+        .await
+        .unwrap();
+    age_delegation(&store, grace);
+    assert!(claim_possible(&store, &backend).await);
+    // An expired intent whose request never left needs the window for a replacement.
+    for (lock, possible) in [(now() + WINDOW_OPEN, true), (closed(), false)] {
+        let (_, backend, store, destination) = setup_with_lock("btc_to_arkade", lock);
+        let error = delegate_with("http://127.0.0.1:1", &store, &backend, &destination)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Transport(_)), "{error}");
+        age_delegation(&store, grace);
+        assert_eq!(claim_possible(&store, &backend).await, possible);
+    }
+    // One the server may have received is replaced past the window, until nothing
+    // is left to settle.
+    let (_, mut backend, store, destination) = setup_with_lock("btc_to_arkade", closed());
+    assert!(
+        delegate_with(&failing.uri(), &store, &backend, &destination)
+            .await
+            .is_err()
+    );
+    age_delegation(&store, grace);
+    assert!(claim_possible(&store, &backend).await);
+    spent_offchain_elsewhere(&mut backend);
+    assert!(!claim_possible(&store, &backend).await);
+    // Until its batch grace passes, an intent counts as one a batch may still take.
+    let (_, mut backend, store, destination) = setup_with_lock("btc_to_arkade", closed());
+    assert!(
+        delegate_with(&failing.uri(), &store, &backend, &destination)
+            .await
+            .is_err()
+    );
+    spent_offchain_elsewhere(&mut backend);
+    assert!(claim_possible(&store, &backend).await);
+    age_delegation(&store, grace);
+    assert!(!claim_possible(&store, &backend).await);
+    // Our own batch settled a dead journal's inputs before its commitment was
+    // saved. The journal reads them as lost, but the delegation decides.
+    let (mut backend, store, destination) = refused_claim(closed()).await;
+    expire_vtxos(&mut backend, 121);
+    assert!(
+        delegate_with(&failing.uri(), &store, &backend, &destination)
+            .await
+            .is_err()
+    );
+    age_delegation(&store, grace);
+    let commitment = Txid::from_byte_array([25; 32]);
+    for vtxo in &mut backend.vtxos {
+        vtxo.is_spent = true;
+        vtxo.settled_by = Some(commitment);
+    }
+    let metadata = store.get_swap("arkade").unwrap().unwrap().metadata;
+    let journal = metadata.arkade_pending.unwrap();
+    assert_eq!(
+        journal_outcome(&journal, &backend.vtxos, i64::from(now())).unwrap(),
+        JournalOutcome::Lost
+    );
+    assert!(claim_possible(&store, &backend).await);
+    // arkd accepted the dead journal after all, which an indexer lagging past
+    // expiry can hide; settle finishes it offchain next to the delegation.
+    let (client, mut backend, store, destination) = setup_with_lock("btc_to_arkade", closed());
+    backend.fail_submit.store(true, Ordering::Relaxed);
+    let risky = ArkadeSpendOptions {
+        minimum_remaining_seconds: 0,
+        ..spend_options(destination.clone())
+    };
+    assert!(
+        client
+            .spend_arkade("arkade", &backend, None, ArkadeSpend::Claim, risky)
+            .await
+            .is_err()
+    );
+    expire_vtxos(&mut backend, 121);
+    assert!(
+        delegate_with(&failing.uri(), &store, &backend, &destination)
+            .await
+            .is_err()
+    );
+    age_delegation(&store, grace);
+    mark_submitted_inputs_spent(&mut backend);
+    assert!(claim_possible(&store, &backend).await);
 }
 
 #[tokio::test]

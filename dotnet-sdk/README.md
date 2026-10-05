@@ -34,25 +34,26 @@ core (`../rust-sdk`) via [UniFFI](https://github.com/mozilla/uniffi-rs).
 `Client::CreateSwapAsync` routes **EVM-stablecoin → BTC on Arkade**,
 Lightning → BTC on Arkade and **on-chain Bitcoin → BTC on Arkade**; the
 dispatcher in `client.rs` rejects anything else with
-`Error::InvalidSwap`. EVM sources: USDC / USDT / USDT0 / WBTC on Polygon,
-Arbitrum, or Ethereum (whichever pairs are wired in `TokenId`, canonical
-list in `client-sdk/rust-sdk/src/types/token.rs`). Bitcoin → Arkade also
-has `CreateBitcoinToArkadeSwapAsync`, and `RefundBitcoinAsync` returns
-the on-chain deposit of one that did not complete. Lightning → Arkade
-has `CreateLightningToArkadeSwapAsync`, with an overload for an exact
-source or target amount and an invoice description; Arkade → Lightning
-has `CreateArkadeToLightningSwapAsync` (including send-max destinations)
-and `GetLightningSendQuoteAsync`, and `FundArkadeSwapAsync` pays its
-VHTLC from the SDK's Arkade wallet. `SettleAsync` claims or refunds any
-swap's Arkade VHTLC, recoverable outputs included, and
-`AmountsForSwapAsync` shows what the VHTLC holds. `OffboardArkadeAsync`
-sends the wallet's spendable sats (not its recoverable ones, which
-`SettleArkadeAsync` renews first) to an on-chain address, priced first by
-`GetArkadeOffboardQuoteAsync`, and keeps at least dust (330 sats today)
-as Arkade change, without which arkd would fail any batch the exit
-shares with others.
-`GetBulkStatusAsync` and `RecoverAllSwapsAsync` cover status polling and
-restoring swaps from the seed. The full matrix lives in the nuget README
+`Error::InvalidSwap`. EVM sources: USDC / USDT / USDT0 / WBTC on
+Polygon, Arbitrum, or Ethereum (whichever pairs are wired in `TokenId`,
+canonical list in `client-sdk/rust-sdk/src/types/token.rs`). Bitcoin →
+Arkade also has `CreateBitcoinToArkadeSwapAsync`, and
+`RefundBitcoinAsync` returns the on-chain deposit of one that did not
+complete. Lightning → Arkade has `CreateLightningToArkadeSwapAsync`,
+with an overload for an exact source or target amount and an invoice
+description; Arkade → Lightning has `CreateArkadeToLightningSwapAsync`
+(including send-max destinations) and `GetLightningSendQuoteAsync`, and
+`FundArkadeSwapAsync` pays its VHTLC from the SDK's Arkade wallet.
+`SettleAsync` claims or refunds any swap's Arkade VHTLC, recoverable
+outputs included, `AmountsForSwapAsync` shows what the VHTLC holds, and
+`IsArkadeClaimPossibleAsync` says whether a claim can still complete.
+`OffboardArkadeAsync` sends the wallet's spendable sats (not its
+recoverable ones, which `SettleArkadeAsync` renews first) to an on-chain
+address, priced first by `GetArkadeOffboardQuoteAsync`, and keeps at
+least dust (330 sats today) as Arkade change, without which arkd would
+fail any batch the exit shares with others. `GetBulkStatusAsync` and
+`RecoverAllSwapsAsync` cover status polling and restoring swaps from the
+seed. The full matrix lives in the nuget README
 (`Satora.Sdk/README.md`); update both in lockstep when you add a
 direction.
 

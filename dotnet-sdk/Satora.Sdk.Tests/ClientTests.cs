@@ -171,6 +171,17 @@ public class ClientTests
     }
 
     [Fact]
+    public async Task ArkadeClaimPossibleReadsTheStoredSwapBeforeArkd()
+    {
+        using var client = new Client(
+            TestMnemonic, BitcoinNetwork.Regtest, Unreachable, Unreachable, Unreachable);
+        var ex = await Assert.ThrowsAsync<SdkException>(
+            () => client.IsArkadeClaimPossibleAsync("missing"));
+        Assert.Equal(SdkErrorKind.InvalidSwap, ex.Kind);
+        Assert.Equal("swap record missing", ex.Message);
+    }
+
+    [Fact]
     public void ContractDbPathMustNotBeTheSwapStore()
     {
         using var temp = new TempDirectory();

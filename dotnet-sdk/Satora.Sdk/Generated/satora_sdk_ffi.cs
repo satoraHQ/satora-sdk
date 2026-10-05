@@ -807,6 +807,8 @@ static class _UniFFILib {
     
     
     
+    
+    
 
     static _UniFFILib() {
         _UniFFILib.uniffiCheckContractApiVersion();
@@ -844,6 +846,10 @@ static class _UniFFILib {
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_arkade_boarding_address(IntPtr @ptr,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern sbyte uniffi_satora_sdk_ffi_fn_method_satoraclient_arkade_claim_possible(IntPtr @ptr,RustBuffer @swapId,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -1187,6 +1193,10 @@ static class _UniFFILib {
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_claim_possible(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_offboard(
     );
 
@@ -1330,6 +1340,12 @@ static class _UniFFILib {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_boarding_address();
             if (checksum != 43759) {
                 throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_boarding_address` checksum `43759`, library returned `{checksum}`");
+            }
+        }
+        {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_claim_possible();
+            if (checksum != 51857) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_claim_possible` checksum `51857`, library returned `{checksum}`");
             }
         }
         {
@@ -1745,6 +1761,17 @@ public interface ISatoraClient {
     /// </summary>
     /// <exception cref="SdkException"></exception>
     string ArkadeBoardingAddress();
+    /// <summary>
+    /// Whether a claim of a swap's Arkade VHTLC can still complete, read
+    /// from the stored claim progress, the Arkade indexer and the claim
+    /// window, without sending anything that carries the preimage. `false`
+    /// is final: no later call can complete the claim. `true` means
+    /// [`Self::settle`] finishes or resumes the claim, or already has.
+    /// Reads only the swap record in this client's storage; a swap missing
+    /// from it is `SdkError::InvalidSwap`.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    bool ArkadeClaimPossible(string @swapId);
     /// <summary>
     /// Send `amount_sats` from the SDK's internal Arkade wallet to the
     /// on-chain Bitcoin `address` in a collaborative exit and return the
@@ -2298,6 +2325,24 @@ public class SatoraClient : ISatoraClient, IDisposable {
         return CallWithPointer(thisPtr => FfiConverterString.INSTANCE.Lift(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
     _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_arkade_boarding_address(thisPtr,  ref _status)
+)));
+    }
+    
+    
+    /// <summary>
+    /// Whether a claim of a swap's Arkade VHTLC can still complete, read
+    /// from the stored claim progress, the Arkade indexer and the claim
+    /// window, without sending anything that carries the preimage. `false`
+    /// is final: no later call can complete the claim. `true` means
+    /// [`Self::settle`] finishes or resumes the claim, or already has.
+    /// Reads only the swap record in this client's storage; a swap missing
+    /// from it is `SdkError::InvalidSwap`.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public bool ArkadeClaimPossible(string @swapId) {
+        return CallWithPointer(thisPtr => FfiConverterBoolean.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_arkade_claim_possible(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), ref _status)
 )));
     }
     

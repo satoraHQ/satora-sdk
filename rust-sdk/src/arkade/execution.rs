@@ -181,10 +181,16 @@ pub(super) enum JournalOutcome {
     Live,
     /// arkd never accepted the journal and never will.
     Dead,
+    /// Another transaction spent an input, so arkd can never accept the journal.
+    /// That may be our own delegated batch, which the caller must rule out.
+    Lost,
 }
 
+pub(super) const JOURNAL_LOST: &str =
+    "the persisted Arkade spend's inputs were spent by another transaction";
+
 /// The journal's Ark txid and the VTXOs its checkpoints spend.
-fn journal_spend(pending: &ArkadePending) -> Result<(Txid, Vec<OutPoint>)> {
+pub(super) fn journal_spend(pending: &ArkadePending) -> Result<(Txid, Vec<OutPoint>)> {
     let txid = restore(&pending.ark_tx, None)?.unsigned_tx.compute_txid();
     let inputs = pending
         .checkpoints
@@ -212,18 +218,26 @@ pub(super) fn journal_outcome(
     if pending.submitted || pending.completed {
         return Ok(JournalOutcome::Live);
     }
-    let (_, inputs) = journal_spend(pending)?;
-    let mut dead = false;
+    let (txid, inputs) = journal_spend(pending)?;
+    let (mut dead, mut lost) = (false, false);
     for outpoint in &inputs {
         let Some(vtxo) = vtxos.iter().find(|v| v.outpoint == *outpoint) else {
             return Ok(JournalOutcome::Live);
         };
-        if vtxo.is_spent || vtxo.is_unrolled {
+        if vtxo.is_unrolled || vtxo.ark_txid == Some(txid) {
             return Ok(JournalOutcome::Live);
+        }
+        if vtxo.is_spent {
+            if vtxo.ark_txid.is_none() && vtxo.settled_by.is_none() {
+                return Ok(JournalOutcome::Live);
+            }
+            lost = true;
         }
         dead |= vtxo.is_swept || expired_beyond_grace(vtxo, now);
     }
-    Ok(if dead {
+    Ok(if lost {
+        JournalOutcome::Lost
+    } else if dead {
         JournalOutcome::Dead
     } else {
         JournalOutcome::Live
@@ -434,7 +448,9 @@ impl Client {
     /// resumes from the journal. A persisted spend arkd refused because its inputs are
     /// unspent and swept or expired for two minutes fails with [`Error::InvalidSwap`]
     /// instead, and [`Client::settle_arkade`] then settles the VHTLC in a delegated
-    /// batch, for a claim only while the claim window is open.
+    /// batch, for a claim only while the claim window is open. One whose inputs another
+    /// transaction spent can never complete, and fails with [`Error::InvalidSwap`] on
+    /// every call instead of being resubmitted.
     pub async fn spend_arkade(
         &self,
         id: &str,
@@ -536,10 +552,14 @@ impl Client {
                 if !pending.submitted && !pending.completed {
                     let vtxos = validate_vtxos(&htlc, backend.vtxos(htlc.address()).await?)?;
                     let now = i64::try_from(super::delegate::unix_now()?).map_err(decode)?;
-                    if journal_outcome(&pending, &vtxos, now)? == JournalOutcome::Dead {
-                        return Err(invalid(
-                            "arkd can no longer accept the persisted Arkade spend; use Client::settle",
-                        ));
+                    match journal_outcome(&pending, &vtxos, now)? {
+                        JournalOutcome::Live => {}
+                        JournalOutcome::Dead => {
+                            return Err(invalid(
+                                "arkd can no longer accept the persisted Arkade spend; use Client::settle",
+                            ));
+                        }
+                        JournalOutcome::Lost => return Err(invalid(JOURNAL_LOST)),
                     }
                 }
                 // Once a submit was attempted arkd may already hold the preimage, and
@@ -1117,7 +1137,7 @@ pub(super) async fn ensure_claim_window(
         ))
     }
 }
-async fn claim_window_open(
+pub(super) async fn claim_window_open(
     htlc: &ArkadeHtlc,
     chain: Option<&dyn crate::bitcoin::BitcoinBackend>,
     margin_secs: u64,

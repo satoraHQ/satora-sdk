@@ -78,6 +78,10 @@ const ARKADE_DERIVATION_PATH: &str = "m/83696968'/11811'/0/0";
 /// gRPC handshake timeout. Matches the ark-client-sample default.
 const ARK_NETWORK_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long before the VHTLC refund locktime the client's claims stop revealing
+/// the preimage.
+pub(crate) const CLAIM_MARGIN_SECS: u64 = 300;
+
 /// Caller-supplied configuration for the Arkade claim flow.
 ///
 /// Mirrors `aa::AaConfig` in shape: URLs + a wallet hook the
@@ -582,7 +586,7 @@ impl Client {
             ArkadeSpendOptions {
                 destination: destination.into(),
                 timeout: Duration::from_secs(120),
-                minimum_remaining_seconds: 300,
+                minimum_remaining_seconds: CLAIM_MARGIN_SECS,
             },
         )
         .await
@@ -617,7 +621,7 @@ impl Client {
             ArkadeSpendOptions {
                 destination: String::new(),
                 timeout: Duration::from_secs(120),
-                minimum_remaining_seconds: 300,
+                minimum_remaining_seconds: CLAIM_MARGIN_SECS,
             },
             true,
         )
@@ -681,6 +685,31 @@ impl Client {
         self.arkade_htlc(swap_id)?;
         let backend = self.arkade_wallet().await?;
         self.vhtlc_balance(swap_id, backend).await
+    }
+
+    /// Whether a claim of the stored swap can still complete, read from its journal,
+    /// the Arkade indexer and the claim window. Nothing carrying the preimage is
+    /// sent. `false` is final; `true` means [`Client::settle`] finishes or resumes
+    /// the claim, or already has. Reads only the local record, like
+    /// `amounts_for_swap`.
+    pub async fn arkade_claim_possible(&self, swap_id: &str) -> Result<bool> {
+        let htlc = self.arkade_htlc(swap_id)?;
+        let chain = (htlc.options.refund_locktime < 500_000_000)
+            .then(|| {
+                let config = self.arkade_config()?;
+                crate::bitcoin::EsploraBackend::new(&config.esplora_url, config.network)
+            })
+            .transpose()?;
+        let backend = self.arkade_wallet().await?;
+        self.arkade_claim_possible_with(
+            swap_id,
+            backend,
+            chain
+                .as_ref()
+                .map(|c| c as &dyn crate::bitcoin::BitcoinBackend),
+            CLAIM_MARGIN_SECS,
+        )
+        .await
     }
 
     /// Claim or refund through [`Client::settle_arkade`], routing recoverable
@@ -774,7 +803,7 @@ impl Client {
             ArkadeSpendOptions {
                 destination,
                 timeout,
-                minimum_remaining_seconds: 300,
+                minimum_remaining_seconds: CLAIM_MARGIN_SECS,
             },
         )
         .await

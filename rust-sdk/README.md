@@ -316,16 +316,20 @@ validators.
 
 ## Arkade execution
 
-Arkade `claim` supports Bitcoin, EVM and Lightning inputs and spends all
-eligible VTXOs after checking the expected funding amount. `refund_arkade` checks
-maturity against Bitcoin chain data; `collab_refund_arkade` obtains and verifies
-the receiver's signatures for Arkade→EVM and Arkade→Lightning refunds.
-`arkade_htlc`, `vhtlc_balance`, and `spend_arkade` expose reconstruction, spend
-observations, and an injectable `ArkadeBackend` for external integrations;
-`amounts_for_swap` reads a stored swap's VHTLC amounts through the internal
-wallet (TypeScript `amountsForSwap`). `ClientBuilder::arkade_config` has no
-default endpoints; the TypeScript SDK defaults to `https://arkade.computer` on
-mainnet and `https://mutinynet.arkade.sh` on signet (Mutinynet).
+Arkade `claim` supports Bitcoin, EVM and Lightning inputs and spends all eligible
+VTXOs after checking the expected funding amount. `refund_arkade` checks maturity
+against Bitcoin chain data; `collab_refund_arkade` obtains and verifies the
+receiver's signatures for Arkade→EVM and Arkade→Lightning refunds. `arkade_htlc`,
+`vhtlc_balance`, and `spend_arkade` expose reconstruction, spend observations, and
+an injectable `ArkadeBackend` for external integrations; `amounts_for_swap` reads
+a stored swap's VHTLC amounts through the internal wallet (TypeScript
+`amountsForSwap`). `arkade_claim_possible` tells whether a claim can still
+complete, from the journal, the indexer and the claim window, without sending
+anything that carries the preimage. `false` is final; anything it cannot settle,
+such as a journal refused less than an hour past expiry, counts as possible.
+`ClientBuilder::arkade_config` has no default endpoints; the TypeScript SDK
+defaults to `https://arkade.computer` on mainnet and `https://mutinynet.arkade.sh`
+on signet (Mutinynet).
 
 The expected amount is the target the swap was created with, which a refresh
 never moves. When an EVM→Arkade source converts to less than quoted, the daemon
@@ -466,14 +470,16 @@ because its inputs are unspent and swept or expired for two minutes (arkd refuse
 such inputs before signing), `spend_arkade` refuses it and `settle_arkade` settles
 the VHTLC in a delegated batch instead. The refused submit never reached the swap
 server, so that batch checks the claim window. A journal the indexer later shows
-arkd accepted after all still finishes offchain. An intent lives for about two
-minutes, so keep the margin above that. Two minutes after an intent expires with
-its inputs unspent, the next call replaces it with a new intent for its own
-request; the claim window is checked again unless an earlier claim may have
-delivered the preimage. A late settlement of a replaced intent is still recognised
-when the replacement spends the same inputs. The timeout refund path still
-requires the Arkade server, as in TypeScript. `StrictVhtlcOptions` exposes all six
-script paths for wallet-level exit integrations.
+arkd accepted after all still finishes offchain. A persisted spend whose inputs
+another transaction spent can never complete, and `spend_arkade` refuses it
+instead of resubmitting it. An intent lives for about two minutes, so keep the
+margin above that. Two minutes after an intent expires with its inputs unspent,
+the next call replaces it with a new intent for its own request; the claim window
+is checked again unless an earlier claim may have delivered the preimage. A late
+settlement of a replaced intent is still recognised when the replacement spends
+the same inputs. The timeout refund path still requires the Arkade server, as in
+TypeScript. `StrictVhtlcOptions` exposes all six script paths for wallet-level
+exit integrations.
 
 ## Sponsored claims
 

@@ -238,12 +238,15 @@ that journal.
 
 ## Arkade VHTLCs
 
-`SettleAsync(swapId, operation, destination)` claims (`ArkadeSpend.Claim`)
-or refunds (`ArkadeSpend.Refund`, `ArkadeSpend.CooperativeRefund`) a
-swap's Arkade VHTLC. Unlike `ClaimAsync`, it also spends recoverable
-(expired) outputs, through a batch, and its `ArkadeSettlement` says
-which path it took. `AmountsForSwapAsync(swapId)` shows the spendable,
-recoverable and spent sats at the VHTLC.
+`SettleAsync(swapId, operation, destination)` claims
+(`ArkadeSpend.Claim`) or refunds (`ArkadeSpend.Refund`,
+`ArkadeSpend.CooperativeRefund`) a swap's Arkade VHTLC. Unlike
+`ClaimAsync`, it also spends recoverable (expired) outputs, through a
+batch, and its `ArkadeSettlement` says which path it took.
+`AmountsForSwapAsync(swapId)` shows the spendable, recoverable and spent
+sats at the VHTLC. `IsArkadeClaimPossibleAsync(swapId)` says whether a
+claim can still complete, without sending the preimage anywhere: `false`
+is final, and `true` means `SettleAsync` finishes or resumes the claim.
 
 ## Offboarding
 

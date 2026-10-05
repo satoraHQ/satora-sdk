@@ -1837,6 +1837,17 @@ impl SatoraClient {
             Ok(amounts.into())
         })
     }
+
+    /// Whether a claim of a swap's Arkade VHTLC can still complete, read
+    /// from the stored claim progress, the Arkade indexer and the claim
+    /// window, without sending anything that carries the preimage. `false`
+    /// is final: no later call can complete the claim. `true` means
+    /// [`Self::settle`] finishes or resumes the claim, or already has.
+    /// Reads only the swap record in this client's storage; a swap missing
+    /// from it is `SdkError::InvalidSwap`.
+    pub fn arkade_claim_possible(&self, swap_id: String) -> Result<bool, SdkError> {
+        runtime().block_on(async { Ok(self.inner.arkade_claim_possible(&swap_id).await?) })
+    }
 }
 
 // ─── Arkade wallet spends ──────────────────────────────────────────────
@@ -2638,6 +2649,16 @@ mod tests {
         assert!(
             matches!(&quote, Err(SdkError::InvalidSwap { message }) if no_wallet(message)),
             "{quote:?}"
+        );
+    }
+
+    #[test]
+    fn arkade_claim_possible_reads_the_stored_swap_before_arkd() {
+        let client = SatoraClient::new_signing(UNREACHABLE.into(), MNEMONIC.into(), None).unwrap();
+        let result = client.arkade_claim_possible("missing".into());
+        assert!(
+            matches!(&result, Err(SdkError::InvalidSwap { message }) if message == "swap record missing"),
+            "{result:?}"
         );
     }
 

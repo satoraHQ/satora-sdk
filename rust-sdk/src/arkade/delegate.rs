@@ -1,12 +1,15 @@
 //! Delegated batch settlement for spendable, expired and swept VHTLC outputs.
+use super::execution::JOURNAL_LOST;
 use super::execution::JournalOutcome;
 use super::execution::archive;
+use super::execution::claim_window_open;
 use super::execution::decode;
 use super::execution::ensure_claim_window;
 use super::execution::expired_beyond_grace;
 use super::execution::invalid;
 use super::execution::journal_accepted;
 use super::execution::journal_outcome;
+use super::execution::journal_spend;
 use super::execution::merge_cosigned;
 use super::execution::restore;
 use super::execution::sign_psbt;
@@ -26,6 +29,12 @@ use serde::Serialize;
 /// How long after an intent expires a batch that took it may still settle it. If
 /// one does after a replacement, reconciling the replacement's inputs finds it.
 pub(super) const INTENT_REPLACEMENT_GRACE_SECS: u64 = 120;
+
+/// How long every input of a dead journal must have been expired before its claim
+/// counts as impossible. This is far beyond any indexer lag that could hide arkd's
+/// acceptance of the journal, which would otherwise let a refund race a claim that
+/// is finalized later.
+const DEAD_FOR_REFUND_SECS: i64 = 3600;
 
 pub(super) fn unix_now() -> Result<u64> {
     Ok(std::time::SystemTime::now()
@@ -121,8 +130,13 @@ impl Client {
             let vtxos=validate_vtxos(&htlc,backend.vtxos(htlc.address()).await?)?;
             let now=i64::try_from(unix_now()?).map_err(decode)?;
             // A delegation is only ever persisted next to a journal arkd refused.
-            if let (Some(pending),None)=(&stored.metadata.arkade_pending,&stored.metadata.arkade_delegate)
-                && journal_outcome(pending,&vtxos,now)?!=JournalOutcome::Dead { return Err(invalid("an offchain Arkade spend is already persisted; resume it first")); }
+            if let (Some(pending),None)=(&stored.metadata.arkade_pending,&stored.metadata.arkade_delegate) {
+                match journal_outcome(pending,&vtxos,now)? {
+                    JournalOutcome::Dead => {}
+                    JournalOutcome::Live => return Err(invalid("an offchain Arkade spend is already persisted; resume it first")),
+                    JournalOutcome::Lost => return Err(invalid(JOURNAL_LOST)),
+                }
+            }
             // A replaced claim whose request may have delivered the preimage skips the window and amount checks.
             let mut delivered=false;
             let mut superseded=Vec::new();
@@ -300,7 +314,8 @@ pub enum ArkadeSettlement {
 impl Client {
     /// Select offchain execution for spendable VTXOs, delegated settlement for
     /// recoverable/mixed balances, and the persisted path when resuming. An offchain
-    /// journal arkd can no longer accept settles in a batch, inside the claim window.
+    /// journal arkd refused because its inputs are swept or expired settles in a batch,
+    /// inside the claim window; one whose inputs another transaction spent is refused.
     pub async fn settle_arkade(
         &self,
         id: &str,
@@ -331,9 +346,11 @@ impl Client {
     }
 
     /// Whether settling the swap now goes through a delegated batch: a persisted
-    /// delegation, an offchain journal arkd can no longer accept, or recoverable
-    /// outputs and no journal. A journal that arkd may still finalize, and one it
-    /// accepted next to an unsettled delegation, finish offchain.
+    /// delegation, an offchain journal arkd refused because its inputs are swept or
+    /// expired, or recoverable outputs and no journal. A journal that arkd may still
+    /// finalize, and one it accepted next to an unsettled delegation, finish offchain,
+    /// and so does one whose inputs another transaction spent, which `spend_arkade`
+    /// then refuses.
     pub(super) async fn delegation_needed(
         &self,
         id: &str,
@@ -361,5 +378,90 @@ impl Client {
             }
             (None, None) => Ok(self.vhtlc_balance(id, backend).await?.recoverable_sats > 0),
         }
+    }
+
+    /// Whether a claim of this swap can still complete, from its journal, the
+    /// indexer and the claim window, without sending anything that carries the
+    /// preimage. Every state it cannot settle counts as possible, so `false` stays
+    /// `false`: time only closes the window, and inputs another transaction spent or
+    /// arkd refused for an hour past expiry never come back.
+    pub(super) async fn arkade_claim_possible_with(
+        &self,
+        id: &str,
+        backend: &dyn ArkadeBackend,
+        chain: Option<&dyn crate::bitcoin::BitcoinBackend>,
+        margin_secs: u64,
+    ) -> Result<bool> {
+        let _execution = self.arkade_execution.lock().await;
+        let stored = self
+            .get_stored_swap(id)?
+            .ok_or_else(|| invalid("swap record missing"))?;
+        let htlc = self.arkade_htlc(id)?;
+        if !htlc.is_receiver {
+            return Err(invalid("only the receiver claims an Arkade VHTLC"));
+        }
+        let info = backend.info().await?;
+        validate_info(&htlc, &info)?;
+        let vtxos = validate_vtxos(&htlc, backend.vtxos(htlc.address()).await?)?;
+        let now = i64::try_from(unix_now()?).map_err(decode)?;
+        let window_open = claim_window_open(&htlc, chain, margin_secs).await?;
+        let pending = stored.metadata.arkade_pending;
+        if let Some(state) = stored.metadata.arkade_delegate {
+            if state.commitment_txid.is_some() {
+                return Ok(true);
+            }
+            // A journal arkd accepted after all finishes offchain. A lost one may
+            // only show this delegation's own batch, so the delegation decides.
+            if let Some(pending) = &pending
+                && journal_outcome(pending, &vtxos, now)? == JournalOutcome::Live
+            {
+                return Ok(true);
+            }
+            if !delegation_replaceable(&state)? {
+                return Ok(true);
+            }
+            let proof = restore(&state.intent_proof, None)?;
+            let settled = proof.unsigned_tx.input.iter().skip(1).any(|input| {
+                vtxos
+                    .iter()
+                    .any(|v| v.outpoint == input.previous_output && v.settled_by.is_some())
+            });
+            if settled {
+                return Ok(true);
+            }
+            let settleable = VtxoList::new(info.dust, vtxos)
+                .batch_settleable_at(&info, now, |_| Some(htlc.options.server))
+                .next()
+                .is_some();
+            // A replacement checks the window unless a request may have delivered the
+            // preimage already.
+            return Ok(settleable && (window_open || state.preimage_sent || !state.unsent));
+        }
+        let Some(pending) = pending else {
+            // Before the lock, settle finishes a claim arkd already holds.
+            let spent_offchain = vtxos.iter().any(|v| {
+                v.is_spent && v.ark_txid.is_some() && v.settled_by.is_none() && !v.is_unrolled
+            });
+            return Ok(window_open || (spent_offchain && claim_window_open(&htlc, chain, 0).await?));
+        };
+        if pending.submitted || pending.completed {
+            return Ok(true);
+        }
+        Ok(match journal_outcome(&pending, &vtxos, now)? {
+            // A journal never submitted resumes only inside the window.
+            JournalOutcome::Live => pending.attempted || window_open,
+            JournalOutcome::Lost => false,
+            // The delegated fallback checks the window.
+            JournalOutcome::Dead => {
+                let (_, inputs) = journal_spend(&pending)?;
+                let dead_long_enough = inputs.iter().all(|outpoint| {
+                    vtxos.iter().any(|v| {
+                        v.outpoint == *outpoint
+                            && now >= v.expires_at.saturating_add(DEAD_FOR_REFUND_SECS)
+                    })
+                });
+                window_open || !dead_long_enough
+            }
+        })
     }
 }
