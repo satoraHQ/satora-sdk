@@ -981,8 +981,9 @@ impl SatoraClient {
     /// [`Self::new_with_arkade`] can refund; others get
     /// `SdkError::InvalidSwap`.
     ///
-    /// `fee_rate_sat_vb` `None` takes the endpoint's estimate for
-    /// confirmation within six blocks. HTLC outputs whose fee would push
+    /// `fee_rate_sat_vb` `None` takes Mempool's recommended hour fee from
+    /// the endpoint, or plain esplora's estimate for confirmation within six
+    /// blocks, never below 1 sat/vB. HTLC outputs whose fee would push
     /// the refund over `maximum_fee_sats` are left for a later call; if
     /// not even one fits, the call is refused with `SdkError::InvalidSwap`.
     /// Unconfirmed HTLC outputs are refunded too, and the call gives up

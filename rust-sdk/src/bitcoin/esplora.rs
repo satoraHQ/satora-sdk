@@ -1,6 +1,20 @@
 use super::*;
 use std::collections::HashSet;
 
+/// Mempool's recommended fees, which the swap server spends at too.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecommendedFees {
+    fastest_fee: f64,
+    half_hour_fee: f64,
+    hour_fee: f64,
+    economy_fee: f64,
+    minimum_fee: f64,
+}
+
+/// Bitcoin Core's default minimum relay fee rate, in sat/vB.
+const MIN_RELAY_SAT_VB: f64 = 1.0;
+
 pub struct EsploraBackend {
     client: esplora_client::AsyncClient,
     network: Network,
@@ -81,6 +95,35 @@ impl EsploraBackend {
             .into_iter()
             .nth(vout as usize)
             .ok_or_else(|| invalid("Bitcoin output spend status unknown"))
+    }
+
+    /// Mempool's recommended fees at the block targets the swap server reads them
+    /// for (swap/src/electrum.rs), or `None` from a server without Mempool's API,
+    /// such as blockstream.info. Mempool serves no `fee-estimates` over an Electrum
+    /// backend and has deprecated it on mempool.space, so that is only the fallback.
+    async fn recommended_fees(&self) -> Result<Option<Vec<(u16, f64)>>> {
+        let response = self
+            .http
+            .get(format!("{}/v1/fees/recommended", self.base_url))
+            .send()
+            .await
+            .map_err(transport)?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let fees: RecommendedFees = response
+            .error_for_status()
+            .map_err(transport)?
+            .json()
+            .await
+            .map_err(decode)?;
+        Ok(Some(vec![
+            (1, fees.fastest_fee),
+            (3, fees.half_hour_fee),
+            (6, fees.hour_fee),
+            (25, fees.economy_fee),
+            (144, fees.minimum_fee),
+        ]))
     }
 
     async fn verify_network(&self) -> Result<()> {
@@ -313,15 +356,30 @@ impl BitcoinBackend for EsploraBackend {
     }
     fn fee_rate(&self, target: u16) -> ChainFuture<'_, FeeRate> {
         Box::pin(async move {
-            let estimates = self.client.get_fee_estimates().await.map_err(transport)?;
+            let estimates: Vec<(u16, f64)> = match self.recommended_fees().await? {
+                Some(estimates) => estimates,
+                None => self
+                    .client
+                    .get_fee_estimates()
+                    .await
+                    .map_err(transport)?
+                    .into_iter()
+                    .collect(),
+            };
             let rate = estimates
                 .iter()
-                .filter(|(blocks, _)| **blocks <= target)
-                .max_by_key(|(blocks, _)| **blocks)
-                .or_else(|| estimates.iter().min_by_key(|(blocks, _)| **blocks))
+                .filter(|(blocks, _)| *blocks <= target)
+                .max_by_key(|(blocks, _)| *blocks)
+                .or_else(|| estimates.iter().min_by_key(|(blocks, _)| *blocks))
                 .map(|(_, rate)| *rate)
                 .ok_or_else(|| invalid("no Bitcoin fee estimate available"))?;
-            fee_from_sat_vb(rate)
+            // Esplora estimates go below the minimum relay fee most nodes keep, so a
+            // spend at them would not propagate. Non-positive rates still fail.
+            fee_from_sat_vb(if rate > 0.0 {
+                rate.max(MIN_RELAY_SAT_VB)
+            } else {
+                rate
+            })
         })
     }
     fn broadcast<'a>(&'a self, tx: &'a Transaction) -> ChainFuture<'a, Txid> {
@@ -487,5 +545,130 @@ mod tests {
         let backend = EsploraBackend::new(&server.uri(), Network::Regtest).unwrap();
         assert_eq!(backend.fetch_transaction(id).await.unwrap(), Some(tx));
         assert!(!backend.output_status(id, 0).await.unwrap().spent);
+    }
+
+    // Bodies captured on 2026-10-05: `fee-estimates` from the regtest Mempool over
+    // Fulcrum (404) and from mempool.space (203, the deprecation now in a header),
+    // and blockstream.info's 404 for Mempool's recommended fees and its estimates.
+    const REGTEST_FEE_ESTIMATES_404: &str = "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /api/v1/fee-estimates</pre>\n</body>\n</html>\n";
+    const MEMPOOL_SPACE_FEE_ESTIMATES_203: &str = r#"{"1":1.269,"2":1.269,"3":0.786,"4":0.786,"5":0.786,"6":0.396,"7":0.396,"8":0.396,"9":0.396,"10":0.396,"11":0.396,"12":0.396,"13":0.396,"14":0.396,"15":0.396,"16":0.396,"17":0.396,"18":0.396,"19":0.396,"20":0.396,"21":0.396,"22":0.396,"23":0.396,"24":0.396,"25":0.396,"144":0.2,"504":0.2,"1008":0.1}"#;
+    const BLOCKSTREAM_RECOMMENDED_404: &str = r#"endpoint does not exist "/v1/fees/recommended""#;
+    const BLOCKSTREAM_FEE_ESTIMATES: &str = r#"{"6":0.381,"7":0.381,"2":1.066,"5":0.42200000000000004,"12":0.284,"11":0.284,"18":0.284,"20":0.284,"3":1.066,"17":0.284,"21":0.284,"15":0.284,"144":0.25,"9":0.301,"1":1.066,"13":0.284,"16":0.284,"24":0.284,"19":0.284,"8":0.301,"23":0.284,"14":0.284,"25":0.27499999999999997,"504":0.25,"22":0.284,"1008":0.09999999999999999,"10":0.301,"4":0.42200000000000004}"#;
+    /// mempool.space's body on 2026-10-04, shortened: its six-block rate and its
+    /// deprecation entry as captured, which no strict parse of `fee-estimates`
+    /// accepts.
+    const MEMPOOL_SPACE_FEE_ESTIMATES_WARNING: &str = r#"{"1":2.012,"3":1.517,"6":0.493,"144":0.2,"warning":"This endpoint is deprecated and will be removed in a future release. Please use /api/v1/fees/precise instead."}"#;
+
+    fn sat_vb(rate: u64) -> FeeRate {
+        FeeRate::from_sat_per_kwu(rate * 250)
+    }
+
+    #[tokio::test]
+    async fn fee_rate_reads_mempool_recommended_fees_before_fee_estimates() {
+        for (status, body) in [
+            (404, REGTEST_FEE_ESTIMATES_404),
+            (200, MEMPOOL_SPACE_FEE_ESTIMATES_WARNING),
+            (203, MEMPOOL_SPACE_FEE_ESTIMATES_203),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(path("/v1/fees/recommended"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "fastestFee": 5, "halfHourFee": 4, "hourFee": 3, "economyFee": 2, "minimumFee": 1
+                })))
+                .mount(&server)
+                .await;
+            Mock::given(path("/fee-estimates"))
+                .respond_with(ResponseTemplate::new(status).set_body_string(body))
+                .expect(0)
+                .mount(&server)
+                .await;
+            let backend = EsploraBackend::new(&server.uri(), Network::Regtest).unwrap();
+            for (target, rate) in [(6, 3), (1, 5), (3, 4), (25, 2), (0, 5), (1008, 1)] {
+                assert_eq!(
+                    backend.fee_rate(target).await.unwrap(),
+                    sat_vb(rate),
+                    "{target}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn fee_rate_falls_back_to_fee_estimates_without_mempools_api() {
+        // A map without an entry for every target, above the relay floor.
+        let server = MockServer::start().await;
+        Mock::given(path("/v1/fees/recommended"))
+            .respond_with(ResponseTemplate::new(404).set_body_string(BLOCKSTREAM_RECOMMENDED_404))
+            .mount(&server)
+            .await;
+        Mock::given(path("/fee-estimates"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"1": 4.0, "3": 3.5, "6": 2.004, "144": 1.0})),
+            )
+            .mount(&server)
+            .await;
+        let backend = EsploraBackend::new(&server.uri(), Network::Regtest).unwrap();
+        assert_eq!(
+            backend.fee_rate(6).await.unwrap(),
+            FeeRate::from_sat_per_kwu(501)
+        );
+
+        // blockstream.info's estimates, mostly below the relay floor.
+        let server = MockServer::start().await;
+        Mock::given(path("/v1/fees/recommended"))
+            .respond_with(ResponseTemplate::new(404).set_body_string(BLOCKSTREAM_RECOMMENDED_404))
+            .mount(&server)
+            .await;
+        Mock::given(path("/fee-estimates"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(BLOCKSTREAM_FEE_ESTIMATES))
+            .mount(&server)
+            .await;
+        let backend = EsploraBackend::new(&server.uri(), Network::Regtest).unwrap();
+        assert_eq!(backend.fee_rate(6).await.unwrap(), sat_vb(1));
+        assert_eq!(
+            backend.fee_rate(1).await.unwrap(),
+            FeeRate::from_sat_per_kwu(267)
+        );
+    }
+
+    #[tokio::test]
+    async fn fee_rate_never_goes_below_the_minimum_relay_fee() {
+        let server = MockServer::start().await;
+        Mock::given(path("/v1/fees/recommended"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "fastestFee": 2, "halfHourFee": 1.5, "hourFee": 0.5, "economyFee": 0.2, "minimumFee": 0.1
+            })))
+            .mount(&server)
+            .await;
+        let backend = EsploraBackend::new(&server.uri(), Network::Regtest).unwrap();
+        assert_eq!(backend.fee_rate(6).await.unwrap(), sat_vb(1));
+        assert_eq!(
+            backend.fee_rate(3).await.unwrap(),
+            FeeRate::from_sat_per_kwu(375)
+        );
+    }
+
+    #[tokio::test]
+    async fn fee_rate_fails_on_any_other_recommended_fees_failure() {
+        for (status, body) in [(503, "busy"), (200, "{}"), (200, "null")] {
+            let server = MockServer::start().await;
+            Mock::given(path("/v1/fees/recommended"))
+                .respond_with(ResponseTemplate::new(status).set_body_string(body))
+                .mount(&server)
+                .await;
+            Mock::given(path("/fee-estimates"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"6": 2.0})))
+                .expect(0)
+                .mount(&server)
+                .await;
+            let backend = EsploraBackend::new(&server.uri(), Network::Regtest).unwrap();
+            let error = backend.fee_rate(6).await.unwrap_err();
+            if status == 503 {
+                assert!(matches!(error, Error::Transport(_)), "{error}");
+            } else {
+                assert!(matches!(error, Error::Decode(_)), "{body}: {error}");
+            }
+        }
     }
 }

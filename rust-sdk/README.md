@@ -295,7 +295,11 @@ an `ElectrumBackend`. Both verify the configured network's genesis block and
 reject observations spanning a tip change with `Transport`, like any read that
 straddled a new block, so call again. `EsploraBackend` also reads Mempool on an
 electrum backend, which serves no `/txs/chain`: history then pages its `/txs`
-through `after_txid`, one request per ten transactions. The injectable
+through `after_txid`, one request per ten transactions. Its fee rate for a
+confirmation target is Mempool's recommended fee, taken at 1, 3, 6, 25 and 144
+blocks for the fastest, half-hour, hour, economy and minimum fees as the swap
+server reads them, or esplora's `fee-estimates` from a server without Mempool's
+API; it never goes below the 1 sat/vB minimum relay fee. The injectable
 `BitcoinBackend` trait also supports private chain readers and offline integration
 tests.
 

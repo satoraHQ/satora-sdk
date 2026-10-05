@@ -1018,8 +1018,9 @@ public sealed class Client : IDisposable
     /// <param name="swapId">UUID returned by <see cref="CreateBitcoinToArkadeSwapAsync"/>.</param>
     /// <param name="destination">Bitcoin address on the client's network that receives the refund.</param>
     /// <param name="feeRateSatVb">
-    /// Fee rate in sat/vB. Pass <c>null</c> to take the esplora estimate
-    /// for confirmation within six blocks.
+    /// Fee rate in sat/vB. Pass <c>null</c> to take Mempool's recommended
+    /// hour fee from the esplora endpoint, or plain esplora's estimate for
+    /// confirmation within six blocks, never below 1 sat/vB.
     /// </param>
     /// <param name="maximumFeeSats">
     /// Upper bound on the fee, in satoshis, whatever the rate. HTLC outputs

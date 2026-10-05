@@ -1464,8 +1464,8 @@ static class _UniFFILib {
         }
         {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_refund_bitcoin();
-            if (checksum != 31945) {
-                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_refund_bitcoin` checksum `31945`, library returned `{checksum}`");
+            if (checksum != 59139) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_refund_bitcoin` checksum `59139`, library returned `{checksum}`");
             }
         }
         {
@@ -2096,8 +2096,9 @@ public interface ISatoraClient {
     /// [`Self::new_with_arkade`] can refund; others get
     /// `SdkError::InvalidSwap`.
     ///
-    /// `fee_rate_sat_vb` `None` takes the endpoint's estimate for
-    /// confirmation within six blocks. HTLC outputs whose fee would push
+    /// `fee_rate_sat_vb` `None` takes Mempool's recommended hour fee from
+    /// the endpoint, or plain esplora's estimate for confirmation within six
+    /// blocks, never below 1 sat/vB. HTLC outputs whose fee would push
     /// the refund over `maximum_fee_sats` are left for a later call; if
     /// not even one fits, the call is refused with `SdkError::InvalidSwap`.
     /// Unconfirmed HTLC outputs are refunded too, and the call gives up
@@ -2804,8 +2805,9 @@ public class SatoraClient : ISatoraClient, IDisposable {
     /// [`Self::new_with_arkade`] can refund; others get
     /// `SdkError::InvalidSwap`.
     ///
-    /// `fee_rate_sat_vb` `None` takes the endpoint's estimate for
-    /// confirmation within six blocks. HTLC outputs whose fee would push
+    /// `fee_rate_sat_vb` `None` takes Mempool's recommended hour fee from
+    /// the endpoint, or plain esplora's estimate for confirmation within six
+    /// blocks, never below 1 sat/vB. HTLC outputs whose fee would push
     /// the refund over `maximum_fee_sats` are left for a later call; if
     /// not even one fits, the call is refused with `SdkError::InvalidSwap`.
     /// Unconfirmed HTLC outputs are refunded too, and the call gives up
