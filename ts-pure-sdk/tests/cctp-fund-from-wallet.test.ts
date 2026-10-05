@@ -33,6 +33,7 @@ vi.mock("../src/cctp-inbound/recover.js", () => ({
 import { cctpFundSwap } from "../src/cctp-inbound/fundSwap.js";
 import type { EvmSigner } from "../src/evm/wallet.js";
 import {
+  bytesToHex,
   Client,
   InMemorySwapStorage,
   InMemoryWalletStorage,
@@ -427,11 +428,25 @@ describe("Client.fundSwap from a wallet on a CCTP-only chain", () => {
       .withSwapStorage(storage)
       .build();
     response = cctpSwap(client.getEvmAddress());
-    await storage.store(storedSwap({ response, cctpBurnTxid: burn }));
+    // Recovery only rebuilds a stored swap whose keys the server's index
+    // derives, so store this client's own keys at index 0.
+    const keys = client.deriveSwapParamsAtIndex(0);
+    await storage.store(
+      storedSwap({
+        response,
+        cctpBurnTxid: burn,
+        publicKey: bytesToHex(keys.publicKey),
+        preimage: bytesToHex(keys.preimage),
+        preimageHash: bytesToHex(keys.preimageHash),
+        secretKey: bytesToHex(keys.secretKey),
+      }),
+    );
 
     await client.recoverSwaps();
 
-    expect((await storage.get(SWAP_ID))?.cctpBurnTxid).toBe(burn);
+    const recovered = await storage.get(SWAP_ID);
+    expect(recovered?.storedAt).toBeGreaterThan(0);
+    expect(recovered?.cctpBurnTxid).toBe(burn);
   });
 
   it("recovers from the recorded burn with the SDK's key", async () => {

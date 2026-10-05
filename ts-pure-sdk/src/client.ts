@@ -217,6 +217,12 @@ import {
   type WalletStorage,
 } from "./storage/index.js";
 import {
+  recoveredKeysChange,
+  SwapVerificationError,
+  swapTermsChange,
+  unboundTerms,
+} from "./swap-verification.js";
+import {
   ALL_EVM_CHAIN_IDS,
   isArkade,
   isBridgedTarget,
@@ -3013,8 +3019,15 @@ export class Client {
    * Gets the status and details of a swap by its ID.
    * @param id - The UUID of the swap.
    * @param options - Optional settings.
-   * @param options.updateStorage - If true, updates the swap in storage after fetching.
+   * @param options.updateStorage - If true, updates the swap in storage after
+   *   fetching. A stored swap is only replaced by a copy whose hash locks,
+   *   lock addresses and invoice payment hashes equal the stored ones, whose
+   *   `bolt11_invoice`, if any, pays the stored preimage hash, and whose
+   *   `hash_lock` is the payment hash of its `client_lightning_invoice`, if
+   *   any.
    * @returns A promise that resolves to the swap details.
+   * @throws {SwapVerificationError} with `updateStorage`, if the server's copy
+   *   fails any of those checks; the stored copy is kept.
    * @throws Error if the request fails or swap is not found.
    */
   async getSwap(
@@ -3032,6 +3045,12 @@ export class Client {
     }
 
     if (options?.updateStorage && this.#swapStorage) {
+      // No compare-and-swap around the update: a concurrent getSwap or
+      // recovery runs the same checks before it writes, so it cannot change
+      // the compared fields between this read and this write.
+      const stored = await this.#swapStorage.get(id);
+      const changed = stored ? swapTermsChange(stored, data) : undefined;
+      if (changed) throw changed;
       await this.#swapStorage.update(id, data);
     }
 
@@ -3128,6 +3147,14 @@ export class Client {
    * After recovery, the key index is set to `next_index` so that new swaps
    * don't reuse derivation indices.
    *
+   * A swap already stored keeps its stored copy if the server's index derives
+   * other keys than the stored ones, or if the server's copy fails the checks
+   * `getSwap` makes with `updateStorage`. A swap not stored yet is stored only
+   * if a Lightning to X invoice pays the hash of the secret derived at the
+   * server's index, and an X to Lightning hash lock is the payment hash of the
+   * invoice it pays. Lock addresses are not rebuilt. A swap that fails is
+   * left out of storage and of the result, with a warning logged.
+   *
    * @returns Recovery metadata and the recovered swaps stored locally.
    */
   async recoverSwaps(
@@ -3167,7 +3194,33 @@ export class Client {
       const { index, ...response } = recoveredSwap;
       const swapParams = this.deriveSwapParamsAtIndex(index);
 
-      await this.#storeSwap(response.id, swapParams, response);
+      // No compare-and-swap, as in getSwap: a concurrent getSwap or recovery
+      // runs the same checks before it writes.
+      const existing = await this.getStoredSwap(response.id);
+      const refused = existing
+        ? (recoveredKeysChange(
+            existing,
+            index,
+            bytesToHex(swapParams.preimageHash),
+          ) ?? swapTermsChange(existing, response))
+        : unboundTerms(response, swapParams);
+      if (refused) {
+        this.#logger.warn({
+          event: existing
+            ? "client.recover.terms_changed"
+            : "client.recover.terms_refused",
+          message: refused.message,
+          swapId: response.id,
+          data: {
+            field:
+              refused instanceof SwapVerificationError
+                ? refused.field
+                : undefined,
+          },
+        });
+      } else {
+        await this.#storeSwap(response.id, swapParams, response);
+      }
 
       const stored = await this.getStoredSwap(response.id);
       if (stored) {
@@ -7437,6 +7490,9 @@ export class Client {
    *
    * @param options - The swap options including source/target assets, amounts, and addresses.
    * @returns The swap result (response + swapParams).
+   * @throws {SwapVerificationError} for a Lightning direction, if the server's
+   *   terms fail the checks that direction's create method documents. Nothing
+   *   is stored; do not pay or fund the swap.
    * @throws Error if the swap direction is unsupported or required fields are missing.
    */
   async createSwap(options: CreateSwapOptions): Promise<CreateSwapResult> {
@@ -7967,6 +8023,8 @@ export class Client {
    *
    * @param options - The swap options.
    * @returns The swap response and parameters for storage.
+   * @throws {SwapVerificationError} if the server's invoice does not pay
+   *   this swap's hash lock; do not pay it.
    * @throws Error if the swap creation fails.
    *
    * @example
@@ -8032,6 +8090,8 @@ export class Client {
    *
    * @param options - The swap options.
    * @returns The swap response and parameters for storage.
+   * @throws {SwapVerificationError} if the server's invoice does not pay
+   *   this swap's hash lock; do not pay it.
    * @throws Error if the swap creation fails.
    *
    * @example
@@ -8069,7 +8129,12 @@ export class Client {
    *
    * @param options - The swap options.
    * @returns The swap response and parameters for storage.
-   * @throws Error if the swap creation fails.
+   * @throws {SwapVerificationError} if the server's hash lock or invoice does
+   *   not match: a hash lock that is not the payment hash of the invoice it
+   *   pays, or an invoice other than the supplied `lightningInvoice`. Nothing
+   *   is stored; do not fund it.
+   * @throws Error if `lightningInvoice` is not a BOLT11 invoice (before any
+   *   request is made), or if the swap creation fails.
    *
    * @example
    * ```ts
@@ -8172,6 +8237,9 @@ export class Client {
    *
    * @param options - The swap options.
    * @returns The swap response and parameters for storage.
+   * @throws {SwapVerificationError} if the server's hash lock or invoice does
+   *   not match the invoice supplied or resolved. Nothing is stored; do not
+   *   fund it.
    * @throws Error if the swap creation fails.
    *
    * @example

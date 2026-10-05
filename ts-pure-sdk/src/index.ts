@@ -363,6 +363,7 @@ export {
   type StrictVhtlcOptions,
   StrictVhtlcScript,
 } from "./strict-vhtlc.js";
+export { SwapVerificationError } from "./swap-verification.js";
 // Token helpers and constants
 export {
   Asset,

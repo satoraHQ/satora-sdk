@@ -5,8 +5,10 @@
  * Lightning invoice and claims the VHTLC with the revealed preimage.
  */
 
+import { invoicePaymentHash } from "../bolt11.js";
 import { bytesToHex } from "../signer/index.js";
 import { ARKADE_HTLC_SCRIPT_VERSION_STRICT } from "../strict-vhtlc.js";
+import { checkedLightningPaymentHash } from "../swap-verification.js";
 import type {
   ArkadeToLightningSwapOptions,
   ArkadeToLightningSwapResult,
@@ -31,10 +33,20 @@ import type {
  * (`refund_pk`), so a duplicate-hash 409 is not retried with a new key:
  * it means this exact invoice already has a swap.
  *
+ * Before the swap is stored or returned, `hash_lock` is checked to be the
+ * payment hash of `client_lightning_invoice`, and that invoice to pay the
+ * same hash as `lightningInvoice` when one was given. A lock on any other
+ * hash would let the server claim the VHTLC without paying the invoice. With
+ * `lightningAddress` or `lnurl` the server resolves the invoice, which must
+ * then also ask for the payout the server quoted.
+ *
  * @param options - The swap options.
  * @param ctx - The context containing API client and helper functions.
  * @returns The swap response and parameters for storage.
- * @throws Error if the swap creation fails.
+ * @throws {SwapVerificationError} if the server's hash lock or invoice does
+ *   not match. Nothing is stored; do not fund the VHTLC.
+ * @throws Error if `lightningInvoice` is not a BOLT11 invoice (before any
+ *   request is made), or if the swap creation fails.
  *
  * @example
  * ```ts
@@ -69,6 +81,10 @@ export async function createArkadeToLightningSwap(
       "Provide exactly one of sourceAmountSats or targetAmountSats",
     );
   }
+  // A malformed invoice is refused before a key is derived or the server asked.
+  if (options.lightningInvoice !== undefined) {
+    invoicePaymentHash(options.lightningInvoice);
+  }
 
   const swapParams = await ctx.deriveSwapParams();
   const refundPk = bytesToHex(swapParams.publicKey);
@@ -96,6 +112,8 @@ export async function createArkadeToLightningSwap(
   if (!data) {
     throw new Error("No swap data returned");
   }
+
+  checkedLightningPaymentHash(options, data);
 
   // Store the swap if storage is configured — the derived key is what
   // signs a collaborative/unilateral refund of the VHTLC.

@@ -3,6 +3,7 @@ import { Client } from "../src/client.js";
 import { createLightningToEvmSwap } from "../src/create/lightning-to-evm.js";
 import type { CreateSwapContext } from "../src/create/types.js";
 import { deriveEvmAddress } from "../src/evm/signing.js";
+import vectors from "./fixtures/lightning-invoices.js";
 
 const MNEMONIC =
   "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -20,7 +21,7 @@ describe("inbound swaps claim with a per-swap key", () => {
         data: {
           id: "11111111-2222-3333-4444-555555555555",
           client_evm_address: opts.body.claiming_address,
-          bolt11_invoice: "lnbc1...",
+          bolt11_invoice: vectors.invoices.lnd_hold_index_7.bolt11,
           target_amount: "1",
         },
         error: undefined,

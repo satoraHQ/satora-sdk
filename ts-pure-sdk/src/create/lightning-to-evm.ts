@@ -11,6 +11,7 @@
 
 import { deriveEvmAddress } from "../evm/signing.js";
 import { bytesToHex } from "../signer/index.js";
+import { assertInvoicePays } from "../swap-verification.js";
 import { retryOnHashCollision } from "./retry.js";
 import type {
   CreateSwapContext,
@@ -28,9 +29,16 @@ import type {
  * If the server rejects the hash lock (duplicate or collision), the
  * function automatically retries with a new key index.
  *
+ * The returned invoice is decoded and its payment hash checked against the
+ * hash of this swap's own secret before the swap is stored or returned. An
+ * invoice on any other hash would let the server settle the payment without
+ * ever funding the HTLC.
+ *
  * @param options - The swap options.
  * @param ctx - The context containing API client and helper functions.
  * @returns The swap response and parameters for storage.
+ * @throws {SwapVerificationError} if the server's invoice does not pay this
+ *   swap's hash lock. Nothing is stored; do not pay that invoice.
  * @throws Error if the swap creation fails after all retries.
  *
  * @example
@@ -100,6 +108,8 @@ export async function createLightningToEvmSwap(
     if (!data) {
       throw new Error("No swap data returned");
     }
+
+    assertInvoicePays(data.bolt11_invoice, hashLock);
 
     // Store the swap if storage is configured
     await ctx.storeSwap(

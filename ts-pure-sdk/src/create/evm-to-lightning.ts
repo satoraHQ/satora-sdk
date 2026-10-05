@@ -7,9 +7,8 @@
  * with the revealed preimage.
  */
 
-import { invoiceAmountMsat, invoicePaymentHash } from "../bolt11.js";
 import { bytesToHex } from "../signer/index.js";
-import type { LightningPaymentHash } from "../storage/types.js";
+import { checkedLightningPaymentHash } from "../swap-verification.js";
 import { fundingTermsOf } from "./funding-terms.js";
 import type {
   CreateSwapContext,
@@ -101,7 +100,7 @@ export async function createEvmToLightningSwap(
 
   // The lock's hash decides who can claim it: one the server knows the
   // preimage of lets it claim without paying. It must be the invoice's.
-  const lightningPaymentHash = checkedPaymentHash(options, data);
+  const lightningPaymentHash = checkedLightningPaymentHash(options, data);
 
   // Store the swap if storage is configured — the derived key is the
   // gasless depositor and what signs a collaborative refund of the HTLC.
@@ -118,60 +117,4 @@ export async function createEvmToLightningSwap(
   );
 
   return { response: data, swapParams };
-}
-
-/**
- * The payment hash the swap's lock must use. From an invoice the caller
- * supplied it is read off that invoice. For a Lightning address or LNURL
- * the server resolves the invoice, so the hash is read off the invoice it
- * returned, which must carry its `hash_lock` and the payout it quoted (and
- * the payout asked for, if one was): what remains trusted is that the
- * server resolved the address honestly, which the client cannot check
- * without resolving it itself.
- */
-function checkedPaymentHash(
-  options: EvmToLightningSwapOptions,
-  data: {
-    hash_lock: string;
-    client_lightning_invoice?: string;
-    target_amount?: string | number;
-  },
-): LightningPaymentHash {
-  const norm = (hash: string) => `0x${hash.replace(/^0x/i, "").toLowerCase()}`;
-  if (options.lightningInvoice !== undefined) {
-    const hash = invoicePaymentHash(options.lightningInvoice);
-    if (norm(data.hash_lock) !== hash) {
-      throw new Error(
-        `The server created the swap under hash ${data.hash_lock}, not the invoice's payment hash ${hash}; do not fund it`,
-      );
-    }
-    return { hash, source: "invoice" };
-  }
-  const invoice = data.client_lightning_invoice;
-  if (!invoice) {
-    throw new Error(
-      "The server returned no invoice for this Lightning address, so the swap's hash lock cannot be checked; do not fund it",
-    );
-  }
-  const hash = invoicePaymentHash(invoice);
-  if (norm(data.hash_lock) !== hash) {
-    throw new Error(
-      `The server created the swap under hash ${data.hash_lock}, not the payment hash ${hash} of the invoice it resolved; do not fund it`,
-    );
-  }
-  const msat = invoiceAmountMsat(invoice);
-  const asked = [data.target_amount, options.targetAmountSats].filter(
-    (amount) => amount !== undefined && amount !== null,
-  );
-  for (const sats of asked) {
-    if (
-      msat === undefined ||
-      msat !== BigInt(sats as string | number) * 1000n
-    ) {
-      throw new Error(
-        `The invoice the server resolved asks for ${msat === undefined ? "any amount" : `${msat} msat`}, not the ${sats} sats payout; do not fund it`,
-      );
-    }
-  }
-  return { hash, source: "server-invoice" };
 }
