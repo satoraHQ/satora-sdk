@@ -1428,8 +1428,8 @@ static class _UniFFILib {
         }
         {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_fund_swap_gasless();
-            if (checksum != 41022) {
-                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_fund_swap_gasless` checksum `41022`, library returned `{checksum}`");
+            if (checksum != 28920) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_fund_swap_gasless` checksum `28920`, library returned `{checksum}`");
             }
         }
         {
@@ -2036,6 +2036,11 @@ public interface ISatoraClient {
     /// Requires the client to have been built via [`Self::new_signing`]
     /// — the SDK needs the mnemonic to re-derive the per-swap secret
     /// material and sign the userOp.
+    ///
+    /// A funding that may already have been submitted without a recorded
+    /// hash, or a relay funding signature that may still be used, fails with
+    /// `SdkError::UnresolvedFunding`; one whose hash is recorded fails with
+    /// `SdkError::InvalidSwap`.
     /// </summary>
     /// <exception cref="SdkException"></exception>
     FundSwapReceipt FundSwapGasless(string @swapId, GaslessOpts @opts);
@@ -2703,6 +2708,11 @@ public class SatoraClient : ISatoraClient, IDisposable {
     /// Requires the client to have been built via [`Self::new_signing`]
     /// — the SDK needs the mnemonic to re-derive the per-swap secret
     /// material and sign the userOp.
+    ///
+    /// A funding that may already have been submitted without a recorded
+    /// hash, or a relay funding signature that may still be used, fails with
+    /// `SdkError::UnresolvedFunding`; one whose hash is recorded fails with
+    /// `SdkError::InvalidSwap`.
     /// </summary>
     /// <exception cref="SdkException"></exception>
     public FundSwapReceipt FundSwapGasless(string @swapId, GaslessOpts @opts) {

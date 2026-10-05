@@ -581,6 +581,87 @@ async fn sponsored_cctp_mint_and_funding_share_one_batch_and_resume_after_restar
             .bridge_operations
             .is_some_and(|operations| operations.contains_key("cctp_fund"))
     );
+    let relay = crate::storage::RelayFundingJournal {
+        permit2_nonce: "7".into(),
+        permit2_deadline: htlc.timelock,
+        depositor: owner.to_string(),
+        coordinator: coordinator.to_string(),
+        lock_token: htlc.token.to_string(),
+        eip2612_permit: false,
+        tx_hash: None,
+        outcome: crate::storage::RelayFundingOutcome::Sending,
+    };
+    for (metadata, unresolved) in [
+        (
+            SwapMetadata {
+                evm_fund_txid: Some(txid.to_string()),
+                ..Default::default()
+            },
+            None,
+        ),
+        (
+            SwapMetadata {
+                evm_fund_relay: Some(relay),
+                ..Default::default()
+            },
+            Some(crate::evm::funding::UNRESOLVED_RELAY_FUNDING),
+        ),
+        (
+            SwapMetadata {
+                evm_fund_started: Some(true),
+                ..Default::default()
+            },
+            Some(crate::evm::funding::UNRESOLVED_FUNDING),
+        ),
+        // A batch reserved for another intent may be out all the same.
+        (
+            SwapMetadata {
+                bridge_operations: Some(
+                    [(
+                        "cctp_fund".into(),
+                        crate::storage::BridgeOperation {
+                            intent: json!({}),
+                            transaction_hash: None,
+                            user_operation_hash: None,
+                            complete: false,
+                        },
+                    )]
+                    .into(),
+                ),
+                ..Default::default()
+            },
+            Some(crate::evm::funding::UNRESOLVED_CCTP_FUNDING),
+        ),
+    ] {
+        // A store of its own, since metadata merges could not clear these again.
+        let store = Arc::new(InMemorySwapStorage::new());
+        store
+            .store_swap(
+                StoredSwap::new(
+                    0,
+                    serde_json::from_value(response.clone()).unwrap(),
+                    metadata,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let error = Client::builder()
+            .base_url(server.uri())
+            .mnemonic("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about")
+            .storage(store)
+            .build()
+            .unwrap()
+            .fund_swap_from_cctp(&id, &wallet, request.clone(), &PollOptions::default())
+            .await
+            .unwrap_err();
+        let expected = match unresolved {
+            Some(text) => matches!(&error, Error::UnresolvedFunding(message) if message == text),
+            None => {
+                matches!(&error, Error::InvalidSwap(message) if message.contains("already submitted"))
+            }
+        };
+        assert!(expected, "{error}");
+    }
     storage
         .store_swap(
             StoredSwap::new(

@@ -30,7 +30,10 @@ impl Client {
     /// Mint USDC and fund the swap in one sponsored transaction. Source burning
     /// is a separate resumable operation (`burn_cctp`); fetch its attestation with
     /// `BridgeApi::wait_cctp_attestation`. No USDC remains stranded if funding reverts.
-    /// Operation key `cctp_fund` is resumable without submitting another batch.
+    /// Operation key `cctp_fund` is resumable without submitting another batch. One
+    /// whose hash was never recorded may have reached the bundler, so every funding
+    /// path fails with [`crate::Error::UnresolvedFunding`]; record its transaction
+    /// with [`Self::attach_bridge_transaction`] once found.
     pub async fn fund_swap_from_cctp(
         &self,
         id: &str,
@@ -55,14 +58,17 @@ impl Client {
             let intent=json!({"burn":burn,"destination":destination,"nonce":decoded.nonce,"coordinator":limits.coordinator,"htlc":limits.htlc,"lock_token":limits.lock_token,"max_source_amount":limits.max_source_amount,"allowed_call_targets":limits.allowed_call_targets});
             let mode=BridgeSubmission::UserOperation(account);
             let journal=Journal::Swap {id,key:"cctp_fund"};
+            if crate::evm::funding::unresolved_cctp_funding(&stored.metadata) {return Err(crate::Error::UnresolvedFunding(crate::evm::funding::UNRESOLVED_CCTP_FUNDING.into()));}
             let receipt=match self.bridge_receipt(journal,&intent,wallet,&mode).await? {
                 Some(receipt)=>receipt,
                 None=>{
+                    // A recorded hash lets the caller look the outcome up, so this is a refusal
+                    // rather than an unresolved funding.
                     if stored.metadata.evm_fund_txid.is_some() || stored.metadata.evm_fund_userop_hash.is_some() {
                         return Err(invalid("swap funding already submitted"));
                     }
-                    if stored.metadata.relay_signature_outstanding() {return Err(invalid(crate::evm::funding::UNRESOLVED_RELAY_FUNDING));}
-                    if stored.metadata.evm_fund_started == Some(true) {return Err(invalid(crate::evm::funding::UNRESOLVED_FUNDING));}
+                    if stored.metadata.relay_signature_outstanding() {return Err(crate::Error::UnresolvedFunding(crate::evm::funding::UNRESOLVED_RELAY_FUNDING.into()));}
+                    if stored.metadata.evm_fund_started == Some(true) {return Err(crate::Error::UnresolvedFunding(crate::evm::funding::UNRESOLVED_FUNDING.into()));}
                     crate::evm::verify_derived_hash_lock(self,&stored,&context)?;
                     if wallet.block_timestamp().await? >= context.timelock {return Err(invalid("swap timelock has expired on chain"));}
                     let used=word(&wallet.call(&transaction(wallet,destination.transmitter,super::cctp::usedNoncesCall {nonce:decoded.nonce}.abi_encode())).await?)?;

@@ -3832,7 +3832,7 @@ async fn relay_unproven_answers_block_another_attempt() {
     use crate::storage::RelayFundingOutcome;
     let options = RelayFundingOptions::new(U256::from(300));
     fn reconcile_first(result: &crate::Result<RelayFunding>) -> bool {
-        matches!(result, Err(Error::InvalidSwap(message)) if message.contains("reconcile"))
+        matches!(result, Err(Error::UnresolvedFunding(message)) if message.contains("reconcile"))
     }
     // The mock serves any other hash a receipt without this HTLC's creation.
     let unproven = B256::repeat_byte(43);
@@ -3897,7 +3897,7 @@ async fn relay_unproven_answers_block_another_attempt() {
 async fn an_unsettled_relay_signature_blocks_other_funding_after_a_release() {
     use crate::storage::RelayFundingOutcome;
     fn relay_blocked<T: std::fmt::Debug>(result: &crate::Result<T>) -> bool {
-        matches!(result, Err(Error::InvalidSwap(message)) if message.contains("reconcile_gasless_relay_funding"))
+        matches!(result, Err(Error::UnresolvedFunding(message)) if message.contains("reconcile_gasless_relay_funding"))
     }
     let case = RelayCase::new(|_| {}, |_| {}).await;
     for outcome in [
@@ -3947,6 +3947,182 @@ async fn an_unsettled_relay_signature_blocks_other_funding_after_a_release() {
             .await;
         assert_eq!(relay_blocked(&wallet), unsettled, "{outcome:?}: {wallet:?}");
     }
+}
+
+#[tokio::test]
+async fn a_funding_hash_is_attached_only_once_no_relay_signature_can_fund() {
+    use super::funding::UNRESOLVED_RELAY_FUNDING;
+    use crate::storage::RelayFundingOutcome;
+    let case = RelayCase::new(|_| {}, |_| {}).await;
+    let stored = case.store.get_swap("test").unwrap().unwrap();
+    let hash = B256::repeat_byte(9);
+    for outcome in [
+        RelayFundingOutcome::Sending,
+        RelayFundingOutcome::Rejected,
+        RelayFundingOutcome::Reverted,
+        RelayFundingOutcome::Accepted,
+        RelayFundingOutcome::Uncertain,
+        RelayFundingOutcome::Expired,
+    ] {
+        // A fresh record each time, since metadata merges could not clear the hash.
+        case.store.delete_swap("test").unwrap();
+        case.store
+            .store_swap(
+                StoredSwap::new(
+                    0,
+                    stored.response.clone(),
+                    SwapMetadata {
+                        evm_fund_started: Some(true),
+                        evm_fund_relay: Some(crate::storage::RelayFundingJournal {
+                            permit2_nonce: "7".into(),
+                            permit2_deadline: case.wallet.now.load(Ordering::Relaxed) + 1800,
+                            depositor: case.wallet.owner.to_string(),
+                            coordinator: case.wallet.coordinator.to_string(),
+                            lock_token: case.wallet.htlc.token.to_string(),
+                            eip2612_permit: true,
+                            tx_hash: None,
+                            outcome,
+                        }),
+                        ..Default::default()
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let result = case
+            .client
+            .attach_evm_funding_transaction("test", hash)
+            .await;
+        let attached = case
+            .store
+            .get_swap("test")
+            .unwrap()
+            .unwrap()
+            .metadata
+            .evm_fund_txid;
+        if outcome == RelayFundingOutcome::Expired {
+            result.unwrap();
+            assert_eq!(attached, Some(hash.to_string()));
+        } else {
+            assert!(
+                matches!(&result, Err(Error::UnresolvedFunding(message)) if message == UNRESOLVED_RELAY_FUNDING),
+                "{outcome:?}: {result:?}"
+            );
+            assert_eq!(attached, None, "{outcome:?}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn only_a_funding_without_a_recorded_hash_is_unresolved() {
+    use super::funding::UNRESOLVED_CCTP_FUNDING;
+    use super::funding::UNRESOLVED_FUNDING;
+    use crate::storage::BridgeOperation;
+    let case = RelayCase::new(|_| {}, |_| {}).await;
+    case.mount_relay(0).await;
+    let stored = case.store.get_swap("test").unwrap().unwrap();
+    let cctp_fund = |user_operation_hash: Option<B256>, complete: bool| {
+        let operation = BridgeOperation {
+            intent: json!({}),
+            transaction_hash: None,
+            user_operation_hash: user_operation_hash.map(|hash| hash.to_string()),
+            complete,
+        };
+        Some(std::collections::BTreeMap::from([(
+            "cctp_fund".to_string(),
+            operation,
+        )]))
+    };
+    let txid = Some(B256::repeat_byte(1).to_string());
+    for (metadata, unresolved) in [
+        (
+            SwapMetadata {
+                evm_fund_started: Some(true),
+                ..Default::default()
+            },
+            Some(UNRESOLVED_FUNDING),
+        ),
+        (
+            SwapMetadata {
+                bridge_operations: cctp_fund(None, false),
+                ..Default::default()
+            },
+            Some(UNRESOLVED_CCTP_FUNDING),
+        ),
+        (
+            SwapMetadata {
+                evm_fund_txid: txid.clone(),
+                bridge_operations: cctp_fund(None, false),
+                ..Default::default()
+            },
+            Some(UNRESOLVED_CCTP_FUNDING),
+        ),
+        (
+            SwapMetadata {
+                bridge_operations: cctp_fund(Some(B256::repeat_byte(2)), false),
+                ..Default::default()
+            },
+            None,
+        ),
+        (
+            SwapMetadata {
+                bridge_operations: cctp_fund(None, true),
+                ..Default::default()
+            },
+            None,
+        ),
+        (
+            SwapMetadata {
+                evm_fund_txid: txid.clone(),
+                ..Default::default()
+            },
+            None,
+        ),
+    ] {
+        // A fresh record each time, since metadata merges could not clear these again.
+        case.store.delete_swap("test").unwrap();
+        case.store
+            .store_swap(
+                StoredSwap::new(
+                    0,
+                    stored.response.clone(),
+                    SwapMetadata {
+                        evm_coordinator_address: stored.metadata.evm_coordinator_address.clone(),
+                        ..metadata
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let relay = case.fund(&RelayFundingOptions::new(U256::from(300))).await;
+        let wallet = case
+            .client
+            .fund_swap_with_wallet("test", &case.wallet, relay_pinned(100_000, vec![]))
+            .await;
+        let gasless = case
+            .client
+            .fund_swap_gasless(
+                "test",
+                crate::aa::GaslessOpts::new(case.server.uri().parse().unwrap()),
+            )
+            .await;
+        for error in [
+            relay.unwrap_err(),
+            wallet.unwrap_err(),
+            gasless.unwrap_err(),
+        ] {
+            let expected = match unresolved {
+                Some(text) => {
+                    matches!(&error, Error::UnresolvedFunding(message) if message == text)
+                }
+                None => {
+                    matches!(&error, Error::InvalidSwap(message) if message.contains("inspect its receipt"))
+                }
+            };
+            assert!(expected, "{error}");
+        }
+    }
+    case.server.verify().await;
 }
 
 #[tokio::test]

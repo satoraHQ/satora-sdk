@@ -1161,9 +1161,13 @@ public sealed class Client : IDisposable
     /// <see cref="SdkErrorKind.Timeout"/> error leaves the outcome unknown:
     /// the userOp may have been submitted. So does any
     /// <see cref="SdkErrorKind.Storage"/> error, which may follow the
-    /// submission. The operation is stored before submission and a later
-    /// call is refused while it is unresolved, so checking the swap status
-    /// before acting is safe.
+    /// submission. The operation is stored before submission, so a later
+    /// call throws <see cref="SdkErrorKind.InvalidSwap"/> when its hash was
+    /// recorded and <see cref="SdkErrorKind.UnresolvedFunding"/> when it
+    /// was not; checking the swap status before acting is safe. This SDK
+    /// can neither record a lost hash nor release the stored operation, so
+    /// <see cref="SdkErrorKind.UnresolvedFunding"/> then comes back on every
+    /// call: follow the swap status, and never fund the swap by other means.
     /// </remarks>
     public Task<FundReceipt> FundSwapAsync(
         string swapId,

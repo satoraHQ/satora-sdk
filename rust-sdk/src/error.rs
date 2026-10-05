@@ -51,6 +51,15 @@ pub enum Error {
     /// VHTLC output or returns it paying nothing to the VHTLC. A spender arkd does not
     /// name, a journaled input arkd does not know, and a journal for another VHTLC
     /// address never resolve on their own.
+    ///
+    /// From the EVM funding methods, a funding reserved without a recorded hash resolves
+    /// once the caller attaches its transaction with `attach_evm_funding_transaction`,
+    /// or releases `evm_fund_started` after making sure nothing was sent. A `cctp_fund`
+    /// batch without one resolves once the caller attaches its transaction with
+    /// `attach_bridge_transaction`, and a relay funding signature once
+    /// `reconcile_gasless_relay_funding` reports it funded or expired. A funding whose
+    /// hash is recorded is refused with [`Error::InvalidSwap`] instead, as its receipt
+    /// tells the outcome.
     #[error("unresolved funding: {0}")]
     UnresolvedFunding(String),
 }

@@ -344,17 +344,19 @@ included, and a Rust SDK error this version does not name yet have
 
 Apart from `UnresolvedFunding`, `Kind` is not a retry signal. After a
 `Transport` or `Timeout` error from `SendArkadeAsync`, `FundSwapAsync`,
-`SettleArkadeAsync` or `OffboardArkadeAsync`, or any `Storage` error from
-`FundSwapAsync`, the outcome is unknown: check the swap status or the
-balance before trying again (a `FundSwapAsync` retry is refused while its
-stored operation is unresolved, so checking first is safe). After one
-from `ClaimAsync` or `SettleAsync`, or a `Storage` error from them once
-arkd may hold the spend, call it again, which resumes from its journal.
-After one from `FundArkadeSwapAsync`, call it again, which resolves the
-outcome from its journal. After one from `RefundBitcoinAsync`, or a
-`Storage` error from it after a fee bump, call it again with the same
-destination, which returns the pending or confirmed refund instead of
-building another. A chain read that straddled a new block, such as
+`SettleArkadeAsync` or `OffboardArkadeAsync`, or any `Storage` error
+from `FundSwapAsync`, the outcome is unknown: check the swap status or
+the balance before trying again (a `FundSwapAsync` retry throws
+`InvalidSwap` when the operation's hash was recorded and
+`UnresolvedFunding` when it was not, which no call through this SDK
+resolves, so checking first is safe). After one from `ClaimAsync` or
+`SettleAsync`, or a `Storage` error from them once arkd may hold the
+spend, call it again, which resumes from its journal. After one from
+`FundArkadeSwapAsync`, call it again, which resolves the outcome from
+its journal. After one from `RefundBitcoinAsync`, or a `Storage` error
+from it after a fee bump, call it again with the same destination, which
+returns the pending or confirmed refund instead of building another. A
+chain read that straddled a new block, such as
 `Bitcoin tip changed during observation`, is a `Transport` error too, so
 the same retry applies.
 

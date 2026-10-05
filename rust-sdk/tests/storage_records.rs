@@ -459,9 +459,7 @@ async fn index_only_store_treats_recovered_funding_as_unresolved() {
             .await
             .unwrap_err();
         assert!(
-            error
-                .to_string()
-                .contains("funding may already be submitted"),
+            matches!(&error, lendaswap_sdk::Error::UnresolvedFunding(message) if message.contains("funding may already be submitted")),
             "{error}"
         );
     }

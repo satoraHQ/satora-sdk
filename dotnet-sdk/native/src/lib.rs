@@ -1365,6 +1365,11 @@ impl SatoraClient {
     /// Requires the client to have been built via [`Self::new_signing`]
     /// — the SDK needs the mnemonic to re-derive the per-swap secret
     /// material and sign the userOp.
+    ///
+    /// A funding that may already have been submitted without a recorded
+    /// hash, or a relay funding signature that may still be used, fails with
+    /// `SdkError::UnresolvedFunding`; one whose hash is recorded fails with
+    /// `SdkError::InvalidSwap`.
     pub fn fund_swap_gasless(
         &self,
         swap_id: String,

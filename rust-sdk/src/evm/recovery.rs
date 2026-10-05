@@ -95,12 +95,21 @@ fn pending_recovery(metadata: &SwapMetadata) -> Option<&String> {
 impl Client {
     /// Attach the original funding hash after a lost broadcast response. This
     /// records identity only; call `get_funded_evm_htlc` to verify its receipt.
+    /// While a relay funding signature may still be used this fails with
+    /// [`Error::UnresolvedFunding`]: reconcile the relay funding instead.
     pub async fn attach_evm_funding_transaction(&self, id: &str, hash: B256) -> Result<()> {
         let _guard = self.evm_execution.lock().await;
         let metadata = self
             .get_stored_swap(id)?
             .ok_or_else(|| invalid("swap record missing"))?
             .metadata;
+        // Until its journal is funded or expired the relay may still fund the swap with
+        // its own transaction, so a hash attached now need not be the funding.
+        if metadata.relay_signature_outstanding() {
+            return Err(Error::UnresolvedFunding(
+                super::funding::UNRESOLVED_RELAY_FUNDING.into(),
+            ));
+        }
         if hash.is_zero()
             || metadata.evm_fund_started != Some(true)
             || metadata.evm_fund_txid.is_some()

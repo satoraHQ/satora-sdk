@@ -23,6 +23,42 @@ use std::time::UNIX_EPOCH;
 /// A funding reserved with no recorded hash: sent or not, only the caller can tell.
 pub(crate) const UNRESOLVED_FUNDING: &str = "funding may already be submitted; attach its transaction, or release evm_fund_started once nothing was sent";
 pub(crate) const UNRESOLVED_RELAY_FUNDING: &str = "a relay funding signature may still be used; run reconcile_gasless_relay_funding until it reports Funded or Expired";
+pub(crate) const UNRESOLVED_CCTP_FUNDING: &str = "a CCTP funding batch may already be submitted; attach its transaction to cctp_fund with attach_bridge_transaction";
+
+/// A `cctp_fund` batch is journaled before the bundler can receive it, so with no
+/// hash recorded it may be out or not.
+pub(crate) fn unresolved_cctp_funding(metadata: &SwapMetadata) -> bool {
+    metadata
+        .bridge_operations
+        .as_ref()
+        .and_then(|operations| operations.get("cctp_fund"))
+        .is_some_and(|operation| {
+            !operation.complete
+                && operation.transaction_hash.is_none()
+                && operation.user_operation_hash.is_none()
+        })
+}
+
+/// Refuses another funding while a CCTP funding batch may be out or a funding is recorded.
+pub(crate) fn refuse_submitted_funding(metadata: &SwapMetadata) -> Result<()> {
+    if unresolved_cctp_funding(metadata) {
+        return Err(Error::UnresolvedFunding(UNRESOLVED_CCTP_FUNDING.into()));
+    }
+    // A recorded hash lets the caller look the outcome up, so this is a refusal
+    // rather than an unresolved funding.
+    if metadata.evm_fund_txid.is_some()
+        || metadata.evm_fund_userop_hash.is_some()
+        || metadata
+            .bridge_operations
+            .as_ref()
+            .is_some_and(|operations| operations.contains_key("cctp_fund"))
+    {
+        return Err(invalid(
+            "funding already submitted; inspect its receipt before another attempt",
+        ));
+    }
+    Ok(())
+}
 
 sol! {
     interface TokenAllowance {
@@ -207,9 +243,12 @@ impl Client {
     /// Fresh quotes are revalidated after approval and before signing. The funding
     /// transaction is persisted before waiting for its receipt.
     ///
-    /// Any [`Error::Storage`] leaves the outcome unknown, as it may follow the broadcast:
-    /// a retry is refused while `evm_fund_started`, persisted before sending, is set, so
-    /// checking the swap status first is safe.
+    /// Fails with [`Error::UnresolvedFunding`] if an earlier funding may have been
+    /// submitted without a recorded hash, or a relay funding signature may still be used,
+    /// and with [`Error::InvalidSwap`] if a funding's hash is recorded. Any
+    /// [`Error::Storage`] leaves the outcome unknown, as it may follow the broadcast: a
+    /// retry fails with [`Error::UnresolvedFunding`] while `evm_fund_started`, persisted
+    /// before sending, is set, so checking the swap status first is safe.
     pub async fn fund_swap_with_wallet(
         &self,
         id: &str,
@@ -240,23 +279,12 @@ impl Client {
         let stored = self
             .get_stored_swap(id)?
             .ok_or_else(|| invalid("recover or create the swap before funding"))?;
-        if stored.metadata.evm_fund_txid.is_some()
-            || stored.metadata.evm_fund_userop_hash.is_some()
-            || stored
-                .metadata
-                .bridge_operations
-                .as_ref()
-                .is_some_and(|operations| operations.contains_key("cctp_fund"))
-        {
-            return Err(invalid(
-                "funding already submitted; inspect its receipt before another attempt",
-            ));
-        }
+        refuse_submitted_funding(&stored.metadata)?;
         if stored.metadata.relay_signature_outstanding() {
-            return Err(invalid(UNRESOLVED_RELAY_FUNDING));
+            return Err(Error::UnresolvedFunding(UNRESOLVED_RELAY_FUNDING.into()));
         }
         if stored.metadata.evm_fund_started == Some(true) {
-            return Err(invalid(UNRESOLVED_FUNDING));
+            return Err(Error::UnresolvedFunding(UNRESOLVED_FUNDING.into()));
         }
         let context = EvmContext::from_response(&stored.response)?;
         context.validate_wallet(wallet)?;
@@ -391,7 +419,7 @@ impl Client {
         )?;
         let hash = wallet.send_transaction(&tx).await?;
         // A failure here is Storage after the broadcast; evm_fund_started makes a retry
-        // refuse rather than fund twice.
+        // fail with UnresolvedFunding rather than fund twice.
         self.update_swap_metadata(
             id,
             SwapMetadata {

@@ -208,7 +208,9 @@ coordinator, lock token, approved call targets, maximum input, and timeout.
 Quotes are checked again after approval; signatures are recovered locally;
 receipts must contain the matching HTLC creation event. Funding transaction IDs
 and gasless operation hashes are persisted before receipt polling. A pending
-submission prevents another funding attempt through that client/store.
+submission prevents another funding attempt through that client/store, which
+fails with `InvalidSwap` once the submission's hash is recorded and with
+`UnresolvedFunding` before.
 Funding, refunds and stranded-token recovery reserve submission before sending,
 including before a bundler or server can receive it. A lost response leaves an
 unresolved reservation. Reconcile the original transaction with
@@ -233,8 +235,8 @@ server's current copy of the swap must match the stored one, and the payload mus
 name the stored coordinator, which must also be the persisted one. For EVM to
 Bitcoin and EVM to Lightning the payload must lock the stored `wbtc_address`; EVM
 to Arkade responses name no lock token, so the payload's is signed unless one is
-pinned. A pinned `FundingOptions` applies on top of these checks, never instead
-of them: its contracts must equal the stored swap's, and it adds a call-target
+pinned. A pinned `FundingOptions` applies on top of these checks, never instead of
+them: its contracts must equal the stored swap's, and it adds a call-target
 allowlist and an input limit. Calls on the source token may only pay the relay
 fee, capped by `RelayFundingOptions::max_relay_fee`, to the server or approve at
 most the input, and the permit domain and nonce are read from the chain. The node
@@ -244,13 +246,15 @@ before the request is sent, and every attempt for a swap signs the same Permit2
 nonce, so at most one can fund it. After an error, the journal's outcome says what
 to do. With no journal, or one at `Rejected`, `Reverted` or `Expired`, the call
 can be repeated. At `Sending`, `Accepted` or `Uncertain` the server may have the
-request: `reconcile_gasless_relay_funding` reports the swap funded, pending or
-expired without sending anything, and expiry releases `evm_fund_started`. The
-funding is recorded only once its receipt shows this swap's HTLC creation and
-spends the nonce. A refused signature stays valid until its deadline, so until the
-journal is `Funded` or `Expired` the wallet, sponsored and CCTP funding paths
-refuse even if `evm_fund_started` is released, and the tracker's
-`ProvenNotSubmitted` keeps it set.
+request, and a repeated call fails with `UnresolvedFunding`:
+`reconcile_gasless_relay_funding` reports the swap funded, pending or expired
+without sending anything, and expiry releases `evm_fund_started`. The funding is
+recorded only once its receipt shows this swap's HTLC creation and spends the
+nonce. A refused signature stays valid until its deadline, so until the journal is
+`Funded` or `Expired` the wallet, sponsored and CCTP funding paths fail with
+`UnresolvedFunding` even if `evm_fund_started` is released, and the tracker's
+`ProvenNotSubmitted` keeps it set. `attach_evm_funding_transaction` fails the same
+way until then.
 
 `RpcWallet::connect` adapts a locally derived EVM key and checks the RPC chain.
 `claim_evm_with_wallet` and `claim_evm_gasless` verify the funded HTLC, preimage,

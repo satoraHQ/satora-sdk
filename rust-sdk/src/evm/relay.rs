@@ -6,6 +6,7 @@ use super::funding::Permit2FundingData;
 use super::funding::TokenAllowance;
 use super::funding::UNRESOLVED_FUNDING;
 use super::funding::now;
+use super::funding::refuse_submitted_funding;
 use super::funding::transaction;
 use super::funding::word;
 use super::htlc::EvmHtlc;
@@ -336,9 +337,12 @@ impl Client {
     /// leaves, and every attempt signs the swap's one Permit2 nonce, so at most one
     /// can fund it. After an error the journal says what to do. With no journal, or
     /// one at `Rejected`, `Reverted` or `Expired`, the call can be repeated. At
-    /// `Sending`, `Accepted` or `Uncertain` the relay may have the request: resolve
-    /// it with [`Self::reconcile_gasless_relay_funding`], never by sending again.
-    /// The funding is recorded once its receipt shows this swap's HTLC creation.
+    /// `Sending`, `Accepted` or `Uncertain` the relay may have the request, and a
+    /// repeated call fails with [`Error::UnresolvedFunding`]: resolve it with
+    /// [`Self::reconcile_gasless_relay_funding`], never by sending again. It fails the
+    /// same way while another path's funding may have been submitted without a recorded
+    /// hash, and with [`Error::InvalidSwap`] once a funding's hash is recorded. The
+    /// funding is recorded once its receipt shows this swap's HTLC creation.
     pub async fn fund_swap_gasless_relay(
         &self,
         id: &str,
@@ -462,26 +466,17 @@ impl Client {
             .get_stored_swap(id)?
             .ok_or_else(|| invalid("recover or create the swap before funding"))?;
         let metadata = &stored.metadata;
-        if metadata.evm_fund_txid.is_some()
-            || metadata.evm_fund_userop_hash.is_some()
-            || metadata
-                .bridge_operations
-                .as_ref()
-                .is_some_and(|operations| operations.contains_key("cctp_fund"))
-        {
-            return Err(invalid(
-                "funding already submitted; inspect its receipt before another attempt",
-            ));
-        }
+        refuse_submitted_funding(metadata)?;
         let previous = metadata.evm_fund_relay.clone();
         let reserved = metadata.evm_fund_started == Some(true);
         match previous.as_ref().map(|journal| journal.outcome) {
             None | Some(RelayFundingOutcome::Expired) if reserved => {
-                return Err(invalid(UNRESOLVED_FUNDING));
+                return Err(Error::UnresolvedFunding(UNRESOLVED_FUNDING.into()));
             }
             Some(outcome) if may_be_submitted(outcome) => {
-                return Err(invalid(
-                    "relay funding may already be submitted; reconcile it before another attempt",
+                return Err(Error::UnresolvedFunding(
+                    "relay funding may already be submitted; reconcile it before another attempt"
+                        .into(),
                 ));
             }
             _ => {}
