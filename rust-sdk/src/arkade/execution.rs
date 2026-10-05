@@ -1135,8 +1135,8 @@ async fn claim_window_open(
         let height = u64::from(chain.observe(&address).await?.height);
         height.saturating_add(margin_secs.div_ceil(600)) < lock
     } else {
-        // Wall clock, not MTP: the daemon triggers VHTLC refunds on wall clock,
-        // and it runs ahead of MTP.
+        // The daemon refunds VHTLCs once MTP passes the lock. Wall clock runs ahead
+        // of MTP, so gating on it closes the claim window earlier.
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(decode)?
