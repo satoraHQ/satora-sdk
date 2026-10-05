@@ -348,7 +348,9 @@ resumes whatever destination it pays): the SDK re-derives the preimage, queries
 pending transactions after interrupted submission, and resumes checkpoint
 finalization. Cosigner responses must preserve the locally constructed transaction
 and contain valid signatures; receiver signatures survive Arkade's cosigning step.
-Recoverable/expired VTXOs use delegated settlement.
+Recoverable/expired VTXOs use delegated settlement. A `Storage` error once arkd may
+hold a claim or refund leaves its outcome unknown, like `Transport` and `Timeout`:
+repeat the call, which resumes from the journal.
 
 A claim also finishes without its journal, after a lost database, on an index-only
 store, or when another client with the same seed submitted it. When the indexer

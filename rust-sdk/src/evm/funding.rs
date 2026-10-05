@@ -206,6 +206,10 @@ impl Client {
     /// Fund through an external wallet, approving only the bounded source amount.
     /// Fresh quotes are revalidated after approval and before signing. The funding
     /// transaction is persisted before waiting for its receipt.
+    ///
+    /// Any [`Error::Storage`] leaves the outcome unknown, as it may follow the broadcast:
+    /// a retry is refused while `evm_fund_started`, persisted before sending, is set, so
+    /// checking the swap status first is safe.
     pub async fn fund_swap_with_wallet(
         &self,
         id: &str,
@@ -386,6 +390,8 @@ impl Client {
             },
         )?;
         let hash = wallet.send_transaction(&tx).await?;
+        // A failure here is Storage after the broadcast; evm_fund_started makes a retry
+        // refuse rather than fund twice.
         self.update_swap_metadata(
             id,
             SwapMetadata {

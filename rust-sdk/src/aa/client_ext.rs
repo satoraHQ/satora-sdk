@@ -211,6 +211,9 @@ impl Client {
     ///   differs from the one persisted for the swap.
     /// - [`Error::Timeout`] if the whole flow outlives its deadline; inspect the persisted
     ///   operation before retrying.
+    /// - Any [`Error::Storage`] leaves the outcome unknown, as it may follow the submission; a
+    ///   retry is refused while `evm_fund_started`, persisted before submission, is set, so
+    ///   checking the swap status first is safe.
     /// - [`Error::Transport`] / [`Error::Api`] for backend, bundler, paymaster, or node RPC
     ///   failures.
     pub async fn fund_swap_gasless(
@@ -434,6 +437,8 @@ impl Client {
                     },
                 )
             },
+            // A failure here is Storage after the submission; evm_fund_started makes a
+            // retry refuse rather than fund twice.
             &|hash| {
                 self.update_swap_metadata(
                     swap_id,
@@ -446,6 +451,8 @@ impl Client {
             },
         )
         .await?;
+        // Storage here follows a submitted operation; the persisted hash and
+        // evm_fund_started make a retry refuse.
         if let Some(hash) = receipt.transaction_hash {
             self.update_swap_metadata(
                 swap_id,

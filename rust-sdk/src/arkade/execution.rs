@@ -350,6 +350,10 @@ impl Client {
 
     /// Multi-input Arkade spend. Refund maturity is independently checked using
     /// the supplied Bitcoin reader; claims need one only under a height refund lock.
+    ///
+    /// [`Error::Transport`] and [`Error::Timeout`] leave the outcome unknown, and so
+    /// does [`Error::Storage`] once arkd may hold the spend: repeat the call, which
+    /// resumes from the journal.
     pub async fn spend_arkade(
         &self,
         id: &str,

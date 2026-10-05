@@ -559,6 +559,10 @@ impl Client {
     /// needs an EVM reader for its chain (`Client::set_evm_reader`, `gasless`
     /// feature) and a shortfall limit that covers it
     /// (`Client::set_conversion_shortfall_limit`).
+    ///
+    /// [`Error::Transport`] and [`Error::Timeout`] leave the outcome unknown, and so
+    /// does [`Error::Storage`] once arkd may hold the spend: repeat the call, which
+    /// resumes from the journal.
     #[tracing::instrument(name = "claim", skip_all, fields(%swap_id))]
     pub async fn claim(&self, swap_id: &str, destination: &str) -> Result<ClaimReceipt> {
         if self.get_stored_swap(swap_id)?.is_none() {
@@ -583,6 +587,10 @@ impl Client {
     /// Finish a claim arkd already holds, without ever submitting one (TypeScript
     /// `continueArkadeClaimSwap`). It resumes the persisted journal, or with no
     /// journal finalizes arkd's pending claim that our receiver key signed.
+    ///
+    /// [`Error::Transport`] and [`Error::Timeout`] leave the outcome unknown, and so
+    /// does [`Error::Storage`] once arkd may hold the spend: repeat the call, which
+    /// resumes from the journal.
     pub async fn continue_arkade_claim(&self, swap_id: &str) -> Result<ClaimReceipt> {
         if self.get_stored_swap(swap_id)?.is_none() {
             self.refresh_swap(swap_id).await?;
@@ -613,6 +621,10 @@ impl Client {
     }
 
     /// Refund after the VHTLC timelock, verified against the configured Bitcoin chain.
+    ///
+    /// [`Error::Transport`] and [`Error::Timeout`] leave the outcome unknown, and so
+    /// does [`Error::Storage`] once arkd may hold the spend: repeat the call, which
+    /// resumes from the journal.
     pub async fn refund_arkade(&self, swap_id: &str, destination: &str) -> Result<ClaimReceipt> {
         let config = self.arkade_config()?;
         let chain = crate::bitcoin::EsploraBackend::new(&config.esplora_url, config.network)?;
@@ -633,6 +645,10 @@ impl Client {
 
     /// Refund an Arkade to EVM or Arkade to Lightning VHTLC before its timelock with
     /// the receiver's signatures, which the server obtains and this client verifies.
+    ///
+    /// [`Error::Transport`] and [`Error::Timeout`] leave the outcome unknown, and so
+    /// does [`Error::Storage`] once arkd may hold the spend: repeat the call, which
+    /// resumes from the journal.
     pub async fn collab_refund_arkade(
         &self,
         swap_id: &str,
@@ -665,6 +681,10 @@ impl Client {
 
     /// Claim or refund through [`Client::settle_arkade`], routing recoverable
     /// outputs to delegated settlement with the cosigner key the API server reports.
+    ///
+    /// [`Error::Transport`] and [`Error::Timeout`] leave the outcome unknown, and so
+    /// does [`Error::Storage`] once arkd may hold the spend: repeat the call, which
+    /// resumes from the journal.
     pub async fn settle(
         &self,
         swap_id: &str,
