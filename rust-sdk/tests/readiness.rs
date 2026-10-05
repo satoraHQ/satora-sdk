@@ -37,6 +37,56 @@ fn fixture(direction: &str) -> Value {
     fixtures[direction].clone()
 }
 
+/// Real invoices and swap responses from the regtest stack.
+fn lightning_vectors() -> Value {
+    serde_json::from_str(include_str!("../../fixtures/lightning-invoices.json")).unwrap()
+}
+
+fn invoice(name: &str) -> String {
+    lightning_vectors()["invoices"][name]["bolt11"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// The shared vector paying `hash_lock`, a hex hash with or without `0x`.
+fn invoice_paying(hash_lock: &str) -> String {
+    let vectors = lightning_vectors();
+    let swaps = vectors["swaps"].as_object().unwrap().values().map(|swap| {
+        let response = &swap["response"];
+        (
+            &swap["invoice_payment_hash"],
+            response
+                .get("bolt11_invoice")
+                .unwrap_or(&response["client_lightning_invoice"]),
+        )
+    });
+    vectors["invoices"]
+        .as_object()
+        .unwrap()
+        .values()
+        .map(|invoice| (&invoice["payment_hash"], &invoice["bolt11"]))
+        .chain(swaps)
+        .find(|(hash, _)| *hash == hash_lock.trim_start_matches("0x"))
+        .and_then(|(_, invoice)| invoice.as_str())
+        .unwrap_or_else(|| panic!("no shared invoice pays {hash_lock}"))
+        .to_owned()
+}
+
+/// A Lightning→Arkade or Lightning→EVM creation response whose hold invoice pays
+/// the hash of the preimage at `key_index`, as creation requires.
+fn hold_invoice_response(direction: &str, key_index: u32) -> Value {
+    let params = Signer::from_mnemonic(MNEMONIC)
+        .unwrap()
+        .derive_swap_params(key_index)
+        .unwrap();
+    let hash_lock = format!("0x{}", hex::encode(params.hash_lock));
+    let mut response = fixture(direction);
+    response["bolt11_invoice"] = json!(invoice_paying(&hash_lock));
+    response["hash_lock"] = json!(hash_lock);
+    response
+}
+
 /// A Bitcoin→Arkade or Bitcoin→EVM creation response whose HTLC the client's keys
 /// at `key_index` rebuild, as creation requires.
 fn bitcoin_htlc_response(direction: &str, key_index: u32) -> Value {
@@ -236,7 +286,10 @@ async fn lightning_receive_uses_current_amount_fields_script_version_and_fees() 
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/swap/lightning/arkade"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(fixture("lightning_to_arkade")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(hold_invoice_response("lightning_to_arkade", 0)),
+            )
             .expect(1)
             .mount(&server)
             .await;
@@ -317,7 +370,7 @@ async fn duplicate_invoice_is_not_retried() {
         .await;
     let (client, records) = recording_client(&server);
     let err = client
-        .create_arkade_to_lightning_swap(LightningDestination::Invoice("lnbcrt1fixture".into()))
+        .create_arkade_to_lightning_swap(LightningDestination::Invoice(invoice("lnd_hold_22")))
         .await
         .unwrap_err();
     assert!(matches!(err, Error::Api { status: 409, .. }));
@@ -361,8 +414,9 @@ async fn expected_invoice_amount_reaches_creation_and_quote() {
         .expect(1)
         .mount(&server)
         .await;
+    let invoice = invoice("lnd_hold_22");
     let destination = || LightningDestination::InvoiceExpecting {
-        invoice: "lnbcrt1fixture".into(),
+        invoice: invoice.clone(),
         sats: 1_000,
     };
     // The two fixtures share a swap id, so each creation needs its own storage.
@@ -390,14 +444,14 @@ async fn expected_invoice_amount_reaches_creation_and_quote() {
     {
         let body: Value = serde_json::from_slice(&request.body).unwrap();
         assert_schema(&body, schema);
-        assert_eq!(body["lightning_invoice"], "lnbcrt1fixture");
+        assert_eq!(body["lightning_invoice"], invoice);
         assert_eq!(body["target_amount_sats"], 1_000);
         assert!(body.get("source_amount_sats").is_none());
         assert!(body.get("amount_in").is_none());
     }
     let query: std::collections::HashMap<_, _> =
         requests[2].url.query_pairs().into_owned().collect();
-    assert_eq!(query["lightning_invoice"], "lnbcrt1fixture");
+    assert_eq!(query["lightning_invoice"], invoice);
     assert_eq!(query["target_amount_sats"], "1000");
     let wire = serde_json::to_value(
         lendaswap_sdk::types::CreateArkadeToLightningSwapRequest::new(
@@ -408,7 +462,7 @@ async fn expected_invoice_amount_reaches_creation_and_quote() {
         ),
     )
     .unwrap();
-    assert_eq!(wire["lightning_invoice"], "lnbcrt1fixture");
+    assert_eq!(wire["lightning_invoice"], invoice);
     assert_eq!(wire["target_amount_sats"], 1_000);
 }
 
@@ -426,6 +480,8 @@ async fn get_swap_sends_compatibility_headers_for_every_direction() {
         "evm_to_bitcoin",
         "evm_to_lightning",
     ] {
+        let mut response = fixture(direction);
+        response["id"] = json!(direction);
         Mock::given(method("GET"))
             .and(path(format!("/swap/{direction}")))
             .and(header("x-satora-bitcoin-htlc-version", "1"))
@@ -437,7 +493,7 @@ async fn get_swap_sends_compatibility_headers_for_every_direction() {
                 "X-Lendaswap-Client",
                 concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION")),
             ))
-            .respond_with(ResponseTemplate::new(200).set_body_json(fixture(direction)))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response))
             .expect(1)
             .mount(&server)
             .await;
@@ -476,9 +532,11 @@ async fn polling_deadline_cancels_a_stalled_http_request() {
 #[tokio::test]
 async fn polling_deadline_includes_sleep_between_requests() {
     let server = MockServer::start().await;
+    let mut response = fixture("evm_to_arkade");
+    response["id"] = json!("pending");
     Mock::given(method("GET"))
         .and(path("/swap/pending"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(fixture("evm_to_arkade")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response))
         .expect(1)
         .mount(&server)
         .await;
@@ -697,8 +755,12 @@ async fn persistent_client_reopens_the_same_wallet_namespace() {
     Mock::given(path("/swap/lightning/arkade"))
         .respond_with({
             let next_id = std::sync::atomic::AtomicU32::new(0);
-            move |_: &wiremock::Request| {
+            move |request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap();
+                let hash_lock = body["hash_lock"].as_str().unwrap();
                 let mut response = fixture("lightning_to_arkade");
+                response["hash_lock"] = json!(hash_lock);
+                response["bolt11_invoice"] = json!(invoice_paying(hash_lock));
                 response["id"] = json!(format!(
                     "swap-{}",
                     next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -984,7 +1046,10 @@ async fn dispatcher_forwards_lightning_source_amount_and_surcharge() {
         .and(body_partial_json(
             json!({"source_amount_sats":100_000,"extra_fees":15}),
         ))
-        .respond_with(ResponseTemplate::new(200).set_body_json(fixture("lightning_to_arkade")))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(hold_invoice_response("lightning_to_arkade", 0)),
+        )
         .expect(1)
         .mount(&server)
         .await;
@@ -1326,10 +1391,10 @@ async fn creates_all_nine_directions_with_current_schemas_and_persists_snapshots
     for amount in [QuoteAmount::Source(100_000), QuoteAmount::Target(100_000)] {
         for (route, direction, schema, request) in creation_cases(amount) {
             let server = MockServer::start().await;
-            let response = if matches!(direction, "btc_to_arkade" | "bitcoin_to_evm") {
-                bitcoin_htlc_response(direction, 0)
-            } else {
-                fixture(direction)
+            let response = match direction {
+                "btc_to_arkade" | "bitcoin_to_evm" => bitcoin_htlc_response(direction, 0),
+                "lightning_to_arkade" | "lightning_to_evm" => hold_invoice_response(direction, 0),
+                _ => fixture(direction),
             };
             Mock::given(method("POST"))
                 .and(path(format!("/swap/{route}")))
@@ -1384,7 +1449,9 @@ async fn creation_preserves_large_evm_amounts_and_bridge_execution_metadata() {
     use lendaswap_sdk::types::SwapOptions;
     let server = MockServer::start().await;
     Mock::given(path("/swap/lightning/evm"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(fixture("lightning_to_evm")))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(hold_invoice_response("lightning_to_evm", 0)),
+        )
         .mount(&server)
         .await;
     let client = client(&server);
@@ -1596,4 +1663,711 @@ async fn dex_quote_and_unsigned_calldata_match_api_schema() {
             "DexCalldataRequest",
         );
     }
+}
+
+const INVOICE_HASH_MISMATCH: &str = "the Lightning invoice does not pay the swap's hash lock";
+const ARKADE_DESTINATION: &str = "tark1qqellv77udfmr20tun8dvju5vgudpf9vxe8jwhthrkn26fz96pawqfdy8nk05rsmrf8h94j26905e7n6sng8y059z8ykn2j5xcuw4xt846qj6x";
+
+fn is_invoice_hash_mismatch<T>(result: &Result<T, Error>) -> bool {
+    matches!(result, Err(Error::InvalidSwap(message)) if message == INVOICE_HASH_MISMATCH)
+}
+
+fn lightning_receive_request(direction: &str) -> lendaswap_sdk::types::SwapCreation {
+    use lendaswap_sdk::types::EvmAsset;
+    use lendaswap_sdk::types::SwapCreation;
+    match direction {
+        "lightning_to_arkade" => SwapCreation::LightningToArkade {
+            amount: QuoteAmount::Target(100_000),
+            target_address: ARKADE_DESTINATION.into(),
+        },
+        _ => SwapCreation::LightningToEvm {
+            target: EvmAsset {
+                chain_id: 137,
+                token: TokenId::Other("0x1111111111111111111111111111111111111111".into()),
+            },
+            amount: QuoteAmount::Target(100_000),
+            target_address: "0x2222222222222222222222222222222222222222".into(),
+        },
+    }
+}
+
+fn lightning_payout_request(
+    direction: &str,
+    destination: LightningDestination,
+) -> lendaswap_sdk::types::SwapCreation {
+    use lendaswap_sdk::types::EvmAsset;
+    use lendaswap_sdk::types::SwapCreation;
+    match direction {
+        "arkade_to_lightning" => SwapCreation::ArkadeToLightning { destination },
+        _ => SwapCreation::EvmToLightning {
+            source: EvmAsset {
+                chain_id: 42161,
+                token: TokenId::Usdt0Arbitrum,
+            },
+            destination,
+        },
+    }
+}
+
+#[test]
+fn the_shared_invoices_pay_this_wallets_swap_hashes() {
+    let signer = Signer::from_mnemonic(MNEMONIC).unwrap();
+    let vectors = lightning_vectors();
+    assert_eq!(vectors["mnemonic"], MNEMONIC);
+    for (index, name) in [(0, "lnd_hold_index_0"), (7, "lnd_hold_index_7")] {
+        assert_eq!(
+            hex::encode(signer.derive_swap_params(index).unwrap().hash_lock),
+            vectors["invoices"][name]["payment_hash"]
+        );
+    }
+    assert_eq!(
+        format!(
+            "0x{}",
+            hex::encode(signer.derive_swap_params(1).unwrap().hash_lock)
+        ),
+        vectors["swaps"]["lightning_to_arkade"]["response"]["hash_lock"]
+    );
+}
+
+#[tokio::test]
+async fn lightning_receive_refuses_a_hold_invoice_for_another_hash_before_storing() {
+    for (route, direction) in [
+        ("lightning/arkade", "lightning_to_arkade"),
+        ("lightning/evm", "lightning_to_evm"),
+    ] {
+        for (paid, refused) in [("lnd_hold_33", true), ("lnd_hold_index_0", false)] {
+            let server = MockServer::start().await;
+            let mut response = hold_invoice_response(direction, 0);
+            response["bolt11_invoice"] = json!(invoice(paid));
+            // Once: the refusal is not a hash collision, so no other key is tried.
+            Mock::given(method("POST"))
+                .and(path(format!("/swap/{route}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(response))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let client = client(&server);
+            let result = client
+                .create_swap_request(lightning_receive_request(direction), Default::default())
+                .await;
+            if refused {
+                assert!(is_invoice_hash_mismatch(&result), "{direction}: {result:?}");
+                assert!(client.list_all_swaps().unwrap().is_empty(), "{direction}");
+            } else {
+                result.unwrap();
+                assert_eq!(client.list_all_swaps().unwrap().len(), 1, "{direction}");
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn lightning_payout_refuses_a_hash_lock_its_invoice_does_not_pay() {
+    let own = lightning_vectors()["invoices"]["lnd_hold_index_0"]["payment_hash"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for (route, direction) in [
+        ("arkade/lightning", "arkade_to_lightning"),
+        ("evm/lightning", "evm_to_lightning"),
+    ] {
+        // The server resolves an address to an invoice, so only their agreement is
+        // checked; a hash lock without 0x or in upper case still agrees.
+        for (invoice_name, hash_lock, refused) in [
+            ("lnd_hold_22", format!("0x{}", "33".repeat(32)), true),
+            ("lnd_hold_index_0", own.to_uppercase(), false),
+        ] {
+            let server = MockServer::start().await;
+            let mut response = fixture(direction);
+            response["client_lightning_invoice"] = json!(invoice(invoice_name));
+            response["hash_lock"] = json!(hash_lock);
+            Mock::given(method("POST"))
+                .and(path(format!("/swap/{route}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(response))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let client = client(&server);
+            let destination = LightningDestination::Address {
+                address: "merchant@example.com".into(),
+                sats: 1_000,
+            };
+            let result = client
+                .create_swap_request(
+                    lightning_payout_request(direction, destination),
+                    Default::default(),
+                )
+                .await;
+            if refused {
+                assert!(is_invoice_hash_mismatch(&result), "{direction}: {result:?}");
+                assert!(client.list_all_swaps().unwrap().is_empty(), "{direction}");
+            } else {
+                result.unwrap();
+                assert_eq!(client.list_all_swaps().unwrap().len(), 1, "{direction}");
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn lightning_payout_refuses_an_invoice_other_than_the_supplied_one() {
+    for (route, direction) in [
+        ("arkade/lightning", "arkade_to_lightning"),
+        ("evm/lightning", "evm_to_lightning"),
+    ] {
+        let server = MockServer::start().await;
+        // Consistent in itself, but not the invoice the caller asked to pay.
+        let mut response = fixture(direction);
+        response["client_lightning_invoice"] = json!(invoice("lnd_hold_33"));
+        response["hash_lock"] = json!(format!("0x{}", "33".repeat(32)));
+        Mock::given(method("POST"))
+            .and(path(format!("/swap/{route}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = client(&server);
+        let result = client
+            .create_swap_request(
+                lightning_payout_request(
+                    direction,
+                    LightningDestination::Invoice(invoice("lnd_hold_22")),
+                ),
+                Default::default(),
+            )
+            .await;
+        assert!(
+            matches!(&result, Err(Error::InvalidSwap(message)) if message.contains("different Lightning invoice than the one supplied")),
+            "{direction}: {result:?}"
+        );
+        assert!(client.list_all_swaps().unwrap().is_empty(), "{direction}");
+    }
+}
+
+#[tokio::test]
+async fn a_malformed_supplied_invoice_is_refused_before_the_request() {
+    let mut tampered = invoice("lnd_hold_22");
+    let last = tampered.pop().unwrap();
+    tampered.push(if last == 'q' { 'p' } else { 'q' });
+    for destination in [
+        LightningDestination::Invoice("lnbcrt1fixture".into()),
+        LightningDestination::InvoiceExpecting {
+            invoice: tampered,
+            sats: 1_000,
+        },
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let storage = Arc::new(InMemorySwapStorage::new());
+        let client = Client::builder()
+            .base_url(server.uri())
+            .mnemonic(MNEMONIC)
+            .storage(storage.clone())
+            .build()
+            .unwrap();
+        let result = client.create_arkade_to_lightning_swap(destination).await;
+        assert!(
+            matches!(&result, Err(Error::InvalidSwap(message)) if message.starts_with("invalid BOLT11 invoice")),
+            "{result:?}"
+        );
+        assert_eq!(storage.next_key_index().unwrap(), 0);
+    }
+}
+
+#[tokio::test]
+async fn a_stored_lightning_swap_keeps_its_copy_when_the_server_changes_its_invoice() {
+    let substitute = invoice("lnd_hold_33");
+    for direction in [
+        "lightning_to_arkade",
+        "lightning_to_evm",
+        "arkade_to_lightning",
+        "evm_to_lightning",
+    ] {
+        let receive = direction.starts_with("lightning_");
+        let stored = if receive {
+            hold_invoice_response(direction, 0)
+        } else {
+            fixture(direction)
+        };
+        let id = stored["id"].as_str().unwrap().to_owned();
+        let mut substituted = stored.clone();
+        if receive {
+            substituted["bolt11_invoice"] = json!(substitute);
+        } else {
+            // Consistent in itself, but not the stored swap's invoice.
+            substituted["client_lightning_invoice"] = json!(substitute);
+            substituted["hash_lock"] = json!(format!("0x{}", "33".repeat(32)));
+        }
+        // A payout's lock must stay under the stored invoice's hash, even with that invoice.
+        let mut relocked = stored.clone();
+        if !receive {
+            relocked["hash_lock"] = json!(format!("0x{}", "33".repeat(32)));
+        }
+        let mut redirected = fixture("arkade_to_evm");
+        redirected["id"] = json!(id);
+        for (served, refused) in [
+            (substituted, true),
+            (relocked, !receive),
+            (redirected, true),
+            (stored.clone(), false),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path(format!("/swap/{id}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(served))
+                .mount(&server)
+                .await;
+            let storage = Arc::new(InMemorySwapStorage::new());
+            storage
+                .store_swap(
+                    lendaswap_sdk::StoredSwap::new(
+                        0,
+                        serde_json::from_value(stored.clone()).unwrap(),
+                        Default::default(),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            let client = Client::builder()
+                .base_url(server.uri())
+                .mnemonic(MNEMONIC)
+                .storage(storage.clone())
+                .build()
+                .unwrap();
+            let results = [
+                client.get_swap(&id).await.map(|_| ()),
+                client.get_swap_details(&id).await.map(|_| ()),
+                client.refresh_swap(&id).await.map(|_| ()),
+            ];
+            for result in results {
+                assert_eq!(
+                    matches!(result, Err(Error::InvalidSwap(_))),
+                    refused,
+                    "{direction}: {result:?}"
+                );
+            }
+            assert_eq!(
+                storage.get_swap(&id).unwrap().unwrap().response,
+                serde_json::from_value(stored.clone()).unwrap(),
+                "{direction}"
+            );
+        }
+    }
+}
+
+/// A server that answers for one swap with another's copy, so that the checks of the
+/// swap asked for would not apply, is refused whatever the client stores for either.
+#[tokio::test]
+async fn a_response_for_another_swap_is_refused() {
+    const ASKED: &str = "00000000-0000-0000-0000-00000000000a";
+    let stored = hold_invoice_response("lightning_to_arkade", 0);
+    let mut answered = stored.clone();
+    answered["id"] = json!("00000000-0000-0000-0000-00000000beef");
+    answered["bolt11_invoice"] = json!(invoice("lnd_hold_33"));
+    let mut record = stored.clone();
+    record["id"] = json!(ASKED);
+    let record: GetSwapResponse = serde_json::from_value(record).unwrap();
+    for local in ["record", "index", "nothing"] {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("/swap/{ASKED}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&answered))
+            .mount(&server)
+            .await;
+        let storage = Arc::new(InMemorySwapStorage::new());
+        match local {
+            "record" => storage
+                .store_swap(
+                    lendaswap_sdk::StoredSwap::new(0, record.clone(), Default::default()).unwrap(),
+                )
+                .unwrap(),
+            "index" => storage.put_swap_key_index(ASKED, 0).unwrap(),
+            _ => {}
+        }
+        let client = Client::builder()
+            .base_url(server.uri())
+            .mnemonic(MNEMONIC)
+            .storage(storage.clone())
+            .build()
+            .unwrap();
+        let mut results = vec![
+            client.get_swap(ASKED).await.map(|_| ()),
+            client.get_swap_details(ASKED).await.map(|_| ()),
+            client
+                .wait_for_swap_status(ASKED, &[SwapStatus::Pending], Duration::from_secs(5))
+                .await
+                .map(|_| ()),
+        ];
+        if local != "nothing" {
+            results.push(client.refresh_swap(ASKED).await.map(|_| ()));
+        }
+        for result in results {
+            assert!(
+                matches!(&result, Err(Error::InvalidSwap(message)) if message.contains("returned swap")),
+                "{local}: {result:?}"
+            );
+        }
+        let kept = client
+            .get_stored_swap(ASKED)
+            .unwrap()
+            .map(|swap| swap.response);
+        assert_eq!(kept, (local == "record").then(|| record.clone()), "{local}");
+    }
+}
+
+/// The server answers in the lower-case spelling the store keys swaps by, so a swap
+/// asked for in upper case is the same swap and keeps its checks.
+#[tokio::test]
+async fn a_swap_asked_for_in_upper_case_keeps_its_checks() {
+    const STORED: &str = "00000000-0000-0000-0000-00000000000a";
+    let asked = STORED.to_uppercase();
+    let mut stored = hold_invoice_response("lightning_to_arkade", 0);
+    stored["id"] = json!(STORED);
+    let mut substituted = stored.clone();
+    substituted["bolt11_invoice"] = json!(invoice("lnd_hold_33"));
+    for local in ["record", "index"] {
+        for (served, refused) in [(&substituted, true), (&stored, false)] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path(format!("/swap/{asked}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(served))
+                .mount(&server)
+                .await;
+            let storage = Arc::new(InMemorySwapStorage::new());
+            if local == "record" {
+                storage
+                    .store_swap(
+                        lendaswap_sdk::StoredSwap::new(
+                            0,
+                            serde_json::from_value(stored.clone()).unwrap(),
+                            Default::default(),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+            } else {
+                storage.put_swap_key_index(STORED, 0).unwrap();
+            }
+            let client = Client::builder()
+                .base_url(server.uri())
+                .mnemonic(MNEMONIC)
+                .storage(storage)
+                .build()
+                .unwrap();
+            for result in [
+                client.get_swap(&asked).await.map(|_| ()),
+                client.get_swap_details(&asked).await.map(|_| ()),
+            ] {
+                if refused {
+                    assert!(is_invoice_hash_mismatch(&result), "{local}: {result:?}");
+                } else {
+                    assert!(result.is_ok(), "{local}: {result:?}");
+                }
+            }
+        }
+    }
+}
+
+/// The store matches ids exactly, so a response that spells a stored swap's id in
+/// upper case would escape its checks, and refresh would store it a second time.
+#[tokio::test]
+async fn a_swap_served_in_upper_case_is_refused() {
+    const STORED: &str = "00000000-0000-0000-0000-00000000000a";
+    let mut stored = hold_invoice_response("lightning_to_arkade", 0);
+    stored["id"] = json!(STORED);
+    let mut relabelled = stored.clone();
+    relabelled["id"] = json!(STORED.to_uppercase());
+    let mut substituted = relabelled.clone();
+    substituted["bolt11_invoice"] = json!(invoice("lnd_hold_33"));
+    for local in ["record", "index"] {
+        for served in [&relabelled, &substituted] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path(format!("/swap/{STORED}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(served))
+                .mount(&server)
+                .await;
+            let storage = Arc::new(InMemorySwapStorage::new());
+            if local == "record" {
+                storage
+                    .store_swap(
+                        lendaswap_sdk::StoredSwap::new(
+                            0,
+                            serde_json::from_value(stored.clone()).unwrap(),
+                            Default::default(),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+            } else {
+                storage.put_swap_key_index(STORED, 0).unwrap();
+            }
+            let client = Client::builder()
+                .base_url(server.uri())
+                .mnemonic(MNEMONIC)
+                .storage(storage.clone())
+                .build()
+                .unwrap();
+            for result in [
+                client.get_swap(STORED).await.map(|_| ()),
+                client.get_swap_details(STORED).await.map(|_| ()),
+                client.refresh_swap(STORED).await.map(|_| ()),
+            ] {
+                assert!(
+                    matches!(&result, Err(Error::InvalidSwap(message)) if message.contains("returned swap")),
+                    "{local}: {result:?}"
+                );
+            }
+            let ids: Vec<_> = client
+                .list_all_swaps()
+                .unwrap()
+                .into_iter()
+                .map(|swap| swap.response.id().to_owned())
+                .collect();
+            let expected: &[&str] = if local == "record" { &[STORED] } else { &[] };
+            assert_eq!(ids, expected, "{local}");
+            assert_eq!(
+                storage.get_swap_key_index(&STORED.to_uppercase()).unwrap(),
+                None,
+                "{local}"
+            );
+        }
+    }
+}
+
+/// A swap created under an upper-case id would be stored under a spelling that
+/// fetching it never looks up.
+#[tokio::test]
+async fn creation_refuses_a_swap_id_with_upper_case_letters() {
+    const ID: &str = "3130e20f-92b3-4825-b54f-fac2872dba4f";
+    for (id, refused) in [(ID.to_uppercase(), true), (ID.to_owned(), false)] {
+        let server = MockServer::start().await;
+        let mut response = hold_invoice_response("lightning_to_arkade", 0);
+        response["id"] = json!(id);
+        // Once: the refusal is not a hash collision, so no other key is tried.
+        Mock::given(method("POST"))
+            .and(path("/swap/lightning/arkade"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = client(&server);
+        let result = client
+            .create_swap_request(
+                lightning_receive_request("lightning_to_arkade"),
+                Default::default(),
+            )
+            .await;
+        if refused {
+            assert!(
+                matches!(&result, Err(Error::InvalidSwap(message)) if message.contains("upper-case")),
+                "{result:?}"
+            );
+            assert!(client.list_all_swaps().unwrap().is_empty());
+        } else {
+            result.unwrap();
+            assert_eq!(client.list_all_swaps().unwrap().len(), 1);
+        }
+    }
+}
+
+/// A server that relabels a stored swap as a Lightning one could otherwise hand over
+/// an invoice no hash of the client's backs.
+#[tokio::test]
+async fn a_stored_swap_keeps_its_direction() {
+    let stored = fixture("arkade_to_evm");
+    let id = stored["id"].as_str().unwrap().to_owned();
+    let mut relabelled = hold_invoice_response("lightning_to_arkade", 0);
+    relabelled["id"] = json!(id);
+    relabelled["bolt11_invoice"] = json!(invoice("lnd_hold_33"));
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/swap/{id}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(relabelled))
+        .mount(&server)
+        .await;
+    let storage = Arc::new(InMemorySwapStorage::new());
+    let stored: GetSwapResponse = serde_json::from_value(stored).unwrap();
+    storage
+        .store_swap(lendaswap_sdk::StoredSwap::new(0, stored.clone(), Default::default()).unwrap())
+        .unwrap();
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(storage.clone())
+        .build()
+        .unwrap();
+    for result in [
+        client.get_swap(&id).await.map(|_| ()),
+        client.get_swap_details(&id).await.map(|_| ()),
+        client.refresh_swap(&id).await.map(|_| ()),
+    ] {
+        assert!(
+            matches!(&result, Err(Error::InvalidSwap(message)) if message.contains("differ from the stored swap")),
+            "{result:?}"
+        );
+    }
+    assert_eq!(storage.get_swap(&id).unwrap().unwrap().response, stored);
+}
+
+/// A legacy database upgraded on open, or a store that keeps only key indices after
+/// a restart, holds no record to compare with, only the key index.
+#[tokio::test]
+async fn an_index_only_lightning_swap_gets_the_invoice_checks_of_recovery() {
+    for direction in [
+        "lightning_to_arkade",
+        "lightning_to_evm",
+        "arkade_to_lightning",
+        "evm_to_lightning",
+    ] {
+        let receive = direction.starts_with("lightning_");
+        let valid = if receive {
+            hold_invoice_response(direction, 0)
+        } else {
+            fixture(direction)
+        };
+        let id = valid["id"].as_str().unwrap().to_owned();
+        let mut invalid = valid.clone();
+        if receive {
+            invalid["bolt11_invoice"] = json!(invoice("lnd_hold_33"));
+        } else {
+            invalid["hash_lock"] = json!(format!("0x{}", "33".repeat(32)));
+        }
+        for (served, refused) in [(invalid, true), (valid, false)] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path(format!("/swap/{id}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(&served))
+                .mount(&server)
+                .await;
+            let storage = Arc::new(InMemorySwapStorage::new());
+            storage.put_swap_key_index(&id, 0).unwrap();
+            let client = Client::builder()
+                .base_url(server.uri())
+                .mnemonic(MNEMONIC)
+                .storage(storage.clone())
+                .build()
+                .unwrap();
+            let results = [
+                client.get_swap(&id).await.map(|_| ()),
+                client.get_swap_details(&id).await.map(|_| ()),
+                client.refresh_swap(&id).await.map(|_| ()),
+            ];
+            for result in results {
+                assert_eq!(
+                    is_invoice_hash_mismatch(&result),
+                    refused,
+                    "{direction}: {result:?}"
+                );
+            }
+            let stored = client.get_stored_swap(&id).unwrap();
+            if refused {
+                assert!(stored.is_none(), "{direction}");
+            } else {
+                assert_eq!(
+                    stored.unwrap().response,
+                    serde_json::from_value(served).unwrap(),
+                    "{direction}"
+                );
+            }
+        }
+    }
+}
+
+/// A real swap response from the shared vectors as a recovery entry at `index`.
+fn recovered_vector(direction: &str, index: u32) -> Value {
+    let mut swap = lightning_vectors()["swaps"][direction]["response"].clone();
+    swap["direction"] = json!(direction);
+    swap["index"] = json!(index);
+    swap
+}
+
+#[tokio::test]
+async fn recovery_refuses_lightning_swaps_whose_invoice_does_not_pay_their_hash_lock() {
+    let mut receive = recovered_vector("lightning_to_arkade", 1);
+    receive["bolt11_invoice"] = json!(invoice("lnd_hold_33"));
+    let mut payout = recovered_vector("arkade_to_lightning", 1);
+    payout["hash_lock"] = json!(format!("0x{}", "33".repeat(32)));
+    for (swap, refused) in [
+        (recovered_vector("lightning_to_arkade", 1), false),
+        (recovered_vector("arkade_to_lightning", 1), false),
+        (receive, true),
+        (payout, true),
+    ] {
+        let server = MockServer::start().await;
+        let id = swap["id"].as_str().unwrap().to_owned();
+        Mock::given(path("/swap/recover"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "swaps":[swap],"highest_index":1,"next_index":2,"scanned_until":10,"complete":true
+            })))
+            .mount(&server)
+            .await;
+        let storage = Arc::new(InMemorySwapStorage::new());
+        let client = Client::builder()
+            .base_url(server.uri())
+            .mnemonic(MNEMONIC)
+            .storage(storage.clone())
+            .build()
+            .unwrap();
+        let result = client.recover_swaps(None).await;
+        if refused {
+            assert!(is_invoice_hash_mismatch(&result), "{id}: {result:?}");
+            assert_eq!(storage.get_swap_key_index(&id).unwrap(), None);
+            assert_eq!(storage.next_key_index().unwrap(), 0);
+        } else {
+            result.unwrap();
+            assert_eq!(storage.get_swap_key_index(&id).unwrap(), Some(1));
+        }
+    }
+}
+
+#[tokio::test]
+async fn recovery_keeps_a_stored_lightning_payout_the_server_would_replace() {
+    let stored = fixture("arkade_to_lightning");
+    let own_key = Signer::from_mnemonic(MNEMONIC)
+        .unwrap()
+        .derive_swap_params(0)
+        .unwrap()
+        .public_key;
+    // It passes every check a swap new to this client gets.
+    let mut substituted = stored.clone();
+    substituted["client_lightning_invoice"] = json!(invoice("lnd_hold_33"));
+    substituted["hash_lock"] = json!(format!("0x{}", "33".repeat(32)));
+    substituted["sender_pk"] = json!(hex::encode(own_key));
+    substituted["index"] = json!(0);
+    let server = MockServer::start().await;
+    Mock::given(path("/swap/recover"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "swaps":[substituted],"highest_index":0,"next_index":1,"scanned_until":10,"complete":true
+        })))
+        .mount(&server)
+        .await;
+    let storage = Arc::new(InMemorySwapStorage::new());
+    storage
+        .store_swap(
+            lendaswap_sdk::StoredSwap::new(
+                0,
+                serde_json::from_value(stored.clone()).unwrap(),
+                Default::default(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(storage.clone())
+        .build()
+        .unwrap();
+    let result = client.recover_swaps(None).await;
+    assert!(is_invoice_hash_mismatch(&result), "{result:?}");
+    let id = stored["id"].as_str().unwrap();
+    assert_eq!(
+        storage.get_swap(id).unwrap().unwrap().response,
+        serde_json::from_value(stored).unwrap()
+    );
 }

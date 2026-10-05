@@ -56,18 +56,14 @@ impl Client {
     }
 
     /// Refresh an existing local swap, retaining its execution metadata.
-    /// Also upgrades index-only entries from older SDK databases.
+    /// Also upgrades index-only entries from older SDK databases. A response
+    /// [`Self::get_swap_details`] refuses leaves the store unchanged.
     pub async fn refresh_swap(&self, id: &str) -> Result<GetSwapResponse> {
         let index = self
             .storage
             .get_swap_key_index(id)?
             .ok_or_else(|| Error::Storage("swap key index not found".into()))?;
         let response = self.get_swap_details(id).await?;
-        if response.id() != id {
-            return Err(Error::Decode(
-                "response swap ID does not match request".into(),
-            ));
-        }
         self.persist_server_swap(index, response.clone())?;
         Ok(response)
     }

@@ -4668,6 +4668,7 @@ dependencies = [
  "futures-util",
  "hex",
  "jsonschema",
+ "lightning-invoice",
  "log",
  "num-bigint",
  "num-traits",

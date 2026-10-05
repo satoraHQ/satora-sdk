@@ -4,13 +4,88 @@ use super::check_status;
 use super::validate_sats;
 use crate::Error;
 use crate::Result;
+use crate::types::GetSwapResponse;
 use crate::types::KnownChain;
 use crate::types::LightningDestination;
 use crate::types::LightningSendQuoteResponse;
 use crate::types::TokenId;
+use bitcoin::hashes::Hash;
+use lightning_invoice::Bolt11Invoice;
 use reqwest::Method;
 use serde_json::Value;
 use serde_json::json;
+use std::str::FromStr;
+
+/// The refusal of a Lightning swap whose invoice does not pay the hash its lock opens
+/// with. Such a swap must be neither paid nor funded.
+pub(crate) const INVOICE_HASH_MISMATCH: &str =
+    "the Lightning invoice does not pay the swap's hash lock";
+
+/// Parsed as the swap server parses it, so both accept the same invoices. The
+/// signature is checked too.
+pub(super) fn parse_invoice(invoice: &str) -> Result<Bolt11Invoice> {
+    Bolt11Invoice::from_str(invoice)
+        .map_err(|e| Error::InvalidSwap(format!("invalid BOLT11 invoice: {e}")))
+}
+
+/// The payment hash a BOLT11 invoice commits its payer to.
+pub(crate) fn invoice_payment_hash(invoice: &str) -> Result<[u8; 32]> {
+    Ok(parse_invoice(invoice)?.payment_hash().to_byte_array())
+}
+
+fn hash_lock_bytes(hash_lock: &str) -> Result<[u8; 32]> {
+    let mut hash = [0; 32];
+    hex::decode_to_slice(hash_lock.trim_start_matches("0x"), &mut hash)
+        .map_err(|e| Error::InvalidSwap(format!("invalid hash lock: {e}")))?;
+    Ok(hash)
+}
+
+/// Refuses a Lightning swap whose invoice does not pay `hash`. A Lightning payout locks
+/// the client's funds under its `hash_lock`, which must then be `hash` as well.
+fn check_lightning_swap(response: &GetSwapResponse, hash: &[u8; 32]) -> Result<()> {
+    let (invoice, hash_lock) = match response {
+        GetSwapResponse::LightningToArkade(r) => (&r.bolt11_invoice, None),
+        GetSwapResponse::LightningToEvm(r) => (&r.bolt11_invoice, None),
+        GetSwapResponse::ArkadeToLightning(r) => (&r.client_lightning_invoice, Some(&r.hash_lock)),
+        GetSwapResponse::EvmToLightning(r) => (&r.client_lightning_invoice, Some(&r.hash_lock)),
+        _ => return Ok(()),
+    };
+    if invoice_payment_hash(invoice)? != *hash
+        || hash_lock
+            .map(|hash_lock| hash_lock_bytes(hash_lock))
+            .transpose()?
+            .is_some_and(|hash_lock| hash_lock != *hash)
+    {
+        return Err(Error::InvalidSwap(INVOICE_HASH_MISMATCH.into()));
+    }
+    Ok(())
+}
+
+/// Refuses a Lightning payout whose hash lock is not the payment hash of its invoice.
+fn check_lightning_payout(response: &GetSwapResponse) -> Result<()> {
+    let hash_lock = match response {
+        GetSwapResponse::ArkadeToLightning(r) => &r.hash_lock,
+        GetSwapResponse::EvmToLightning(r) => &r.hash_lock,
+        _ => return Ok(()),
+    };
+    check_lightning_swap(response, &hash_lock_bytes(hash_lock)?)
+}
+
+/// Refuses a Lightning swap the server returned at creation or recovery whose invoice
+/// does not pay the hash its lock opens with: for a Lightning input, `own_hash`, the
+/// hash the client sent and holds the preimage of, since the server mints the hold
+/// invoice; for a payout, the swap's hash lock.
+pub(super) fn check_new_lightning_swap(
+    response: &GetSwapResponse,
+    own_hash: &[u8; 32],
+) -> Result<()> {
+    match response {
+        GetSwapResponse::LightningToArkade(_) | GetSwapResponse::LightningToEvm(_) => {
+            check_lightning_swap(response, own_hash)
+        }
+        _ => check_lightning_payout(response),
+    }
+}
 
 /// Shared destination encoding for Lightning sends. Field names differ between
 /// the exact quote and creation endpoints; source-token amounts stay strings.
@@ -60,6 +135,69 @@ pub(super) fn destination_fields(
 }
 
 impl Client {
+    /// Refuses a fresh server snapshot of swap `id` that names another swap, that changes
+    /// the direction of the stored swap, or whose invoice does not pay the hash a stored
+    /// Lightning swap locks under, so that the snapshot neither replaces the stored copy
+    /// nor reaches the caller. That hash is the client's own for a Lightning input, and
+    /// for a payout the payment hash of the stored invoice. This SDK checks an invoice
+    /// before storing it, but one an older SDK stored may be unchecked.
+    pub(super) fn check_swap_snapshot(&self, id: &str, fresh: &GetSwapResponse) -> Result<()> {
+        // A snapshot relabelled as another swap would be checked against the wrong local
+        // state, or against none. The server spells the UUID in lower case whatever the
+        // request's case, and the client stores no other spelling. The store matches ids
+        // exactly, so a snapshot in another spelling would escape the stored swap's checks.
+        let id = id.to_ascii_lowercase();
+        if fresh.id() != id {
+            return Err(Error::InvalidSwap(format!(
+                "the server returned swap {} for swap {id}",
+                fresh.id()
+            )));
+        }
+        let Some(stored) = self.get_stored_swap(&id)? else {
+            // An index-only entry, from an older database or a store without records after
+            // a restart, gets the invoice checks recovery gives a swap: there is no stored
+            // invoice to compare with, but the key index gives the client's own hash.
+            let Some(index) = self.storage.get_swap_key_index(&id)? else {
+                return Ok(());
+            };
+            return match fresh {
+                GetSwapResponse::LightningToArkade(_) | GetSwapResponse::LightningToEvm(_) => {
+                    check_lightning_swap(fresh, &self.own_hash_lock(index)?)
+                }
+                _ => check_lightning_payout(fresh),
+            };
+        };
+        if std::mem::discriminant(fresh) != std::mem::discriminant(&stored.response) {
+            return Err(Error::InvalidSwap(
+                "server swap details differ from the stored swap".into(),
+            ));
+        }
+        let hash = match &stored.response {
+            GetSwapResponse::LightningToArkade(_) | GetSwapResponse::LightningToEvm(_) => {
+                self.own_hash_lock(stored.key_index)?
+            }
+            GetSwapResponse::ArkadeToLightning(r) => {
+                invoice_payment_hash(&r.client_lightning_invoice)?
+            }
+            GetSwapResponse::EvmToLightning(r) => {
+                invoice_payment_hash(&r.client_lightning_invoice)?
+            }
+            _ => return Ok(()),
+        };
+        check_lightning_swap(fresh, &hash)
+    }
+
+    fn own_hash_lock(&self, key_index: u32) -> Result<[u8; 32]> {
+        Ok(self
+            .signer
+            .as_ref()
+            .ok_or_else(|| {
+                Error::InvalidSigner("checking a Lightning swap requires a signer".into())
+            })?
+            .derive_swap_params(key_index)?
+            .hash_lock)
+    }
+
     /// Quote a Lightning payout using the provider's fee for the actual destination.
     /// Sources are Arkade BTC or an EVM token on its matching chain.
     pub async fn get_lightning_send_quote(
@@ -127,6 +265,9 @@ impl Client {
 
     /// Create an EVM → Lightning swap. The invoice owns the hash lock, so
     /// duplicate-invoice errors are returned without retrying with another key.
+    /// A hash lock that is not the payment hash of the returned invoice, or a
+    /// returned invoice other than the supplied one, is refused with
+    /// [`Error::InvalidSwap`] before anything is stored.
     ///
     /// With `gasless`, the returned deposit address can be funded and relayed
     /// using `fund_swap_gasless` (requires the `gasless` feature).
@@ -159,5 +300,66 @@ impl Client {
             },
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every invoice in the shared Lightning vectors, with the payment hash
+    /// `lncli decodepayreq` printed for it (BOLT 11 states the spec vector's).
+    fn shared_invoices() -> Vec<(String, String)> {
+        let vectors: Value =
+            serde_json::from_str(include_str!("../../../fixtures/lightning-invoices.json"))
+                .unwrap();
+        let text = |value: &Value| value.as_str().unwrap().to_owned();
+        let mut invoices: Vec<_> = vectors["invoices"]
+            .as_object()
+            .unwrap()
+            .values()
+            .map(|invoice| (text(&invoice["bolt11"]), text(&invoice["payment_hash"])))
+            .collect();
+        for swap in vectors["swaps"].as_object().unwrap().values() {
+            let response = &swap["response"];
+            let invoice = response
+                .get("bolt11_invoice")
+                .unwrap_or(&response["client_lightning_invoice"]);
+            invoices.push((text(invoice), text(&swap["invoice_payment_hash"])));
+        }
+        invoices
+    }
+
+    #[test]
+    fn reads_the_payment_hash_of_real_lnd_and_spark_invoices() {
+        let invoices = shared_invoices();
+        assert!(invoices.len() >= 8);
+        for (invoice, hash) in invoices {
+            assert_eq!(hex::encode(invoice_payment_hash(&invoice).unwrap()), hash);
+            // A QR code carries the invoice in upper case.
+            assert_eq!(
+                hex::encode(invoice_payment_hash(&invoice.to_uppercase()).unwrap()),
+                hash
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_an_invoice_the_server_would_not_parse() {
+        let (invoice, _) = shared_invoices().remove(0);
+        let mut mixed_case = invoice.clone();
+        mixed_case.replace_range(0..1, "L");
+        for invoice in [
+            "lnbcrt1fixture",
+            "",
+            &mixed_case,
+            &invoice[..invoice.len() - 1],
+        ] {
+            let error = invoice_payment_hash(invoice).unwrap_err();
+            assert!(
+                matches!(&error, Error::InvalidSwap(message) if message.starts_with("invalid BOLT11 invoice")),
+                "{invoice}: {error:?}"
+            );
+        }
     }
 }

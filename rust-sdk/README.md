@@ -77,13 +77,30 @@ Invoice-owned hash collisions return HTTP 409 without retrying. Lightning→Arka
 supports both source and target amounts, a UTF-8 invoice description of at most
 639 bytes, and a per-swap surcharge.
 
+Lightning swaps are checked before anything is stored, and refused with
+`InvalidSwap` otherwise. A Lightning→Arkade or Lightning→EVM hold invoice must pay
+the hash of the client's preimage. An Arkade→Lightning or EVM→Lightning hash lock
+must be the payment hash of the returned invoice, which must be the supplied one
+when an invoice was supplied; for Lightning addresses and LNURLs the server resolves
+the invoice, so only that agreement is checked. A supplied invoice that does not
+parse is refused before the request. `recover_swaps` checks a page the same way
+before storing any of it. `Client::send` with the creation request types skips
+these checks.
+
 `get_swap_details` preserves the server's full response. `get_swap` projects it
-into payment instructions; its `receive_address` is empty for an EVM→Bitcoin
-swap whose server response has no target address. `Swap::from` applies the same
+into payment instructions; its `receive_address` is empty for an EVM→Bitcoin swap
+whose server response has no target address. `Swap::from` applies the same
 projection to a `GetSwapResponse`. A `Swap` also carries its `direction`,
 `created_at`, and under their wire names the refund locktimes and invoice expiry
 in unix seconds. A locktime on the leg the client funds is when its refund
 unlocks; on the leg the server funds it is the client's claim deadline.
+`get_swap`, `get_swap_details`, `refresh_swap` and `wait_for_swap_status` refuse
+with `InvalidSwap` a server response that names another swap than the one asked
+for. They and `recover_swaps` refuse one that changes a stored swap's direction,
+or whose invoice no longer pays a stored Lightning swap's hash lock, and the
+stored copy stays as it was. A swap stored only as its key index, as in an
+index-only store after a restart, gets the Lightning invoice and hash-lock checks
+of `recover_swaps`, and `refresh_swap` stores nothing it refuses.
 
 `create_swap_request(SwapCreation, SwapOptions)` provides explicit routes for all
 nine directions. `EvmAsset` accepts a chain ID and either a named token or a

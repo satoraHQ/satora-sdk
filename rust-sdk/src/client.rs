@@ -49,6 +49,10 @@ mod lightning;
 mod quotes;
 mod storage;
 
+#[cfg(feature = "gasless")]
+pub(crate) use lightning::INVOICE_HASH_MISMATCH;
+#[cfg(feature = "gasless")]
+pub(crate) use lightning::invoice_payment_hash;
 pub use quotes::DEFAULT_COMPOSE_SLIPPAGE_BPS;
 
 /// Production Lendaswap API endpoint. Used by [`ClientBuilder`] when no
@@ -620,6 +624,10 @@ impl Client {
     /// `sats_receive` is what the user wants to *receive* on Arkade.
     /// The server quotes the corresponding Bolt11 amount internally and
     /// embeds it in the invoice.
+    ///
+    /// An invoice that does not pay the hash of this client's preimage is
+    /// refused with [`Error::InvalidSwap`] before anything is stored, as
+    /// [`Self::create_swap_request`] describes.
     pub async fn create_lightning_to_arkade_swap(
         &self,
         sats_receive: u64,
@@ -680,6 +688,11 @@ impl Client {
     ///
     /// [`Self::create_swap`] accepts Lightning addresses and LNURLs; invoices
     /// need this method or [`Self::create_swap_request`].
+    ///
+    /// A hash lock that is not the payment hash of the returned invoice, or a
+    /// returned invoice other than the supplied one, is refused with
+    /// [`Error::InvalidSwap`] before anything is stored, as
+    /// [`Self::create_swap_request`] describes.
     pub async fn create_arkade_to_lightning_swap(
         &self,
         destination: crate::types::LightningDestination,
@@ -711,17 +724,19 @@ impl Client {
     /// shape varies per direction (the server wraps it in a
     /// `direction`-tagged enum); the `From<GetSwapResponse>` projection
     /// for [`Swap`] dispatches on the variant.
+    ///
+    /// Checked as [`Self::get_swap_details`] checks it.
     #[tracing::instrument(name = "get_swap", skip_all, fields(%swap_id))]
     pub async fn get_swap(&self, swap_id: &str) -> Result<Swap> {
-        let body = self.fetch_swap_response(swap_id).await?;
+        let body = self.get_swap_details(swap_id).await?;
         Ok(Swap::from(body))
     }
 
-    /// Private: fetch the raw backend response without projection.
-    /// `get_swap` consumers see the trimmed [`Swap`]; internal callers
-    /// (e.g. the Arkade claim flow) need access to fields the public
-    /// projection drops (VHTLC pubkeys, locktimes, network, …) and
-    /// must dispatch on the variant themselves.
+    /// Private: fetch the raw backend response without projection. `get_swap` consumers
+    /// see the trimmed [`Swap`]; internal callers (e.g. the Arkade claim flow) need access
+    /// to fields the public projection drops (VHTLC pubkeys, locktimes, network, …) and
+    /// must dispatch on the variant themselves. Unlike [`Self::get_swap_details`], it
+    /// checks neither the returned id nor a Lightning swap's invoice.
     pub(crate) async fn fetch_swap_response(&self, swap_id: &str) -> Result<GetSwapResponse> {
         let mut url = self.url("swap/")?;
         url.path_segments_mut()
@@ -747,6 +762,9 @@ impl Client {
     ///
     /// The timeout covers HTTP requests and time spent sleeping between polls.
     /// Include terminal failure statuses in `targets` to stop on those states.
+    ///
+    /// Each poll is checked as [`Self::get_swap_details`] checks it, and a response it
+    /// refuses ends the wait with [`Error::InvalidSwap`].
     #[tracing::instrument(name = "wait_for_swap_status", skip_all, fields(%swap_id, ?targets, ?timeout))]
     pub async fn wait_for_swap_status(
         &self,
@@ -791,8 +809,17 @@ impl Client {
     }
 
     /// Fetch all server-provided swap details, without the compact display projection.
+    ///
+    /// A response that names another swap than `swap_id`, or that changes the direction
+    /// of a swap stored here, is refused with [`Error::InvalidSwap`], and so is one whose
+    /// invoice no longer pays the hash lock of a Lightning swap stored here: never pay or
+    /// fund the swap then. A swap stored only as its key index gets the Lightning invoice
+    /// and hash-lock checks of [`Self::recover_swaps`]. [`Self::refresh_swap`] leaves the
+    /// store unchanged when a response is refused.
     pub async fn get_swap_details(&self, swap_id: &str) -> Result<GetSwapResponse> {
-        self.fetch_swap_response(swap_id).await
+        let response = self.fetch_swap_response(swap_id).await?;
+        self.check_swap_snapshot(swap_id, &response)?;
+        Ok(response)
     }
 
     fn url(&self, path: &str) -> Result<Url> {

@@ -256,6 +256,16 @@ impl EvmWallet for Wallet {
     }
 }
 
+/// A real LND hold invoice paying the hash of the preimage at key index 0.
+fn invoice_paying_key_index_0() -> String {
+    let vectors: Value =
+        serde_json::from_str(include_str!("../../../fixtures/lightning-invoices.json")).unwrap();
+    vectors["invoices"]["lnd_hold_index_0"]["bolt11"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
 fn setup(claim: bool) -> (Client, Wallet, Arc<InMemorySwapStorage>) {
     setup_kind(claim, EvmHtlcKind::Erc20)
 }
@@ -309,6 +319,9 @@ fn setup_fixture(
         "hash_lock"
     };
     r[hash_field] = json!(htlc.hash_lock);
+    if r.get("client_lightning_invoice").is_some() {
+        r["client_lightning_invoice"] = json!(invoice_paying_key_index_0());
+    }
     r["evm_refund_locktime"] = json!(htlc.timelock);
     r["evm_htlc_version"] = json!(version);
     r["evm_htlc_kind"] = json!(kind);
@@ -2050,8 +2063,8 @@ fn derived_hash_lock_check() {
         matches!(&rejected, Err(Error::InvalidSwap(message)) if message.contains("seed-derived")),
         "{rejected:?}"
     );
-    // Lightning-destination swaps lock under the invoice's payment hash. If an invoice check
-    // replaces this exemption, this assertion should change with it.
+    // Lightning-destination swaps lock under the payment hash of their stored invoice, which
+    // pays 0x22..22 here, whatever hash the swap's hash lock names.
     let fixture: Value =
         serde_json::from_str(include_str!("../../tests/fixtures/swap-responses.json")).unwrap();
     let mut lightning = fixture["evm_to_lightning"].clone();
@@ -2064,8 +2077,14 @@ fn derived_hash_lock_check() {
         SwapMetadata::default(),
     )
     .unwrap();
-    let lightning_context = EvmContext::from_response(&lightning.response).unwrap();
+    let mut lightning_context = EvmContext::from_response(&lightning.response).unwrap();
     assert_eq!(lightning_context.hash, B256::repeat_byte(1));
+    let rejected = verify_derived_hash_lock(&client, &lightning, &lightning_context);
+    assert!(
+        matches!(&rejected, Err(Error::InvalidSwap(message)) if message == crate::client::INVOICE_HASH_MISMATCH),
+        "{rejected:?}"
+    );
+    lightning_context.hash = B256::repeat_byte(0x22);
     verify_derived_hash_lock(&client, &lightning, &lightning_context).unwrap();
     let unsigned = Client::new("http://localhost").unwrap();
     let rejected = verify_derived_hash_lock(&unsigned, &stored, &context);
@@ -2128,6 +2147,129 @@ async fn gasless_funding_rejects_foreign_hash_lock() {
             .metadata
             .evm_fund_started,
         None
+    );
+}
+
+#[tokio::test]
+async fn lightning_funding_pays_only_a_lock_under_the_stored_invoices_payment_hash() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+    let (_, wallet, fixture) = setup_fixture("evm_to_lightning", false, EvmHtlcKind::Erc20);
+    let response = fixture.get_swap("test").unwrap().unwrap().response;
+    let store = Arc::new(InMemorySwapStorage::new());
+    store
+        .store_swap(StoredSwap::new(0, response.clone(), SwapMetadata::default()).unwrap())
+        .unwrap();
+    let options = FundingOptions {
+        coordinator: wallet.coordinator,
+        htlc: wallet.htlc.address,
+        lock_token: wallet.htlc.token,
+        max_source_amount: wallet.htlc.amount,
+        allowed_call_targets: vec![],
+        timeout: Duration::from_secs(10),
+    };
+    // Gasless funding locks under the hash a fresh server read names: one other than
+    // the stored invoice's payment hash is refused before anything is signed.
+    let mut served = serde_json::to_value(&response).unwrap();
+    served["hash_lock"] = json!(B256::repeat_byte(1));
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/swap/test"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&served))
+        .mount(&server)
+        .await;
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .build()
+        .unwrap();
+    let result = client
+        .fund_swap_gasless(
+            "test",
+            crate::aa::GaslessOpts::new(server.uri().parse().unwrap()),
+        )
+        .await;
+    assert!(
+        matches!(&result, Err(Error::InvalidSwap(message)) if message == crate::client::INVOICE_HASH_MISMATCH),
+        "{result:?}"
+    );
+    let paths: Vec<String> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|request| request.url.path().to_owned())
+        .collect();
+    assert_eq!(paths, ["/swap/test"]);
+    // Wallet funding locks under the stored hash lock, which an invoice stored before the
+    // creation check may not pay.
+    let fixture: Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/swap-responses.json")).unwrap();
+    let mut inconsistent = serde_json::to_value(&response).unwrap();
+    inconsistent["client_lightning_invoice"] =
+        fixture["evm_to_lightning"]["client_lightning_invoice"].clone();
+    store
+        .store_swap(
+            StoredSwap::new(
+                0,
+                serde_json::from_value(inconsistent).unwrap(),
+                SwapMetadata::default(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let result = client.fund_swap_with_wallet("test", &wallet, options).await;
+    assert!(
+        matches!(&result, Err(Error::InvalidSwap(message)) if message == crate::client::INVOICE_HASH_MISMATCH),
+        "{result:?}"
+    );
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    assert!(wallet.sent.lock().unwrap().is_empty());
+    assert_eq!(wallet.signatures.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        store
+            .get_swap("test")
+            .unwrap()
+            .unwrap()
+            .metadata
+            .evm_fund_started,
+        None
+    );
+}
+
+#[tokio::test]
+async fn refunds_read_the_servers_funding_hash_whatever_its_invoice() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::path;
+    let (_, _, store) = setup_fixture("evm_to_lightning", false, EvmHtlcKind::Erc20);
+    let vectors: Value =
+        serde_json::from_str(include_str!("../../../fixtures/lightning-invoices.json")).unwrap();
+    let mut served =
+        serde_json::to_value(store.get_swap("test").unwrap().unwrap().response).unwrap();
+    served["client_lightning_invoice"] = vectors["invoices"]["lnd_hold_33"]["bolt11"].clone();
+    served["hash_lock"] = json!(B256::repeat_byte(0x33));
+    served["evm_fund_txid"] = json!(B256::repeat_byte(7));
+    let server = MockServer::start().await;
+    Mock::given(path("/swap/test"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(served))
+        .mount(&server)
+        .await;
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(store)
+        .build()
+        .unwrap();
+    assert!(client.get_swap_details("test").await.is_err());
+    assert_eq!(
+        client.server_funding_hash("test", "test.lookup").await,
+        Some(B256::repeat_byte(7).to_string())
     );
 }
 

@@ -318,7 +318,8 @@ impl Client {
         id: &str,
         event: &'static str,
     ) -> Option<String> {
-        let response = match self.get_swap_details(id).await {
+        // Unchecked, as a refund must not depend on the server's current invoice.
+        let response = match self.fetch_swap_response(id).await {
             Ok(response) => response,
             Err(error) => {
                 sdk_log!(

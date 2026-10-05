@@ -41,7 +41,7 @@
   "lightning_to_arkade": {
     "id": "00000000-0000-0000-0000-000000000001",
     "status": "pending",
-    "bolt11_invoice": "lnbcrt1fixture",
+    "bolt11_invoice": "lnbcrt10u1p4vxmukpp5yg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3qdqawdshgmmjvys8xertypnxj7r5w4ex2cqzzsxq97zvuqsp52wke8tf3thq9qxarmxu9xphh7x79xn7zqqv52sr6h7ys8l3qd5pq9qxpqysgq5xd7tgjnrkfhxr0j4zphmhglct3lmhv7r9cfjgv3mdmfpkqt80rjweptz0etsy9qmx27dncqd8sy8lzh6wdv40xvqanyse22rhqsggcp3urj9q",
     "invoice_expires_at": 1,
     "fee_sats": 1,
     "network_fee_sats": 1,
@@ -79,7 +79,7 @@
   "arkade_to_lightning": {
     "id": "00000000-0000-0000-0000-000000000001",
     "status": "pending",
-    "client_lightning_invoice": "lnbcrt1fixture",
+    "client_lightning_invoice": "lnbcrt10u1p4vxmukpp5yg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3qdqawdshgmmjvys8xertypnxj7r5w4ex2cqzzsxq97zvuqsp52wke8tf3thq9qxarmxu9xphh7x79xn7zqqv52sr6h7ys8l3qd5pq9qxpqysgq5xd7tgjnrkfhxr0j4zphmhglct3lmhv7r9cfjgv3mdmfpkqt80rjweptz0etsy9qmx27dncqd8sy8lzh6wdv40xvqanyse22rhqsggcp3urj9q",
     "invoice_expires_at": 1,
     "fee_sats": 1,
     "network_fee_sats": 1,
@@ -118,7 +118,7 @@
     "status": "pending",
     "fee_sats": 1,
     "hash_lock": "0x2222222222222222222222222222222222222222222222222222222222222222",
-    "bolt11_invoice": "lnbcrt1fixture",
+    "bolt11_invoice": "lnbcrt10u1p4vxmukpp5yg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3qdqawdshgmmjvys8xertypnxj7r5w4ex2cqzzsxq97zvuqsp52wke8tf3thq9qxarmxu9xphh7x79xn7zqqv52sr6h7ys8l3qd5pq9qxpqysgq5xd7tgjnrkfhxr0j4zphmhglct3lmhv7r9cfjgv3mdmfpkqt80rjweptz0etsy9qmx27dncqd8sy8lzh6wdv40xvqanyse22rhqsggcp3urj9q",
     "network": "regtest",
     "created_at": "2026-09-01T00:00:00Z",
     "chain": "100000",
@@ -333,7 +333,7 @@
     "fee_sats": 1,
     "network_fee_sats": 1,
     "hash_lock": "0x2222222222222222222222222222222222222222222222222222222222222222",
-    "client_lightning_invoice": "lnbcrt1fixture",
+    "client_lightning_invoice": "lnbcrt10u1p4vxmukpp5yg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3qdqawdshgmmjvys8xertypnxj7r5w4ex2cqzzsxq97zvuqsp52wke8tf3thq9qxarmxu9xphh7x79xn7zqqv52sr6h7ys8l3qd5pq9qxpqysgq5xd7tgjnrkfhxr0j4zphmhglct3lmhv7r9cfjgv3mdmfpkqt80rjweptz0etsy9qmx27dncqd8sy8lzh6wdv40xvqanyse22rhqsggcp3urj9q",
     "invoice_expires_at": 1,
     "source_token": {
       "token_id": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",

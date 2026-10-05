@@ -172,16 +172,21 @@ pub(super) fn verify_signature(
 }
 
 /// A lock under any other hash could only be opened by whoever chose that hash.
-/// Lightning-destination swaps lock under the invoice's payment hash instead.
+/// A Lightning-destination swap must lock under the payment hash of its stored
+/// invoice, whatever hash `context` read from a fresh server response. This SDK checks
+/// an invoice before storing it, but one an older SDK stored may be unchecked.
 pub(crate) fn verify_derived_hash_lock(
     client: &crate::Client,
     stored: &crate::StoredSwap,
     context: &EvmContext,
 ) -> Result<()> {
-    if matches!(
-        stored.response,
-        crate::types::GetSwapResponse::EvmToLightning(_)
-    ) {
+    if let crate::types::GetSwapResponse::EvmToLightning(r) = &stored.response {
+        if B256::from(crate::client::invoice_payment_hash(
+            &r.client_lightning_invoice,
+        )?) != context.hash
+        {
+            return Err(invalid(crate::client::INVOICE_HASH_MISMATCH));
+        }
         return Ok(());
     }
     let signer = client

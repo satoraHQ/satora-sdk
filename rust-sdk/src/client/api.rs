@@ -1,5 +1,6 @@
 use super::Client;
 use super::check_status;
+use super::lightning::check_new_lightning_swap;
 use crate::Error;
 use crate::Result;
 use crate::logging::sdk_log;
@@ -122,6 +123,11 @@ impl Client {
     /// Persists swap indices and advances the allocation counter monotonically.
     /// Secrets are re-derived locally; only the recovery xpub is sent to the server.
     /// A custom [`crate::SwapStorage`] must implement `ensure_next_key_index`.
+    ///
+    /// Nothing from the page is stored if any swap on it fails the checks creation
+    /// applies to a Lightning swap, changes the direction of a stored swap, or replaces a
+    /// stored Lightning swap with one whose invoice no longer pays its hash lock; that
+    /// fails with [`Error::InvalidSwap`].
     pub async fn recover_swaps(&self, start_index: Option<u32>) -> Result<RecoveryResponse> {
         let start = start_index.unwrap_or(0);
         if start >= 1 << 31 {
@@ -170,8 +176,8 @@ impl Client {
             return Err(Error::Decode("invalid recovery cursor".into()));
         }
         // Validate the whole page before persisting anything. Invoice-owned hashes
-        // cannot be compared to our preimage. Check an Arkade refund key instead;
-        // EVM invoice swaps may belong to an externally managed depositor.
+        // cannot be compared to our preimage, only to their invoice. Check an Arkade
+        // refund key too; EVM invoice swaps may belong to an externally managed depositor.
         for recovered in &recovery.swaps {
             if recovered.index < start
                 || recovered.index > recovery.scanned_until
@@ -182,6 +188,8 @@ impl Client {
                 ));
             }
             let params = signer.derive_swap_params(recovered.index)?;
+            check_new_lightning_swap(&recovered.swap, &params.hash_lock)?;
+            self.check_swap_snapshot(recovered.swap.id(), &recovered.swap)?;
             let (actual, expected) = match &recovered.swap {
                 GetSwapResponse::ArkadeToLightning(r) => {
                     (&r.sender_pk, hex::encode(params.public_key))

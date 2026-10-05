@@ -110,6 +110,30 @@ fn setup_fixture(
         id,
     )
 }
+/// The invoice among the shared Lightning vectors that pays `hash`, in hex.
+fn shared_invoice_paying(hash: &str) -> String {
+    let vectors: serde_json::Value =
+        serde_json::from_str(include_str!("../../../fixtures/lightning-invoices.json")).unwrap();
+    let swaps = vectors["swaps"].as_object().unwrap().values().map(|swap| {
+        (
+            &swap["invoice_payment_hash"],
+            swap["response"]
+                .get("bolt11_invoice")
+                .unwrap_or(&swap["response"]["client_lightning_invoice"]),
+        )
+    });
+    vectors["invoices"]
+        .as_object()
+        .unwrap()
+        .values()
+        .map(|invoice| (&invoice["payment_hash"], &invoice["bolt11"]))
+        .chain(swaps)
+        .find(|(paid, _)| *paid == hash)
+        .and_then(|(_, invoice)| invoice.as_str())
+        .unwrap_or_else(|| panic!("no shared invoice pays {hash}"))
+        .to_owned()
+}
+
 async fn track(tracker: &SwapTracker, id: &str) {
     tracker
         .track(
@@ -1167,6 +1191,7 @@ async fn swaps_stored_without_a_journal_are_adopted_after_restore() {
             let mut response = fixtures["lightning_to_arkade"].clone();
             response["id"] = json!(format!("swap-{}", next.fetch_add(1, Ordering::SeqCst)));
             response["hash_lock"] = body["hash_lock"].clone();
+            response["bolt11_invoice"] = json!(shared_invoice_paying(&hex::encode(&hash)));
             response["sender_pk"] = json!(key(2).to_string());
             response["receiver_pk"] = json!(claim.to_string());
             response["arkade_server_pk"] = json!(key(3).to_string());

@@ -1,0 +1,128 @@
+{
+  "about": "Real BOLT11 invoices and swap responses for the SDKs' Lightning hash checks, minted on the e2e regtest stack on 2026-10-05. Each regtest invoice's payment_hash is what `lncli decodepayreq` printed for it; the spec vector's is the one BOLT 11 states. Key indices refer to swap keys derived from `mnemonic`.",
+  "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+  "invoices": {
+    "lnd_hold_index_0": {
+      "source": "lncli addholdinvoice <sha256 of the swap preimage at key index 0> --amt 1000",
+      "bolt11": "lnbcrt10u1p4vxmu4pp5l8p4skkcuq696x4e2wtnrl9at0h942a68d92sft8nqldnt9pwwesdqawdshgmmjvys8xertypnxj7r5w4ex2cqzzsxq97zvuqsp56rcf0cwghkrpmmxay5enaukvwvjcd4llhevmukg2c987vvldfukq9qxpqysgq8wfg2tznhzky5rneguvj9nekysa8lcht0ngn27cvea0jap78tqcqcjr49nlm8x0l7gstr3j25q0uxy804v03p4krvhs3sjd7w8k8n2sphr70u6",
+      "payment_hash": "f9c3585ad8e0345d1ab9539731fcbd5bee5aabba3b4aa82567983ed9aca173b3"
+    },
+    "lnd_hold_index_7": {
+      "source": "lncli addholdinvoice <sha256 of the swap preimage at key index 7> --amt 1000",
+      "bolt11": "lnbcrt10u1p4vxmukpp5w7mw02q834sppjs547f5g8zdjrahkgrz3gyc9f74psqh8yym572qdqawdshgmmjvys8xertypnxj7r5w4ex2cqzzsxq97zvuqsp5m5nhgtyzhf5ty030jc9l6uzfvfy4wsr0yh8tcjsjmq36e7s8wgjq9qxpqysgq4dpwajezgvhn3v5lu0ry7p6t78sxxtcgpcmz6cyhvm2mfpsvnxm5rcavnl7wvuleph6ftmwl04vks93jfen3q3du82hcafuuptj3ypcpth26vk",
+      "payment_hash": "77b6e7a8078d6010ca14af93441c4d90fb7b20628a0982a7d50c0173909ba794"
+    },
+    "lnd_hold_22": {
+      "source": "lncli addholdinvoice 2222222222222222222222222222222222222222222222222222222222222222 --amt 1000",
+      "bolt11": "lnbcrt10u1p4vxmukpp5yg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3qdqawdshgmmjvys8xertypnxj7r5w4ex2cqzzsxq97zvuqsp52wke8tf3thq9qxarmxu9xphh7x79xn7zqqv52sr6h7ys8l3qd5pq9qxpqysgq5xd7tgjnrkfhxr0j4zphmhglct3lmhv7r9cfjgv3mdmfpkqt80rjweptz0etsy9qmx27dncqd8sy8lzh6wdv40xvqanyse22rhqsggcp3urj9q",
+      "payment_hash": "2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "lnd_hold_33": {
+      "source": "lncli addholdinvoice 3333333333333333333333333333333333333333333333333333333333333333 --amt 1000",
+      "bolt11": "lnbcrt10u1p4vxmuhpp5xvenxvenxvenxvenxvenxvenxvenxvenxvenxvenxvenxvenxvesdqawdshgmmjvys8xertypnxj7r5w4ex2cqzzsxq97zvuqsp5qtw23leuyl95xwhnqy0qwj73pxu5e0mfww633d05794yrgma9xeq9qxpqysgq8awfuy3l2k6kps2hzveu8f59gkj9f3de3h0tra9w4ey45yj55nj4xg4f0dj3dyc7gwkd8jsmmff8zfm5mzxzxpt47tn0qcf4fcse6lqqvxu2ka",
+      "payment_hash": "3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    "lnd_hold_evm_funding_fixture": {
+      "source": "lncli addholdinvoice <the hash lock of the real SwapCreated log in ts-pure-sdk/tests/evm-funding-fixture.ts> --amt 20001",
+      "bolt11": "lnbcrt200010n1p4vxufdpp5afwe6wrhmaanh22xh27kqz8psfntjz420kelptqw92skwlw4lwfqdqawdshgmmjvys8xertypnxj7r5w4ex2cqzzsxq97zvuqsp50l8pymdld32yxludxjdcg9pycgulh24asj7xcuuy06dmse4jr5xs9qxpqysgqgp857maww29k0gdk6ussftrx825rygzeeayjy7u4egk88mhe9ja5kt49wlcasqyz03hm5rk2tzd649rlwkugawrxvcnr4uler72uwjgqtk2xur",
+      "payment_hash": "ea5d9d3877df7b3ba946babd6008e18266b90aaa7db3f0ac0e2aa1677dd5fb92"
+    },
+    "spark_regtest": {
+      "source": "Spark regtest invoice from the e2e donor wallet (spark-e2e create-invoice 1000); carries a route hint and the payee node id",
+      "bolt11": "lnbcrt10u1p4vxuqrpp5mls6k9jlvkqzjrt8jlgvythk8de8wwylelq2uyschrzy0mfns4lssp5xjj4df4lry6h6ygjamuktne2w997c6wds69cfspn20hhdqha7x8sxqrrssnp4qtlyk6hxw5h4hrdfdkd4nh2rv0mwyyqvdtakr3dv6m4vvsmfshvg6rzjqgp0s738klwqef7yr8yu54vv3wfuk4psv46x5laf6l6v5x4lwwahvqqqqrusum7gtyqqqqqqqqqqqqqq9qcqzpudqawdshgmmjvykhxert94nxj7r5w4ex29qyyssqkhfsktycmz2mpw8v466cuaeyhdv2myfutd7cgmrlp6yd08tug8f90g399xrkn2wvy5jlfwp7r3ur2m6nv5nd6u86c504xxpwygq44jcp2lgvh2",
+      "payment_hash": "dfe1ab165f6580290d6797d0c22ef63b7277389fcfc0ae1218b8c447ed33857f"
+    },
+    "bolt11_spec": {
+      "source": "BOLT 11 test vector, as in lightning-invoice 0.33.2's tests",
+      "bolt11": "lnbc1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpl2pkx2ctnv5sxxmmwwd5kgetjypeh2ursdae8g6twvus8g6rfwvs8qun0dfjkxaq9qrsgq357wnc5r2ueh7ck6q93dj32dlqnls087fxdwk8qakdyafkq3yap9us6v52vjjsrvywa6rt52cm9r9zqt8r2t7mlcwspyetp5h2tztugp9lfyql",
+      "payment_hash": "0001020304050607080900010203040506070809000102030405060708090102"
+    }
+  },
+  "swaps": {
+    "lightning_to_arkade": {
+      "source": "POST /swap/lightning/arkade on the regtest daemon (LND provider) with hash_lock and claim_pk of key index 1",
+      "invoice_payment_hash": "d0b3be127c0197890f25f1bb8febdada683e2b019319b4a7657c5bc2caa954cd",
+      "response": {
+        "id": "e7e49f1e-e1ab-4915-8a7d-9f920d0c9c38",
+        "status": "pending",
+        "bolt11_invoice": "lnbcrt200u1p4vxmlppp56zemuynuqxtcjre97xacl676mf5ru2cpjvvmffm903du9j4f2nxsdpz2dshgmmjvys8xampwqs8gmeqg9exkctyv5cqzvqxqr8pqsp59sudsxmczlthdrl2epnlrat3t9l98vrdrs0dfjy8ztmhw09ugklq9qxpqysgqd2tn6yx7zj76zrhc6r27udsp8h6ev5wyyq7v9w6xddlkwsmng0a5crtdch4mvd07psf85lkkmu8avpnmfpurk8ula8lma4es9j3wkgcqp2thdq",
+        "invoice_expires_at": 1791200257,
+        "fee_sats": 40,
+        "network_fee_sats": 2,
+        "hash_lock": "0xd0b3be127c0197890f25f1bb8febdada683e2b019319b4a7657c5bc2caa954cd",
+        "arkade_vhtlc_address": "tark1qr340xg400jtxat9hdd0ungyu6s05zjtdf85uj9smyzxshf98ndakzfku39kucm4eye4ejvl2dgez5jnzg7p7dvt29her0ackk62xfcrxr0qep",
+        "arkade_htlc_script_version": 1,
+        "target_arkade_address": "tark1qr340xg400jtxat9hdd0ungyu6s05zjtdf85uj9smyzxshf98ndak520dcl9ec56hm4cumtc9q3y57e4dm8lx2y2wgq28tnl0x2q5gdyly2al5",
+        "arkade_fund_txid": null,
+        "arkade_claim_txid": null,
+        "sender_pk": "69161b49311918766086f6e234e451d043be322b18f1d8ffa1e958d6a8228f99",
+        "receiver_pk": "0265393346c0188676593f4335afd3bdba6d506522278fd1f1ecf8b2177be4c833",
+        "arkade_server_pk": "02e35799157be4b37565bb5afe4d04e6a0fa0a4b6a4f4e48b0d904685d253cdbdb",
+        "vhtlc_refund_locktime": 1791194857,
+        "unilateral_claim_delay": 512,
+        "unilateral_refund_delay": 173568,
+        "unilateral_refund_without_receiver_delay": 173568,
+        "network": "regtest",
+        "created_at": "2026-10-05T09:37:37.749288Z",
+        "source_token": {
+          "token_id": "btc",
+          "symbol": "BTC",
+          "chain": "Lightning",
+          "name": "Bitcoin (Lightning)",
+          "decimals": 8
+        },
+        "target_token": {
+          "token_id": "btc",
+          "symbol": "BTC",
+          "chain": "Arkade",
+          "name": "Bitcoin (Arkade)",
+          "decimals": 8
+        },
+        "source_amount": "20000",
+        "target_amount": "19958"
+      }
+    },
+    "arkade_to_lightning": {
+      "source": "POST /swap/arkade/lightning on the regtest daemon with refund_pk of key index 1, paying an LND invoice",
+      "invoice_payment_hash": "0ab6a087761b714f61afbddedc7527f3b7105b4f7db0d2b49aab033235c0378e",
+      "response": {
+        "id": "3130e20f-92b3-4825-b54f-fac2872dba4f",
+        "status": "pending",
+        "client_lightning_invoice": "lnbcrt200u1p4vxmanpp5p2m2ppmkrdc57cd0hh0dcaf87wm3qk600kcd9dy64vpnydwqx78qdpywdshgmmjvys8xertypnxj7r5w4ex2grpxfkqcqzzsxqyz5vqsp54dnryd4vvw5cf9cu0syxcrpclt62vpytugrtenrpn4tcn75tak7s9qxpqysgqq6aa2d3cu9gygpsj4fvr9z6gv0ls6rvtl0hwhfudc7xufw4r37uqxnde4nn40kqmgucrauqx3njqkx0wfemj7ax8deyys38s6t0dpncpfkl6c9",
+        "invoice_expires_at": 1791279411,
+        "fee_sats": 60,
+        "network_fee_sats": 2,
+        "hash_lock": "0x0ab6a087761b714f61afbddedc7527f3b7105b4f7db0d2b49aab033235c0378e",
+        "arkade_vhtlc_address": "tark1qr340xg400jtxat9hdd0ungyu6s05zjtdf85uj9smyzxshf98ndak520dcl9ec56hm4cumtc9q3y57e4dm8lx2y2wgq28tnl0x2q5gdyly2al5",
+        "arkade_htlc_script_version": 1,
+        "arkade_fund_txid": null,
+        "arkade_claim_txid": null,
+        "sender_pk": "0265393346c0188676593f4335afd3bdba6d506522278fd1f1ecf8b2177be4c833",
+        "receiver_pk": "d2fa121778608407b1292729569aa4140488093d3da7e4a54f3421f2627f17c3",
+        "arkade_server_pk": "02e35799157be4b37565bb5afe4d04e6a0fa0a4b6a4f4e48b0d904685d253cdbdb",
+        "vhtlc_refund_locktime": 1791200236,
+        "unilateral_claim_delay": 512,
+        "unilateral_refund_delay": 173568,
+        "unilateral_refund_without_receiver_delay": 173568,
+        "network": "regtest",
+        "created_at": "2026-10-05T09:37:16.264014Z",
+        "source_token": {
+          "token_id": "btc",
+          "symbol": "BTC",
+          "chain": "Arkade",
+          "name": "Bitcoin (Arkade)",
+          "decimals": 8
+        },
+        "target_token": {
+          "token_id": "btc",
+          "symbol": "BTC",
+          "chain": "Lightning",
+          "name": "Bitcoin (Lightning)",
+          "decimals": 8
+        },
+        "source_amount": "20062",
+        "target_amount": "20000"
+      }
+    }
+  }
+}

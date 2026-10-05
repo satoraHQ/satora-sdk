@@ -4820,6 +4820,7 @@ dependencies = [
  "bitcoin",
  "esplora-client",
  "hex",
+ "lightning-invoice",
  "num-bigint",
  "num-traits",
  "rand 0.8.8",

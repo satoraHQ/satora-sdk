@@ -201,6 +201,9 @@ impl Endpoint for CreateEvmToArkadeSwapRequest {
 /// `swap::api::lightning_to_arkade::LightningToArkadeSwapRequest`.
 /// `claim_pk` and `user_id` are hex pubkeys derived from the signer
 /// (see [`crate::Client::create_lightning_to_arkade_swap`]).
+///
+/// Sent through [`crate::Client::send`], the response is unchecked and unstored:
+/// nothing confirms that its invoice pays `hash_lock`, as the creation methods do.
 #[derive(Clone, Debug, Serialize)]
 #[serde(into = "CreateLightningToArkadeSwapRequestWire")]
 #[non_exhaustive]
@@ -272,6 +275,10 @@ pub enum LightningDestination {
 /// counterpart: `swap::api::arkade_to_lightning::ArkadeToLightningSwapRequest`.
 /// `refund_pk` and `user_id` are hex pubkeys derived from the signer
 /// (see [`crate::Client::create_arkade_to_lightning_swap`]).
+///
+/// Sent through [`crate::Client::send`], the response is unchecked and unstored:
+/// nothing confirms that its hash lock is its invoice's payment hash, as the
+/// creation methods do.
 #[derive(Clone, Debug, Serialize)]
 #[serde(into = "CreateArkadeToLightningSwapRequestWire")]
 #[non_exhaustive]

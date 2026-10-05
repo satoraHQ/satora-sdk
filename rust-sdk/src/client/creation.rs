@@ -3,7 +3,9 @@ use super::MAX_KEY_INDEX_GRIND_ATTEMPTS;
 use super::Swap;
 use super::check_status;
 use super::is_preimage_collision;
+use super::lightning::check_new_lightning_swap;
 use super::lightning::destination_fields;
+use super::lightning::parse_invoice;
 use super::validate_sats;
 use crate::Error;
 use crate::Result;
@@ -93,6 +95,16 @@ fn arkade_address(address: &str) -> Result<()> {
 impl Client {
     /// Create any API swap direction with explicit rails and EVM chain IDs.
     /// Local metadata is persisted with the response before returning.
+    ///
+    /// A Lightning swap is checked before anything is stored, and refused with
+    /// [`Error::InvalidSwap`] if its invoice does not pay the hash its lock opens
+    /// with: for Lightning→Arkade and Lightning→EVM the server's hold invoice must
+    /// pay the hash of this client's preimage, and for Arkade→Lightning and
+    /// EVM→Lightning the returned hash lock must be the payment hash of the returned
+    /// invoice, which must be the supplied one when an invoice was supplied. A
+    /// supplied invoice that does not parse is refused before the request. For
+    /// Lightning addresses and LNURLs the server resolves the invoice, so only its
+    /// agreement with the hash lock is checked.
     ///
     /// For Bitcoin→Arkade and Bitcoin→EVM the HTLC is rebuilt from the client's
     /// keys and the response, as [`Self::bitcoin_htlc`] does. [`Error::InvalidSwap`]
@@ -238,6 +250,11 @@ impl Client {
                 nonempty(value)?;
             }
         }
+        let supplied_invoice = body
+            .get("lightning_invoice")
+            .and_then(Value::as_str)
+            .map(parse_invoice)
+            .transpose()?;
         if let Some(description) = &options.invoice_description {
             if !matches!(request, LightningToArkade { .. } | LightningToEvm { .. })
                 || description.len() > 639
@@ -358,13 +375,37 @@ impl Client {
                     .insert("direction".into(), json!(direction));
                 let response: GetSwapResponse =
                     serde_json::from_value(response).map_err(|e| Error::Decode(e.to_string()))?;
+                // Fetching a swap looks its record up by the lower-case id the server
+                // answers with, so a record stored under another spelling would escape
+                // the checks of `check_swap_snapshot`.
+                if response.id() != response.id().to_ascii_lowercase() {
+                    return Err(Error::InvalidSwap(format!(
+                        "the server returned swap id {} with upper-case letters",
+                        response.id()
+                    )));
+                }
+                check_new_lightning_swap(&response, &params.hash_lock)?;
+                if let Some(supplied) = &supplied_invoice {
+                    let returned = match &response {
+                        GetSwapResponse::ArkadeToLightning(r) => &r.client_lightning_invoice,
+                        GetSwapResponse::EvmToLightning(r) => &r.client_lightning_invoice,
+                        _ => return Err(Error::Decode("unexpected swap direction".into())),
+                    };
+                    if parse_invoice(returned)? != *supplied {
+                        return Err(Error::InvalidSwap(
+                            "the swap pays a different Lightning invoice than the one supplied"
+                                .into(),
+                        ));
+                    }
+                }
                 self.persist_swap_with_metadata(index, response.clone(), metadata.clone())?;
                 if matches!(
                     response,
                     GetSwapResponse::BtcToArkade(_) | GetSwapResponse::BitcoinToEvm(_)
                 ) {
                     // The payer funds this address, so it must be the script our keys
-                    // rebuild; the record stays stored, unreturned, for recovery.
+                    // rebuild. Unlike a refused Lightning swap, the record stays stored,
+                    // unreturned, for recovery.
                     self.bitcoin_htlc(response.id())?;
                 }
                 Ok::<_, Error>(Swap::from(response))
