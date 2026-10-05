@@ -564,7 +564,9 @@ impl Client {
     ///
     /// [`Error::Transport`] and [`Error::Timeout`] leave the outcome unknown, and so
     /// does [`Error::Storage`] once arkd may hold the spend: repeat the call, which
-    /// resumes from the journal.
+    /// resumes from the journal. Once arkd has refused the persisted claim because an
+    /// input expired, the call fails with [`Error::InvalidSwap`], and [`Client::settle`]
+    /// then claims the VHTLC in a delegated batch while the claim window is open.
     #[tracing::instrument(name = "claim", skip_all, fields(%swap_id))]
     pub async fn claim(&self, swap_id: &str, destination: &str) -> Result<ClaimReceipt> {
         if self.get_stored_swap(swap_id)?.is_none() {
@@ -729,9 +731,13 @@ impl Client {
         let stored = self
             .get_stored_swap(swap_id)?
             .ok_or_else(|| Error::InvalidSwap("swap record missing".into()))?;
-        // Mirrors the routing in settle_arkade, so the key is only fetched when used.
-        // A persisted delegation must resume with the key it was signed for.
+        // settle_arkade decides again from its own read. Should the verdict flip in
+        // between, it fails for want of the key and the next call fetches it.
         let cosigner = tokio::time::timeout(timeout, async {
+            if !self.delegation_needed(swap_id, backend).await? {
+                return Ok(None);
+            }
+            // A persisted delegation must resume with the key it was signed for.
             if let Some(state) = &stored.metadata.arkade_delegate {
                 // A replacement is signed for the server's current key; reconciling a
                 // settlement needs no key, so an unreachable server falls back to it.
@@ -753,12 +759,7 @@ impl Client {
                     .map(Some)
                     .map_err(|e| Error::Decode(e.to_string()));
             }
-            if stored.metadata.arkade_pending.is_none()
-                && self.vhtlc_balance(swap_id, backend).await?.recoverable_sats > 0
-            {
-                return self.delegate_cosigner_key().await.map(Some);
-            }
-            Ok(None)
+            self.delegate_cosigner_key().await.map(Some)
         })
         .await
         .map_err(|_| Error::Timeout("Arkade settlement routing timed out".into()))??;

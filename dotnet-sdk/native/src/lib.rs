@@ -1620,7 +1620,10 @@ impl SatoraClient {
     ///
     /// A `Transport` or `Timeout` error leaves the outcome unknown, and so
     /// does `Storage` once arkd may hold the claim: call this again, which
-    /// resumes from the journal.
+    /// resumes from the journal. Once arkd has refused the stored claim
+    /// because an input expired, the call fails with
+    /// `SdkError::InvalidSwap`, and [`Self::settle`] then claims the VHTLC
+    /// in a batch while the claim window is open.
     pub fn claim(&self, swap_id: String, destination: String) -> Result<ClaimReceipt, SdkError> {
         runtime().block_on(async {
             let receipt = self.inner.claim(&swap_id, &destination).await?;

@@ -1299,6 +1299,10 @@ public sealed class Client : IDisposable
     /// and so does <see cref="SdkErrorKind.Storage"/> once arkd may hold the
     /// claim. The claim's progress is stored before submission, so calling
     /// this again with the same storage resumes it instead of claiming twice.
+    /// Once arkd has refused the stored claim because an input expired, the
+    /// call throws <see cref="SdkErrorKind.InvalidSwap"/>, and
+    /// <see cref="SettleAsync"/> then claims the VHTLC in a batch while the
+    /// claim window is open.
     /// </remarks>
     public Task<ClaimReceipt> ClaimAsync(
         string swapId,

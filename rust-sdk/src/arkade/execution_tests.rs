@@ -31,6 +31,10 @@ struct Backend {
     final_checkpoints: Mutex<Vec<Psbt>>,
     pending: Mutex<Vec<ark_rs::core::server::PendingTx>>,
     fail_submit: AtomicBool,
+    /// arkd refusing an input as recoverable before accepting anything. The mock
+    /// refuses whatever the inputs' `expires_at` says, so a test can submit fresh
+    /// inputs and only then move them past expiry.
+    refuse_recoverable: AtomicBool,
     pending_queries: AtomicUsize,
     preimage_hash: ripemd160::Hash,
     intents: Mutex<Vec<Vec<OutPoint>>>,
@@ -127,6 +131,12 @@ impl ArkadeBackend for Backend {
     ) -> ArkadeFuture<'_, SubmitOffchainTxResponse> {
         Box::pin(async move {
             self.submit_count.fetch_add(1, Ordering::Relaxed);
+            if self.refuse_recoverable.load(Ordering::Relaxed) {
+                return Err(transport(format!(
+                    "VTXO_RECOVERABLE (8): {} is recoverable",
+                    checkpoints[0].unsigned_tx.input[0].previous_output
+                )));
+            }
             if self.tamper.load(Ordering::Relaxed) {
                 checkpoints[0].unsigned_tx.output[0].value = Amount::from_sat(1);
             }
@@ -317,6 +327,7 @@ fn setup_with_lock(
         final_checkpoints: Mutex::new(vec![]),
         pending: Mutex::new(vec![]),
         fail_submit: AtomicBool::new(false),
+        refuse_recoverable: AtomicBool::new(false),
         pending_queries: AtomicUsize::new(0),
         preimage_hash: options.preimage_hash,
         intents: Mutex::new(vec![]),
@@ -1781,6 +1792,444 @@ async fn one_call_settle_spends_spendable_outputs_offchain_without_the_cosigner(
         super::super::ArkadeSettlement::Offchain(_)
     ));
     assert_eq!(backend.submit_count.load(Ordering::Relaxed), 1);
+}
+
+fn api_client(store: &Arc<InMemorySwapStorage>, server: &wiremock::MockServer) -> Client {
+    Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .base_url(server.uri())
+        .build()
+        .unwrap()
+}
+
+async fn settle(
+    client: &Client,
+    backend: &Backend,
+    destination: &str,
+) -> Result<super::super::ArkadeSettlement> {
+    client
+        .settle_with(
+            "arkade",
+            backend,
+            ArkadeSpend::Claim,
+            destination.to_owned(),
+            Duration::from_secs(5),
+        )
+        .await
+}
+
+fn expire_vtxos(backend: &mut Backend, seconds_ago: u32) {
+    for vtxo in &mut backend.vtxos {
+        vtxo.expires_at = i64::from(now() - seconds_ago);
+    }
+}
+
+async fn mount_cosigner_key(server: &wiremock::MockServer) {
+    wiremock::Mock::given(wiremock::matchers::path("/api/delegate/cosigner-pk"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_json(json!({"cosigner_pk":pair(5).public_key().to_string()})),
+        )
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn a_claim_arkd_refused_settles_in_a_batch_once_its_inputs_are_dead() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    let (_, mut backend, store, destination) = setup_with_lock("btc_to_arkade", now() + 3600);
+    backend.refuse_recoverable.store(true, Ordering::Relaxed);
+    let server = MockServer::start().await;
+    mount_cosigner_key(&server).await;
+    let commitment = Txid::from_byte_array([20; 32]);
+    let bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let seen = bodies.clone();
+    Mock::given(wiremock::matchers::path("/api/delegate/settle"))
+        .respond_with(move |request: &wiremock::Request| {
+            seen.lock().unwrap().push(request.body_json().unwrap());
+            ResponseTemplate::new(200).set_body_json(json!({"commitment_txid":commitment}))
+        })
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = api_client(&store, &server);
+    assert!(settle(&client, &backend, &destination).await.is_err());
+    let pending = store
+        .get_swap("arkade")
+        .unwrap()
+        .unwrap()
+        .metadata
+        .arkade_pending
+        .unwrap();
+    assert!(pending.attempted && !pending.submitted);
+    // An arkd whose clock lags ours may still accept inputs that only just expired.
+    expire_vtxos(&mut backend, 10);
+    assert!(settle(&client, &backend, &destination).await.is_err());
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 2);
+    expire_vtxos(&mut backend, 121);
+    let result = settle(&client, &backend, &destination).await.unwrap();
+    assert!(matches!(
+        result,
+        super::super::ArkadeSettlement::Delegated { commitment_txid } if commitment_txid == commitment
+    ));
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 2);
+    let metadata = store.get_swap("arkade").unwrap().unwrap().metadata;
+    assert!(metadata.arkade_pending.is_some());
+    assert!(!metadata.arkade_delegate.unwrap().preimage_sent);
+    let body = &bodies.lock().unwrap()[0];
+    assert!(body["preimage"].is_string());
+    assert_eq!(body["forfeit_psbts"], json!([]));
+}
+
+#[tokio::test]
+async fn a_dead_claim_journal_never_reaches_the_swap_server_after_the_claim_window() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    let (client, mut backend, store, destination) = setup_with_lock("btc_to_arkade", now() + 60);
+    backend.refuse_recoverable.store(true, Ordering::Relaxed);
+    let risky = ArkadeSpendOptions {
+        minimum_remaining_seconds: 0,
+        ..spend_options(destination.clone())
+    };
+    assert!(
+        client
+            .spend_arkade("arkade", &backend, None, ArkadeSpend::Claim, risky)
+            .await
+            .is_err()
+    );
+    expire_vtxos(&mut backend, 121);
+    let server = MockServer::start().await;
+    mount_cosigner_key(&server).await;
+    Mock::given(wiremock::matchers::path("/api/delegate/settle"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let client = api_client(&store, &server);
+    let error = settle(&client, &backend, &destination).await.unwrap_err();
+    assert!(error.to_string().contains("insufficient time"), "{error}");
+    let metadata = store.get_swap("arkade").unwrap().unwrap().metadata;
+    assert!(metadata.arkade_delegate.is_none());
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn a_dead_journal_is_not_resubmitted_by_a_direct_claim() {
+    let (client, mut backend, _, destination) = setup("btc_to_arkade");
+    backend.refuse_recoverable.store(true, Ordering::Relaxed);
+    let options = spend_options(destination);
+    assert!(
+        client
+            .spend_arkade(
+                "arkade",
+                &backend,
+                None,
+                ArkadeSpend::Claim,
+                options.clone()
+            )
+            .await
+            .is_err()
+    );
+    expire_vtxos(&mut backend, 121);
+    let error = client
+        .spend_arkade("arkade", &backend, None, ArkadeSpend::Claim, options)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("use Client::settle"), "{error}");
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 1);
+    assert_eq!(backend.pending_queries.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn journals_arkd_may_still_finish_stay_offchain_past_expiry() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::any())
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let offchain = |result: Result<super::super::ArkadeSettlement>| {
+        matches!(result, Ok(super::super::ArkadeSettlement::Offchain(_)))
+    };
+
+    // arkd accepted the submit and lost only its response.
+    let (_, mut backend, store, destination) = setup("btc_to_arkade");
+    let client = api_client(&store, &server);
+    backend.fail_submit.store(true, Ordering::Relaxed);
+    assert!(settle(&client, &backend, &destination).await.is_err());
+    mark_submitted_inputs_spent(&mut backend);
+    for vtxo in &mut backend.vtxos {
+        vtxo.expires_at = 0;
+        vtxo.is_swept = true;
+    }
+    assert!(offchain(settle(&client, &backend, &destination).await));
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 1);
+    assert_eq!(backend.finalize_count.load(Ordering::Relaxed), 1);
+
+    // A submitted journal only needs finalizing, whatever its inputs show.
+    let (_, mut backend, store, destination) = setup("btc_to_arkade");
+    let client = api_client(&store, &server);
+    backend.fail_finalize.store(true, Ordering::Relaxed);
+    assert!(settle(&client, &backend, &destination).await.is_err());
+    expire_vtxos(&mut backend, 3600);
+    assert!(offchain(settle(&client, &backend, &destination).await));
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 1);
+    assert_eq!(backend.finalize_count.load(Ordering::Relaxed), 2);
+
+    // Inside the grace a lagging arkd may still accept the resubmit.
+    let (_, mut backend, store, destination) = setup("btc_to_arkade");
+    let client = api_client(&store, &server);
+    backend.refuse_recoverable.store(true, Ordering::Relaxed);
+    assert!(settle(&client, &backend, &destination).await.is_err());
+    expire_vtxos(&mut backend, 60);
+    backend.refuse_recoverable.store(false, Ordering::Relaxed);
+    assert!(offchain(settle(&client, &backend, &destination).await));
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 2);
+}
+
+#[tokio::test]
+async fn journal_outcome_is_dead_only_for_unspent_inputs_arkd_refuses() {
+    let (client, backend, store, destination) = setup("btc_to_arkade");
+    backend.refuse_recoverable.store(true, Ordering::Relaxed);
+    assert!(
+        client
+            .spend_arkade(
+                "arkade",
+                &backend,
+                None,
+                ArkadeSpend::Claim,
+                spend_options(destination)
+            )
+            .await
+            .is_err()
+    );
+    let pending = store
+        .get_swap("arkade")
+        .unwrap()
+        .unwrap()
+        .metadata
+        .arkade_pending
+        .unwrap();
+    let txid = restore(&pending.ark_tx, None)
+        .unwrap()
+        .unsigned_tx
+        .compute_txid();
+    let at = 1_000_000;
+    let fresh = backend.vtxos.clone();
+    let case = |change: &dyn Fn(&mut Vec<VirtualTxOutPoint>)| {
+        let mut vtxos = fresh.clone();
+        change(&mut vtxos);
+        journal_outcome(&pending, &vtxos, at).unwrap()
+    };
+    use JournalOutcome::Dead;
+    use JournalOutcome::Live;
+    assert_eq!(case(&|_| {}), Live);
+    assert_eq!(case(&|v| v[0].expires_at = at - 119), Live);
+    assert_eq!(case(&|v| v[0].expires_at = at - 120), Dead);
+    assert_eq!(case(&|v| v[1].is_swept = true), Dead);
+    assert_eq!(
+        case(&|v| {
+            v[0].is_swept = true;
+            v.pop();
+        }),
+        Live
+    );
+    assert_eq!(
+        case(&|v| {
+            v[0].is_swept = true;
+            v[1].is_unrolled = true;
+        }),
+        Live
+    );
+    assert_eq!(
+        case(&|v| {
+            v[0].is_swept = true;
+            v[1].is_spent = true;
+        }),
+        Live
+    );
+    assert_eq!(
+        case(&|v| {
+            v[0].is_swept = true;
+            v[1].is_spent = true;
+            v[1].ark_txid = Some(txid);
+        }),
+        Live
+    );
+    for (submitted, completed) in [(true, false), (true, true)] {
+        let journal = ArkadePending {
+            submitted,
+            completed,
+            ..pending.clone()
+        };
+        let mut swept = fresh.clone();
+        swept.iter_mut().for_each(|v| v.is_swept = true);
+        assert_eq!(journal_outcome(&journal, &swept, at).unwrap(), Live);
+    }
+}
+
+/// Persists writes until the first one that saves a delegation, then drops the rest,
+/// as a process that stopped right after that write would.
+struct StopsAfterDelegateSave {
+    inner: Arc<InMemorySwapStorage>,
+    stopped: AtomicBool,
+}
+impl SwapStorage for StopsAfterDelegateSave {
+    fn next_key_index(&self) -> Result<u32> {
+        self.inner.next_key_index()
+    }
+    fn put_swap_key_index(&self, swap_id: &str, key_index: u32) -> Result<()> {
+        self.inner.put_swap_key_index(swap_id, key_index)
+    }
+    fn get_swap_key_index(&self, swap_id: &str) -> Result<Option<u32>> {
+        self.inner.get_swap_key_index(swap_id)
+    }
+    fn get_swap(&self, swap_id: &str) -> Result<Option<StoredSwap>> {
+        self.inner.get_swap(swap_id)
+    }
+    fn update_metadata(&self, swap_id: &str, metadata: SwapMetadata) -> Result<()> {
+        if self.stopped.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let delegation = metadata.arkade_delegate.is_some();
+        self.inner.update_metadata(swap_id, metadata)?;
+        self.stopped.store(delegation, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn a_delegation_saved_but_never_sent_keeps_to_the_claim_window_after_a_restart() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    let (_, backend, store, destination) = setup_with_lock("btc_to_arkade", now() + 60);
+    let stopping = Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(Arc::new(StopsAfterDelegateSave {
+            inner: store.clone(),
+            stopped: AtomicBool::new(false),
+        }))
+        .base_url("http://127.0.0.1:1")
+        .build()
+        .unwrap();
+    let risky = ArkadeSpendOptions {
+        minimum_remaining_seconds: 0,
+        ..spend_options(destination.clone())
+    };
+    assert!(
+        stopping
+            .delegate_arkade(
+                "arkade",
+                &backend,
+                None,
+                ArkadeSpend::Claim,
+                pair(5).public_key(),
+                risky
+            )
+            .await
+            .is_err()
+    );
+    let metadata = store.get_swap("arkade").unwrap().unwrap().metadata;
+    assert!(metadata.arkade_delegate.is_some());
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::path("/api/delegate/settle"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"commitment_txid":Txid::from_byte_array([21;32])})),
+        )
+        .expect(0)
+        .mount(&server)
+        .await;
+    let error = api_client(&store, &server)
+        .delegate_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            pair(5).public_key(),
+            spend_options(destination),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("insufficient time"), "{error}");
+}
+
+#[tokio::test]
+async fn a_journal_arkd_accepted_after_its_fallback_was_saved_finishes_offchain() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    let (_, mut backend, store, destination) = setup("btc_to_arkade");
+    let server = MockServer::start().await;
+    mount_cosigner_key(&server).await;
+    Mock::given(wiremock::matchers::path("/api/delegate/settle"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = api_client(&store, &server);
+    // arkd accepted the submit, but the indexer showed its inputs unspent well past
+    // expiry, so the next settle fell back to a delegated batch.
+    backend.fail_submit.store(true, Ordering::Relaxed);
+    assert!(settle(&client, &backend, &destination).await.is_err());
+    expire_vtxos(&mut backend, 121);
+    assert!(settle(&client, &backend, &destination).await.is_err());
+    let metadata = store.get_swap("arkade").unwrap().unwrap().metadata;
+    assert!(
+        metadata
+            .arkade_delegate
+            .is_some_and(|d| d.commitment_txid.is_none())
+    );
+    mark_submitted_inputs_spent(&mut backend);
+    let result = settle(&client, &backend, &destination).await.unwrap();
+    assert!(matches!(
+        result,
+        super::super::ArkadeSettlement::Offchain(_)
+    ));
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 1);
+    assert_eq!(backend.finalize_count.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn delegated_settlement_forfeits_only_inputs_arkd_expects_a_forfeit_for() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    let (_, mut backend, store, destination) = setup("btc_to_arkade");
+    backend.vtxos[0].expires_at = i64::from(now() - 121);
+    // An arkd whose clock lags ours may still count this one live.
+    backend.vtxos[1].expires_at = i64::from(now() - 60);
+    let server = MockServer::start().await;
+    let body = Arc::new(Mutex::new(Value::Null));
+    let seen = body.clone();
+    Mock::given(wiremock::matchers::path("/api/delegate/settle"))
+        .respond_with(move |request: &wiremock::Request| {
+            *seen.lock().unwrap() = request.body_json().unwrap();
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"commitment_txid":Txid::from_byte_array([22;32])}))
+        })
+        .expect(1)
+        .mount(&server)
+        .await;
+    delegate_claim(&api_client(&store, &server), &backend, &destination)
+        .await
+        .unwrap();
+    let body = body.lock().unwrap();
+    let forfeits = body["forfeit_psbts"].as_array().unwrap();
+    assert_eq!(forfeits.len(), 1);
+    let forfeit = restore(forfeits[0].as_str().unwrap(), None).unwrap();
+    assert_eq!(
+        forfeit.unsigned_tx.input[0].previous_output,
+        backend.vtxos[1].outpoint
+    );
 }
 
 #[tokio::test]

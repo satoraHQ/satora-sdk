@@ -446,27 +446,34 @@ before their refund lock.
 `settle_arkade` chooses offchain or delegated settlement from VTXO state and
 resumes the persisted path. `delegate_arkade` exposes the batch path explicitly.
 Pin the expected delegate public key, obtainable with `delegate_cosigner_key`.
-`settle` does the same routing in one call with the configured Arkade wallet,
-but trusts the cosigner key the API server reports (as the TypeScript SDK does);
+`settle` does the same routing in one call with the configured Arkade wallet, but
+trusts the cosigner key the API server reports (as the TypeScript SDK does);
 `settle_arkade` or `delegate_arkade` with a pinned key is the stricter path.
 Claims and cooperative/timeout refunds support mixed and swept VTXOs. Delegated
 intent signatures use ALL; forfeits use ALL|ANYONECANPAY for the batch connector.
-Timeout-refund forfeits carry the refund locktime and a non-final sequence.
+Timeout-refund forfeits carry the refund locktime and a non-final sequence. Inputs
+swept or expired for two minutes carry no forfeit, as arkd expects none for them.
 
 A delegated request persists its exact intent before submission and records the
 commitment transaction after success. After a lost response, retry reconciles
 settled inputs first. A retried claim resubmits even inside
 `minimum_remaining_seconds`, because the lost request may have delivered its
-preimage already, unless the request failed to connect and so provably never left.
-An offchain claim likewise finishes once its submit was attempted, reusing arkd's
-pending entry when it has one and resubmitting otherwise. An intent lives
-for about two minutes, so keep the margin above that. Two minutes after an intent
-expires with its inputs unspent, the next call replaces it with a new intent for its
-own request; the claim window is checked again unless an earlier claim may have
+preimage already, unless the request provably never left: it failed to connect, or
+the process stopped before sending it. An offchain claim likewise finishes once
+its submit was attempted, reusing arkd's pending entry when it has one and
+resubmitting otherwise. Once arkd can no longer accept a persisted offchain spend,
+because its inputs are unspent and swept or expired for two minutes (arkd refuses
+such inputs before signing), `spend_arkade` refuses it and `settle_arkade` settles
+the VHTLC in a delegated batch instead. The refused submit never reached the swap
+server, so that batch checks the claim window. A journal the indexer later shows
+arkd accepted after all still finishes offchain. An intent lives for about two
+minutes, so keep the margin above that. Two minutes after an intent expires with
+its inputs unspent, the next call replaces it with a new intent for its own
+request; the claim window is checked again unless an earlier claim may have
 delivered the preimage. A late settlement of a replaced intent is still recognised
-when the replacement spends the same inputs.
-The timeout refund path still requires the Arkade server, as in TypeScript.
-`StrictVhtlcOptions` exposes all six script paths for wallet-level exit integrations.
+when the replacement spends the same inputs. The timeout refund path still
+requires the Arkade server, as in TypeScript. `StrictVhtlcOptions` exposes all six
+script paths for wallet-level exit integrations.
 
 ## Sponsored claims
 

@@ -1370,8 +1370,8 @@ static class _UniFFILib {
         }
         {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_claim();
-            if (checksum != 34600) {
-                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_claim` checksum `34600`, library returned `{checksum}`");
+            if (checksum != 21380) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_claim` checksum `21380`, library returned `{checksum}`");
             }
         }
         {
@@ -1856,7 +1856,10 @@ public interface ISatoraClient {
     ///
     /// A `Transport` or `Timeout` error leaves the outcome unknown, and so
     /// does `Storage` once arkd may hold the claim: call this again, which
-    /// resumes from the journal.
+    /// resumes from the journal. Once arkd has refused the stored claim
+    /// because an input expired, the call fails with
+    /// `SdkError::InvalidSwap`, and [`Self::settle`] then claims the VHTLC
+    /// in a batch while the claim window is open.
     /// </summary>
     /// <exception cref="SdkException"></exception>
     ClaimReceipt Claim(string @swapId, string @destination);
@@ -2452,7 +2455,10 @@ public class SatoraClient : ISatoraClient, IDisposable {
     ///
     /// A `Transport` or `Timeout` error leaves the outcome unknown, and so
     /// does `Storage` once arkd may hold the claim: call this again, which
-    /// resumes from the journal.
+    /// resumes from the journal. Once arkd has refused the stored claim
+    /// because an input expired, the call fails with
+    /// `SdkError::InvalidSwap`, and [`Self::settle`] then claims the VHTLC
+    /// in a batch while the claim window is open.
     /// </summary>
     /// <exception cref="SdkException"></exception>
     public ClaimReceipt Claim(string @swapId, string @destination) {

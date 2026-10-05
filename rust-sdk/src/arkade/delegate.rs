@@ -1,8 +1,12 @@
 //! Delegated batch settlement for spendable, expired and swept VHTLC outputs.
+use super::execution::JournalOutcome;
 use super::execution::archive;
 use super::execution::decode;
 use super::execution::ensure_claim_window;
+use super::execution::expired_beyond_grace;
 use super::execution::invalid;
+use super::execution::journal_accepted;
+use super::execution::journal_outcome;
 use super::execution::merge_cosigned;
 use super::execution::restore;
 use super::execution::sign_psbt;
@@ -52,8 +56,9 @@ pub struct ArkadeDelegateState {
     pub forfeit_psbts: Vec<String>,
     pub cosigner_pk: String,
     pub commitment_txid: Option<String>,
-    /// The last request failed before leaving this process, so the server has not
-    /// seen this intent's preimage.
+    /// No request for this intent has left this process: it was saved before its
+    /// first request, or the last request failed to connect. The server has then
+    /// not seen the preimage through this intent.
     #[serde(default)]
     pub unsent: bool,
     /// A claim request for an intent this one replaced may have delivered the
@@ -106,7 +111,6 @@ impl Client {
         tokio::time::timeout(options.timeout,async {
             let _execution=self.arkade_execution.lock().await;
             let stored=self.get_stored_swap(id)?.ok_or_else(||invalid("swap record missing"))?;
-            if stored.metadata.arkade_pending.is_some() { return Err(invalid("an offchain Arkade spend is already persisted; resume it first")); }
             let htlc=self.arkade_htlc(id)?;let script=htlc.spend_script(operation)?;
             let info=backend.info().await?;validate_info(&htlc,&info)?;
             let destination=ArkAddress::decode(&options.destination).map_err(decode)?;
@@ -115,6 +119,10 @@ impl Client {
             let pair=Keypair::from_secret_key(&Secp256k1::new(),&secp256k1::SecretKey::from_slice(&params.secret).map_err(decode)?);
             let preimage=(operation==ArkadeSpend::Claim).then_some(params.preimage);
             let vtxos=validate_vtxos(&htlc,backend.vtxos(htlc.address()).await?)?;
+            let now=i64::try_from(unix_now()?).map_err(decode)?;
+            // A delegation is only ever persisted next to a journal arkd refused.
+            if let (Some(pending),None)=(&stored.metadata.arkade_pending,&stored.metadata.arkade_delegate)
+                && journal_outcome(pending,&vtxos,now)?!=JournalOutcome::Dead { return Err(invalid("an offchain Arkade spend is already persisted; resume it first")); }
             // A replaced claim whose request may have delivered the preimage skips the window and amount checks.
             let mut delivered=false;
             let mut superseded=Vec::new();
@@ -168,8 +176,7 @@ impl Client {
                 }
                 if operation==ArkadeSpend::Claim && !delivered {ensure_claim_window(&htlc,chain,options.minimum_remaining_seconds).await?;}
                 let list=VtxoList::new(info.dust,vtxos);
-                let now=unix_now()?;
-                let available:Vec<_>=list.batch_settleable_at(&info,i64::try_from(now).map_err(decode)?,|_|Some(htlc.options.server)).collect();
+                let available:Vec<_>=list.batch_settleable_at(&info,now,|_|Some(htlc.options.server)).collect();
                 if available.is_empty() {return Err(invalid("no settleable Arkade VTXOs"));}
                 let amount=available.iter().try_fold(0u64,|sum,v|sum.checked_add(v.amount.to_sat()).filter(|sum|*sum<=Amount::MAX_MONEY.to_sat()).ok_or_else(||invalid("Arkade amount overflow")))?;
                 let log=self.log.child("delegate","delegate.settle").swap_id(id).with("destinationAddress",options.destination.as_str()).with("networkName",htlc.network.to_string());
@@ -177,7 +184,9 @@ impl Client {
                 if operation==ArkadeSpend::Claim && !delivered {self.ensure_claim_covered(id,&htlc,amount,&log,true).await?;}
                 let control=htlc.script.taproot_spend_info().control_block(&(script.clone(),LeafVersion::TapScript)).ok_or_else(||invalid("Arkade control block missing"))?;
                 let lock=(operation==ArkadeSpend::Refund).then(||bitcoin::absolute::LockTime::from_consensus(htlc.options.refund_locktime));
-                let inputs=available.iter().map(|v|Input::new_with_extra_witness(v.outpoint,if lock.is_some() {Sequence::ENABLE_LOCKTIME_NO_RBF} else {Sequence::MAX},lock,TxOut {value:v.amount,script_pubkey:v.script.clone()},htlc.script.tapscripts(),(script.clone(),control.clone()),false,v.is_swept,vec![],preimage.map(|p|vec![p.to_vec()]).unwrap_or_default())).collect();
+                // ark-core forfeits every unswept input above dust, but arkd expects no
+                // forfeit for an expired one and rejects a forfeit it does not expect.
+                let inputs=available.iter().map(|v|Input::new_with_extra_witness(v.outpoint,if lock.is_some() {Sequence::ENABLE_LOCKTIME_NO_RBF} else {Sequence::MAX},lock,TxOut {value:v.amount,script_pubkey:v.script.clone()},htlc.script.tapscripts(),(script.clone(),control.clone()),false,v.is_swept || expired_beyond_grace(v,now),vec![],preimage.map(|p|vec![p.to_vec()]).unwrap_or_default())).collect();
                 let mut delegate=prepare_delegate_psbts(inputs,vec![Output::Offchain(TxOut {value:Amount::from_sat(amount),script_pubkey:destination.to_p2tr_script_pubkey()})],cosigner,&info.forfeit_address,info.dust).map_err(decode)?;
                 // Match the TypeScript intent's explicit SIGHASH_ALL; forfeits
                 // use ALL|ANYONECANPAY so the batch can append a connector input.
@@ -188,7 +197,7 @@ impl Client {
                     sign_psbt(forfeit,&pair,preimage)?;
                 }
                 superseded.retain(|(address,sats)|!(address==&options.destination && *sats==amount));
-                let mut state=ArkadeDelegateState {operation,destination:options.destination.clone(),amount_sats:amount,intent_proof:archive(&delegate.intent.proof),intent_message:delegate.intent.serialize_message().map_err(decode)?,forfeit_psbts:delegate.forfeit_psbts.iter().map(archive).collect(),cosigner_pk:cosigner.to_string(),commitment_txid:None,unsent:false,preimage_sent:delivered,superseded};
+                let mut state=ArkadeDelegateState {operation,destination:options.destination.clone(),amount_sats:amount,intent_proof:archive(&delegate.intent.proof),intent_message:delegate.intent.serialize_message().map_err(decode)?,forfeit_psbts:delegate.forfeit_psbts.iter().map(archive).collect(),cosigner_pk:cosigner.to_string(),commitment_txid:None,unsent:true,preimage_sent:delivered,superseded};
                 if operation==ArkadeSpend::CooperativeRefund {self.cosign_arkade_delegate(id,&mut state,&htlc).await?;}
                 self.save_arkade_delegate(id,state.clone())?;
                 state
@@ -196,6 +205,7 @@ impl Client {
             let proof=restore(&state.intent_proof,preimage)?.to_string();
             let forfeits=state.forfeit_psbts.iter().map(|p|restore(p,preimage).map(|p|p.to_string())).collect::<Result<Vec<_>>>()?;
             let body=serde_json::json!({"intent_proof":proof,"intent_message":state.intent_message,"forfeit_psbts":forfeits,"cosigner_pk":state.cosigner_pk,"swap_id":preimage.map(|_|id),"preimage":preimage.map(hex::encode)});
+            // From here the request may leave, so a restart counts it as delivered.
             if state.unsent {state.unsent=false;self.save_arkade_delegate(id,state.clone())?;}
             let settle=self.base_url.join("/api/delegate/settle")?;
             // The server holds this open for a whole batch, so the operation deadline
@@ -289,7 +299,8 @@ pub enum ArkadeSettlement {
 }
 impl Client {
     /// Select offchain execution for spendable VTXOs, delegated settlement for
-    /// recoverable/mixed balances, and the persisted path when resuming.
+    /// recoverable/mixed balances, and the persisted path when resuming. An offchain
+    /// journal arkd can no longer accept settles in a batch, inside the claim window.
     pub async fn settle_arkade(
         &self,
         id: &str,
@@ -300,17 +311,7 @@ impl Client {
         options: ArkadeSpendOptions,
     ) -> Result<ArkadeSettlement> {
         tokio::time::timeout(options.timeout, async {
-            let stored = self
-                .get_stored_swap(id)?
-                .ok_or_else(|| invalid("swap record missing"))?;
-            let delegated = if stored.metadata.arkade_delegate.is_some() {
-                true
-            } else if stored.metadata.arkade_pending.is_some() {
-                false
-            } else {
-                self.vhtlc_balance(id, backend).await?.recoverable_sats > 0
-            };
-            if delegated {
+            if self.delegation_needed(id, backend).await? {
                 let cosigner = cosigner.ok_or_else(|| {
                     invalid("delegated settlement requires the expected cosigner public key")
                 })?;
@@ -327,5 +328,38 @@ impl Client {
         })
         .await
         .map_err(|_| Error::Timeout("Arkade settlement timed out".into()))?
+    }
+
+    /// Whether settling the swap now goes through a delegated batch: a persisted
+    /// delegation, an offchain journal arkd can no longer accept, or recoverable
+    /// outputs and no journal. A journal that arkd may still finalize, and one it
+    /// accepted next to an unsettled delegation, finish offchain.
+    pub(super) async fn delegation_needed(
+        &self,
+        id: &str,
+        backend: &dyn ArkadeBackend,
+    ) -> Result<bool> {
+        let stored = self
+            .get_stored_swap(id)?
+            .ok_or_else(|| invalid("swap record missing"))?;
+        let vtxos = || async {
+            let htlc = self.arkade_htlc(id)?;
+            validate_vtxos(&htlc, backend.vtxos(htlc.address()).await?)
+        };
+        match (
+            stored.metadata.arkade_delegate,
+            stored.metadata.arkade_pending,
+        ) {
+            (Some(state), Some(pending)) if state.commitment_txid.is_none() => {
+                Ok(!journal_accepted(&pending, &vtxos().await?)?)
+            }
+            (Some(_), _) => Ok(true),
+            (None, Some(pending)) if pending.submitted || pending.completed => Ok(false),
+            (None, Some(pending)) => {
+                let now = i64::try_from(unix_now()?).map_err(decode)?;
+                Ok(journal_outcome(&pending, &vtxos().await?, now)? == JournalOutcome::Dead)
+            }
+            (None, None) => Ok(self.vhtlc_balance(id, backend).await?.recoverable_sats > 0),
+        }
     }
 }

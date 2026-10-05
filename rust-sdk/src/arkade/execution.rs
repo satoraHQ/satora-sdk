@@ -166,6 +166,84 @@ impl std::fmt::Debug for ArkadePending {
     }
 }
 
+/// How long past a VTXO's expiry before the SDK trusts that arkd, whose clock may
+/// lag ours, sees it expired too: arkd then refuses it offchain and expects no
+/// forfeit for it in a batch.
+pub(super) const EXPIRY_GRACE_SECS: i64 = 120;
+
+pub(super) fn expired_beyond_grace(vtxo: &VirtualTxOutPoint, now: i64) -> bool {
+    now >= vtxo.expires_at.saturating_add(EXPIRY_GRACE_SECS)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum JournalOutcome {
+    /// arkd may still accept or finalize the journal.
+    Live,
+    /// arkd never accepted the journal and never will.
+    Dead,
+}
+
+/// The journal's Ark txid and the VTXOs its checkpoints spend.
+fn journal_spend(pending: &ArkadePending) -> Result<(Txid, Vec<OutPoint>)> {
+    let txid = restore(&pending.ark_tx, None)?.unsigned_tx.compute_txid();
+    let inputs = pending
+        .checkpoints
+        .iter()
+        .map(
+            |checkpoint| match restore(checkpoint, None)?.unsigned_tx.input.as_slice() {
+                [input] => Ok(input.previous_output),
+                _ => Err(invalid("invalid stored Arkade checkpoint")),
+            },
+        )
+        .collect::<Result<_>>()?;
+    Ok((txid, inputs))
+}
+
+/// What the indexer says about an offchain journal. arkd refuses a transaction with
+/// a swept or expired input before signing it and marks inputs spent only once it
+/// accepts, so unspent inputs that are swept or past expiry mean it was never
+/// accepted. Every state the indexer cannot settle counts as live; that includes
+/// unrolled inputs, so such a journal keeps failing at arkd rather than settling.
+pub(super) fn journal_outcome(
+    pending: &ArkadePending,
+    vtxos: &[VirtualTxOutPoint],
+    now: i64,
+) -> Result<JournalOutcome> {
+    if pending.submitted || pending.completed {
+        return Ok(JournalOutcome::Live);
+    }
+    let (_, inputs) = journal_spend(pending)?;
+    let mut dead = false;
+    for outpoint in &inputs {
+        let Some(vtxo) = vtxos.iter().find(|v| v.outpoint == *outpoint) else {
+            return Ok(JournalOutcome::Live);
+        };
+        if vtxo.is_spent || vtxo.is_unrolled {
+            return Ok(JournalOutcome::Live);
+        }
+        dead |= vtxo.is_swept || expired_beyond_grace(vtxo, now);
+    }
+    Ok(if dead {
+        JournalOutcome::Dead
+    } else {
+        JournalOutcome::Live
+    })
+}
+
+/// Whether the indexer shows every input of the journal spent by the journal itself.
+pub(super) fn journal_accepted(
+    pending: &ArkadePending,
+    vtxos: &[VirtualTxOutPoint],
+) -> Result<bool> {
+    let (txid, inputs) = journal_spend(pending)?;
+    Ok(!inputs.is_empty()
+        && inputs.iter().all(|outpoint| {
+            vtxos
+                .iter()
+                .any(|v| v.outpoint == *outpoint && v.is_spent && v.ark_txid == Some(txid))
+        }))
+}
+
 pub struct ArkadeHtlc {
     pub options: StrictVhtlcOptions,
     pub script: StrictVhtlcScript,
@@ -353,7 +431,10 @@ impl Client {
     ///
     /// [`Error::Transport`] and [`Error::Timeout`] leave the outcome unknown, and so
     /// does [`Error::Storage`] once arkd may hold the spend: repeat the call, which
-    /// resumes from the journal.
+    /// resumes from the journal. A persisted spend arkd refused because its inputs are
+    /// unspent and swept or expired for two minutes fails with [`Error::InvalidSwap`]
+    /// instead, and [`Client::settle_arkade`] then settles the VHTLC in a delegated
+    /// batch, for a claim only while the claim window is open.
     pub async fn spend_arkade(
         &self,
         id: &str,
@@ -382,17 +463,28 @@ impl Client {
             let stored = self
                 .get_stored_swap(id)?
                 .ok_or_else(|| invalid("swap record missing"))?;
-            if stored.metadata.arkade_delegate.is_some() {
-                return Err(invalid(
-                    "a delegated Arkade spend is already persisted; reconcile it first",
-                ));
+            let htlc = self.arkade_htlc(id)?;
+            if let Some(state) = &stored.metadata.arkade_delegate {
+                // A journal the indexer hid past expiry may have been accepted after
+                // all; its delegated intent can then never settle, so it finishes here.
+                let accepted = match (&stored.metadata.arkade_pending, &state.commitment_txid) {
+                    (Some(pending), None) => journal_accepted(
+                        pending,
+                        &validate_vtxos(&htlc, backend.vtxos(htlc.address()).await?)?,
+                    )?,
+                    _ => false,
+                };
+                if !accepted {
+                    return Err(invalid(
+                        "a delegated Arkade spend is already persisted; reconcile it first",
+                    ));
+                }
             }
             let params = self
                 .signer
                 .as_ref()
                 .ok_or_else(|| invalid("signer missing"))?
                 .derive_swap_params(stored.key_index)?;
-            let htlc = self.arkade_htlc(id)?;
             let log = self.arkade_log(id, &htlc, operation, false, &options.destination);
             let continue_log = self.arkade_log(id, &htlc, operation, true, &options.destination);
             // TypeScript's claim always tries continueArkadeClaim first, which logs
@@ -440,6 +532,15 @@ impl Client {
                     || (destination.is_some() && !fixed && pending.destination != options.destination)
                 {
                     return Err(invalid("Arkade pending operation or destination differs"));
+                }
+                if !pending.submitted && !pending.completed {
+                    let vtxos = validate_vtxos(&htlc, backend.vtxos(htlc.address()).await?)?;
+                    let now = i64::try_from(super::delegate::unix_now()?).map_err(decode)?;
+                    if journal_outcome(&pending, &vtxos, now)? == JournalOutcome::Dead {
+                        return Err(invalid(
+                            "arkd can no longer accept the persisted Arkade spend; use Client::settle",
+                        ));
+                    }
                 }
                 // Once a submit was attempted arkd may already hold the preimage, and
                 // refusing to finish would only strand the claim.
