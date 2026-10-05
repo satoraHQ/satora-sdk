@@ -592,7 +592,9 @@ public sealed class Client : IDisposable
     /// <see cref="CreateLightningToArkadeSwapAsync"/> and
     /// <see cref="CreateBitcoinToArkadeSwapAsync"/>: the same routing
     /// with a clearer signature. Other direction combos return
-    /// an <see cref="SdkException"/>.
+    /// an <see cref="SdkException"/>. A Lightning swap is checked as
+    /// <see cref="CreateLightningToArkadeSwapAsync(ulong, Address?, CancellationToken)"/>
+    /// describes before anything is stored.
     /// </summary>
     /// <param name="sourceChain">Source chain enum.</param>
     /// <param name="sourceToken">Source token enum.</param>
@@ -914,6 +916,12 @@ public sealed class Client : IDisposable
     /// <see cref="CreateSwapAsync"/> with <c>sourceChain =
     /// ChainId.Lightning</c>, but with a signature that only exposes the
     /// knobs the Lightning rail actually uses.
+    ///
+    /// A server invoice that does not pay the hash of this client's
+    /// preimage throws <see cref="SdkException"/> with
+    /// <see cref="SdkErrorKind.InvalidSwap"/>, and nothing is stored:
+    /// paying it would let the server keep the payment without funding the
+    /// VHTLC.
     /// </summary>
     /// <param name="satsReceive">
     /// Amount the user wants to <b>receive</b> on Arkade, in satoshis.
@@ -1068,6 +1076,14 @@ public sealed class Client : IDisposable
     /// Lightning destination via Boltz and claims the VHTLC with the
     /// resulting preimage. <b>No client-side claim path</b> —
     /// <see cref="ClaimAsync"/> doesn't apply for this direction.
+    ///
+    /// A supplied invoice that does not parse throws
+    /// <see cref="SdkException"/> with <see cref="SdkErrorKind.InvalidSwap"/>
+    /// before any request is sent. A hash lock that is not the payment hash
+    /// of the returned invoice, or a returned invoice other than the
+    /// supplied one, throws the same, and nothing is stored. For a Lightning
+    /// address or LNURL the server picks the invoice, so only their
+    /// agreement is checked.
     /// </summary>
     /// <param name="destination">
     /// Lightning destination. Use <c>LightningDestination.Invoice</c>
@@ -1238,6 +1254,18 @@ public sealed class Client : IDisposable
     /// <see cref="CreateSwapAsync"/> does, so callers can re-read after the
     /// backend transitions states (e.g. ServerFunded).
     /// </summary>
+    /// <remarks>
+    /// A server copy that names another swap than
+    /// <paramref name="swapId"/>, or that changes the direction of a swap
+    /// this client stored, throws <see cref="SdkException"/> with
+    /// <see cref="SdkErrorKind.InvalidSwap"/>, and so does one whose invoice
+    /// no longer pays the hash lock of a Lightning swap this client stored:
+    /// never pay or fund the swap then. A swap stored only as its key
+    /// index, as in an older database, gets the invoice checks
+    /// <see cref="RecoverAllSwapsAsync"/> applies: a Lightning to Arkade
+    /// invoice must pay the hash of this client's preimage, and an Arkade to
+    /// Lightning hash lock must be its invoice's payment hash.
+    /// </remarks>
     public Task<SwapDetails> GetSwapAsync(string swapId, CancellationToken cancellationToken = default)
     {
         var ffi = _ffi;
@@ -1275,6 +1303,11 @@ public sealed class Client : IDisposable
     /// — three accept-states cover the case where the swap raced past
     /// ServerFunded between polls.</param>
     /// <param name="timeout">Total wait budget. The SDK accepts seconds; we round up.</param>
+    /// <remarks>
+    /// Each poll is checked as <see cref="GetSwapAsync"/> describes, and a
+    /// server copy it refuses ends the wait with <see cref="SdkException"/>
+    /// and <see cref="SdkErrorKind.InvalidSwap"/>.
+    /// </remarks>
     public Task<SwapStatus> WaitForSwapStatusAsync(
         string swapId,
         IEnumerable<SwapStatus> targets,

@@ -1392,8 +1392,8 @@ static class _UniFFILib {
         }
         {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_arkade_to_lightning_swap();
-            if (checksum != 55337) {
-                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_arkade_to_lightning_swap` checksum `55337`, library returned `{checksum}`");
+            if (checksum != 14654) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_arkade_to_lightning_swap` checksum `14654`, library returned `{checksum}`");
             }
         }
         {
@@ -1404,8 +1404,8 @@ static class _UniFFILib {
         }
         {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_lightning_to_arkade_swap();
-            if (checksum != 46608) {
-                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_lightning_to_arkade_swap` checksum `46608`, library returned `{checksum}`");
+            if (checksum != 52244) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_lightning_to_arkade_swap` checksum `52244`, library returned `{checksum}`");
             }
         }
         {
@@ -1416,8 +1416,8 @@ static class _UniFFILib {
         }
         {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_swap();
-            if (checksum != 9195) {
-                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_swap` checksum `9195`, library returned `{checksum}`");
+            if (checksum != 47274) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_create_swap` checksum `47274`, library returned `{checksum}`");
             }
         }
         {
@@ -1446,8 +1446,8 @@ static class _UniFFILib {
         }
         {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_get_swap();
-            if (checksum != 9665) {
-                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_get_swap` checksum `9665`, library returned `{checksum}`");
+            if (checksum != 486) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_get_swap` checksum `486`, library returned `{checksum}`");
             }
         }
         {
@@ -1488,8 +1488,8 @@ static class _UniFFILib {
         }
         {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_wait_for_swap_status();
-            if (checksum != 58386) {
-                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_wait_for_swap_status` checksum `58386`, library returned `{checksum}`");
+            if (checksum != 5521) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_wait_for_swap_status` checksum `5521`, library returned `{checksum}`");
             }
         }
         {
@@ -1896,6 +1896,13 @@ public interface ISatoraClient {
     /// `SwapFunding::ArkadeAddress`); the server (via Boltz) then pays
     /// the Lightning destination and claims the VHTLC. No client-side
     /// claim — see the underlying SDK doc.
+    ///
+    /// A supplied invoice that does not parse fails with
+    /// `SdkError::InvalidSwap` before any request is sent. A hash lock that
+    /// is not the payment hash of the returned invoice, or a returned
+    /// invoice other than the supplied one, fails the same way, and nothing
+    /// is stored. For a Lightning address or LNURL the server picks the
+    /// invoice, so only their agreement is checked.
     /// </summary>
     /// <exception cref="SdkException"></exception>
     Swap CreateArkadeToLightningSwap(LightningDestination @destination);
@@ -1939,6 +1946,11 @@ public interface ISatoraClient {
     /// `source_chain == Lightning`; the dedicated method exists so the
     /// C# surface has a discoverable, single-purpose entry point that
     /// matches the Rust SDK's `create_lightning_to_arkade_swap`.
+    ///
+    /// A server invoice that does not pay the hash of this client's
+    /// preimage fails with `SdkError::InvalidSwap`, and nothing is stored:
+    /// paying it would let the server keep the payment without funding
+    /// the VHTLC.
     /// </summary>
     /// <exception cref="SdkException"></exception>
     Swap CreateLightningToArkadeSwap(ulong @satsReceive, Address? @receiveTo);
@@ -1965,6 +1977,9 @@ public interface ISatoraClient {
     /// user just pays the Bolt11 invoice from their own wallet). The
     /// FFI signature stays uniform so the C# surface doesn't need an
     /// overload per direction; the inner dispatcher does the routing.
+    ///
+    /// A Lightning swap is checked as the dedicated Lightning methods
+    /// describe before anything is stored.
     ///
     /// State note: `create_swap` writes the per-swap `key_index` into
     /// the inner client's storage. Subsequent [`Self::fund_swap_gasless`]
@@ -2066,6 +2081,15 @@ public interface ISatoraClient {
     /// `GET /swap/{id}` — fetch a swap's current state. Returns the
     /// same `Swap` shape `create_swap` does, so callers can re-read
     /// after the backend transitions states (e.g. ServerFunded).
+    ///
+    /// A server copy that names another swap than `swap_id`, or that
+    /// changes the direction of a swap this client stored, fails with
+    /// `SdkError::InvalidSwap`, and so does one whose invoice no longer
+    /// pays the hash lock of a Lightning swap this client stored: never pay
+    /// or fund the swap then. A swap stored only as its key index, as in an
+    /// older database, gets the invoice checks recovery applies: a Lightning
+    /// to Arkade invoice must pay the hash of this client's preimage, and an
+    /// Arkade to Lightning hash lock must be its invoice's payment hash.
     /// </summary>
     /// <exception cref="SdkException"></exception>
     Swap GetSwap(string @swapId);
@@ -2169,6 +2193,9 @@ public interface ISatoraClient {
     /// `timeout_seconds: u64` because uniffi's `Duration` support is
     /// patchy across foreign bindgens; seconds is precise enough for
     /// swap-status polling (sub-second timeouts make no sense here).
+    ///
+    /// Each poll is checked as [`Self::get_swap`] describes, and a server
+    /// copy it refuses ends the wait with `SdkError::InvalidSwap`.
     /// </summary>
     /// <exception cref="SdkException"></exception>
     SwapStatus WaitForSwapStatus(string @swapId, SwapStatus[] @targets, ulong @timeoutSeconds);
@@ -2526,6 +2553,13 @@ public class SatoraClient : ISatoraClient, IDisposable {
     /// `SwapFunding::ArkadeAddress`); the server (via Boltz) then pays
     /// the Lightning destination and claims the VHTLC. No client-side
     /// claim — see the underlying SDK doc.
+    ///
+    /// A supplied invoice that does not parse fails with
+    /// `SdkError::InvalidSwap` before any request is sent. A hash lock that
+    /// is not the payment hash of the returned invoice, or a returned
+    /// invoice other than the supplied one, fails the same way, and nothing
+    /// is stored. For a Lightning address or LNURL the server picks the
+    /// invoice, so only their agreement is checked.
     /// </summary>
     /// <exception cref="SdkException"></exception>
     public Swap CreateArkadeToLightningSwap(LightningDestination @destination) {
@@ -2583,6 +2617,11 @@ public class SatoraClient : ISatoraClient, IDisposable {
     /// `source_chain == Lightning`; the dedicated method exists so the
     /// C# surface has a discoverable, single-purpose entry point that
     /// matches the Rust SDK's `create_lightning_to_arkade_swap`.
+    ///
+    /// A server invoice that does not pay the hash of this client's
+    /// preimage fails with `SdkError::InvalidSwap`, and nothing is stored:
+    /// paying it would let the server keep the payment without funding
+    /// the VHTLC.
     /// </summary>
     /// <exception cref="SdkException"></exception>
     public Swap CreateLightningToArkadeSwap(ulong @satsReceive, Address? @receiveTo) {
@@ -2623,6 +2662,9 @@ public class SatoraClient : ISatoraClient, IDisposable {
     /// user just pays the Bolt11 invoice from their own wallet). The
     /// FFI signature stays uniform so the C# surface doesn't need an
     /// overload per direction; the inner dispatcher does the routing.
+    ///
+    /// A Lightning swap is checked as the dedicated Lightning methods
+    /// describe before anything is stored.
     ///
     /// State note: `create_swap` writes the per-swap `key_index` into
     /// the inner client's storage. Subsequent [`Self::fund_swap_gasless`]
@@ -2759,6 +2801,15 @@ public class SatoraClient : ISatoraClient, IDisposable {
     /// `GET /swap/{id}` — fetch a swap's current state. Returns the
     /// same `Swap` shape `create_swap` does, so callers can re-read
     /// after the backend transitions states (e.g. ServerFunded).
+    ///
+    /// A server copy that names another swap than `swap_id`, or that
+    /// changes the direction of a swap this client stored, fails with
+    /// `SdkError::InvalidSwap`, and so does one whose invoice no longer
+    /// pays the hash lock of a Lightning swap this client stored: never pay
+    /// or fund the swap then. A swap stored only as its key index, as in an
+    /// older database, gets the invoice checks recovery applies: a Lightning
+    /// to Arkade invoice must pay the hash of this client's preimage, and an
+    /// Arkade to Lightning hash lock must be its invoice's payment hash.
     /// </summary>
     /// <exception cref="SdkException"></exception>
     public Swap GetSwap(string @swapId) {
@@ -2912,6 +2963,9 @@ public class SatoraClient : ISatoraClient, IDisposable {
     /// `timeout_seconds: u64` because uniffi's `Duration` support is
     /// patchy across foreign bindgens; seconds is precise enough for
     /// swap-status polling (sub-second timeouts make no sense here).
+    ///
+    /// Each poll is checked as [`Self::get_swap`] describes, and a server
+    /// copy it refuses ends the wait with `SdkError::InvalidSwap`.
     /// </summary>
     /// <exception cref="SdkException"></exception>
     public SwapStatus WaitForSwapStatus(string @swapId, SwapStatus[] @targets, ulong @timeoutSeconds) {

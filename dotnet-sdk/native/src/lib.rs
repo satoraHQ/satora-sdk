@@ -775,6 +775,9 @@ impl SatoraClient {
     /// FFI signature stays uniform so the C# surface doesn't need an
     /// overload per direction; the inner dispatcher does the routing.
     ///
+    /// A Lightning swap is checked as the dedicated Lightning methods
+    /// describe before anything is stored.
+    ///
     /// State note: `create_swap` writes the per-swap `key_index` into
     /// the inner client's storage. Subsequent [`Self::fund_swap_gasless`]
     /// / [`Self::claim`] calls on THIS instance recover it. A new
@@ -875,6 +878,11 @@ impl SatoraClient {
     /// `source_chain == Lightning`; the dedicated method exists so the
     /// C# surface has a discoverable, single-purpose entry point that
     /// matches the Rust SDK's `create_lightning_to_arkade_swap`.
+    ///
+    /// A server invoice that does not pay the hash of this client's
+    /// preimage fails with `SdkError::InvalidSwap`, and nothing is stored:
+    /// paying it would let the server keep the payment without funding
+    /// the VHTLC.
     pub fn create_lightning_to_arkade_swap(
         &self,
         sats_receive: u64,
@@ -1160,6 +1168,13 @@ impl SatoraClient {
     /// `SwapFunding::ArkadeAddress`); the server (via Boltz) then pays
     /// the Lightning destination and claims the VHTLC. No client-side
     /// claim — see the underlying SDK doc.
+    ///
+    /// A supplied invoice that does not parse fails with
+    /// `SdkError::InvalidSwap` before any request is sent. A hash lock that
+    /// is not the payment hash of the returned invoice, or a returned
+    /// invoice other than the supplied one, fails the same way, and nothing
+    /// is stored. For a Lightning address or LNURL the server picks the
+    /// invoice, so only their agreement is checked.
     pub fn create_arkade_to_lightning_swap(
         &self,
         destination: LightningDestination,
@@ -1452,6 +1467,15 @@ impl SatoraClient {
     /// `GET /swap/{id}` — fetch a swap's current state. Returns the
     /// same `Swap` shape `create_swap` does, so callers can re-read
     /// after the backend transitions states (e.g. ServerFunded).
+    ///
+    /// A server copy that names another swap than `swap_id`, or that
+    /// changes the direction of a swap this client stored, fails with
+    /// `SdkError::InvalidSwap`, and so does one whose invoice no longer
+    /// pays the hash lock of a Lightning swap this client stored: never pay
+    /// or fund the swap then. A swap stored only as its key index, as in an
+    /// older database, gets the invoice checks recovery applies: a Lightning
+    /// to Arkade invoice must pay the hash of this client's preimage, and an
+    /// Arkade to Lightning hash lock must be its invoice's payment hash.
     pub fn get_swap(&self, swap_id: String) -> Result<Swap, SdkError> {
         runtime().block_on(async {
             let swap = self.inner.get_swap(&swap_id).await?;
@@ -1466,6 +1490,9 @@ impl SatoraClient {
     /// `timeout_seconds: u64` because uniffi's `Duration` support is
     /// patchy across foreign bindgens; seconds is precise enough for
     /// swap-status polling (sub-second timeouts make no sense here).
+    ///
+    /// Each poll is checked as [`Self::get_swap`] describes, and a server
+    /// copy it refuses ends the wait with `SdkError::InvalidSwap`.
     pub fn wait_for_swap_status(
         &self,
         swap_id: String,

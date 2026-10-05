@@ -200,18 +200,33 @@ surcharge and an invoice description. The invoice must be paid before
 both `InvoiceExpiresAt` and the claim cutoff `VhtlcRefundLocktime`; the
 server does not guarantee which comes first, and `InvoiceExpiresAt` is
 null when the server reports no expiry. `ClaimAsync` refuses within 300
-seconds of `VhtlcRefundLocktime`.
+seconds of `VhtlcRefundLocktime`. An invoice that does not pay the hash
+of the client's preimage throws `InvalidSwap` at creation, and nothing is
+stored.
 
 `CreateArkadeToLightningSwapAsync(destination)` returns an Arkade VHTLC
 address in `SwapFunding.ArkadeAddress`; `FundArkadeSwapAsync(swap.Id)`
 pays it `DepositAmount` sats from the SDK's Arkade wallet and the server
-pays the destination. `LightningDestination.AddressSendMax`
-and `LightningDestination.LnurlSendMax` take a fixed amount from Arkade
-and pay out what remains after fees. `GetLightningSendQuoteAsync` prices
-a destination with the Lightning provider's actual fee. If the swap
-fails, `SettleAsync` with `ArkadeSpend.CooperativeRefund` (or
+pays the destination. `LightningDestination.AddressSendMax` and
+`LightningDestination.LnurlSendMax` take a fixed amount from Arkade and
+pay out what remains after fees. `GetLightningSendQuoteAsync` prices a
+destination with the Lightning provider's actual fee. If the swap fails,
+`SettleAsync` with `ArkadeSpend.CooperativeRefund` (or
 `ArkadeSpend.Refund` once median time past, which trails wall clock by
 about an hour, has reached the VHTLC refund locktime) returns the funds.
+A supplied invoice that does not parse throws `InvalidSwap` before any
+request is sent. A hash lock that is not the payment hash of the
+returned invoice, or a returned invoice other than the one supplied,
+throws `InvalidSwap` at creation, and nothing is stored.
+
+`GetSwapAsync` and `WaitForSwapStatusAsync` throw `InvalidSwap` for a
+server copy that names another swap than the one asked for, that changes
+the direction of a swap the client stored, or that no longer pays the
+hash lock of a Lightning swap the client stored: never pay or fund the
+swap then. A swap stored only as its key index, as in an older database,
+is checked too: a Lightning → Arkade invoice must pay the hash of the
+client's preimage, and an Arkade → Lightning hash lock must be its
+invoice's payment hash.
 
 ```csharp
 var destination = new LightningDestination.Address("alice@example.com", 50_000);
