@@ -3930,8 +3930,10 @@ export interface components {
             /** @description Optional hex-encoded preimage (the HTLC secret). Required together with `swap_id`. */
             preimage?: string | null;
             /**
-             * @description Optional swap ID. When provided alongside `preimage`, the backend marks the
-             *     swap as ClientRedeemed so the EVM claimer can proceed.
+             * @description Optional swap ID. When provided alongside `preimage`, the intent must spend
+             *     the swap's VHTLC, and the backend records the claim (ClientRedeemed) so it
+             *     can collect its own leg: the EVM HTLC, the on-chain BTC HTLC or the held
+             *     Lightning payment.
              */
             swap_id?: string | null;
         };

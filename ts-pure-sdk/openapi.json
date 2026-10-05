@@ -7043,7 +7043,7 @@
           },
           "swap_id": {
             "type": ["string", "null"],
-            "description": "Optional swap ID. When provided alongside `preimage`, the backend marks the\nswap as ClientRedeemed so the EVM claimer can proceed."
+            "description": "Optional swap ID. When provided alongside `preimage`, the intent must spend\nthe swap's VHTLC, and the backend records the claim (ClientRedeemed) so it\ncan collect its own leg: the EVM HTLC, the on-chain BTC HTLC or the held\nLightning payment."
           }
         }
       },
