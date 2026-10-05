@@ -249,6 +249,39 @@ describe("Arkade to Lightning creation checks the hash lock against the invoice"
   });
 });
 
+describe("Arkade to Lightning creation rebuilds the VHTLC it asks the user to fund", () => {
+  const create = (ctx: CreateSwapContext) =>
+    createArkadeToLightningSwap({ lightningInvoice: A2L_INVOICE }, ctx);
+
+  it("refuses an address the server built on another hash", async () => {
+    const { ctx, stored } = contextAnswering(await paramsAt(1), {
+      ...A2L,
+      arkade_vhtlc_address: L2A.arkade_vhtlc_address,
+    });
+    const error = await refusal(create(ctx));
+    expect(error.field).toBe("arkade_vhtlc_address");
+    expect(error.expected).toBe(A2L.arkade_vhtlc_address);
+    expect(stored).toHaveLength(0);
+  });
+
+  it("refuses a VHTLC that refunds to another key", async () => {
+    const { ctx, stored } = contextAnswering(await paramsAt(0), A2L);
+    const error = await refusal(create(ctx));
+    expect(error.field).toBe("arkade_vhtlc_address");
+    expect(stored).toHaveLength(0);
+  });
+
+  it("refuses a script version this client cannot refund", async () => {
+    const { ctx, stored } = contextAnswering(await paramsAt(1), {
+      ...A2L,
+      arkade_htlc_script_version: 2,
+    });
+    const error = await refusal(create(ctx));
+    expect(error.field).toBe("arkade_htlc_script_version");
+    expect(stored).toHaveLength(0);
+  });
+});
+
 describe("a server refresh cannot replace a stored swap's terms", () => {
   async function storedArkadeToLightning(): Promise<{
     client: Client;
@@ -526,6 +559,27 @@ describe("recovery checks a swap it stores for the first time", () => {
       "an Arkade to Lightning hash lock that is not its invoice's payment hash",
       recovered({ ...A2L, hash_lock: otherLock }, "arkade_to_lightning"),
       "hash_lock",
+    ],
+    [
+      "an Arkade to Lightning VHTLC that refunds to another key than the one at the server's index",
+      recovered(A2L, "arkade_to_lightning", 0),
+      "arkade_vhtlc_address",
+    ],
+    [
+      "an Arkade to Lightning VHTLC address built on another hash",
+      recovered(
+        { ...A2L, arkade_vhtlc_address: L2A.arkade_vhtlc_address },
+        "arkade_to_lightning",
+      ),
+      "arkade_vhtlc_address",
+    ],
+    [
+      "an Arkade to Lightning swap on a script version this client cannot refund",
+      recovered(
+        { ...A2L, arkade_htlc_script_version: 0 },
+        "arkade_to_lightning",
+      ),
+      "arkade_htlc_script_version",
     ],
     [
       "a Bitcoin to Lightning hash lock that is not its invoice's payment hash",

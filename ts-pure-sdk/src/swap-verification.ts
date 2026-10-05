@@ -3,10 +3,21 @@
  * holds, before the client stores it, shows it or pays into it.
  */
 
-import type { GetSwapResponse } from "./api/client.js";
+import { ripemd160 } from "@noble/hashes/legacy.js";
+import { hex } from "@scure/base";
+import type {
+  ArkadeToLightningSwapResponse,
+  GetSwapResponse,
+} from "./api/client.js";
+import { getNetworkHrp, getNetworkName } from "./arkade-network.js";
 import { invoiceAmountMsat, invoicePaymentHash } from "./bolt11.js";
+import { parseXOnlyPubKey } from "./refund/arkade.js";
 import { bytesToHex, type SwapParams } from "./signer/index.js";
 import type { LightningPaymentHash, StoredSwap } from "./storage/types.js";
+import {
+  ARKADE_HTLC_SCRIPT_VERSION_STRICT,
+  StrictVhtlcScript,
+} from "./strict-vhtlc.js";
 
 /**
  * The server's terms for a swap do not bind to what this client holds: a
@@ -150,6 +161,65 @@ export function checkedLightningPaymentHash(
 }
 
 /**
+ * Rebuilds the Arkade to Lightning VHTLC the user is asked to fund, as a
+ * refund rebuilds it, from the invoice's payment hash and the swap's refund
+ * key, and refuses a script version this client cannot refund. Consumers fund
+ * `arkade_vhtlc_address` straight from the stored response, so it is checked
+ * before the swap is first stored: at creation, or when recovery stores it.
+ */
+export function assertArkadeToLightningVhtlc(
+  response: ArkadeToLightningSwapResponse,
+  paymentHash: string,
+  refundPublicKey: Uint8Array,
+): void {
+  const swapId = response.id;
+  if (
+    response.arkade_htlc_script_version !== ARKADE_HTLC_SCRIPT_VERSION_STRICT
+  ) {
+    throw new SwapVerificationError(
+      `Swap ${swapId} uses Arkade HTLC script version ${response.arkade_htlc_script_version}, which this client cannot refund; do not fund it`,
+      {
+        field: "arkade_htlc_script_version",
+        expected: String(ARKADE_HTLC_SCRIPT_VERSION_STRICT),
+        received: String(response.arkade_htlc_script_version),
+        swapId,
+      },
+    );
+  }
+  const seconds = (value: number) => ({
+    type: "seconds" as const,
+    value: BigInt(value),
+  });
+  const server = parseXOnlyPubKey(response.arkade_server_pk);
+  const vhtlc = new StrictVhtlcScript({
+    sender: parseXOnlyPubKey(bytesToHex(refundPublicKey)),
+    receiver: parseXOnlyPubKey(response.receiver_pk),
+    server,
+    preimageHash: ripemd160(hex.decode(paymentHash)),
+    refundLocktime: BigInt(response.vhtlc_refund_locktime),
+    unilateralClaimDelay: seconds(response.unilateral_claim_delay),
+    unilateralRefundDelay: seconds(response.unilateral_refund_delay),
+    unilateralRefundWithoutReceiverDelay: seconds(
+      response.unilateral_refund_without_receiver_delay,
+    ),
+  });
+  const expected = vhtlc
+    .address(getNetworkHrp(getNetworkName(response.network)), server)
+    .encode();
+  if (expected !== response.arkade_vhtlc_address) {
+    throw new SwapVerificationError(
+      `Swap ${swapId}'s VHTLC address ${response.arkade_vhtlc_address} does not lock to the invoice's payment hash and this client's refund key (expected ${expected}); do not fund it`,
+      {
+        field: "arkade_vhtlc_address",
+        expected,
+        received: response.arkade_vhtlc_address,
+        swapId,
+      },
+    );
+  }
+}
+
+/**
  * How the keys recovery derives at the server's `index` fail to match a
  * stored swap, if they do. The swap's locks were built on the stored keys and
  * preimage, so keys from another index must never replace them.
@@ -178,9 +248,10 @@ export function recoveredKeysChange(
 /**
  * How a server copy of a swap this client has not stored fails the checks
  * creation makes on the server's terms, if it does: a Lightning to X invoice
- * must pay the hash of the secret in `swapParams`, and an Arkade or Bitcoin to
- * Lightning hash lock must be the payment hash of the invoice it pays. A field
- * that is missing or does not decode fails too.
+ * must pay the hash of the secret in `swapParams`, an Arkade or Bitcoin to
+ * Lightning hash lock must be the payment hash of the invoice it pays, and an
+ * Arkade to Lightning VHTLC must rebuild from that hash and the refund key in
+ * `swapParams`. A field that is missing or does not decode fails too.
  */
 export function unboundTerms(
   fresh: GetSwapResponse,
@@ -197,6 +268,20 @@ export function unboundTerms(
         break;
       // EVM-sourced swaps are left to the commitments their creation records.
       case "arkade_to_lightning":
+        assertArkadeToLightningVhtlc(
+          fresh,
+          normalizeHash(
+            checkedLightningPaymentHash(
+              {},
+              {
+                hash_lock: fresh.hash_lock,
+                client_lightning_invoice: fresh.client_lightning_invoice,
+              },
+            ).hash,
+          ),
+          swapParams.publicKey,
+        );
+        break;
       case "bitcoin_to_lightning":
         checkedLightningPaymentHash(
           {},

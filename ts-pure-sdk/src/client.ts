@@ -3151,9 +3151,12 @@ export class Client {
    * other keys than the stored ones, or if the server's copy fails the checks
    * `getSwap` makes with `updateStorage`. A swap not stored yet is stored only
    * if a Lightning to X invoice pays the hash of the secret derived at the
-   * server's index, and an X to Lightning hash lock is the payment hash of the
-   * invoice it pays. Lock addresses are not rebuilt. A swap that fails is
-   * left out of storage and of the result, with a warning logged.
+   * server's index, an X to Lightning hash lock is the payment hash of the
+   * invoice it pays, and an Arkade to Lightning VHTLC, on a script version
+   * this client can refund, rebuilds to `arkade_vhtlc_address` from that hash
+   * and the refund key derived at the server's index. Other directions' lock
+   * addresses are not rebuilt. A swap that fails is left out of storage and
+   * of the result, with a warning logged.
    *
    * @returns Recovery metadata and the recovered swaps stored locally.
    */
@@ -8129,10 +8132,12 @@ export class Client {
    *
    * @param options - The swap options.
    * @returns The swap response and parameters for storage.
-   * @throws {SwapVerificationError} if the server's hash lock or invoice does
-   *   not match: a hash lock that is not the payment hash of the invoice it
-   *   pays, or an invoice other than the supplied `lightningInvoice`. Nothing
-   *   is stored; do not fund it.
+   * @throws {SwapVerificationError} if the server's hash lock, invoice or
+   *   VHTLC does not match: a hash lock that is not the payment hash of the
+   *   invoice it pays, an invoice other than the supplied `lightningInvoice`,
+   *   a VHTLC address that does not lock to that hash and this swap's refund
+   *   key, or a script version this client cannot refund. Nothing is stored;
+   *   do not fund the VHTLC.
    * @throws Error if `lightningInvoice` is not a BOLT11 invoice (before any
    *   request is made), or if the swap creation fails.
    *

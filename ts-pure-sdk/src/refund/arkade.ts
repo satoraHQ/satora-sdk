@@ -96,7 +96,7 @@ function secondsToTimelock(
  * Parse public key, handling both compressed (33-byte) and x-only (32-byte) formats.
  * Returns x-only (32-byte) format.
  */
-function parseXOnlyPubKey(pubKeyHex: string): Uint8Array {
+export function parseXOnlyPubKey(pubKeyHex: string): Uint8Array {
   const bytes = hex.decode(pubKeyHex);
   if (bytes.length === 33) {
     // Compressed pubkey, strip the prefix byte
