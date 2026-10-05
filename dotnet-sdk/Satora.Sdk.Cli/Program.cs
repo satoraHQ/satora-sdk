@@ -89,6 +89,11 @@ internal static class Cli
             Console.Error.WriteLine($"error: {ex.Message}");
             return 1;
         }
+        catch (ArgumentException ex)
+        {
+            Console.Error.WriteLine($"error: {ex.Message}");
+            return 2;
+        }
     }
 
     private static int Fail(string message)
@@ -131,6 +136,7 @@ internal static class Cli
                                         `balance` / `address` / `flow`.
                                         Stays in this process's memory only.
                 ARKADE_NETWORK          mainnet|testnet|signet|regtest   (default mainnet)
+                                        testnet has no defaults: set the three URLs below.
                 LENDASWAP_API_URL       override the network's default backend URL
                 ARKADE_URL              override the network's default arkd gRPC endpoint
                 ESPLORA_URL             override the network's default esplora HTTP endpoint

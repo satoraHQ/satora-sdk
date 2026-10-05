@@ -35,6 +35,10 @@
     <None Include="build\Satora.Sdk.targets" Pack="true" PackagePath="build\" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Satora.Sdk.Tests" />
+  </ItemGroup>
+
   <!-- Surface the uniffi-generated tagged enums under our public
        Satora.Sdk namespace via global type aliases. Callers write
        `ChainId.Arbitrum` / `TokenId.Usdt0Arbitrum` / `QuoteAmount.Source`

@@ -40,7 +40,7 @@ using var client = new Client(
     BitcoinNetwork.Regtest,
     baseUrl: "http://localhost:3333",
     arkadeServerUrl: "http://localhost:7070",
-    esploraUrl: "http://localhost:3000");
+    esploraUrl: "http://localhost:3000/api");
 ```
 
 ### Network defaults
@@ -48,12 +48,17 @@ using var client = new Client(
 | `BitcoinNetwork` | `baseUrl`                            | `arkadeServerUrl`             | `esploraUrl`                |
 | ---------------- | ------------------------------------ | ----------------------------- | --------------------------- |
 | `Mainnet`        | `https://api.satora.io`              | `https://arkade.computer`     | `https://mempool.space/api` |
-| `Testnet`        | `https://mutinynetswap.lendasat.com` | `https://mutinynet.arkade.sh` | `https://mutinynet.com/api` |
+| `Testnet`        | none                                 | none                          | none                        |
 | `Signet`         | `https://mutinynetswap.lendasat.com` | `https://mutinynet.arkade.sh` | `https://mutinynet.com/api` |
-| `Regtest`        | `http://localhost:3333`              | `http://localhost:7070`       | `http://localhost:3000`     |
+| `Regtest`        | `http://localhost:3333`              | `http://localhost:7070`       | `http://localhost:3000/api` |
 
-`Testnet` and `Signet` both route to mutinynet — vanilla Bitcoin testnet
-isn't supported by the Arkade infrastructure.
+`esploraUrl` is the esplora API root, which Mempool serves under `/api`;
+its root serves the web app, so a URL without `/api` fails on the first
+chain read.
+
+No Arkade infrastructure runs on testnet, so `Testnet` throws an
+`ArgumentException` unless all three URLs are passed. Mutinynet is a
+signet: use `Signet` for it.
 
 ## Supported swap pairs
 

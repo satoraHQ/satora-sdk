@@ -202,6 +202,10 @@ public sealed class Client : IDisposable
     /// Optional SQLite DB path for ark-rs contract-manager state. If null,
     /// ark-rs uses its default <c>contracts.db</c> path.
     /// </param>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="network"/> has no default endpoints
+    /// (<see cref="BitcoinNetwork.Testnet"/>) and one was not passed.
+    /// </exception>
     public Client(
         string mnemonic,
         BitcoinNetwork network = BitcoinNetwork.Mainnet,
@@ -212,18 +216,31 @@ public sealed class Client : IDisposable
         string? contractDbPath = null)
     {
         var defaults = Defaults.For(network);
+        var resolvedBaseUrl = baseUrl
+            ?? defaults?.BaseUrl
+            ?? throw NoDefault(network, nameof(baseUrl));
+        var resolvedArkadeServerUrl = arkadeServerUrl
+            ?? defaults?.ArkadeServerUrl
+            ?? throw NoDefault(network, nameof(arkadeServerUrl));
+        var resolvedEsploraUrl = esploraUrl
+            ?? defaults?.EsploraUrl
+            ?? throw NoDefault(network, nameof(esploraUrl));
+
         var arkadeConfig = new Ffi.ArkadeConfig(
-            arkadeServerUrl ?? defaults.ArkadeServerUrl,
-            esploraUrl ?? defaults.EsploraUrl,
+            resolvedArkadeServerUrl,
+            resolvedEsploraUrl,
             mnemonic,
             network,
             contractDbPath);
         _ffi = TryOrThrow(() => Ffi.SatoraClient.NewWithArkade(
-            baseUrl ?? defaults.BaseUrl, mnemonic, arkadeConfig, referralCode));
+            resolvedBaseUrl, mnemonic, arkadeConfig, referralCode));
     }
 
     /// <summary>Releases the FFI handle. Idempotent.</summary>
     public void Dispose() => _ffi.Dispose();
+
+    private static ArgumentException NoDefault(BitcoinNetwork network, string parameter) =>
+        new($"{network} has no default endpoints; pass {parameter}.", parameter);
 
     /// <summary>
     /// Shared helper: invoke an FFI call and re-wrap its tagged-enum
@@ -655,24 +672,26 @@ internal static class Defaults
 {
     internal readonly record struct Endpoints(string BaseUrl, string ArkadeServerUrl, string EsploraUrl);
 
-    internal static Endpoints For(BitcoinNetwork network) => network switch
+    internal static Endpoints? For(BitcoinNetwork network) => network switch
     {
         BitcoinNetwork.Mainnet => new(
             "https://api.satora.io",
             "https://arkade.computer",
             "https://mempool.space/api"),
-        // Testnet and Signet both route to mutinynet — vanilla Bitcoin
-        // testnet isn't supported by our Arkade infrastructure, and
-        // "testnet" in user-facing language really means "a working
-        // test environment" (= mutinynet, which is technically a Signet).
-        BitcoinNetwork.Testnet or BitcoinNetwork.Signet => new(
+        // No Arkade infrastructure runs on testnet. Mutinynet is a signet,
+        // so a Testnet client pointed there would fail the swaps' network
+        // checks.
+        BitcoinNetwork.Testnet => null,
+        BitcoinNetwork.Signet => new(
             "https://mutinynetswap.lendasat.com",
             "https://mutinynet.arkade.sh",
             "https://mutinynet.com/api"),
+        // The local stack's mempool serves the web app at its root and the
+        // esplora API under /api, as on the other networks.
         BitcoinNetwork.Regtest => new(
             "http://localhost:3333",
             "http://localhost:7070",
-            "http://localhost:3000"),
+            "http://localhost:3000/api"),
         _ => throw new ArgumentOutOfRangeException(nameof(network), network, "Unsupported network."),
     };
 }

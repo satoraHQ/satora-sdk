@@ -16,6 +16,10 @@ public class ClientTests
     private const string TestMnemonic =
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
+    // Nothing listens on port 1, so calls through it fail fast without
+    // leaving the machine.
+    private const string Unreachable = "http://127.0.0.1:1";
+
     /// <summary>
     /// Smoke test that exercises the entire FFI call chain (Rust →
     /// cdylib → uniffi-generated C# → facade) against a real server.
@@ -49,20 +53,48 @@ public class ClientTests
         Assert.NotNull(client);
     }
 
+    public static TheoryData<BitcoinNetwork> Networks => new(Enum.GetValues<BitcoinNetwork>());
+
     /// <summary>
-    /// Every BitcoinNetwork variant has a default URL set; construction
-    /// against each must succeed (defaults are wired, no network calls
-    /// happen at ctor time). If a new variant lands in the FFI enum
-    /// without a matching Defaults.For entry, this catches it.
+    /// Every BitcoinNetwork variant but Testnet has default URLs, so
+    /// construction against each must succeed (no network calls happen
+    /// at ctor time); Testnet must refuse to guess. Driven from the enum,
+    /// so a variant added to the FFI without a Defaults.For entry fails
+    /// here.
     /// </summary>
     [Theory]
-    [InlineData(BitcoinNetwork.Mainnet)]
-    [InlineData(BitcoinNetwork.Testnet)]
-    [InlineData(BitcoinNetwork.Signet)]
-    [InlineData(BitcoinNetwork.Regtest)]
-    public void ConstructionWithEachNetworkSucceeds(BitcoinNetwork network)
+    [MemberData(nameof(Networks))]
+    public void ConstructionWithEachNetworkUsesItsDefaults(BitcoinNetwork network)
     {
+        if (network == BitcoinNetwork.Testnet)
+        {
+            Assert.Throws<ArgumentException>(() => new Client(TestMnemonic, network));
+            return;
+        }
         using var client = new Client(TestMnemonic, network);
+        Assert.NotNull(client);
+    }
+
+    /// <summary>
+    /// Mempool serves the esplora API under /api and its web app at the
+    /// root, so a default without the suffix fails on the first chain read.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(Networks))]
+    public void DefaultEsploraUrlsPointAtTheApiRoot(BitcoinNetwork network)
+    {
+        if (Defaults.For(network) is { } endpoints)
+        {
+            Assert.EndsWith("/api", endpoints.EsploraUrl);
+        }
+    }
+
+    [Fact]
+    public void TestnetNeedsExplicitEndpoints()
+    {
+        var ex = Assert.Throws<ArgumentException>(() => new Client(TestMnemonic, BitcoinNetwork.Testnet));
+        Assert.Equal("baseUrl", ex.ParamName);
+        using var client = new Client(TestMnemonic, BitcoinNetwork.Testnet, Unreachable, Unreachable, Unreachable);
         Assert.NotNull(client);
     }
 
