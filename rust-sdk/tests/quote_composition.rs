@@ -1,4 +1,5 @@
-//! Ported vectors from ts-pure-sdk/tests/compose-{quote-direct-pegged,net-target}.test.ts.
+//! Ported vectors from
+//! ts-pure-sdk/tests/compose-{quote-direct-pegged,net-target,quote-layerzero-fee}.test.ts.
 #[path = "support/quotes.rs"]
 mod quotes;
 use lendaswap_sdk::Client;
@@ -148,6 +149,67 @@ async fn bridge_fee_is_subtracted_at_full_value_and_solana_setup_is_forwarded() 
     assert_eq!(body["from"]["chain_id"], 42161);
     assert_eq!(body["to"]["kind"], "solana");
     assert_eq!(body["cctp_recipient_setup"], true);
+}
+
+#[tokio::test]
+async fn layerzero_fee_is_added_to_the_network_fee_on_both_pinned_sides() {
+    const PLASMA_USDT0: &str = "0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb";
+    let layerzero = json!({"router": "layerzero", "native_fee_sats": "450"});
+    // As a server released before the fee was charged sends the leg.
+    let unpriced = json!({"router": "layerzero"});
+    for (chain, bridge_rate, network_fee) in [
+        ("9745", Some(layerzero), 500),
+        ("9745", Some(unpriced), 50),
+        ("42161", None, 50),
+    ] {
+        for amount in [
+            QuoteAmount::Source(100_000),
+            QuoteAmount::Target(100_000_000),
+        ] {
+            let server = MockServer::start().await;
+            // As the server sends an OFT leg: no `bridge_fee`, since nothing is deducted
+            // from the bridged USDT0.
+            let mut dex = json!({"expected_amount_in":{"raw":"1000000000000000","decimals":18},"estimated_amount_out":{"raw":"100000000","decimals":6},"estimated_settlement_seconds":60,"router":"uniswap_v3","cache_ttl_seconds":30});
+            if let Some(rate) = &bridge_rate {
+                dex["bridge_rate"] = rate.clone();
+            }
+            Mock::given(path("/dex-quote"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(dex))
+                .mount(&server)
+                .await;
+            let (pairs, mut fees, config) = data();
+            fees.pairs[0].fees.source_sats = 50;
+            let q = Client::new(&server.uri())
+                .unwrap()
+                .compose_quote_with_data(
+                    request(
+                        true,
+                        Chain::from_wire_str(chain),
+                        PLASMA_USDT0,
+                        amount.clone(),
+                    ),
+                    100,
+                    &pairs,
+                    &fees,
+                    &config,
+                    0.0,
+                )
+                .await
+                .unwrap();
+            assert_eq!(q.network_fee, network_fee, "{chain} {amount:?}");
+            assert_eq!(q.bridge_fee, None);
+            let fees = u128::from(network_fee);
+            match amount {
+                QuoteAmount::Source(_) => assert_eq!(
+                    q.net_target_amount,
+                    ((100_000 - fees) * 100_000_000 / 100_000).to_string()
+                ),
+                QuoteAmount::Target(_) => {
+                    assert_eq!(q.net_source_amount, (100_000 + fees).to_string())
+                }
+            }
+        }
+    }
 }
 
 #[tokio::test]

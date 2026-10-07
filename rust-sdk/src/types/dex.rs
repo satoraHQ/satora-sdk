@@ -32,7 +32,16 @@ pub enum BridgeRate {
         flat: String,
         flat_with_setup: String,
     },
-    Layerzero,
+    Layerzero {
+        /// The LayerZero messaging fee the server pays in ETH and charges in sats.
+        /// A server released before it charged the fee omits it.
+        #[serde(default = "zero_sats")]
+        native_fee_sats: String,
+    },
+}
+
+fn zero_sats() -> String {
+    "0".into()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

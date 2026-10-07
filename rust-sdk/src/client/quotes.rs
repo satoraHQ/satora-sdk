@@ -625,7 +625,7 @@ impl Client {
                 .as_wire_str()
                 .eq_ignore_ascii_case(&pivot.btc_pegged_token.address);
         let btc_pinned = btc_source == source_pinned;
-        let (btc, evm, decimals, bridge_fee) = if direct_pivot {
+        let (btc, evm, decimals, bridge_fee, bridge_native_fee) = if direct_pivot {
             let (num, den) = rate(&pivot.btc_peg_rate)?;
             let (btc, evm) = if btc_pinned {
                 let evm = ((&pinned * num + &den / 2u32) / den) * &pivot_scale;
@@ -634,7 +634,7 @@ impl Client {
                 let btc = &pinned * den / (&pivot_scale * num);
                 (btc, pinned)
             };
-            (btc, evm, pivot.btc_pegged_token.decimals, BigUint::ZERO)
+            (btc, evm, pivot.btc_pegged_token.decimals, BigUint::ZERO, 0)
         } else {
             let value = if btc_pinned {
                 &pinned * &pivot_scale
@@ -681,13 +681,23 @@ impl Client {
                     dex.expected_amount_in.decimals,
                 ),
             };
+            let bridge_native_fee = match &dex.bridge_rate {
+                Some(BridgeRate::Layerzero { native_fee_sats }) => {
+                    to_u64(&integer(native_fee_sats)?)?
+                }
+                Some(BridgeRate::Cctp { .. }) | None => 0,
+            };
             (
                 btc,
                 evm,
                 decimals,
                 integer(dex.bridge_fee.as_deref().unwrap_or("0"))?,
+                bridge_native_fee,
             )
         };
+        let network_fee = network_fee
+            .checked_add(bridge_native_fee)
+            .ok_or_else(|| invalid("network fee overflow"))?;
         // A negotiated partner rate replaces the pair fee before the extra fee is added.
         let effective_rate =
             referral.base_fee_rate.unwrap_or(pair.fee_percentage) + referral.extra_fee_rate;
