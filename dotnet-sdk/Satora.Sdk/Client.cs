@@ -19,16 +19,19 @@ using Ffi = uniffi.satora_sdk_ffi;
 
 /// <summary>
 /// Which Rust SDK error an <see cref="SdkException"/> carries. Except for
-/// <see cref="UnresolvedFunding"/>, it names the failure, not whether a retry
-/// is safe: <see cref="Transport"/> and
+/// <see cref="UnresolvedFunding"/> and <see cref="InsufficientGas"/>, it names
+/// the failure, not whether a retry is safe: <see cref="Transport"/> and
 /// <see cref="Timeout"/> cover both requests that never reached the server
 /// and spends whose outcome is unknown, and <see cref="Storage"/> from
 /// <see cref="Client.ClaimAsync"/> and <see cref="Client.SettleAsync"/> once
 /// arkd may hold the spend, from <see cref="Client.RefundBitcoinAsync"/>
 /// after a fee bump, or from
 /// <see cref="Client.FundSwapAsync(string, GaslessOpts, CancellationToken)"/>
-/// or <see cref="Client.FundSwapViaRelayAsync"/> at any point, leaves the
-/// outcome unknown too. Each method's remarks say what to do next.
+/// or <see cref="Client.FundSwapViaRelayAsync"/> at any point, or from
+/// <see cref="Client.SweepEvmDepositAsync"/> and
+/// <see cref="Client.RefundEvmHtlcAsync"/> once the transaction is
+/// reserved, leaves the outcome unknown too. Each method's remarks say what
+/// to do next.
 /// </summary>
 public enum SdkErrorKind
 {
@@ -49,9 +52,17 @@ public enum SdkErrorKind
     /// tell. Never fund the swap by other means and do not treat it as
     /// unfunded: follow its status meanwhile, and give it up only once a
     /// check by hand shows where the funds went. After a relay funding,
-    /// <see cref="Client.ReconcileRelayFundingAsync"/> resolves it.
+    /// <see cref="Client.ReconcileRelayFundingAsync"/> resolves it. From
+    /// <see cref="Client.SweepEvmDepositAsync"/> it means a relay funding
+    /// signature can still pull the deposit.
     /// </summary>
     UnresolvedFunding,
+    /// <summary>
+    /// The swap's depositor holds less native gas (ETH on Arbitrum, POL on
+    /// Polygon) than the transaction's estimated fee. Nothing was reserved or
+    /// sent: send the depositor gas and call again.
+    /// </summary>
+    InsufficientGas,
     /// <summary>
     /// A failure in the bindings themselves, a Rust panic included, or a Rust
     /// SDK error this version does not name yet; <see cref="Exception.InnerException"/>
@@ -97,6 +108,7 @@ public sealed class SdkException : Exception
         Ffi.SdkException.Timeout e => new(SdkErrorKind.Timeout, e.@message, innerException: ex),
         Ffi.SdkException.Storage e => new(SdkErrorKind.Storage, e.@message, innerException: ex),
         Ffi.SdkException.UnresolvedFunding e => new(SdkErrorKind.UnresolvedFunding, e.@message, innerException: ex),
+        Ffi.SdkException.InsufficientGas e => new(SdkErrorKind.InsufficientGas, e.@message, innerException: ex),
         Ffi.SdkException.Internal e => new(SdkErrorKind.Internal, e.@message, innerException: ex),
         _ => new(SdkErrorKind.Internal, ex.Message, innerException: ex),
     };
@@ -363,6 +375,41 @@ public sealed record FundReceipt(string UserOpHash, string? TransactionHash)
 public sealed record RelayFunding(string TxHash, bool Eip2612Permit)
 {
     internal static RelayFunding FromFfi(Ffi.RelayFundingReceipt r) => new(r.@txHash, r.@eip2612Permit);
+}
+
+/// <summary>
+/// What a swap's depositor holds, from <see cref="Client.GetDepositorBalanceAsync"/>.
+/// Decimal strings; parse with <see cref="System.Numerics.BigInteger"/>.
+/// </summary>
+/// <param name="TokenUnits">Balance of the token asked about, in its smallest unit.</param>
+/// <param name="NativeWei">Native gas balance (ETH on Arbitrum, POL on Polygon), in wei.</param>
+public sealed record DepositorBalance(string TokenUnits, string NativeWei)
+{
+    internal static DepositorBalance FromFfi(Ffi.DepositorBalance b) => new(b.@tokenUnits, b.@nativeWei);
+}
+
+/// <summary>
+/// A mined EVM transaction the SDK sent and verified, from
+/// <see cref="Client.SweepEvmDepositAsync"/>.
+/// </summary>
+/// <param name="TxHash">Transaction hash, <c>0x…</c>.</param>
+public sealed record EvmReceipt(string TxHash)
+{
+    internal static EvmReceipt FromFfi(Ffi.EvmReceipt r) => new(r.@txHash);
+}
+
+/// <summary>
+/// A verified HTLC refund, from <see cref="Client.RefundEvmHtlcAsync"/>.
+/// </summary>
+/// <param name="TxHash">Refund transaction hash, <c>0x…</c>.</param>
+/// <param name="LockToken">
+/// Contract (<c>0x…</c>) of the token the HTLC locked, which the refund paid
+/// to the depositor; pass it to <see cref="Client.SweepEvmDepositAsync"/> as
+/// <c>token</c> to send it on.
+/// </param>
+public sealed record HtlcRefund(string TxHash, string LockToken)
+{
+    internal static HtlcRefund FromFfi(Ffi.HtlcRefund r) => new(r.@txHash, r.@lockToken);
 }
 
 /// <summary>
@@ -1327,7 +1374,7 @@ public sealed class Client : IDisposable
     /// How long the signatures stay valid, in whole seconds from signing. The
     /// relay can land the funding until then, so the depositor's tokens stay
     /// committed to it until chain time passes that deadline by 120 seconds,
-    /// and a sweep of the deposit waits as long. It must end
+    /// and <see cref="SweepEvmDepositAsync"/> waits as long. It must end
     /// before the swap's <see cref="SwapDetails.EvmRefundLocktime"/>; a
     /// funding started late should pass a shorter deadline so that a funding
     /// landing at its end still leaves time to claim.
@@ -1406,6 +1453,140 @@ public sealed class Client : IDisposable
             "0", nodeRpcUrl, 0, Seconds(timeout, nameof(timeout), roundUp: true));
         return Task.Run(
             () => TryOrThrow(() => ffi.ReconcileGaslessRelayFunding(swapId, opts)),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// The balance of <paramref name="token"/>, the swap's source token when
+    /// null, and of native gas at a stored EVM-sourced swap's depositor
+    /// address. Reads only, so every error can be retried.
+    /// </summary>
+    /// <param name="swapId">UUID of an EVM-sourced swap in this client's storage.</param>
+    /// <param name="token">ERC-20 contract address (<c>0x…</c>); null for the swap's source token.</param>
+    /// <param name="nodeRpcUrl">EVM node; null for the chain's public default.</param>
+    /// <remarks>
+    /// An argument that does not parse throws <see cref="SdkException"/> with
+    /// <see cref="SdkErrorKind.InvalidSwap"/> before anything is read, and so
+    /// does a swap this client does not store.
+    /// </remarks>
+    public Task<DepositorBalance> GetDepositorBalanceAsync(
+        string swapId,
+        string? token = null,
+        string? nodeRpcUrl = null,
+        CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        return Task.Run(
+            () => TryOrThrow(() => DepositorBalance.FromFfi(
+                ffi.DepositorBalance(swapId, token, nodeRpcUrl))),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Send the depositor's whole balance of <paramref name="token"/>, the
+    /// swap's source token when null, to <paramref name="destination"/>, and
+    /// return once the receipt shows the transfer: a deposit that cannot fund
+    /// the swap, the excess over a proven funding, or the lock token
+    /// <see cref="RefundEvmHtlcAsync"/> returned.
+    /// </summary>
+    /// <param name="swapId">UUID of an EVM-sourced swap in this client's storage.</param>
+    /// <param name="destination">EVM address (<c>0x…</c>) that receives the tokens; not the depositor itself.</param>
+    /// <param name="timeout">Bounds the whole call, including the wait for the receipt.</param>
+    /// <param name="token">ERC-20 contract address (<c>0x…</c>); null for the swap's source token.</param>
+    /// <param name="nodeRpcUrl">EVM node for the reads and the broadcast; null for the chain's public default.</param>
+    /// <remarks>
+    /// <para>
+    /// The depositor pays the gas from its own native balance, so send it a
+    /// little ETH (Arbitrum) or POL (Polygon) first: with less than the
+    /// transfer's estimated fee the call throws
+    /// <see cref="SdkErrorKind.InsufficientGas"/> before anything is reserved.
+    /// While a relay funding signature can still pull the deposit it throws
+    /// <see cref="SdkErrorKind.UnresolvedFunding"/> before anything is sent:
+    /// reconcile the funding with <see cref="ReconcileRelayFundingAsync"/>,
+    /// or wait until chain time passes the signatures' deadline by 120
+    /// seconds. An argument that does not parse throws
+    /// <see cref="SdkErrorKind.InvalidSwap"/> before anything is read.
+    /// </para>
+    /// <para>
+    /// The transfer is reserved with its amount before it is sent and its
+    /// hash recorded after, so calling again with the same token and
+    /// destination verifies a recorded transfer instead of sending another,
+    /// and returns the settled receipt once the balance it moved is gone. A
+    /// transfer that mined and reverted moved nothing: the call throws
+    /// <see cref="SdkErrorKind.InvalidSwap"/>, and the next call sends a new
+    /// one. <see cref="SdkErrorKind.Transport"/>,
+    /// <see cref="SdkErrorKind.Timeout"/> and
+    /// <see cref="SdkErrorKind.Storage"/> can leave the outcome unknown; call
+    /// again. A transfer reserved but never recorded is sent again by the next
+    /// call with the same token and destination, from the balance then held,
+    /// since a second whole-balance transfer to the same destination moves
+    /// what is there or reverts. Once that balance is gone the call throws
+    /// <see cref="SdkErrorKind.InvalidSwap"/> and releases the reservation.
+    /// Until then a sweep of another token or to another destination throws
+    /// <see cref="SdkErrorKind.InvalidSwap"/> naming the sweep to repeat.
+    /// </para>
+    /// </remarks>
+    public Task<EvmReceipt> SweepEvmDepositAsync(
+        string swapId,
+        string destination,
+        TimeSpan timeout,
+        string? token = null,
+        string? nodeRpcUrl = null,
+        CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        var seconds = Seconds(timeout, nameof(timeout), roundUp: true);
+        return Task.Run(
+            () => TryOrThrow(() => EvmReceipt.FromFfi(
+                ffi.SweepEvmDeposit(swapId, token, destination, nodeRpcUrl, seconds))),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Refund a funded EVM-sourced swap's HTLC once chain time reaches its
+    /// <see cref="SwapDetails.EvmRefundLocktime"/>. The depositor calls the
+    /// coordinator's <c>refundTo</c>, which pays the token the HTLC locked, a
+    /// BTC-pegged token rather than the source token, back to the depositor;
+    /// <see cref="SweepEvmDepositAsync"/> with the returned
+    /// <see cref="HtlcRefund.LockToken"/> sends it on.
+    /// </summary>
+    /// <param name="swapId">UUID of an EVM-sourced swap in this client's storage.</param>
+    /// <param name="timeout">Bounds the whole call, including the wait for the receipt.</param>
+    /// <param name="nodeRpcUrl">EVM node for the reads and the broadcast; null for the chain's public default.</param>
+    /// <remarks>
+    /// <para>
+    /// The depositor pays the gas, so send it a little native gas first.
+    /// Before the locktime the call throws
+    /// <see cref="SdkErrorKind.InvalidSwap"/>, and with less native gas than
+    /// the refund's estimated fee <see cref="SdkErrorKind.InsufficientGas"/>,
+    /// both before anything is reserved.
+    /// </para>
+    /// <para>
+    /// The refund is reserved before it is sent and its hash recorded after,
+    /// so calling again verifies the recorded refund instead of sending
+    /// another. A refund that mined and reverted refunded nothing: the call
+    /// throws <see cref="SdkErrorKind.InvalidSwap"/>, and the next call sends
+    /// a new one while the HTLC is active. <see cref="SdkErrorKind.Transport"/>,
+    /// <see cref="SdkErrorKind.Timeout"/> and <see cref="SdkErrorKind.Storage"/>
+    /// can leave the outcome unknown; call again. A refund reserved but never
+    /// recorded is sent again while the HTLC is active, since a second
+    /// <c>refundTo</c> of the same deposit reverts. Once the HTLC is no longer
+    /// active, or the coordinator no longer holds its deposit, the call throws
+    /// <see cref="SdkErrorKind.InvalidSwap"/>: that refund or a claim settled
+    /// it, so check the depositor's balance of the lock token.
+    /// </para>
+    /// </remarks>
+    public Task<HtlcRefund> RefundEvmHtlcAsync(
+        string swapId,
+        TimeSpan timeout,
+        string? nodeRpcUrl = null,
+        CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        var seconds = Seconds(timeout, nameof(timeout), roundUp: true);
+        return Task.Run(
+            () => TryOrThrow(() => HtlcRefund.FromFfi(
+                ffi.RefundEvmHtlc(swapId, nodeRpcUrl, seconds))),
             cancellationToken);
     }
 

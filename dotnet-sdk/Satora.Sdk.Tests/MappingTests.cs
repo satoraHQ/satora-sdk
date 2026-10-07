@@ -118,6 +118,30 @@ public class MappingTests
     }
 
     [Fact]
+    public void DepositorBalanceKeepsTheTokenAndNativeBalances()
+    {
+        var balance = DepositorBalance.FromFfi(new Ffi.DepositorBalance(
+            @tokenUnits: "1",
+            @nativeWei: "2"));
+
+        Assert.Equal(new DepositorBalance(TokenUnits: "1", NativeWei: "2"), balance);
+    }
+
+    [Fact]
+    public void EvmReceiptKeepsTheHash()
+    {
+        Assert.Equal(new EvmReceipt("0xcd"), EvmReceipt.FromFfi(new Ffi.EvmReceipt(@txHash: "0xcd")));
+    }
+
+    [Fact]
+    public void HtlcRefundKeepsTheHashAndTheLockToken()
+    {
+        var refund = HtlcRefund.FromFfi(new Ffi.HtlcRefund(@txHash: "0xcd", @lockToken: "0xef"));
+
+        Assert.Equal(new HtlcRefund(TxHash: "0xcd", LockToken: "0xef"), refund);
+    }
+
+    [Fact]
     public void RecoveryResultKeepsTheSwapIdsAndTheCursor()
     {
         var result = RecoveryResult.FromFfi(new Ffi.RecoveryResult(

@@ -128,6 +128,7 @@ public class ClientTests
         { new Ffi.SdkException.Timeout("detail"), SdkErrorKind.Timeout },
         { new Ffi.SdkException.Storage("detail"), SdkErrorKind.Storage },
         { new Ffi.SdkException.UnresolvedFunding("detail"), SdkErrorKind.UnresolvedFunding },
+        { new Ffi.SdkException.InsufficientGas("detail"), SdkErrorKind.InsufficientGas },
         { new Ffi.SdkException.Internal("detail"), SdkErrorKind.Internal },
         { new Ffi.PanicException("detail"), SdkErrorKind.Internal },
     };
@@ -226,6 +227,24 @@ public class ClientTests
             _ = client.FundSwapViaRelayAsync(
                 "missing", TimeSpan.FromSeconds(-1), TimeSpan.FromSeconds(5));
         });
+    }
+
+    [Fact]
+    public async Task DepositorCallsRefuseAnInvalidAddressBeforeReadingTheSwap()
+    {
+        using var client = new Client(
+            TestMnemonic, BitcoinNetwork.Regtest, Unreachable, Unreachable, Unreachable);
+        var swept = await Assert.ThrowsAsync<SdkException>(() => client.SweepEvmDepositAsync(
+            "missing", "not an address", TimeSpan.FromSeconds(5)));
+        Assert.Equal(SdkErrorKind.InvalidSwap, swept.Kind);
+        Assert.StartsWith("destination", swept.Message);
+        var balance = await Assert.ThrowsAsync<SdkException>(
+            () => client.GetDepositorBalanceAsync("missing", token: "0x12"));
+        Assert.StartsWith("token", balance.Message);
+        var refund = await Assert.ThrowsAsync<SdkException>(
+            () => client.RefundEvmHtlcAsync("missing", TimeSpan.FromSeconds(5)));
+        Assert.Equal(SdkErrorKind.InvalidSwap, refund.Kind);
+        Assert.Equal("swap record missing", refund.Message);
     }
 
     [Fact]

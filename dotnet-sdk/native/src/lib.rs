@@ -33,6 +33,7 @@ use lendaswap_sdk::arkade::VhtlcBalance as SdkVhtlcBalance;
 use lendaswap_sdk::bitcoin::BitcoinSpendOptions;
 use lendaswap_sdk::bitcoin::BitcoinSpendReceipt as SdkBitcoinSpendReceipt;
 use lendaswap_sdk::bitcoin::EsploraBackend;
+use lendaswap_sdk::evm::Address as EvmAddress;
 use lendaswap_sdk::evm::RelayFundingOptions as SdkRelayFundingOptions;
 use lendaswap_sdk::evm::RelayFundingState as SdkRelayFundingState;
 use lendaswap_sdk::evm::U256 as EvmU256;
@@ -126,6 +127,8 @@ pub enum SdkError {
     #[error("{message}")]
     UnresolvedFunding { message: String },
     #[error("{message}")]
+    InsufficientGas { message: String },
+    #[error("{message}")]
     Internal { message: String },
 }
 
@@ -145,6 +148,7 @@ impl From<SdkErrorInner> for SdkError {
             SdkErrorInner::Timeout(message) => Self::Timeout { message },
             SdkErrorInner::Storage(message) => Self::Storage { message },
             SdkErrorInner::UnresolvedFunding(message) => Self::UnresolvedFunding { message },
+            SdkErrorInner::InsufficientGas(message) => Self::InsufficientGas { message },
             // `Error` is `#[non_exhaustive]` upstream: a new variant arrives
             // as `Internal` until it is mirrored here.
             _ => Self::Internal {
@@ -1560,6 +1564,167 @@ impl SatoraClient {
     }
 }
 
+// ─── EVM depositor ─────────────────────────────────────────────────────
+
+/// What a swap's depositor holds, from [`SatoraClient::depositor_balance`].
+/// Decimal strings, since neither fits a uniffi integer.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct DepositorBalance {
+    /// In the token's smallest unit.
+    pub token_units: String,
+    pub native_wei: String,
+}
+
+/// A mined EVM transaction the SDK sent and verified.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct EvmReceipt {
+    /// `0x…`.
+    pub tx_hash: String,
+}
+
+/// A verified HTLC refund, from [`SatoraClient::refund_evm_htlc`].
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct HtlcRefund {
+    /// `0x…`.
+    pub tx_hash: String,
+    /// The token the HTLC locked, which the refund paid to the depositor: pass
+    /// it to [`SatoraClient::sweep_evm_deposit`] to send it on. `0x…`.
+    pub lock_token: String,
+}
+
+fn evm_address(value: &str, name: &str) -> Result<EvmAddress, SdkError> {
+    value
+        .parse()
+        .map_err(|e| invalid_argument(format!("{name} is not an EVM address: {e}")))
+}
+
+fn optional_evm_address(value: Option<String>, name: &str) -> Result<Option<EvmAddress>, SdkError> {
+    value
+        .as_deref()
+        .map(|value| evm_address(value, name))
+        .transpose()
+}
+
+#[uniffi::export]
+impl SatoraClient {
+    /// The balance of `token`, the swap's source token with `None`, and of
+    /// native gas at a stored EVM-sourced swap's depositor, through
+    /// `node_rpc_url` or with `None` the chain's public default. Reads only,
+    /// so every error can be retried.
+    pub fn depositor_balance(
+        &self,
+        swap_id: String,
+        token: Option<String>,
+        node_rpc_url: Option<String>,
+    ) -> Result<DepositorBalance, SdkError> {
+        let token = optional_evm_address(token, "token")?;
+        let node_rpc_url = optional_url(node_rpc_url, "node_rpc_url")?;
+        runtime().block_on(async {
+            let balance = self
+                .inner
+                .depositor_balance(&swap_id, token, node_rpc_url.as_ref())
+                .await?;
+            Ok(DepositorBalance {
+                token_units: balance.token_units.to_string(),
+                native_wei: balance.native_wei.to_string(),
+            })
+        })
+    }
+
+    /// Send the depositor's whole balance of `token`, the swap's source token
+    /// with `None`, to `destination`, and return once the receipt shows the
+    /// transfer. The depositor pays the gas from its own native balance, so
+    /// send it gas first; with less than the transfer's estimated fee the
+    /// call fails with `InsufficientGas` before anything is reserved. While a
+    /// relay funding signature can still pull the deposit it fails with
+    /// `UnresolvedFunding`: reconcile the relay funding, or wait until chain
+    /// time passes the signatures' deadline by 120 seconds.
+    ///
+    /// The transfer is reserved with its amount before it is sent and its
+    /// hash recorded after, so calling again verifies a recorded transfer
+    /// instead of sending another, and returns the settled receipt once the
+    /// balance it moved is gone. A transfer that mined and reverted moved
+    /// nothing: it fails with `InvalidSwap`, and the next call sends a new
+    /// one. A `Transport`, `Timeout` or `Storage` error can leave the outcome
+    /// unknown; call again. A transfer reserved but never recorded is sent
+    /// again by the next call with the same token and destination, from the
+    /// balance then held, since a second whole-balance transfer to the same
+    /// destination moves what is there or reverts. Once that balance is gone
+    /// the call fails with `InvalidSwap` and releases the reservation. Until
+    /// then a sweep of another token or to another destination fails with
+    /// `InvalidSwap` naming the sweep to repeat.
+    pub fn sweep_evm_deposit(
+        &self,
+        swap_id: String,
+        token: Option<String>,
+        destination: String,
+        node_rpc_url: Option<String>,
+        timeout_secs: u64,
+    ) -> Result<EvmReceipt, SdkError> {
+        let token = optional_evm_address(token, "token")?;
+        let destination = evm_address(&destination, "destination")?;
+        let node_rpc_url = optional_url(node_rpc_url, "node_rpc_url")?;
+        runtime().block_on(async {
+            let receipt = self
+                .inner
+                .sweep_evm_deposit(
+                    &swap_id,
+                    token,
+                    destination,
+                    node_rpc_url.as_ref(),
+                    std::time::Duration::from_secs(timeout_secs),
+                )
+                .await?;
+            Ok(EvmReceipt {
+                tx_hash: format!("{:#x}", receipt.transaction_hash),
+            })
+        })
+    }
+
+    /// Refund a funded EVM-sourced swap's HTLC once chain time reaches its
+    /// refund locktime: the depositor calls the coordinator's `refundTo`,
+    /// which pays the lock token (the HTLC's BTC-pegged token, not the source
+    /// token) back to the depositor. The result names it; sweep it from there
+    /// with [`Self::sweep_evm_deposit`]. The depositor pays the gas, so send it
+    /// gas first. Before the locktime it fails with `InvalidSwap`, and with
+    /// less native gas than the refund's estimated fee with `InsufficientGas`,
+    /// both before anything is reserved.
+    ///
+    /// The refund is reserved before it is sent and its hash recorded after,
+    /// so calling again verifies the recorded refund instead of sending
+    /// another. A refund that mined and reverted refunded nothing: it fails
+    /// with `InvalidSwap`, and the next call sends a new one while the HTLC is
+    /// active. A `Transport`, `Timeout` or `Storage` error can leave the
+    /// outcome unknown; call again. A refund reserved but never recorded is
+    /// sent again while the HTLC is active, since a second `refundTo` of the
+    /// same deposit reverts. Once the HTLC is no longer active, or the
+    /// coordinator no longer holds its deposit, the call fails with
+    /// `InvalidSwap`: that refund or a claim settled it, so check the
+    /// depositor's balance of the lock token.
+    pub fn refund_evm_htlc(
+        &self,
+        swap_id: String,
+        node_rpc_url: Option<String>,
+        timeout_secs: u64,
+    ) -> Result<HtlcRefund, SdkError> {
+        let node_rpc_url = optional_url(node_rpc_url, "node_rpc_url")?;
+        runtime().block_on(async {
+            let refund = self
+                .inner
+                .refund_evm_htlc(
+                    &swap_id,
+                    node_rpc_url.as_ref(),
+                    std::time::Duration::from_secs(timeout_secs),
+                )
+                .await?;
+            Ok(HtlcRefund {
+                tx_hash: format!("{:#x}", refund.receipt.transaction_hash),
+                lock_token: refund.lock_token.to_string(),
+            })
+        })
+    }
+}
+
 // ─── Status polling ────────────────────────────────────────────────────
 
 /// One swap's status in a [`BulkStatus`]. Mirrors
@@ -2355,6 +2520,10 @@ mod tests {
                 SdkErrorInner::UnresolvedFunding(message()),
                 SdkError::UnresolvedFunding { message: message() },
             ),
+            (
+                SdkErrorInner::InsufficientGas(message()),
+                SdkError::InsufficientGas { message: message() },
+            ),
         ];
         for (error, expected) in cases {
             assert_eq!(SdkError::from(error), expected);
@@ -3046,7 +3215,6 @@ mod tests {
 
     #[test]
     fn relay_funding_state_keeps_each_variant_and_prefixes_the_hash() {
-        use lendaswap_sdk::evm::Address as EvmAddress;
         use lendaswap_sdk::evm::B256;
         use lendaswap_sdk::evm::RelayFunding;
         use lendaswap_sdk::evm::htlc::EvmHtlc;
@@ -3112,6 +3280,53 @@ mod tests {
             matches!(&reconciled, Err(SdkError::InvalidSwap { message }) if message == "swap record missing"),
             "{reconciled:?}"
         );
+    }
+
+    #[test]
+    fn depositor_calls_refuse_bad_arguments_and_unknown_swaps_before_any_request() {
+        const DESTINATION: &str = "0x7777777777777777777777777777777777777777";
+        let client = SatoraClient::new_signing(UNREACHABLE.into(), MNEMONIC.into(), None).unwrap();
+        let refused = |result: Result<(), SdkError>, start: &str| {
+            assert!(
+                matches!(&result, Err(SdkError::InvalidSwap { message }) if message.starts_with(start)),
+                "{start}: {result:?}"
+            );
+        };
+        let sweep = |token: Option<&str>, destination: &str, node: Option<&str>| {
+            client
+                .sweep_evm_deposit(
+                    "missing".into(),
+                    token.map(Into::into),
+                    destination.into(),
+                    node.map(Into::into),
+                    5,
+                )
+                .map(|_| ())
+        };
+        let balance = |token: Option<&str>, node: Option<&str>| {
+            client
+                .depositor_balance(
+                    "missing".into(),
+                    token.map(Into::into),
+                    node.map(Into::into),
+                )
+                .map(|_| ())
+        };
+        let refund = |node: Option<&str>| {
+            client
+                .refund_evm_htlc("missing".into(), node.map(Into::into), 5)
+                .map(|_| ())
+        };
+        refused(sweep(None, "not an address", None), "destination");
+        refused(sweep(Some("0x12"), DESTINATION, None), "token");
+        refused(balance(Some("0x12"), None), "token");
+        refused(sweep(None, DESTINATION, Some("not a url")), "node_rpc_url");
+        refused(balance(None, Some("not a url")), "node_rpc_url");
+        refused(refund(Some("not a url")), "node_rpc_url");
+        // Valid arguments reach storage, which knows no such swap.
+        refused(sweep(None, DESTINATION, None), "swap record missing");
+        refused(balance(Some(DESTINATION), None), "swap record missing");
+        refused(refund(None), "swap record missing");
     }
 
     #[test]

@@ -815,6 +815,12 @@ static class _UniFFILib {
     
     
     
+    
+    
+    
+    
+    
+    
 
     static _UniFFILib() {
         _UniFFILib.uniffiCheckContractApiVersion();
@@ -911,6 +917,10 @@ static class _UniFFILib {
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_depositor_balance(IntPtr @ptr,RustBuffer @swapId,RustBuffer @token,RustBuffer @nodeRpcUrl,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_fund_arkade_swap(IntPtr @ptr,RustBuffer @swapId,ref UniffiRustCallStatus _uniffi_out_err
     );
 
@@ -951,7 +961,15 @@ static class _UniFFILib {
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_refund_evm_htlc(IntPtr @ptr,RustBuffer @swapId,RustBuffer @nodeRpcUrl,ulong @timeoutSecs,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_settle(IntPtr @ptr,RustBuffer @swapId,RustBuffer @operation,RustBuffer @destination,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_sweep_evm_deposit(IntPtr @ptr,RustBuffer @swapId,RustBuffer @token,RustBuffer @destination,RustBuffer @nodeRpcUrl,ulong @timeoutSecs,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -1267,6 +1285,10 @@ static class _UniFFILib {
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_depositor_balance(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_fund_arkade_swap(
     );
 
@@ -1307,7 +1329,15 @@ static class _UniFFILib {
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_refund_evm_htlc(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_settle(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_sweep_evm_deposit(
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -1457,6 +1487,12 @@ static class _UniFFILib {
             }
         }
         {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_depositor_balance();
+            if (checksum != 39694) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_depositor_balance` checksum `39694`, library returned `{checksum}`");
+            }
+        }
+        {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_fund_arkade_swap();
             if (checksum != 42294) {
                 throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_fund_arkade_swap` checksum `42294`, library returned `{checksum}`");
@@ -1517,9 +1553,21 @@ static class _UniFFILib {
             }
         }
         {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_refund_evm_htlc();
+            if (checksum != 37928) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_refund_evm_htlc` checksum `37928`, library returned `{checksum}`");
+            }
+        }
+        {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_settle();
             if (checksum != 65000) {
                 throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_settle` checksum `65000`, library returned `{checksum}`");
+            }
+        }
+        {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_sweep_evm_deposit();
+            if (checksum != 35789) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_sweep_evm_deposit` checksum `35789`, library returned `{checksum}`");
             }
         }
         {
@@ -2060,6 +2108,14 @@ public interface ISatoraClient {
     /// <exception cref="SdkException"></exception>
     Swap CreateSwap(ChainId @sourceChain, TokenId @sourceToken, ChainId @targetChain, TokenId @targetToken, QuoteAmount @amount, Address? @receiveTo, bool @gasless, ushort? @extraFeesBps);
     /// <summary>
+    /// The balance of `token`, the swap's source token with `None`, and of
+    /// native gas at a stored EVM-sourced swap's depositor, through
+    /// `node_rpc_url` or with `None` the chain's public default. Reads only,
+    /// so every error can be retried.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    DepositorBalance DepositorBalance(string @swapId, string? @token, string? @nodeRpcUrl);
+    /// <summary>
     /// Pay the VHTLC of an Arkade → Lightning or Arkade → EVM swap from
     /// the SDK's internal Arkade wallet and return the Ark txid as `0x…`
     /// hex. Wraps [`lendaswap_sdk::Client::fund_arkade_swap`]: the wallet
@@ -2256,6 +2312,30 @@ public interface ISatoraClient {
     /// <exception cref="SdkException"></exception>
     BitcoinRefundReceipt RefundBitcoin(string @swapId, string @destination, ulong? @feeRateSatVb, ulong @maximumFeeSats);
     /// <summary>
+    /// Refund a funded EVM-sourced swap's HTLC once chain time reaches its
+    /// refund locktime: the depositor calls the coordinator's `refundTo`,
+    /// which pays the lock token (the HTLC's BTC-pegged token, not the source
+    /// token) back to the depositor. The result names it; sweep it from there
+    /// with [`Self::sweep_evm_deposit`]. The depositor pays the gas, so send it
+    /// gas first. Before the locktime it fails with `InvalidSwap`, and with
+    /// less native gas than the refund's estimated fee with `InsufficientGas`,
+    /// both before anything is reserved.
+    ///
+    /// The refund is reserved before it is sent and its hash recorded after,
+    /// so calling again verifies the recorded refund instead of sending
+    /// another. A refund that mined and reverted refunded nothing: it fails
+    /// with `InvalidSwap`, and the next call sends a new one while the HTLC is
+    /// active. A `Transport`, `Timeout` or `Storage` error can leave the
+    /// outcome unknown; call again. A refund reserved but never recorded is
+    /// sent again while the HTLC is active, since a second `refundTo` of the
+    /// same deposit reverts. Once the HTLC is no longer active, or the
+    /// coordinator no longer holds its deposit, the call fails with
+    /// `InvalidSwap`: that refund or a claim settled it, so check the
+    /// depositor's balance of the lock token.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    HtlcRefund RefundEvmHtlc(string @swapId, string? @nodeRpcUrl, ulong @timeoutSecs);
+    /// <summary>
     /// Claim or refund a swap's Arkade VHTLC to `destination`, an Arkade
     /// address. This spends a swap's VHTLC; [`Self::arkade_settle`]
     /// recovers the wallet's own expired, swept or sub-dust VTXOs and
@@ -2272,6 +2352,32 @@ public interface ISatoraClient {
     /// </summary>
     /// <exception cref="SdkException"></exception>
     ArkadeSettlement Settle(string @swapId, ArkadeSpend @operation, string @destination);
+    /// <summary>
+    /// Send the depositor's whole balance of `token`, the swap's source token
+    /// with `None`, to `destination`, and return once the receipt shows the
+    /// transfer. The depositor pays the gas from its own native balance, so
+    /// send it gas first; with less than the transfer's estimated fee the
+    /// call fails with `InsufficientGas` before anything is reserved. While a
+    /// relay funding signature can still pull the deposit it fails with
+    /// `UnresolvedFunding`: reconcile the relay funding, or wait until chain
+    /// time passes the signatures' deadline by 120 seconds.
+    ///
+    /// The transfer is reserved with its amount before it is sent and its
+    /// hash recorded after, so calling again verifies a recorded transfer
+    /// instead of sending another, and returns the settled receipt once the
+    /// balance it moved is gone. A transfer that mined and reverted moved
+    /// nothing: it fails with `InvalidSwap`, and the next call sends a new
+    /// one. A `Transport`, `Timeout` or `Storage` error can leave the outcome
+    /// unknown; call again. A transfer reserved but never recorded is sent
+    /// again by the next call with the same token and destination, from the
+    /// balance then held, since a second whole-balance transfer to the same
+    /// destination moves what is there or reverts. Once that balance is gone
+    /// the call fails with `InvalidSwap` and releases the reservation. Until
+    /// then a sweep of another token or to another destination fails with
+    /// `InvalidSwap` naming the sweep to repeat.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    EvmReceipt SweepEvmDeposit(string @swapId, string? @token, string @destination, string? @nodeRpcUrl, ulong @timeoutSecs);
     /// <summary>
     /// `GET /version` — canary endpoint. Exercises the full build
     /// chain (Rust → cdylib → uniffi-generated C# → managed test)
@@ -2819,6 +2925,21 @@ public class SatoraClient : ISatoraClient, IDisposable {
     
     
     /// <summary>
+    /// The balance of `token`, the swap's source token with `None`, and of
+    /// native gas at a stored EVM-sourced swap's depositor, through
+    /// `node_rpc_url` or with `None` the chain's public default. Reads only,
+    /// so every error can be retried.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public DepositorBalance DepositorBalance(string @swapId, string? @token, string? @nodeRpcUrl) {
+        return CallWithPointer(thisPtr => FfiConverterTypeDepositorBalance.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_depositor_balance(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterOptionalString.INSTANCE.Lower(@token), FfiConverterOptionalString.INSTANCE.Lower(@nodeRpcUrl), ref _status)
+)));
+    }
+    
+    
+    /// <summary>
     /// Pay the VHTLC of an Arkade → Lightning or Arkade → EVM swap from
     /// the SDK's internal Arkade wallet and return the Ark txid as `0x…`
     /// hex. Wraps [`lendaswap_sdk::Client::fund_arkade_swap`]: the wallet
@@ -3085,6 +3206,37 @@ public class SatoraClient : ISatoraClient, IDisposable {
     
     
     /// <summary>
+    /// Refund a funded EVM-sourced swap's HTLC once chain time reaches its
+    /// refund locktime: the depositor calls the coordinator's `refundTo`,
+    /// which pays the lock token (the HTLC's BTC-pegged token, not the source
+    /// token) back to the depositor. The result names it; sweep it from there
+    /// with [`Self::sweep_evm_deposit`]. The depositor pays the gas, so send it
+    /// gas first. Before the locktime it fails with `InvalidSwap`, and with
+    /// less native gas than the refund's estimated fee with `InsufficientGas`,
+    /// both before anything is reserved.
+    ///
+    /// The refund is reserved before it is sent and its hash recorded after,
+    /// so calling again verifies the recorded refund instead of sending
+    /// another. A refund that mined and reverted refunded nothing: it fails
+    /// with `InvalidSwap`, and the next call sends a new one while the HTLC is
+    /// active. A `Transport`, `Timeout` or `Storage` error can leave the
+    /// outcome unknown; call again. A refund reserved but never recorded is
+    /// sent again while the HTLC is active, since a second `refundTo` of the
+    /// same deposit reverts. Once the HTLC is no longer active, or the
+    /// coordinator no longer holds its deposit, the call fails with
+    /// `InvalidSwap`: that refund or a claim settled it, so check the
+    /// depositor's balance of the lock token.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public HtlcRefund RefundEvmHtlc(string @swapId, string? @nodeRpcUrl, ulong @timeoutSecs) {
+        return CallWithPointer(thisPtr => FfiConverterTypeHtlcRefund.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_refund_evm_htlc(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterOptionalString.INSTANCE.Lower(@nodeRpcUrl), FfiConverterUInt64.INSTANCE.Lower(@timeoutSecs), ref _status)
+)));
+    }
+    
+    
+    /// <summary>
     /// Claim or refund a swap's Arkade VHTLC to `destination`, an Arkade
     /// address. This spends a swap's VHTLC; [`Self::arkade_settle`]
     /// recovers the wallet's own expired, swept or sub-dust VTXOs and
@@ -3104,6 +3256,39 @@ public class SatoraClient : ISatoraClient, IDisposable {
         return CallWithPointer(thisPtr => FfiConverterTypeArkadeSettlement.INSTANCE.Lift(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
     _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_settle(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterTypeArkadeSpend.INSTANCE.Lower(@operation), FfiConverterString.INSTANCE.Lower(@destination), ref _status)
+)));
+    }
+    
+    
+    /// <summary>
+    /// Send the depositor's whole balance of `token`, the swap's source token
+    /// with `None`, to `destination`, and return once the receipt shows the
+    /// transfer. The depositor pays the gas from its own native balance, so
+    /// send it gas first; with less than the transfer's estimated fee the
+    /// call fails with `InsufficientGas` before anything is reserved. While a
+    /// relay funding signature can still pull the deposit it fails with
+    /// `UnresolvedFunding`: reconcile the relay funding, or wait until chain
+    /// time passes the signatures' deadline by 120 seconds.
+    ///
+    /// The transfer is reserved with its amount before it is sent and its
+    /// hash recorded after, so calling again verifies a recorded transfer
+    /// instead of sending another, and returns the settled receipt once the
+    /// balance it moved is gone. A transfer that mined and reverted moved
+    /// nothing: it fails with `InvalidSwap`, and the next call sends a new
+    /// one. A `Transport`, `Timeout` or `Storage` error can leave the outcome
+    /// unknown; call again. A transfer reserved but never recorded is sent
+    /// again by the next call with the same token and destination, from the
+    /// balance then held, since a second whole-balance transfer to the same
+    /// destination moves what is there or reverts. Once that balance is gone
+    /// the call fails with `InvalidSwap` and releases the reservation. Until
+    /// then a sweep of another token or to another destination fails with
+    /// `InvalidSwap` naming the sweep to repeat.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public EvmReceipt SweepEvmDeposit(string @swapId, string? @token, string @destination, string? @nodeRpcUrl, ulong @timeoutSecs) {
+        return CallWithPointer(thisPtr => FfiConverterTypeEvmReceipt.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_sweep_evm_deposit(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterOptionalString.INSTANCE.Lower(@token), FfiConverterString.INSTANCE.Lower(@destination), FfiConverterOptionalString.INSTANCE.Lower(@nodeRpcUrl), FfiConverterUInt64.INSTANCE.Lower(@timeoutSecs), ref _status)
 )));
     }
     
@@ -3565,6 +3750,81 @@ class FfiConverterTypeDepositStatus: FfiConverterRustBuffer<DepositStatus> {
 
 
 /// <summary>
+/// What a swap's depositor holds, from [`SatoraClient::depositor_balance`].
+/// Decimal strings, since neither fits a uniffi integer.
+/// </summary>
+/// <param name="token_units">
+/// In the token's smallest unit.
+/// </param>
+public record DepositorBalance (
+    /// <summary>
+    /// In the token's smallest unit.
+    /// </summary>
+    string @tokenUnits, 
+    string @nativeWei
+) {
+}
+
+class FfiConverterTypeDepositorBalance: FfiConverterRustBuffer<DepositorBalance> {
+    public static FfiConverterTypeDepositorBalance INSTANCE = new FfiConverterTypeDepositorBalance();
+
+    public override DepositorBalance Read(BigEndianStream stream) {
+        return new DepositorBalance(
+            @tokenUnits: FfiConverterString.INSTANCE.Read(stream),
+            @nativeWei: FfiConverterString.INSTANCE.Read(stream)
+        );
+    }
+
+    public override int AllocationSize(DepositorBalance value) {
+        return 0
+            + FfiConverterString.INSTANCE.AllocationSize(value.@tokenUnits)
+            + FfiConverterString.INSTANCE.AllocationSize(value.@nativeWei);
+    }
+
+    public override void Write(DepositorBalance value, BigEndianStream stream) {
+            FfiConverterString.INSTANCE.Write(value.@tokenUnits, stream);
+            FfiConverterString.INSTANCE.Write(value.@nativeWei, stream);
+    }
+}
+
+
+
+/// <summary>
+/// A mined EVM transaction the SDK sent and verified.
+/// </summary>
+/// <param name="tx_hash">
+/// `0x…`.
+/// </param>
+public record EvmReceipt (
+    /// <summary>
+    /// `0x…`.
+    /// </summary>
+    string @txHash
+) {
+}
+
+class FfiConverterTypeEvmReceipt: FfiConverterRustBuffer<EvmReceipt> {
+    public static FfiConverterTypeEvmReceipt INSTANCE = new FfiConverterTypeEvmReceipt();
+
+    public override EvmReceipt Read(BigEndianStream stream) {
+        return new EvmReceipt(
+            @txHash: FfiConverterString.INSTANCE.Read(stream)
+        );
+    }
+
+    public override int AllocationSize(EvmReceipt value) {
+        return 0
+            + FfiConverterString.INSTANCE.AllocationSize(value.@txHash);
+    }
+
+    public override void Write(EvmReceipt value, BigEndianStream stream) {
+            FfiConverterString.INSTANCE.Write(value.@txHash, stream);
+    }
+}
+
+
+
+/// <summary>
 /// Submitted-userOp receipt. `transaction_hash` is `None` when the
 /// SDK's bounded receipt poll ran out — callers can re-poll via
 /// the bundler directly if needed.
@@ -3709,6 +3969,53 @@ class FfiConverterTypeGaslessOpts: FfiConverterRustBuffer<GaslessOpts> {
             FfiConverterOptionalString.INSTANCE.Write(value.@nodeRpcUrl, stream);
             FfiConverterOptionalString.INSTANCE.Write(value.@paymasterContextJson, stream);
             FfiConverterOptionalTypeGasOverrides.INSTANCE.Write(value.@gasOverrides, stream);
+    }
+}
+
+
+
+/// <summary>
+/// A verified HTLC refund, from [`SatoraClient::refund_evm_htlc`].
+/// </summary>
+/// <param name="tx_hash">
+/// `0x…`.
+/// </param>
+/// <param name="lock_token">
+/// The token the HTLC locked, which the refund paid to the depositor: pass
+/// it to [`SatoraClient::sweep_evm_deposit`] to send it on. `0x…`.
+/// </param>
+public record HtlcRefund (
+    /// <summary>
+    /// `0x…`.
+    /// </summary>
+    string @txHash, 
+    /// <summary>
+    /// The token the HTLC locked, which the refund paid to the depositor: pass
+    /// it to [`SatoraClient::sweep_evm_deposit`] to send it on. `0x…`.
+    /// </summary>
+    string @lockToken
+) {
+}
+
+class FfiConverterTypeHtlcRefund: FfiConverterRustBuffer<HtlcRefund> {
+    public static FfiConverterTypeHtlcRefund INSTANCE = new FfiConverterTypeHtlcRefund();
+
+    public override HtlcRefund Read(BigEndianStream stream) {
+        return new HtlcRefund(
+            @txHash: FfiConverterString.INSTANCE.Read(stream),
+            @lockToken: FfiConverterString.INSTANCE.Read(stream)
+        );
+    }
+
+    public override int AllocationSize(HtlcRefund value) {
+        return 0
+            + FfiConverterString.INSTANCE.AllocationSize(value.@txHash)
+            + FfiConverterString.INSTANCE.AllocationSize(value.@lockToken);
+    }
+
+    public override void Write(HtlcRefund value, BigEndianStream stream) {
+            FfiConverterString.INSTANCE.Write(value.@txHash, stream);
+            FfiConverterString.INSTANCE.Write(value.@lockToken, stream);
     }
 }
 
@@ -5340,6 +5647,20 @@ public class SdkException: UniffiException {
     }
     
     
+    public class InsufficientGas : SdkException {
+        // Members
+        public string @message;
+
+        // Constructor
+        public InsufficientGas(
+                string @message) : base(
+                "@message" + "=" + @message) {
+
+            this.@message = @message;
+        }
+    }
+    
+    
     public class Internal : SdkException {
         // Members
         public string @message;
@@ -5398,6 +5719,9 @@ class FfiConverterTypeSdkError : FfiConverterRustBuffer<SdkException>, CallStatu
                 return new SdkException.UnresolvedFunding(
                     FfiConverterString.INSTANCE.Read(stream));
             case 12:
+                return new SdkException.InsufficientGas(
+                    FfiConverterString.INSTANCE.Read(stream));
+            case 13:
                 return new SdkException.Internal(
                     FfiConverterString.INSTANCE.Read(stream));
             default:
@@ -5450,6 +5774,10 @@ class FfiConverterTypeSdkError : FfiConverterRustBuffer<SdkException>, CallStatu
                     + FfiConverterString.INSTANCE.AllocationSize(variant_value.@message);
 
             case SdkException.UnresolvedFunding variant_value:
+                return 4
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@message);
+
+            case SdkException.InsufficientGas variant_value:
                 return 4
                     + FfiConverterString.INSTANCE.AllocationSize(variant_value.@message);
 
@@ -5508,8 +5836,12 @@ class FfiConverterTypeSdkError : FfiConverterRustBuffer<SdkException>, CallStatu
                 stream.WriteInt(11);
                 FfiConverterString.INSTANCE.Write(variant_value.@message, stream);
                 break;
-            case SdkException.Internal variant_value:
+            case SdkException.InsufficientGas variant_value:
                 stream.WriteInt(12);
+                FfiConverterString.INSTANCE.Write(variant_value.@message, stream);
+                break;
+            case SdkException.Internal variant_value:
+                stream.WriteInt(13);
                 FfiConverterString.INSTANCE.Write(variant_value.@message, stream);
                 break;
             default:
