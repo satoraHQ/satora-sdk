@@ -186,7 +186,7 @@ impl AutoClaimer {
             BitcoinToEvm(r) => (r.target_evm_address.as_ref(), true),
             ArkadeToEvm(r) => (r.target_evm_address.as_ref(), true),
             LightningToEvm(r) => (r.target_evm_address.as_ref(), true),
-            EvmToLightning(_) | ArkadeToLightning(_) => {
+            EvmToLightning(_) | ArkadeToLightning(_) | BitcoinToLightning(_) => {
                 return Err(invalid("the server claims this direction"));
             }
         };
@@ -228,7 +228,7 @@ impl AutoClaimer {
             BitcoinToEvm(_) | ArkadeToEvm(_) | LightningToEvm(_) => {
                 self.claim_evm(id, stored, &destination).await
             }
-            EvmToLightning(_) | ArkadeToLightning(_) => {
+            EvmToLightning(_) | ArkadeToLightning(_) | BitcoinToLightning(_) => {
                 Err(invalid("the server claims this direction"))
             }
         }

@@ -562,6 +562,11 @@ impl Client {
                         parse_key(&r.btc_server_refund_pk)?,
                     )
                 }
+                GetSwapResponse::BitcoinToLightning(_) => {
+                    return Err(invalid(
+                        "this SDK cannot rebuild a Bitcoin to Lightning HTLC yet",
+                    ));
+                }
                 _ => return Err(invalid("swap has no on-chain Bitcoin HTLC")),
             };
         let hash_lock: [u8; 20] = hex::decode(hash.trim_start_matches("0x"))

@@ -281,3 +281,31 @@ pub struct EvmToLightningSwapResponse {
     pub target_token: TokenInfo,
     pub wbtc_address: String,
 }
+
+/// `BitcoinToLightningSwapResponse` in `openapi.json`. The SDK reads this direction
+/// but cannot create, fund or refund it.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BitcoinToLightningSwapResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub btc_claim_txid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub btc_fund_txid: Option<String>,
+    pub btc_hash_lock: String,
+    pub btc_htlc_address: String,
+    pub btc_htlc_script_version: i64,
+    pub btc_refund_locktime: i64,
+    pub btc_server_pk: String,
+    pub client_lightning_invoice: String,
+    pub created_at: String,
+    pub fee_sats: i64,
+    pub hash_lock: String,
+    pub id: String,
+    pub invoice_expires_at: i64,
+    pub network: String,
+    pub network_fee_sats: i64,
+    pub source_amount: String,
+    pub source_token: TokenInfo,
+    pub status: SwapStatus,
+    pub target_amount: String,
+    pub target_token: TokenInfo,
+}

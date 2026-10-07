@@ -39,7 +39,7 @@ strings on the wire, while Bitcoin amounts must be positive and fit in `i64`.
 | Operation                 | Rust support                                                                                                                                     |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Discovery and quotes      | Health, tokens, pairs, chain/AA configuration, fees, MTP, referral/support data, typed DEX calls, exact local quote composition                  |
-| Creation and recovery     | All nine swap directions, paginated recovery, SQLite snapshots and execution journals                                                            |
+| Creation and recovery     | All nine creatable directions, paginated recovery that also reads Bitcoin→Lightning, SQLite snapshots and execution journals                     |
 | EVM execution (`gasless`) | External and local wallets, Permit2 and EIP-2612, ERC-4337 and server funding/claims, timeout refunds, deposit recovery and refund continuation  |
 | Bitcoin execution         | Strict version 1 Taproot claims/refunds, multiple outputs, Esplora and optional Electrum                                                         |
 | Arkade execution          | All supported directions, offchain claims/refunds, cooperative refunds, delegated settlement, interrupted-batch recovery                         |
@@ -65,6 +65,9 @@ are in [PARITY_PLAN.md](PARITY_PLAN.md). .NET bindings are outside this change.
 | EVM→Arkade       | Wallet or sponsored HTLC funding | Claim Arkade; refund EVM on failure               |
 | EVM→Lightning    | Wallet or sponsored HTLC funding | Server pays the invoice; refund EVM on failure    |
 
+The SDK also reads Bitcoin→Lightning swaps, which another client created, but
+cannot create, claim, refund or track them.
+
 Examples are compiled templates: [routes.rs](examples/routes.rs) constructs every
 route, [tracking.rs](examples/tracking.rs) wires observations and automation,
 and [recovery.rs](examples/recovery.rs) illustrates settlement and restart recovery.
@@ -85,7 +88,8 @@ must be the payment hash of the returned invoice, which must be the supplied one
 when an invoice was supplied; for Lightning addresses and LNURLs the server resolves
 the invoice, so only that agreement is checked. A supplied invoice that does not
 parse is refused before the request. `recover_swaps` checks a page the same way
-before storing any of it. `Client::send` with the creation request types skips
+before storing any of it, and holds a Bitcoin→Lightning hash lock to its
+invoice's payment hash too. `Client::send` with the creation request types skips
 these checks.
 
 `get_swap_details` preserves the server's full response. `get_swap` projects it

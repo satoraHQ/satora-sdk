@@ -197,6 +197,9 @@ impl Client {
                 // EVM depositors can be external wallets (including TypeScript clients),
                 // so they need not match this SDK's per-swap EVM derivation.
                 GetSwapResponse::EvmToLightning(_) => continue,
+                // The hash lock is the invoice's and the response names no key of the
+                // client's, so nothing in it can show which wallet created the swap.
+                GetSwapResponse::BitcoinToLightning(_) => continue,
                 GetSwapResponse::BitcoinToEvm(r) => {
                     (&r.evm_hash_lock, hex::encode(params.hash_lock))
                 }

@@ -1394,15 +1394,16 @@ pub struct Swap {
     /// claim deadline. Arkade to EVM or Lightning: when the client's refund
     /// unlocks.
     pub vhtlc_refund_locktime: Option<i64>,
-    /// On-chain Bitcoin HTLC refund locktime. Bitcoin to Arkade or EVM: when
-    /// the client's refund unlocks. EVM to Bitcoin: the claim deadline.
+    /// On-chain Bitcoin HTLC refund locktime. Bitcoin to Arkade, EVM or
+    /// Lightning: when the client's refund unlocks. EVM to Bitcoin: the claim
+    /// deadline.
     pub btc_refund_locktime: Option<i64>,
     /// EVM HTLC refund locktime. EVM to Arkade, Bitcoin or Lightning: when the
     /// client's refund unlocks. Bitcoin, Arkade or Lightning to EVM: the claim
     /// deadline.
     pub evm_refund_locktime: Option<i64>,
     /// Expiry of the invoice the payer pays (Lightning to Arkade or EVM) or the
-    /// server pays (Arkade or EVM to Lightning). `None` also when the server
+    /// server pays (Arkade, Bitcoin or EVM to Lightning). `None` also when the server
     /// reports no expiry, which it sends as 0. A payer must pay before both
     /// this expiry and the claim cutoff on the server-funded leg
     /// (`vhtlc_refund_locktime` for Lightning to Arkade, `evm_refund_locktime`
@@ -1577,6 +1578,24 @@ impl From<GetSwapResponse> for Swap {
                 vhtlc_refund_locktime: None,
                 btc_refund_locktime: None,
                 evm_refund_locktime: Some(r.evm_refund_locktime),
+                invoice_expires_at: Some(r.invoice_expires_at).filter(|&t| t > 0),
+            },
+            GetSwapResponse::BitcoinToLightning(r) => Self {
+                id: r.id,
+                status: r.status,
+                direction: SwapDirection::BitcoinToLightning,
+                funding: SwapFunding::BitcoinAddress {
+                    address: r.btc_htlc_address,
+                },
+                deposit_amount: r.source_amount,
+                deposit_token: r.source_token.token_id,
+                receive_address: r.client_lightning_invoice,
+                receive_amount: r.target_amount,
+                receive_token: r.target_token.token_id,
+                created_at: r.created_at,
+                vhtlc_refund_locktime: None,
+                btc_refund_locktime: Some(r.btc_refund_locktime),
+                evm_refund_locktime: None,
                 invoice_expires_at: Some(r.invoice_expires_at).filter(|&t| t > 0),
             },
             GetSwapResponse::EvmToArkade(r) => Self::from_evm_response(r),

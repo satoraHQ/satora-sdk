@@ -3926,9 +3926,9 @@ class FfiConverterTypeRecoveryResult: FfiConverterRustBuffer<RecoveryResult> {
 /// refund unlocks.
 /// </param>
 /// <param name="btc_refund_locktime">
-/// On-chain Bitcoin HTLC refund locktime. Bitcoin to Arkade or EVM:
-/// when the client's refund unlocks. EVM to Bitcoin: the claim
-/// deadline.
+/// On-chain Bitcoin HTLC refund locktime. Bitcoin to Arkade, EVM or
+/// Lightning: when the client's refund unlocks. EVM to Bitcoin: the
+/// claim deadline.
 /// </param>
 /// <param name="evm_refund_locktime">
 /// EVM HTLC refund locktime. EVM to Arkade, Bitcoin or Lightning: when
@@ -3937,7 +3937,7 @@ class FfiConverterTypeRecoveryResult: FfiConverterRustBuffer<RecoveryResult> {
 /// </param>
 /// <param name="invoice_expires_at">
 /// Expiry of the invoice the payer pays (Lightning to Arkade or EVM)
-/// or the server pays (Arkade or EVM to Lightning). `None` also when
+/// or the server pays (Arkade, Bitcoin or EVM to Lightning). `None` also when
 /// the server reports no expiry, which it sends as 0. A payer must pay
 /// before both this expiry and the claim cutoff on the server-funded
 /// leg (`vhtlc_refund_locktime` for Lightning to Arkade,
@@ -3965,9 +3965,9 @@ public record Swap (
     /// </summary>
     long? @vhtlcRefundLocktime, 
     /// <summary>
-    /// On-chain Bitcoin HTLC refund locktime. Bitcoin to Arkade or EVM:
-    /// when the client's refund unlocks. EVM to Bitcoin: the claim
-    /// deadline.
+    /// On-chain Bitcoin HTLC refund locktime. Bitcoin to Arkade, EVM or
+    /// Lightning: when the client's refund unlocks. EVM to Bitcoin: the
+    /// claim deadline.
     /// </summary>
     long? @btcRefundLocktime, 
     /// <summary>
@@ -3978,7 +3978,7 @@ public record Swap (
     long? @evmRefundLocktime, 
     /// <summary>
     /// Expiry of the invoice the payer pays (Lightning to Arkade or EVM)
-    /// or the server pays (Arkade or EVM to Lightning). `None` also when
+    /// or the server pays (Arkade, Bitcoin or EVM to Lightning). `None` also when
     /// the server reports no expiry, which it sends as 0. A payer must pay
     /// before both this expiry and the claim cutoff on the server-funded
     /// leg (`vhtlc_refund_locktime` for Lightning to Arkade,
@@ -5219,6 +5219,9 @@ public record SwapDirection {
     public record ArkadeToLightning: SwapDirection {}
     
     
+    public record BitcoinToLightning: SwapDirection {}
+    
+    
     /// <summary>
     /// A direction of the Rust SDK this binding does not name yet,
     /// carrying its debug output.
@@ -5265,6 +5268,9 @@ class FfiConverterTypeSwapDirection : FfiConverterRustBuffer<SwapDirection>{
                 return new SwapDirection.ArkadeToLightning(
                 );
             case 10:
+                return new SwapDirection.BitcoinToLightning(
+                );
+            case 11:
                 return new SwapDirection.Unknown(
                     FfiConverterString.INSTANCE.Read(stream)
                 );
@@ -5292,6 +5298,8 @@ class FfiConverterTypeSwapDirection : FfiConverterRustBuffer<SwapDirection>{
             case SwapDirection.LightningToArkade variant_value:
                 return 4;
             case SwapDirection.ArkadeToLightning variant_value:
+                return 4;
+            case SwapDirection.BitcoinToLightning variant_value:
                 return 4;
             case SwapDirection.Unknown variant_value:
                 return 4
@@ -5330,8 +5338,11 @@ class FfiConverterTypeSwapDirection : FfiConverterRustBuffer<SwapDirection>{
             case SwapDirection.ArkadeToLightning variant_value:
                 stream.WriteInt(9);
                 break;
-            case SwapDirection.Unknown variant_value:
+            case SwapDirection.BitcoinToLightning variant_value:
                 stream.WriteInt(10);
+                break;
+            case SwapDirection.Unknown variant_value:
+                stream.WriteInt(11);
                 FfiConverterString.INSTANCE.Write(variant_value.@description, stream);
                 break;
             default:

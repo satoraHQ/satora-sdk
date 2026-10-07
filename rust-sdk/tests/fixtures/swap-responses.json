@@ -368,5 +368,40 @@
     "network": "regtest",
     "gasless": false,
     "direction": "evm_to_lightning"
+  },
+  "bitcoin_to_lightning": {
+    "id": "00000000-0000-0000-0000-000000000001",
+    "status": "pending",
+    "client_lightning_invoice": "lnbcrt10u1p4vxmukpp5yg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3qdqawdshgmmjvys8xertypnxj7r5w4ex2cqzzsxq97zvuqsp52wke8tf3thq9qxarmxu9xphh7x79xn7zqqv52sr6h7ys8l3qd5pq9qxpqysgq5xd7tgjnrkfhxr0j4zphmhglct3lmhv7r9cfjgv3mdmfpkqt80rjweptz0etsy9qmx27dncqd8sy8lzh6wdv40xvqanyse22rhqsggcp3urj9q",
+    "invoice_expires_at": 1800000600,
+    "fee_sats": 3,
+    "network_fee_sats": 250,
+    "hash_lock": "0x2222222222222222222222222222222222222222222222222222222222222222",
+    "btc_htlc_address": "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080",
+    "btc_hash_lock": "7150f635054b87df566a970b21e07030d6444bf2",
+    "btc_server_pk": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+    "btc_refund_locktime": 1800003600,
+    "btc_htlc_script_version": 1,
+    "btc_fund_txid": null,
+    "btc_claim_txid": null,
+    "network": "regtest",
+    "created_at": "2026-09-01T00:00:00Z",
+    "source_token": {
+      "token_id": "btc",
+      "symbol": "BTC",
+      "chain": "Bitcoin",
+      "name": "Bitcoin",
+      "decimals": 8
+    },
+    "target_token": {
+      "token_id": "btc",
+      "symbol": "BTC",
+      "chain": "Lightning",
+      "name": "Bitcoin (Lightning)",
+      "decimals": 8
+    },
+    "source_amount": "1253",
+    "target_amount": "1000",
+    "direction": "bitcoin_to_lightning"
   }
 }

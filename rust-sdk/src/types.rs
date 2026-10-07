@@ -66,6 +66,7 @@ pub use discovery::TokenInfos;
 pub use discovery::TokenRef;
 pub use responses::ArkadeToEvmSwapResponse;
 pub use responses::BitcoinToEvmSwapResponse;
+pub use responses::BitcoinToLightningSwapResponse;
 pub use responses::BtcToArkadeSwapResponse;
 pub use responses::EvmHtlcKind;
 pub use responses::EvmToBitcoinSwapResponse;

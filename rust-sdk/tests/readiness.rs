@@ -227,6 +227,11 @@ fn swap_projection_carries_direction_and_deadlines_for_every_direction() {
             SwapDirection::ArkadeToLightning,
             [Some(VHTLC), None, None, Some(INVOICE)],
         ),
+        (
+            "bitcoin_to_lightning",
+            SwapDirection::BitcoinToLightning,
+            [None, Some(BTC), None, Some(INVOICE)],
+        ),
     ];
     for (name, direction, deadlines) in cases {
         let mut value = fixture(name);
@@ -264,6 +269,7 @@ fn swap_projection_drops_out_of_range_locktimes_and_unset_invoice_expiry() {
         "arkade_to_lightning",
         "evm_to_lightning",
         "lightning_to_evm",
+        "bitcoin_to_lightning",
     ] {
         let swap = project(name, "invoice_expires_at", json!(0));
         assert_eq!(swap.invoice_expires_at, None, "{name}");
@@ -746,6 +752,71 @@ async fn recovery_rejects_a_wrong_wallet_before_mutating_storage() {
     // The valid swap on the same page is not persisted either.
     assert_eq!(storage.get_swap_key_index("swap-2").unwrap(), None);
     assert_eq!(storage.get_swap_key_index("swap-3").unwrap(), None);
+    assert_eq!(storage.next_key_index().unwrap(), 0);
+}
+
+#[tokio::test]
+async fn recovery_and_get_swap_read_a_bitcoin_to_lightning_swap() {
+    let server = MockServer::start().await;
+    let response = fixture("bitcoin_to_lightning");
+    let id = response["id"].as_str().unwrap().to_owned();
+    let mut swap = response.clone();
+    swap["index"] = json!(3);
+    Mock::given(path("/swap/recover"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "swaps":[recovered(2), swap],"highest_index":3,"next_index":4,"scanned_until":10,"complete":true
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/swap/{id}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response))
+        .mount(&server)
+        .await;
+    let storage = Arc::new(InMemorySwapStorage::new());
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(storage.clone())
+        .build()
+        .unwrap();
+    client.recover_swaps(None).await.unwrap();
+    assert_eq!(storage.get_swap_key_index("swap-2").unwrap(), Some(2));
+    assert_eq!(storage.get_swap_key_index(&id).unwrap(), Some(3));
+    let swap = client.get_swap(&id).await.unwrap();
+    assert_eq!(swap.direction, SwapDirection::BitcoinToLightning);
+    assert!(matches!(
+        &swap.funding,
+        SwapFunding::BitcoinAddress { address } if address == "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080"
+    ));
+    assert_eq!(swap.deposit_amount, "1253");
+    assert_eq!(swap.receive_amount, "1000");
+}
+
+#[tokio::test]
+async fn recovery_refuses_a_bitcoin_to_lightning_swap_whose_invoice_does_not_pay_its_hash_lock() {
+    let server = MockServer::start().await;
+    let mut swap = fixture("bitcoin_to_lightning");
+    let id = swap["id"].as_str().unwrap().to_owned();
+    swap["index"] = json!(3);
+    swap["hash_lock"] = json!(format!("0x{}", "33".repeat(32)));
+    Mock::given(path("/swap/recover"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "swaps":[recovered(2), swap],"highest_index":3,"next_index":4,"scanned_until":10,"complete":true
+        })))
+        .mount(&server)
+        .await;
+    let storage = Arc::new(InMemorySwapStorage::new());
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(storage.clone())
+        .build()
+        .unwrap();
+    let result = client.recover_swaps(None).await;
+    assert!(is_invoice_hash_mismatch(&result), "{result:?}");
+    assert_eq!(storage.get_swap_key_index("swap-2").unwrap(), None);
+    assert_eq!(storage.get_swap_key_index(&id).unwrap(), None);
     assert_eq!(storage.next_key_index().unwrap(), 0);
 }
 
@@ -1886,6 +1957,7 @@ async fn a_stored_lightning_swap_keeps_its_copy_when_the_server_changes_its_invo
         "lightning_to_evm",
         "arkade_to_lightning",
         "evm_to_lightning",
+        "bitcoin_to_lightning",
     ] {
         let receive = direction.starts_with("lightning_");
         let stored = if receive {
@@ -2223,6 +2295,7 @@ async fn an_index_only_lightning_swap_gets_the_invoice_checks_of_recovery() {
         "lightning_to_evm",
         "arkade_to_lightning",
         "evm_to_lightning",
+        "bitcoin_to_lightning",
     ] {
         let receive = direction.starts_with("lightning_");
         let valid = if receive {

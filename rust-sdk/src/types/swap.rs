@@ -377,9 +377,7 @@ pub struct EvmToArkadeSwapResponse {
     pub evm_fund_txid: Option<String>,
 }
 
-/// `GET /swap/{id}` response for every direction the SDK can create.
-/// `bitcoin_to_lightning` is in the pinned spec but not modelled yet, so it fails
-/// to deserialize.
+/// `GET /swap/{id}` response for every direction in the pinned spec.
 /// Reading a direction does not imply that its claim/refund flow is implemented.
 // The per-direction responses are what the wire sends; a Box would only
 // move the size difference behind a pointer for callers that never see it.
@@ -397,6 +395,7 @@ pub enum GetSwapResponse {
     EvmToArkade(EvmToArkadeSwapResponse),
     LightningToArkade(LightningToArkadeSwapResponse),
     ArkadeToLightning(ArkadeToLightningSwapResponse),
+    BitcoinToLightning(super::BitcoinToLightningSwapResponse),
 }
 
 impl GetSwapResponse {
@@ -412,6 +411,7 @@ impl GetSwapResponse {
             Self::LightningToEvm(r) => &r.id,
             Self::EvmToBitcoin(r) => &r.id,
             Self::EvmToLightning(r) => &r.id,
+            Self::BitcoinToLightning(r) => &r.id,
         }
     }
 
@@ -429,6 +429,7 @@ impl GetSwapResponse {
 
             Self::LightningToArkade(r) => &r.status,
             Self::ArkadeToLightning(r) => &r.status,
+            Self::BitcoinToLightning(r) => &r.status,
         }
     }
 }
@@ -446,6 +447,7 @@ pub enum SwapDirection {
     EvmToArkade,
     LightningToArkade,
     ArkadeToLightning,
+    BitcoinToLightning,
 }
 
 /// Response from `POST /swap/lightning/arkade`. Maps to the

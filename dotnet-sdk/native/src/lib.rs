@@ -623,6 +623,7 @@ pub enum SwapDirection {
     EvmToArkade,
     LightningToArkade,
     ArkadeToLightning,
+    BitcoinToLightning,
     /// A direction of the Rust SDK this binding does not name yet,
     /// carrying its debug output.
     Unknown {
@@ -642,6 +643,7 @@ impl From<SdkSwapDirection> for SwapDirection {
             SdkSwapDirection::EvmToArkade => Self::EvmToArkade,
             SdkSwapDirection::LightningToArkade => Self::LightningToArkade,
             SdkSwapDirection::ArkadeToLightning => Self::ArkadeToLightning,
+            SdkSwapDirection::BitcoinToLightning => Self::BitcoinToLightning,
             // `SdkSwapDirection` is `#[non_exhaustive]` upstream.
             other => Self::Unknown {
                 description: format!("{other:?}"),
@@ -679,16 +681,16 @@ pub struct Swap {
     /// the claim deadline. Arkade to EVM or Lightning: when the client's
     /// refund unlocks.
     pub vhtlc_refund_locktime: Option<i64>,
-    /// On-chain Bitcoin HTLC refund locktime. Bitcoin to Arkade or EVM:
-    /// when the client's refund unlocks. EVM to Bitcoin: the claim
-    /// deadline.
+    /// On-chain Bitcoin HTLC refund locktime. Bitcoin to Arkade, EVM or
+    /// Lightning: when the client's refund unlocks. EVM to Bitcoin: the
+    /// claim deadline.
     pub btc_refund_locktime: Option<i64>,
     /// EVM HTLC refund locktime. EVM to Arkade, Bitcoin or Lightning: when
     /// the client's refund unlocks. Bitcoin, Arkade or Lightning to EVM:
     /// the claim deadline.
     pub evm_refund_locktime: Option<i64>,
     /// Expiry of the invoice the payer pays (Lightning to Arkade or EVM)
-    /// or the server pays (Arkade or EVM to Lightning). `None` also when
+    /// or the server pays (Arkade, Bitcoin or EVM to Lightning). `None` also when
     /// the server reports no expiry, which it sends as 0. A payer must pay
     /// before both this expiry and the claim cutoff on the server-funded
     /// leg (`vhtlc_refund_locktime` for Lightning to Arkade,
@@ -2446,6 +2448,10 @@ mod tests {
             (
                 SdkSwapDirection::ArkadeToLightning,
                 SwapDirection::ArkadeToLightning,
+            ),
+            (
+                SdkSwapDirection::BitcoinToLightning,
+                SwapDirection::BitcoinToLightning,
             ),
         ];
         for (direction, expected) in cases {

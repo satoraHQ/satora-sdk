@@ -48,6 +48,7 @@ fn check_lightning_swap(response: &GetSwapResponse, hash: &[u8; 32]) -> Result<(
         GetSwapResponse::LightningToEvm(r) => (&r.bolt11_invoice, None),
         GetSwapResponse::ArkadeToLightning(r) => (&r.client_lightning_invoice, Some(&r.hash_lock)),
         GetSwapResponse::EvmToLightning(r) => (&r.client_lightning_invoice, Some(&r.hash_lock)),
+        GetSwapResponse::BitcoinToLightning(r) => (&r.client_lightning_invoice, Some(&r.hash_lock)),
         _ => return Ok(()),
     };
     if invoice_payment_hash(invoice)? != *hash
@@ -66,6 +67,7 @@ fn check_lightning_payout(response: &GetSwapResponse) -> Result<()> {
     let hash_lock = match response {
         GetSwapResponse::ArkadeToLightning(r) => &r.hash_lock,
         GetSwapResponse::EvmToLightning(r) => &r.hash_lock,
+        GetSwapResponse::BitcoinToLightning(r) => &r.hash_lock,
         _ => return Ok(()),
     };
     check_lightning_swap(response, &hash_lock_bytes(hash_lock)?)
@@ -180,6 +182,9 @@ impl Client {
                 invoice_payment_hash(&r.client_lightning_invoice)?
             }
             GetSwapResponse::EvmToLightning(r) => {
+                invoice_payment_hash(&r.client_lightning_invoice)?
+            }
+            GetSwapResponse::BitcoinToLightning(r) => {
                 invoice_payment_hash(&r.client_lightning_invoice)?
             }
             _ => return Ok(()),

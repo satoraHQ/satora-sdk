@@ -222,6 +222,10 @@ impl Client {
                 client: Some(evm(true)?),
                 server: None,
             },
+            BitcoinToLightning(_) => SwapContracts {
+                client: Some(bitcoin(true)?),
+                server: None,
+            },
             LightningToEvm(_) => SwapContracts {
                 client: None,
                 server: Some(evm(false)?),

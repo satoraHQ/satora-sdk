@@ -198,8 +198,9 @@ public sealed record Quote(
 /// unlocks.
 /// </param>
 /// <param name="BtcRefundLocktime">
-/// On-chain Bitcoin HTLC refund locktime. Bitcoin to Arkade or EVM: when
-/// the client's refund unlocks. EVM to Bitcoin: the claim deadline.
+/// On-chain Bitcoin HTLC refund locktime. Bitcoin to Arkade, EVM or
+/// Lightning: when the client's refund unlocks. EVM to Bitcoin: the claim
+/// deadline.
 /// </param>
 /// <param name="EvmRefundLocktime">
 /// EVM HTLC refund locktime. EVM to Arkade, Bitcoin or Lightning: when the
@@ -208,7 +209,7 @@ public sealed record Quote(
 /// </param>
 /// <param name="InvoiceExpiresAt">
 /// Expiry of the invoice the payer pays (Lightning to Arkade or EVM) or
-/// the server pays (Arkade or EVM to Lightning). Null also when the server
+/// the server pays (Arkade, Bitcoin or EVM to Lightning). Null also when the server
 /// reports no expiry, which it sends as 0. A payer must pay before both
 /// this expiry and the claim cutoff on the server-funded leg
 /// (<paramref name="VhtlcRefundLocktime"/> for Lightning to Arkade,
