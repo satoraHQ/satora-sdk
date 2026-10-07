@@ -192,6 +192,42 @@ public class ClientTests
         Assert.Equal("swap record missing", ex.Message);
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("1.5")]
+    [InlineData("-1")]
+    [InlineData("0x10")]
+    public async Task RelayFundingRefusesARelayFeeThatIsNotADecimalInteger(string maxRelayFee)
+    {
+        using var client = new Client(
+            TestMnemonic, BitcoinNetwork.Regtest, Unreachable, Unreachable, Unreachable);
+        var ex = await Assert.ThrowsAsync<SdkException>(() => client.FundSwapViaRelayAsync(
+            "missing", TimeSpan.FromMinutes(10), TimeSpan.FromSeconds(5), maxRelayFee));
+        Assert.Equal(SdkErrorKind.InvalidSwap, ex.Kind);
+        Assert.Contains("max_relay_fee", ex.Message);
+    }
+
+    [Fact]
+    public async Task RelayFundingAndReconciliationReadTheStoredSwapFirst()
+    {
+        using var client = new Client(
+            TestMnemonic, BitcoinNetwork.Regtest, Unreachable, Unreachable, Unreachable);
+        var funded = await Assert.ThrowsAsync<SdkException>(() => client.FundSwapViaRelayAsync(
+            "missing", TimeSpan.FromMinutes(10), TimeSpan.FromSeconds(5)));
+        Assert.Equal(SdkErrorKind.InvalidSwap, funded.Kind);
+        Assert.Contains("recover or create", funded.Message);
+        var reconciled = await Assert.ThrowsAsync<SdkException>(
+            () => client.ReconcileRelayFundingAsync("missing", TimeSpan.FromSeconds(5)));
+        Assert.Equal(SdkErrorKind.InvalidSwap, reconciled.Kind);
+        Assert.Equal("swap record missing", reconciled.Message);
+        // Refused before the native call is scheduled.
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+        {
+            _ = client.FundSwapViaRelayAsync(
+                "missing", TimeSpan.FromSeconds(-1), TimeSpan.FromSeconds(5));
+        });
+    }
+
     [Fact]
     public void ContractDbPathMustNotBeTheSwapStore()
     {

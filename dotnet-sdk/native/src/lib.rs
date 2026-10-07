@@ -33,6 +33,9 @@ use lendaswap_sdk::arkade::VhtlcBalance as SdkVhtlcBalance;
 use lendaswap_sdk::bitcoin::BitcoinSpendOptions;
 use lendaswap_sdk::bitcoin::BitcoinSpendReceipt as SdkBitcoinSpendReceipt;
 use lendaswap_sdk::bitcoin::EsploraBackend;
+use lendaswap_sdk::evm::RelayFundingOptions as SdkRelayFundingOptions;
+use lendaswap_sdk::evm::RelayFundingState as SdkRelayFundingState;
+use lendaswap_sdk::evm::U256 as EvmU256;
 use lendaswap_sdk::types::Address as SdkAddress;
 use lendaswap_sdk::types::BulkStatusResponse;
 use lendaswap_sdk::types::Chain as SdkChain;
@@ -1399,6 +1402,160 @@ impl SatoraClient {
                 user_op_hash: format!("{:#x}", receipt.user_op_hash),
                 transaction_hash: receipt.transaction_hash.map(|h| format!("{h:#x}")),
             })
+        })
+    }
+}
+
+// ─── EVM relay funding ─────────────────────────────────────────────────
+
+/// Options for [`SatoraClient::fund_swap_gasless_relay`] and
+/// [`SatoraClient::reconcile_gasless_relay_funding`].
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct RelayOpts {
+    /// Largest relay fee the server may take from the input, in the source
+    /// token's smallest unit as a decimal string. Only Ethereum charges one,
+    /// so `"0"` suits Arbitrum and Polygon.
+    pub max_relay_fee: String,
+    /// EVM node for the balance, allowance, permit and receipt reads. `None`
+    /// uses the chain's public default.
+    pub node_rpc_url: Option<String>,
+    /// How long the signatures stay valid from when they are signed. The
+    /// relay can land the funding until then, so the depositor's tokens stay
+    /// committed to it until chain time passes that deadline by 120 seconds.
+    /// It must end before the swap's EVM refund locktime. Reconciliation
+    /// ignores it.
+    pub permit_deadline_secs: u64,
+    /// Bounds the whole call, including the relay's wait for its receipt.
+    pub timeout_secs: u64,
+}
+
+/// Digits are checked first because `U256`'s parser skips underscores and reads
+/// an empty string as zero.
+fn decimal_units(value: &str, name: &str) -> Result<EvmU256, SdkError> {
+    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(invalid_argument(format!(
+            "{name} must be a decimal integer in the token's smallest unit"
+        )));
+    }
+    EvmU256::from_str_radix(value, 10).map_err(|e| invalid_argument(format!("{name} parse: {e}")))
+}
+
+fn optional_url(value: Option<String>, name: &str) -> Result<Option<url::Url>, SdkError> {
+    value
+        .as_deref()
+        .map(url::Url::parse)
+        .transpose()
+        .map_err(|e| invalid_argument(format!("{name} parse: {e}")))
+}
+
+fn relay_opts_into_sdk(o: RelayOpts) -> Result<SdkRelayFundingOptions, SdkError> {
+    let mut options =
+        SdkRelayFundingOptions::new(decimal_units(&o.max_relay_fee, "RelayOpts.max_relay_fee")?);
+    options.node_rpc_url = optional_url(o.node_rpc_url, "RelayOpts.node_rpc_url")?;
+    options.permit_deadline = std::time::Duration::from_secs(o.permit_deadline_secs);
+    options.timeout = std::time::Duration::from_secs(o.timeout_secs);
+    Ok(options)
+}
+
+/// A relay funding proven on chain by its receipt.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct RelayFundingReceipt {
+    /// Funding transaction hash, `0x…`.
+    pub tx_hash: String,
+    /// Whether the relay was also sent an EIP-2612 approval of Permit2.
+    pub eip2612_permit: bool,
+}
+
+/// What [`SatoraClient::reconcile_gasless_relay_funding`] found. Mirrors
+/// `lendaswap_sdk::evm::RelayFundingState`.
+#[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq)]
+pub enum RelayFundingState {
+    /// Proven on chain by the receipt of `tx_hash` (`0x…`).
+    Funded { tx_hash: String },
+    /// Not proven yet. With `nonce_consumed` the swap was funded under a
+    /// transaction this client does not know: never fund it again. Without,
+    /// a signature may still land until chain time passes `deadline` (unix
+    /// seconds) by 120 seconds.
+    Pending { nonce_consumed: bool, deadline: u64 },
+    /// Past the deadline with the nonce unspent: nothing can land any more,
+    /// and the swap may be funded again.
+    Expired,
+}
+
+impl From<SdkRelayFundingState> for RelayFundingState {
+    fn from(state: SdkRelayFundingState) -> Self {
+        match state {
+            SdkRelayFundingState::Funded(funding) => Self::Funded {
+                tx_hash: format!("{:#x}", funding.tx_hash),
+            },
+            SdkRelayFundingState::Pending {
+                nonce_consumed,
+                deadline,
+            } => Self::Pending {
+                nonce_consumed,
+                deadline,
+            },
+            SdkRelayFundingState::Expired => Self::Expired,
+        }
+    }
+}
+
+#[uniffi::export]
+impl SatoraClient {
+    /// Fund an EVM-sourced swap created with `gasless` through the swap
+    /// server's relay, and return once its receipt proves the funding: the
+    /// swap's depositor key signs a Permit2 transfer, plus an unlimited
+    /// EIP-2612 approval of Permit2 when the depositor has no Permit2
+    /// allowance, and the server submits the funding and pays its gas. The
+    /// depositor must already hold the swap's source amount. The server's
+    /// current copy of the swap and its funding payload must match the stored
+    /// swap before anything is signed.
+    ///
+    /// Every attempt signs the swap's one Permit2 nonce, so at most one can
+    /// fund it, and calling this again after any error is safe. A refusal
+    /// before the request is sent, such as an `Api` error when the DEX rate
+    /// moved or `InvalidSwap` for an insufficient balance, leaves nothing in
+    /// flight, and the next call tries again. Once the request may have left,
+    /// a `Transport`, `Timeout`, `Storage`, `Decode`, `Api` or `InvalidSwap`
+    /// error can leave the outcome unknown; the next call then fails with
+    /// `UnresolvedFunding` without sending anything. Resolve that with
+    /// [`Self::reconcile_gasless_relay_funding`], never by funding the swap
+    /// another way. Once a funding's hash is recorded the call fails with
+    /// `InvalidSwap`, and reconciliation reports it `Funded`.
+    pub fn fund_swap_gasless_relay(
+        &self,
+        swap_id: String,
+        opts: RelayOpts,
+    ) -> Result<RelayFundingReceipt, SdkError> {
+        let options = relay_opts_into_sdk(opts)?;
+        runtime().block_on(async {
+            let funded = self
+                .inner
+                .fund_swap_gasless_relay(&swap_id, options)
+                .await?;
+            Ok(RelayFundingReceipt {
+                tx_hash: format!("{:#x}", funded.tx_hash),
+                eip2612_permit: funded.eip2612_permit,
+            })
+        })
+    }
+
+    /// Resolve a relay funding whose outcome is unknown from the chain and the
+    /// server, without sending anything. `Expired` releases the swap for
+    /// another funding. A swap never funded through the relay fails with
+    /// `InvalidSwap`. Every error can be retried.
+    pub fn reconcile_gasless_relay_funding(
+        &self,
+        swap_id: String,
+        opts: RelayOpts,
+    ) -> Result<RelayFundingState, SdkError> {
+        let options = relay_opts_into_sdk(opts)?;
+        runtime().block_on(async {
+            Ok(self
+                .inner
+                .reconcile_gasless_relay_funding(&swap_id, options)
+                .await?
+                .into())
         })
     }
 }
@@ -2834,6 +2991,126 @@ mod tests {
                 next_index: 6,
                 scanned_until: 25,
             }
+        );
+    }
+
+    fn relay_opts(max_relay_fee: &str, node_rpc_url: Option<&str>) -> RelayOpts {
+        RelayOpts {
+            max_relay_fee: max_relay_fee.into(),
+            node_rpc_url: node_rpc_url.map(Into::into),
+            permit_deadline_secs: 600,
+            timeout_secs: 30,
+        }
+    }
+
+    #[test]
+    fn relay_opts_take_a_decimal_relay_fee_and_a_parseable_url() {
+        let over_max = format!("{}0", EvmU256::MAX);
+        for fee in [
+            "",
+            "1.5",
+            "-1",
+            "0x10",
+            "1_000",
+            " 1",
+            "1e3",
+            over_max.as_str(),
+        ] {
+            let result = relay_opts_into_sdk(relay_opts(fee, None));
+            assert!(
+                matches!(&result, Err(SdkError::InvalidSwap { message }) if message.contains("max_relay_fee")),
+                "{fee:?}: {result:?}"
+            );
+        }
+        let result = relay_opts_into_sdk(relay_opts("0", Some("not a url")));
+        assert!(
+            matches!(&result, Err(SdkError::InvalidSwap { message }) if message.contains("node_rpc_url")),
+            "{result:?}"
+        );
+        let max = EvmU256::MAX.to_string();
+        let options = relay_opts_into_sdk(relay_opts(&max, Some("http://127.0.0.1:8545"))).unwrap();
+        assert_eq!(options.max_relay_fee, EvmU256::MAX);
+        assert_eq!(
+            options.node_rpc_url.map(String::from),
+            Some("http://127.0.0.1:8545/".to_owned())
+        );
+        assert_eq!(
+            (options.permit_deadline, options.timeout),
+            (
+                std::time::Duration::from_secs(600),
+                std::time::Duration::from_secs(30)
+            )
+        );
+        assert!(options.funding.is_none());
+    }
+
+    #[test]
+    fn relay_funding_state_keeps_each_variant_and_prefixes_the_hash() {
+        use lendaswap_sdk::evm::Address as EvmAddress;
+        use lendaswap_sdk::evm::B256;
+        use lendaswap_sdk::evm::RelayFunding;
+        use lendaswap_sdk::evm::htlc::EvmHtlc;
+        let htlc = EvmHtlc {
+            chain_id: 137,
+            address: EvmAddress::repeat_byte(5),
+            hash_lock: B256::repeat_byte(1),
+            amount: EvmU256::from(100),
+            token: EvmAddress::repeat_byte(6),
+            sender: EvmAddress::repeat_byte(4),
+            claimer: EvmAddress::repeat_byte(3),
+            timelock: 2_000_000_000,
+        };
+        let cases = [
+            (
+                SdkRelayFundingState::Funded(RelayFunding {
+                    tx_hash: B256::repeat_byte(0xab),
+                    htlc,
+                    eip2612_permit: true,
+                }),
+                RelayFundingState::Funded {
+                    tx_hash: format!("0x{}", "ab".repeat(32)),
+                },
+            ),
+            (
+                SdkRelayFundingState::Pending {
+                    nonce_consumed: true,
+                    deadline: 7,
+                },
+                RelayFundingState::Pending {
+                    nonce_consumed: true,
+                    deadline: 7,
+                },
+            ),
+            (
+                SdkRelayFundingState::Pending {
+                    nonce_consumed: false,
+                    deadline: 8,
+                },
+                RelayFundingState::Pending {
+                    nonce_consumed: false,
+                    deadline: 8,
+                },
+            ),
+            (SdkRelayFundingState::Expired, RelayFundingState::Expired),
+        ];
+        for (state, expected) in cases {
+            assert_eq!(RelayFundingState::from(state), expected);
+        }
+    }
+
+    #[test]
+    fn relay_funding_reads_the_stored_swap_before_any_request() {
+        let client = SatoraClient::new_signing(UNREACHABLE.into(), MNEMONIC.into(), None).unwrap();
+        let funded = client.fund_swap_gasless_relay("missing".into(), relay_opts("0", None));
+        assert!(
+            matches!(&funded, Err(SdkError::InvalidSwap { message }) if message.contains("recover or create")),
+            "{funded:?}"
+        );
+        let reconciled =
+            client.reconcile_gasless_relay_funding("missing".into(), relay_opts("0", None));
+        assert!(
+            matches!(&reconciled, Err(SdkError::InvalidSwap { message }) if message == "swap record missing"),
+            "{reconciled:?}"
         );
     }
 

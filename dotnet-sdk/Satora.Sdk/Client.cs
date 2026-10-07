@@ -27,8 +27,8 @@ using Ffi = uniffi.satora_sdk_ffi;
 /// arkd may hold the spend, from <see cref="Client.RefundBitcoinAsync"/>
 /// after a fee bump, or from
 /// <see cref="Client.FundSwapAsync(string, GaslessOpts, CancellationToken)"/>
-/// at any point, leaves the outcome unknown too. Each method's remarks
-/// say what to do next.
+/// or <see cref="Client.FundSwapViaRelayAsync"/> at any point, leaves the
+/// outcome unknown too. Each method's remarks say what to do next.
 /// </summary>
 public enum SdkErrorKind
 {
@@ -48,7 +48,8 @@ public enum SdkErrorKind
     /// An earlier funding of the swap may have gone out, and the SDK cannot
     /// tell. Never fund the swap by other means and do not treat it as
     /// unfunded: follow its status meanwhile, and give it up only once a
-    /// check by hand shows where the funds went.
+    /// check by hand shows where the funds went. After a relay funding,
+    /// <see cref="Client.ReconcileRelayFundingAsync"/> resolves it.
     /// </summary>
     UnresolvedFunding,
     /// <summary>
@@ -352,6 +353,16 @@ public sealed record RecoveryResult(IReadOnlyList<string> SwapIds, uint NextInde
 public sealed record FundReceipt(string UserOpHash, string? TransactionHash)
 {
     internal static FundReceipt FromFfi(FundSwapReceiptRaw r) => new(r.@userOpHash, r.@transactionHash);
+}
+
+/// <summary>
+/// A relay funding proven on chain, from <see cref="Client.FundSwapViaRelayAsync"/>.
+/// </summary>
+/// <param name="TxHash">Funding transaction hash, <c>0x…</c>.</param>
+/// <param name="Eip2612Permit">Whether the relay was also sent an EIP-2612 approval of Permit2.</param>
+public sealed record RelayFunding(string TxHash, bool Eip2612Permit)
+{
+    internal static RelayFunding FromFfi(Ffi.RelayFundingReceipt r) => new(r.@txHash, r.@eip2612Permit);
 }
 
 /// <summary>
@@ -1297,6 +1308,114 @@ public sealed class Client : IDisposable
             () => TryOrThrow(() => DepositStatus.FromFfi(
                 ffi.CheckDepositFunding(swapId, nodeRpcUrl))),
             cancellationToken);
+    }
+
+    /// <summary>
+    /// Fund an EVM-sourced swap created with <c>gasless: true</c> through the
+    /// Satora server's relay, and return once the funding's receipt proves it.
+    /// The swap's depositor key signs a Permit2 transfer, plus an unlimited
+    /// EIP-2612 approval of Permit2 when the depositor has no Permit2
+    /// allowance, and the server submits the funding and pays its gas. The
+    /// depositor must already hold the swap's
+    /// <see cref="SwapDetails.DepositAmount"/>; poll
+    /// <see cref="CheckDepositAsync(string, string, CancellationToken)"/>
+    /// for that. The server's copy of the swap and its funding payload must
+    /// match the stored swap before anything is signed.
+    /// </summary>
+    /// <param name="swapId">UUID returned by the creation call.</param>
+    /// <param name="permitDeadline">
+    /// How long the signatures stay valid, in whole seconds from signing. The
+    /// relay can land the funding until then, so the depositor's tokens stay
+    /// committed to it until chain time passes that deadline by 120 seconds,
+    /// and a sweep of the deposit waits as long. It must end
+    /// before the swap's <see cref="SwapDetails.EvmRefundLocktime"/>; a
+    /// funding started late should pass a shorter deadline so that a funding
+    /// landing at its end still leaves time to claim.
+    /// </param>
+    /// <param name="timeout">Bounds the whole call, including the relay's wait for its receipt.</param>
+    /// <param name="maxRelayFee">
+    /// Largest relay fee the server may take from the input, in the source
+    /// token's smallest unit as a decimal string. Only Ethereum charges one.
+    /// Anything but a decimal integer throws <see cref="SdkException"/> with
+    /// <see cref="SdkErrorKind.InvalidSwap"/> before anything is sent.
+    /// </param>
+    /// <param name="nodeRpcUrl">EVM node for the balance, allowance, permit and receipt reads; null for the chain's public default.</param>
+    /// <remarks>
+    /// Every attempt signs the swap's one Permit2 nonce, so at most one can
+    /// fund it, and calling this again after any error is safe. A refusal
+    /// before the request is sent, such as <see cref="SdkErrorKind.Api"/>
+    /// when the DEX rate moved or <see cref="SdkErrorKind.InvalidSwap"/> for
+    /// an insufficient balance, leaves nothing in flight, and the next call
+    /// tries again. Once the request may have left,
+    /// <see cref="SdkErrorKind.Transport"/>, <see cref="SdkErrorKind.Timeout"/>,
+    /// <see cref="SdkErrorKind.Storage"/>, <see cref="SdkErrorKind.Decode"/>,
+    /// <see cref="SdkErrorKind.Api"/> or <see cref="SdkErrorKind.InvalidSwap"/>
+    /// can leave the outcome unknown; the next call then throws
+    /// <see cref="SdkErrorKind.UnresolvedFunding"/> without sending anything.
+    /// Resolve that with <see cref="ReconcileRelayFundingAsync"/>, never by
+    /// funding the swap another way. Once the funding's hash is recorded the
+    /// call throws <see cref="SdkErrorKind.InvalidSwap"/>, and reconciliation
+    /// reports it funded.
+    /// </remarks>
+    public Task<RelayFunding> FundSwapViaRelayAsync(
+        string swapId,
+        TimeSpan permitDeadline,
+        TimeSpan timeout,
+        string maxRelayFee = "0",
+        string? nodeRpcUrl = null,
+        CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        var opts = new Ffi.RelayOpts(
+            maxRelayFee,
+            nodeRpcUrl,
+            Seconds(permitDeadline, nameof(permitDeadline), roundUp: false),
+            Seconds(timeout, nameof(timeout), roundUp: true));
+        return Task.Run(
+            () => TryOrThrow(() => RelayFunding.FromFfi(ffi.FundSwapGaslessRelay(swapId, opts))),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Resolve a relay funding whose outcome is unknown from the chain and the
+    /// server, without sending anything. <c>RelayFundingState.Funded</c>
+    /// carries the funding hash. <c>RelayFundingState.Pending</c> is not
+    /// proven yet: with <c>nonceConsumed</c> the swap was funded under a
+    /// transaction this client does not know and must never be funded again;
+    /// without, a signature may still land until chain time passes
+    /// <c>deadline</c> (unix seconds) by 120 seconds.
+    /// <c>RelayFundingState.Expired</c> means nothing can land any more, and
+    /// <see cref="FundSwapViaRelayAsync"/> may run again.
+    /// </summary>
+    /// <param name="swapId">UUID of a swap funded through <see cref="FundSwapViaRelayAsync"/>.</param>
+    /// <param name="timeout">Bounds the whole call.</param>
+    /// <param name="nodeRpcUrl">EVM node for the chain reads; null for the chain's public default.</param>
+    /// <remarks>
+    /// A swap never funded through the relay throws <see cref="SdkException"/>
+    /// with <see cref="SdkErrorKind.InvalidSwap"/>. Nothing is sent, so every
+    /// error can be retried.
+    /// </remarks>
+    public Task<RelayFundingState> ReconcileRelayFundingAsync(
+        string swapId,
+        TimeSpan timeout,
+        string? nodeRpcUrl = null,
+        CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        var opts = new Ffi.RelayOpts(
+            "0", nodeRpcUrl, 0, Seconds(timeout, nameof(timeout), roundUp: true));
+        return Task.Run(
+            () => TryOrThrow(() => ffi.ReconcileGaslessRelayFunding(swapId, opts)),
+            cancellationToken);
+    }
+
+    private static ulong Seconds(TimeSpan span, string parameter, bool roundUp)
+    {
+        if (span < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(parameter, span, "Must not be negative.");
+        }
+        return (ulong)(roundUp ? Math.Ceiling(span.TotalSeconds) : Math.Floor(span.TotalSeconds));
     }
 
     /// <summary>

@@ -811,6 +811,10 @@ static class _UniFFILib {
     
     
     
+    
+    
+    
+    
 
     static _UniFFILib() {
         _UniFFILib.uniffiCheckContractApiVersion();
@@ -915,6 +919,10 @@ static class _UniFFILib {
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_fund_swap_gasless_relay(IntPtr @ptr,RustBuffer @swapId,RustBuffer @opts,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_get_bulk_status(IntPtr @ptr,RustBuffer @ids,ref UniffiRustCallStatus _uniffi_out_err
     );
 
@@ -928,6 +936,10 @@ static class _UniFFILib {
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_quote(IntPtr @ptr,RustBuffer @sourceChain,RustBuffer @sourceToken,RustBuffer @targetChain,RustBuffer @targetToken,RustBuffer @amount,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_reconcile_gasless_relay_funding(IntPtr @ptr,RustBuffer @swapId,RustBuffer @opts,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -1263,6 +1275,10 @@ static class _UniFFILib {
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_fund_swap_gasless_relay(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_get_bulk_status(
     );
 
@@ -1276,6 +1292,10 @@ static class _UniFFILib {
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_quote(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_reconcile_gasless_relay_funding(
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -1449,6 +1469,12 @@ static class _UniFFILib {
             }
         }
         {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_fund_swap_gasless_relay();
+            if (checksum != 338) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_fund_swap_gasless_relay` checksum `338`, library returned `{checksum}`");
+            }
+        }
+        {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_get_bulk_status();
             if (checksum != 922) {
                 throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_get_bulk_status` checksum `922`, library returned `{checksum}`");
@@ -1470,6 +1496,12 @@ static class _UniFFILib {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_quote();
             if (checksum != 423) {
                 throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_quote` checksum `423`, library returned `{checksum}`");
+            }
+        }
+        {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_reconcile_gasless_relay_funding();
+            if (checksum != 43718) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_reconcile_gasless_relay_funding` checksum `43718`, library returned `{checksum}`");
             }
         }
         {
@@ -2104,6 +2136,30 @@ public interface ISatoraClient {
     /// <exception cref="SdkException"></exception>
     FundSwapReceipt FundSwapGasless(string @swapId, GaslessOpts @opts);
     /// <summary>
+    /// Fund an EVM-sourced swap created with `gasless` through the swap
+    /// server's relay, and return once its receipt proves the funding: the
+    /// swap's depositor key signs a Permit2 transfer, plus an unlimited
+    /// EIP-2612 approval of Permit2 when the depositor has no Permit2
+    /// allowance, and the server submits the funding and pays its gas. The
+    /// depositor must already hold the swap's source amount. The server's
+    /// current copy of the swap and its funding payload must match the stored
+    /// swap before anything is signed.
+    ///
+    /// Every attempt signs the swap's one Permit2 nonce, so at most one can
+    /// fund it, and calling this again after any error is safe. A refusal
+    /// before the request is sent, such as an `Api` error when the DEX rate
+    /// moved or `InvalidSwap` for an insufficient balance, leaves nothing in
+    /// flight, and the next call tries again. Once the request may have left,
+    /// a `Transport`, `Timeout`, `Storage`, `Decode`, `Api` or `InvalidSwap`
+    /// error can leave the outcome unknown; the next call then fails with
+    /// `UnresolvedFunding` without sending anything. Resolve that with
+    /// [`Self::reconcile_gasless_relay_funding`], never by funding the swap
+    /// another way. Once a funding's hash is recorded the call fails with
+    /// `InvalidSwap`, and reconciliation reports it `Funded`.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    RelayFundingReceipt FundSwapGaslessRelay(string @swapId, RelayOpts @opts);
+    /// <summary>
     /// Current status of each swap in `ids`, any number of them, in
     /// requests of at most 100 IDs. Read-only, so safe to call again
     /// after any error.
@@ -2144,6 +2200,14 @@ public interface ISatoraClient {
     /// </summary>
     /// <exception cref="SdkException"></exception>
     QuoteResult Quote(ChainId @sourceChain, TokenId @sourceToken, ChainId @targetChain, TokenId @targetToken, QuoteAmount @amount);
+    /// <summary>
+    /// Resolve a relay funding whose outcome is unknown from the chain and the
+    /// server, without sending anything. `Expired` releases the swap for
+    /// another funding. A swap never funded through the relay fails with
+    /// `InvalidSwap`. Every error can be retried.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    RelayFundingState ReconcileGaslessRelayFunding(string @swapId, RelayOpts @opts);
     /// <summary>
     /// Find this wallet's swaps on the server, from wallet key index
     /// `start_index` (`None` for 0) until the server's gap limit, and
@@ -2845,6 +2909,37 @@ public class SatoraClient : ISatoraClient, IDisposable {
     
     
     /// <summary>
+    /// Fund an EVM-sourced swap created with `gasless` through the swap
+    /// server's relay, and return once its receipt proves the funding: the
+    /// swap's depositor key signs a Permit2 transfer, plus an unlimited
+    /// EIP-2612 approval of Permit2 when the depositor has no Permit2
+    /// allowance, and the server submits the funding and pays its gas. The
+    /// depositor must already hold the swap's source amount. The server's
+    /// current copy of the swap and its funding payload must match the stored
+    /// swap before anything is signed.
+    ///
+    /// Every attempt signs the swap's one Permit2 nonce, so at most one can
+    /// fund it, and calling this again after any error is safe. A refusal
+    /// before the request is sent, such as an `Api` error when the DEX rate
+    /// moved or `InvalidSwap` for an insufficient balance, leaves nothing in
+    /// flight, and the next call tries again. Once the request may have left,
+    /// a `Transport`, `Timeout`, `Storage`, `Decode`, `Api` or `InvalidSwap`
+    /// error can leave the outcome unknown; the next call then fails with
+    /// `UnresolvedFunding` without sending anything. Resolve that with
+    /// [`Self::reconcile_gasless_relay_funding`], never by funding the swap
+    /// another way. Once a funding's hash is recorded the call fails with
+    /// `InvalidSwap`, and reconciliation reports it `Funded`.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public RelayFundingReceipt FundSwapGaslessRelay(string @swapId, RelayOpts @opts) {
+        return CallWithPointer(thisPtr => FfiConverterTypeRelayFundingReceipt.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_fund_swap_gasless_relay(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterTypeRelayOpts.INSTANCE.Lower(@opts), ref _status)
+)));
+    }
+    
+    
+    /// <summary>
     /// Current status of each swap in `ids`, any number of them, in
     /// requests of at most 100 IDs. Read-only, so safe to call again
     /// after any error.
@@ -2909,6 +3004,21 @@ public class SatoraClient : ISatoraClient, IDisposable {
         return CallWithPointer(thisPtr => FfiConverterTypeQuoteResult.INSTANCE.Lift(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
     _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_quote(thisPtr, FfiConverterTypeChainId.INSTANCE.Lower(@sourceChain), FfiConverterTypeTokenId.INSTANCE.Lower(@sourceToken), FfiConverterTypeChainId.INSTANCE.Lower(@targetChain), FfiConverterTypeTokenId.INSTANCE.Lower(@targetToken), FfiConverterTypeQuoteAmount.INSTANCE.Lower(@amount), ref _status)
+)));
+    }
+    
+    
+    /// <summary>
+    /// Resolve a relay funding whose outcome is unknown from the chain and the
+    /// server, without sending anything. `Expired` releases the swap for
+    /// another funding. A swap never funded through the relay fails with
+    /// `InvalidSwap`. Every error can be retried.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public RelayFundingState ReconcileGaslessRelayFunding(string @swapId, RelayOpts @opts) {
+        return CallWithPointer(thisPtr => FfiConverterTypeRelayFundingState.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_reconcile_gasless_relay_funding(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterTypeRelayOpts.INSTANCE.Lower(@opts), ref _status)
 )));
     }
     
@@ -3904,6 +4014,131 @@ class FfiConverterTypeRecoveryResult: FfiConverterRustBuffer<RecoveryResult> {
 
 
 /// <summary>
+/// A relay funding proven on chain by its receipt.
+/// </summary>
+/// <param name="tx_hash">
+/// Funding transaction hash, `0x…`.
+/// </param>
+/// <param name="eip2612_permit">
+/// Whether the relay was also sent an EIP-2612 approval of Permit2.
+/// </param>
+public record RelayFundingReceipt (
+    /// <summary>
+    /// Funding transaction hash, `0x…`.
+    /// </summary>
+    string @txHash, 
+    /// <summary>
+    /// Whether the relay was also sent an EIP-2612 approval of Permit2.
+    /// </summary>
+    bool @eip2612Permit
+) {
+}
+
+class FfiConverterTypeRelayFundingReceipt: FfiConverterRustBuffer<RelayFundingReceipt> {
+    public static FfiConverterTypeRelayFundingReceipt INSTANCE = new FfiConverterTypeRelayFundingReceipt();
+
+    public override RelayFundingReceipt Read(BigEndianStream stream) {
+        return new RelayFundingReceipt(
+            @txHash: FfiConverterString.INSTANCE.Read(stream),
+            @eip2612Permit: FfiConverterBoolean.INSTANCE.Read(stream)
+        );
+    }
+
+    public override int AllocationSize(RelayFundingReceipt value) {
+        return 0
+            + FfiConverterString.INSTANCE.AllocationSize(value.@txHash)
+            + FfiConverterBoolean.INSTANCE.AllocationSize(value.@eip2612Permit);
+    }
+
+    public override void Write(RelayFundingReceipt value, BigEndianStream stream) {
+            FfiConverterString.INSTANCE.Write(value.@txHash, stream);
+            FfiConverterBoolean.INSTANCE.Write(value.@eip2612Permit, stream);
+    }
+}
+
+
+
+/// <summary>
+/// Options for [`SatoraClient::fund_swap_gasless_relay`] and
+/// [`SatoraClient::reconcile_gasless_relay_funding`].
+/// </summary>
+/// <param name="max_relay_fee">
+/// Largest relay fee the server may take from the input, in the source
+/// token's smallest unit as a decimal string. Only Ethereum charges one,
+/// so `"0"` suits Arbitrum and Polygon.
+/// </param>
+/// <param name="node_rpc_url">
+/// EVM node for the balance, allowance, permit and receipt reads. `None`
+/// uses the chain's public default.
+/// </param>
+/// <param name="permit_deadline_secs">
+/// How long the signatures stay valid from when they are signed. The
+/// relay can land the funding until then, so the depositor's tokens stay
+/// committed to it until chain time passes that deadline by 120 seconds.
+/// It must end before the swap's EVM refund locktime. Reconciliation
+/// ignores it.
+/// </param>
+/// <param name="timeout_secs">
+/// Bounds the whole call, including the relay's wait for its receipt.
+/// </param>
+public record RelayOpts (
+    /// <summary>
+    /// Largest relay fee the server may take from the input, in the source
+    /// token's smallest unit as a decimal string. Only Ethereum charges one,
+    /// so `"0"` suits Arbitrum and Polygon.
+    /// </summary>
+    string @maxRelayFee, 
+    /// <summary>
+    /// EVM node for the balance, allowance, permit and receipt reads. `None`
+    /// uses the chain's public default.
+    /// </summary>
+    string? @nodeRpcUrl, 
+    /// <summary>
+    /// How long the signatures stay valid from when they are signed. The
+    /// relay can land the funding until then, so the depositor's tokens stay
+    /// committed to it until chain time passes that deadline by 120 seconds.
+    /// It must end before the swap's EVM refund locktime. Reconciliation
+    /// ignores it.
+    /// </summary>
+    ulong @permitDeadlineSecs, 
+    /// <summary>
+    /// Bounds the whole call, including the relay's wait for its receipt.
+    /// </summary>
+    ulong @timeoutSecs
+) {
+}
+
+class FfiConverterTypeRelayOpts: FfiConverterRustBuffer<RelayOpts> {
+    public static FfiConverterTypeRelayOpts INSTANCE = new FfiConverterTypeRelayOpts();
+
+    public override RelayOpts Read(BigEndianStream stream) {
+        return new RelayOpts(
+            @maxRelayFee: FfiConverterString.INSTANCE.Read(stream),
+            @nodeRpcUrl: FfiConverterOptionalString.INSTANCE.Read(stream),
+            @permitDeadlineSecs: FfiConverterUInt64.INSTANCE.Read(stream),
+            @timeoutSecs: FfiConverterUInt64.INSTANCE.Read(stream)
+        );
+    }
+
+    public override int AllocationSize(RelayOpts value) {
+        return 0
+            + FfiConverterString.INSTANCE.AllocationSize(value.@maxRelayFee)
+            + FfiConverterOptionalString.INSTANCE.AllocationSize(value.@nodeRpcUrl)
+            + FfiConverterUInt64.INSTANCE.AllocationSize(value.@permitDeadlineSecs)
+            + FfiConverterUInt64.INSTANCE.AllocationSize(value.@timeoutSecs);
+    }
+
+    public override void Write(RelayOpts value, BigEndianStream stream) {
+            FfiConverterString.INSTANCE.Write(value.@maxRelayFee, stream);
+            FfiConverterOptionalString.INSTANCE.Write(value.@nodeRpcUrl, stream);
+            FfiConverterUInt64.INSTANCE.Write(value.@permitDeadlineSecs, stream);
+            FfiConverterUInt64.INSTANCE.Write(value.@timeoutSecs, stream);
+    }
+}
+
+
+
+/// <summary>
 /// Compact, user-facing view of a created swap. Mirrors
 /// `lendaswap_sdk::Swap` — amounts stay as strings to preserve
 /// precision for large EVM token amounts.
@@ -4822,6 +5057,106 @@ class FfiConverterTypeQuoteAmount : FfiConverterRustBuffer<QuoteAmount>{
                 break;
             default:
                 throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeQuoteAmount.Write()", value));
+        }
+    }
+}
+
+
+
+
+
+
+
+/// <summary>
+/// What [`SatoraClient::reconcile_gasless_relay_funding`] found. Mirrors
+/// `lendaswap_sdk::evm::RelayFundingState`.
+/// </summary>
+public record RelayFundingState {
+    
+    /// <summary>
+    /// Proven on chain by the receipt of `tx_hash` (`0x…`).
+    /// </summary>
+    public record Funded (
+        string @txHash
+    ) : RelayFundingState {}
+    
+    /// <summary>
+    /// Not proven yet. With `nonce_consumed` the swap was funded under a
+    /// transaction this client does not know: never fund it again. Without,
+    /// a signature may still land until chain time passes `deadline` (unix
+    /// seconds) by 120 seconds.
+    /// </summary>
+    public record Pending (
+        bool @nonceConsumed,
+        ulong @deadline
+    ) : RelayFundingState {}
+    
+    /// <summary>
+    /// Past the deadline with the nonce unspent: nothing can land any more,
+    /// and the swap may be funded again.
+    /// </summary>
+    public record Expired: RelayFundingState {}
+    
+    
+
+    
+}
+
+class FfiConverterTypeRelayFundingState : FfiConverterRustBuffer<RelayFundingState>{
+    public static FfiConverterRustBuffer<RelayFundingState> INSTANCE = new FfiConverterTypeRelayFundingState();
+
+    public override RelayFundingState Read(BigEndianStream stream) {
+        var value = stream.ReadInt();
+        switch (value) {
+            case 1:
+                return new RelayFundingState.Funded(
+                    FfiConverterString.INSTANCE.Read(stream)
+                );
+            case 2:
+                return new RelayFundingState.Pending(
+                    FfiConverterBoolean.INSTANCE.Read(stream),
+                    FfiConverterUInt64.INSTANCE.Read(stream)
+                );
+            case 3:
+                return new RelayFundingState.Expired(
+                );
+            default:
+                throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeRelayFundingState.Read()", value));
+        }
+    }
+
+    public override int AllocationSize(RelayFundingState value) {
+        switch (value) {
+            case RelayFundingState.Funded variant_value:
+                return 4
+                    + FfiConverterString.INSTANCE.AllocationSize(variant_value.@txHash);
+            case RelayFundingState.Pending variant_value:
+                return 4
+                    + FfiConverterBoolean.INSTANCE.AllocationSize(variant_value.@nonceConsumed)
+                    + FfiConverterUInt64.INSTANCE.AllocationSize(variant_value.@deadline);
+            case RelayFundingState.Expired variant_value:
+                return 4;
+            default:
+                throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeRelayFundingState.AllocationSize()", value));
+        }
+    }
+
+    public override void Write(RelayFundingState value, BigEndianStream stream) {
+        switch (value) {
+            case RelayFundingState.Funded variant_value:
+                stream.WriteInt(1);
+                FfiConverterString.INSTANCE.Write(variant_value.@txHash, stream);
+                break;
+            case RelayFundingState.Pending variant_value:
+                stream.WriteInt(2);
+                FfiConverterBoolean.INSTANCE.Write(variant_value.@nonceConsumed, stream);
+                FfiConverterUInt64.INSTANCE.Write(variant_value.@deadline, stream);
+                break;
+            case RelayFundingState.Expired variant_value:
+                stream.WriteInt(3);
+                break;
+            default:
+                throw new InternalException(String.Format("invalid enum value '{0}' in FfiConverterTypeRelayFundingState.Write()", value));
         }
     }
 }

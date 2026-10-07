@@ -60,6 +60,7 @@
     <Using Include="uniffi.satora_sdk_ffi.SwapDirection" Alias="SwapDirection" />
     <Using Include="uniffi.satora_sdk_ffi.ArkadeSpend" Alias="ArkadeSpend" />
     <Using Include="uniffi.satora_sdk_ffi.ArkadeSettlement" Alias="ArkadeSettlement" />
+    <Using Include="uniffi.satora_sdk_ffi.RelayFundingState" Alias="RelayFundingState" />
   </ItemGroup>
 
   <!-- Native libraries: at pack time these go under runtimes/{rid}/native

@@ -108,6 +108,16 @@ public class MappingTests
     }
 
     [Fact]
+    public void RelayFundingKeepsTheHashAndThePermitFlag()
+    {
+        var funding = RelayFunding.FromFfi(new Ffi.RelayFundingReceipt(
+            @txHash: "0xab",
+            @eip2612Permit: true));
+
+        Assert.Equal(new RelayFunding(TxHash: "0xab", Eip2612Permit: true), funding);
+    }
+
+    [Fact]
     public void RecoveryResultKeepsTheSwapIdsAndTheCursor()
     {
         var result = RecoveryResult.FromFfi(new Ffi.RecoveryResult(
