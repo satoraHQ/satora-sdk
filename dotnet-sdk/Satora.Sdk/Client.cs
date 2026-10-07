@@ -731,13 +731,18 @@ public sealed class Client : IDisposable
 
     /// <summary>
     /// Send <paramref name="amountSats"/> from the SDK's internal
-    /// Arkade wallet to <paramref name="destination"/> (any
-    /// <c>tark1q…</c> Arkade address) via an offchain Ark transaction.
+    /// Arkade wallet to <paramref name="destination"/> (an Arkade address
+    /// on the configured server) via an offchain Ark transaction.
     /// Returns the Ark txid as <c>0x…</c> hex. Fund a swap's VHTLC with
     /// <see cref="FundArkadeSwapAsync"/> instead, which journals the
     /// payment and resolves a retry from it.
     /// </summary>
     /// <remarks>
+    /// <para>
+    /// An address for another network, or whose server key is not the
+    /// Arkade server's current signer, is refused with
+    /// <see cref="SdkErrorKind.InvalidSwap"/> before anything is sent.
+    /// </para>
     /// <para>
     /// It spends confirmed and pre-confirmed VTXOs, including inputs a failed
     /// <see cref="FundArkadeSwapAsync"/> journaled; once arkd names and

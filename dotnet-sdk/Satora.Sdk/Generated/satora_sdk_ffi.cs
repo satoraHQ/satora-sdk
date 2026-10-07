@@ -1384,8 +1384,8 @@ static class _UniFFILib {
         }
         {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_send();
-            if (checksum != 8187) {
-                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_send` checksum `8187`, library returned `{checksum}`");
+            if (checksum != 45197) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_send` checksum `45197`, library returned `{checksum}`");
             }
         }
         {
@@ -1866,10 +1866,14 @@ public interface ISatoraClient {
     string? ArkadeRenew();
     /// <summary>
     /// Send `amount_sats` from the SDK's internal Arkade wallet to
-    /// `destination` (any `tark1q…` Arkade address) via an offchain
-    /// Ark transaction. Returns the Ark txid as `0x…` hex. Fund a swap's
-    /// VHTLC with [`Self::fund_arkade_swap`] instead, which journals the
-    /// payment and resolves a retry from it.
+    /// `destination` (an Arkade address on the configured server) via an
+    /// offchain Ark transaction. Returns the Ark txid as `0x…` hex. Fund a
+    /// swap's VHTLC with [`Self::fund_arkade_swap`] instead, which journals
+    /// the payment and resolves a retry from it.
+    ///
+    /// An address for another network, or whose server key is not the
+    /// Arkade server's current signer, is refused with `InvalidSwap` before
+    /// anything is sent.
     ///
     /// It spends confirmed and pre-confirmed VTXOs, including inputs a
     /// failed [`Self::fund_arkade_swap`] journaled; once arkd names and
@@ -2526,10 +2530,14 @@ public class SatoraClient : ISatoraClient, IDisposable {
     
     /// <summary>
     /// Send `amount_sats` from the SDK's internal Arkade wallet to
-    /// `destination` (any `tark1q…` Arkade address) via an offchain
-    /// Ark transaction. Returns the Ark txid as `0x…` hex. Fund a swap's
-    /// VHTLC with [`Self::fund_arkade_swap`] instead, which journals the
-    /// payment and resolves a retry from it.
+    /// `destination` (an Arkade address on the configured server) via an
+    /// offchain Ark transaction. Returns the Ark txid as `0x…` hex. Fund a
+    /// swap's VHTLC with [`Self::fund_arkade_swap`] instead, which journals
+    /// the payment and resolves a retry from it.
+    ///
+    /// An address for another network, or whose server key is not the
+    /// Arkade server's current signer, is refused with `InvalidSwap` before
+    /// anything is sent.
     ///
     /// It spends confirmed and pre-confirmed VTXOs, including inputs a
     /// failed [`Self::fund_arkade_swap`] journaled; once arkd names and

@@ -960,6 +960,10 @@ impl Client {
     /// txid. Fund a swap's VHTLC with [`Self::fund_arkade_swap`] instead,
     /// which journals the payment and resolves a retry from it.
     ///
+    /// A `destination` for another network, or whose server key is not the
+    /// Arkade server's current signer, is refused with [`Error::InvalidSwap`]
+    /// before anything is sent.
+    ///
     /// It spends confirmed and pre-confirmed VTXOs, including inputs a failed
     /// [`Self::fund_arkade_swap`] journaled; once arkd names and returns this spend,
     /// which pays nothing to its VHTLC, that call resolves its journal.

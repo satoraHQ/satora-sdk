@@ -352,14 +352,23 @@ impl ArkadeWallet {
     /// transaction. Returns the Ark txid of the offchain spend (NOT a
     /// batch commitment txid — settle is the thing that anchors on L1).
     ///
-    /// Works for any Arkade destination, including a plain `tark1q…`
-    /// address you got from someone else. Fund a swap's VHTLC with
-    /// [`crate::Client::fund_arkade_swap`] instead, which journals the
-    /// payment and resolves a retry from it.
+    /// `destination` can be anyone's address on the connected Arkade server.
+    /// One for another network, or whose server key is not the server's
+    /// current signer (another operator, or this one before it rotated its
+    /// key), is refused with [`Error::InvalidSwap`] before anything is sent.
+    /// Fund a swap's VHTLC with [`crate::Client::fund_arkade_swap`] instead,
+    /// which journals the payment and resolves a retry from it.
     pub async fn send_offchain(&self, destination: &str, amount_sats: u64) -> Result<Txid> {
-        let address = ArkAddress::decode(destination).map_err(|e| {
-            Error::InvalidSwap(format!("invalid Arkade address `{destination}`: {e}"))
-        })?;
+        let info = self
+            .client
+            .server_info()
+            .await
+            .map_err(|e| Error::Transport(format!("server_info: {e}")))?;
+        let address = offchain_destination(
+            destination,
+            info.network,
+            info.signer_pk.x_only_public_key().0,
+        )?;
         let amount = Amount::from_sat(amount_sats);
         let _ = self.offchain_address().await?;
         let inputs = funding::select_inputs(&[], self.payment_coins().await?, amount)?;
@@ -368,6 +377,37 @@ impl ArkadeWallet {
             .await
             .map_err(|e| Error::Transport(format!("send_offchain: {e}")))
     }
+}
+
+/// ark-core pays only an address's VTXO key, so arkd never sees the server key a
+/// receiver's address names and cannot refuse a foreign one. The VTXO would need
+/// that other server to cosign, and the recipient's wallet, which asks only its
+/// own server, would never see it. Under a key this server has rotated away from,
+/// it cosigns the VTXO only until that key's cutoff.
+fn offchain_destination(
+    destination: &str,
+    network: Network,
+    signer: XOnlyPublicKey,
+) -> Result<ArkAddress> {
+    let address = ArkAddress::decode(destination)
+        .map_err(|e| Error::InvalidSwap(format!("invalid Arkade address `{destination}`: {e}")))?;
+    // ark-core decodes any human-readable part.
+    let prefix = if network == Network::Bitcoin {
+        "ark1"
+    } else {
+        "tark1"
+    };
+    if !address.encode().starts_with(prefix) {
+        return Err(Error::InvalidSwap(format!(
+            "Arkade address `{destination}` is not for the Arkade server's network ({network})"
+        )));
+    }
+    if address.server() != signer {
+        return Err(Error::InvalidSwap(format!(
+            "Arkade address `{destination}` names another Arkade server: its server key is not the connected server's current signer"
+        )));
+    }
+    Ok(address)
 }
 
 /// `Blockchain` impl backed by an esplora HTTP server. Copied from the
@@ -808,6 +848,57 @@ impl Client {
             },
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod destination_tests {
+    use super::*;
+    use bitcoin::key::TweakedPublicKey;
+
+    fn key(byte: u8) -> XOnlyPublicKey {
+        Keypair::from_secret_key(
+            &Secp256k1::new(),
+            &secp256k1::SecretKey::from_slice(&[byte; 32]).unwrap(),
+        )
+        .x_only_public_key()
+        .0
+    }
+
+    fn address(network: Network, server: XOnlyPublicKey) -> String {
+        let vtxo = TweakedPublicKey::dangerous_assume_tweaked(key(9));
+        ArkAddress::new(network, server, vtxo).encode()
+    }
+
+    #[test]
+    fn sends_only_to_addresses_of_the_connected_server() {
+        let signer = key(1);
+        let own = address(Network::Regtest, signer);
+        for accepted in [own.clone(), own.to_uppercase()] {
+            assert_eq!(
+                offchain_destination(&accepted, Network::Regtest, signer)
+                    .unwrap()
+                    .encode(),
+                own
+            );
+        }
+        let mainnet = address(Network::Bitcoin, signer);
+        assert!(offchain_destination(&mainnet, Network::Bitcoin, signer).is_ok());
+        for (destination, network) in [
+            (address(Network::Regtest, key(2)), Network::Regtest),
+            (address(Network::Bitcoin, key(2)), Network::Bitcoin),
+            (mainnet, Network::Regtest),
+            (own, Network::Bitcoin),
+            ("tark1".into(), Network::Regtest),
+        ] {
+            assert!(
+                matches!(
+                    offchain_destination(&destination, network, signer),
+                    Err(Error::InvalidSwap(_))
+                ),
+                "{destination} on {network}"
+            );
+        }
     }
 }
 

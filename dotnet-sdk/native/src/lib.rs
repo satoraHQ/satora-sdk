@@ -1734,10 +1734,14 @@ impl SatoraClient {
     }
 
     /// Send `amount_sats` from the SDK's internal Arkade wallet to
-    /// `destination` (any `tark1q…` Arkade address) via an offchain
-    /// Ark transaction. Returns the Ark txid as `0x…` hex. Fund a swap's
-    /// VHTLC with [`Self::fund_arkade_swap`] instead, which journals the
-    /// payment and resolves a retry from it.
+    /// `destination` (an Arkade address on the configured server) via an
+    /// offchain Ark transaction. Returns the Ark txid as `0x…` hex. Fund a
+    /// swap's VHTLC with [`Self::fund_arkade_swap`] instead, which journals
+    /// the payment and resolves a retry from it.
+    ///
+    /// An address for another network, or whose server key is not the
+    /// Arkade server's current signer, is refused with `InvalidSwap` before
+    /// anything is sent.
     ///
     /// It spends confirmed and pre-confirmed VTXOs, including inputs a
     /// failed [`Self::fund_arkade_swap`] journaled; once arkd names and
