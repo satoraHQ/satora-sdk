@@ -92,6 +92,12 @@ before storing any of it, and holds a Bitcoin→Lightning hash lock to its
 invoice's payment hash too. `Client::send` with the creation request types skips
 these checks.
 
+An EVM→Arkade, EVM→Bitcoin or EVM→Lightning swap is funded at the returned
+`client_evm_address`, which must be the address the request sent: the per-swap
+key's, or `SwapOptions::evm_address` when set. Creation refuses any other with
+`InvalidSwap`; the swap stays stored, and its address must never be shown or
+funded.
+
 `get_swap_details` preserves the server's full response. `get_swap` projects it
 into payment instructions; its `receive_address` is empty for an EVM→Bitcoin swap
 whose server response has no target address. `Swap::from` applies the same

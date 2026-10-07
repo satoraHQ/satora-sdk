@@ -37,6 +37,22 @@ fn fixture(direction: &str) -> Value {
     fixtures[direction].clone()
 }
 
+/// A creation answer for `direction` that names the deposit address an
+/// EVM-sourced creation at key index 0 sends, as the server does.
+fn created(direction: &str) -> Value {
+    let mut response = fixture(direction);
+    if direction.starts_with("evm_") {
+        response["client_evm_address"] = json!(
+            Signer::from_mnemonic(MNEMONIC)
+                .unwrap()
+                .derive_evm_key(0)
+                .unwrap()
+                .address
+        );
+    }
+    response
+}
+
 /// Real invoices and swap responses from the regtest stack.
 fn lightning_vectors() -> Value {
     serde_json::from_str(include_str!("../../fixtures/lightning-invoices.json")).unwrap()
@@ -405,7 +421,7 @@ async fn expected_invoice_amount_reaches_creation_and_quote() {
     ] {
         Mock::given(method("POST"))
             .and(path(route))
-            .respond_with(ResponseTemplate::new(200).set_body_json(fixture(direction)))
+            .respond_with(ResponseTemplate::new(200).set_body_json(created(direction)))
             .expect(1)
             .mount(&server)
             .await;
@@ -907,7 +923,7 @@ async fn evm_lightning_creation_keeps_send_max_amounts_lossless() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/swap/evm/lightning"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(fixture("evm_to_lightning")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(created("evm_to_lightning")))
         .expect(1)
         .mount(&server)
         .await;
@@ -1465,7 +1481,7 @@ async fn creates_all_nine_directions_with_current_schemas_and_persists_snapshots
             let response = match direction {
                 "btc_to_arkade" | "bitcoin_to_evm" => bitcoin_htlc_response(direction, 0),
                 "lightning_to_arkade" | "lightning_to_evm" => hold_invoice_response(direction, 0),
-                _ => fixture(direction),
+                _ => created(direction),
             };
             Mock::given(method("POST"))
                 .and(path(format!("/swap/{route}")))
@@ -1507,6 +1523,65 @@ async fn creates_all_nine_directions_with_current_schemas_and_persists_snapshots
                 );
             } else {
                 assert!(body.get("hash_lock").is_none());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn evm_sourced_creation_refuses_a_deposit_address_it_did_not_send() {
+    let own = Signer::from_mnemonic(MNEMONIC)
+        .unwrap()
+        .derive_evm_key(0)
+        .unwrap()
+        .address;
+    let upper_case = format!("0x{}", own[2..].to_uppercase());
+    for (route, direction, _, request) in creation_cases(QuoteAmount::Source(100_000)) {
+        if !direction.starts_with("evm_") {
+            continue;
+        }
+        for (returned, refused) in [
+            ("0x3333333333333333333333333333333333333333", true),
+            (upper_case.as_str(), false),
+        ] {
+            let server = MockServer::start().await;
+            let mut response = fixture(direction);
+            response["client_evm_address"] = json!(returned);
+            response["gasless"] = json!(true);
+            let id = response["id"].as_str().unwrap().to_owned();
+            Mock::given(method("POST"))
+                .and(path(format!("/swap/{route}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(response))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let client = client(&server);
+            let result = client
+                .create_swap_request(request.clone(), Default::default())
+                .await;
+            let body: Value =
+                serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+            assert_eq!(body["user_address"], json!(own), "{direction}");
+            if refused {
+                assert!(
+                    matches!(&result, Err(Error::InvalidSwap(message)) if message.contains("deposit address")),
+                    "{direction}: {result:?}"
+                );
+                let stored = client.get_stored_swap(&id).unwrap().expect(direction);
+                assert_eq!(
+                    serde_json::to_value(&stored.response).unwrap()["client_evm_address"],
+                    json!(returned),
+                    "{direction}"
+                );
+            } else {
+                let funding = result.unwrap().funding;
+                assert_eq!(
+                    funding,
+                    SwapFunding::Gasless {
+                        deposit_address: upper_case.clone()
+                    },
+                    "{direction}"
+                );
             }
         }
     }
@@ -1849,7 +1924,7 @@ async fn lightning_payout_refuses_a_hash_lock_its_invoice_does_not_pay() {
             ("lnd_hold_index_0", own.to_uppercase(), false),
         ] {
             let server = MockServer::start().await;
-            let mut response = fixture(direction);
+            let mut response = created(direction);
             response["client_lightning_invoice"] = json!(invoice(invoice_name));
             response["hash_lock"] = json!(hash_lock);
             Mock::given(method("POST"))

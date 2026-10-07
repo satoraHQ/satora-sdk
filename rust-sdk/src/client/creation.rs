@@ -78,6 +78,23 @@ fn nonempty(value: &str) -> Result<()> {
     Ok(())
 }
 
+/// The payer funds an EVM-sourced swap at `client_evm_address`, so it must be the
+/// address this client sent, whose key it holds.
+fn check_deposit_address(response: &GetSwapResponse, sent: &str) -> Result<()> {
+    let returned = match response {
+        GetSwapResponse::EvmToArkade(r) => &r.client_evm_address,
+        GetSwapResponse::EvmToBitcoin(r) => &r.client_evm_address,
+        GetSwapResponse::EvmToLightning(r) => &r.client_evm_address,
+        _ => return Err(Error::Decode("unexpected swap direction".into())),
+    };
+    if !returned.eq_ignore_ascii_case(sent) {
+        return Err(Error::InvalidSwap(format!(
+            "the server returned deposit address {returned}, not the {sent} this client sent"
+        )));
+    }
+    Ok(())
+}
+
 fn arkade_address(address: &str) -> Result<()> {
     let decoded = ark_rs::core::ArkAddress::decode(address)
         .map_err(|e| Error::InvalidSwap(format!("invalid Arkade address: {e}")))?;
@@ -113,6 +130,12 @@ impl Client {
     /// `btc_htlc_address` other than the rebuilt one; [`Error::Decode`] refuses a
     /// server key, hash lock or refund locktime that does not parse. Such a swap
     /// stays in storage for recovery; never fund its address.
+    ///
+    /// For EVM to Arkade, Bitcoin and Lightning the payer funds the returned
+    /// `client_evm_address`, so it must be the address sent: the per-swap key's,
+    /// or `SwapOptions::evm_address` when set. Any other, compared without regard
+    /// to letter case, is refused with [`Error::InvalidSwap`] after the swap is
+    /// stored, as above; never show or fund that address.
     pub async fn create_swap_request(
         &self,
         request: SwapCreation,
@@ -350,6 +373,7 @@ impl Client {
                     }
                     _ => {}
                 }
+                let mut deposit_address = None;
                 if evm_source || evm_target {
                     let address = match &options.evm_address {
                         Some(a) => a.clone(),
@@ -360,6 +384,7 @@ impl Client {
                     } else {
                         "claiming_address"
                     }] = json!(address);
+                    deposit_address = evm_source.then_some(address);
                 }
                 let response = self
                     .api_request(Method::POST, self.url(&format!("swap/{route}"))?)
@@ -399,6 +424,9 @@ impl Client {
                     }
                 }
                 self.persist_swap_with_metadata(index, response.clone(), metadata.clone())?;
+                if let Some(sent) = &deposit_address {
+                    check_deposit_address(&response, sent)?;
+                }
                 if matches!(
                     response,
                     GetSwapResponse::BtcToArkade(_) | GetSwapResponse::BitcoinToEvm(_)

@@ -279,12 +279,23 @@ async fn get_server_quote_sends_optional_bridge_and_referral() {
 const TEST_MNEMONIC: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
+/// Answers swap creation with `response`, naming the deposit address the request
+/// sent, as the server does.
+fn echo_deposit_address(response: serde_json::Value) -> impl wiremock::Respond {
+    move |request: &Request| {
+        let sent: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+        let mut response = response.clone();
+        response["client_evm_address"] = sent["user_address"].clone();
+        ResponseTemplate::new(200).set_body_json(response)
+    }
+}
+
 #[tokio::test]
 async fn create_evm_to_arkade_swap_posts_high_level_request() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/swap/evm/arkade"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+        .respond_with(echo_deposit_address(json!({
             "id": "swap_42",
             "status": "pending",
             "fee_sats": 500,
@@ -311,7 +322,6 @@ async fn create_evm_to_arkade_swap_posts_high_level_request() {
             "evm_expected_sats": "150000",
             "evm_htlc_address": "0xhtlc",
             "evm_htlc_version": 6,
-            "client_evm_address": "0xclient",
             "server_evm_address": "0xserver",
             "evm_refund_locktime": 1_000_000,
             "evm_funding_confirmations": 64,
@@ -359,20 +369,19 @@ async fn create_evm_to_arkade_swap_posts_high_level_request() {
         swap.receive_address,
         "tark1qqellv77udfmr20tun8dvju5vgudpf9vxe8jwhthrkn26fz96pawqfdy8nk05rsmrf8h94j26905e7n6sng8y059z8ykn2j5xcuw4xt846qj6x"
     );
-    // gasless=true → Gasless variant with the SDK-derived EVM address
-    // (echoed back as client_evm_address by the backend).
-    match swap.funding {
-        SwapFunding::Gasless { deposit_address } => {
-            assert_eq!(deposit_address, "0xclient");
-        }
-        other => panic!("expected Gasless funding, got {other:?}"),
-    }
-
     // Inspect the wire body to confirm the signer-derived fields and the
     // builder-set referral code flow through.
     let received = server.received_requests().await.expect("requests recorded");
     let req = received.last().expect("at least one request");
     let body: serde_json::Value = serde_json::from_slice(&req.body).expect("body is valid JSON");
+    // gasless=true → Gasless variant with the SDK-derived EVM address
+    // (echoed back as client_evm_address by the backend).
+    match swap.funding {
+        SwapFunding::Gasless { deposit_address } => {
+            assert_eq!(deposit_address, body["user_address"].as_str().unwrap());
+        }
+        other => panic!("expected Gasless funding, got {other:?}"),
+    }
     assert_eq!(
         body["target_address"],
         "tark1qqellv77udfmr20tun8dvju5vgudpf9vxe8jwhthrkn26fz96pawqfdy8nk05rsmrf8h94j26905e7n6sng8y059z8ykn2j5xcuw4xt846qj6x"
@@ -404,7 +413,7 @@ async fn create_swap_dispatcher_routes_to_evm_to_arkade() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/swap/evm/arkade"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+        .respond_with(echo_deposit_address(json!({
             "id": "swap_99",
             "status": "pending",
             "fee_sats": 500,
@@ -431,7 +440,6 @@ async fn create_swap_dispatcher_routes_to_evm_to_arkade() {
             "evm_expected_sats": "150000",
             "evm_htlc_address": "0xhtlc",
             "evm_htlc_version": 6,
-            "client_evm_address": "0xclient",
             "server_evm_address": "0xserver",
             "evm_refund_locktime": 1_000_000,
             "evm_funding_confirmations": 64,

@@ -527,7 +527,9 @@ impl Client {
     /// [`Signer::derive_evm_key`]) and just sends tokens to it from any
     /// wallet. Calling `fund_swap_gasless` then relays the funds into the
     /// HTLC with Permit2 authorization. Paymaster sponsorship is optional;
-    /// without it the account needs native gas funds.
+    /// without it the account needs native gas funds. A server answer whose
+    /// deposit address is not that derived address is refused with
+    /// [`Error::InvalidSwap`], as [`Client::create_swap_request`] describes.
     ///
     /// `gasless = false` requires a wallet transaction. With the `gasless`
     /// feature enabled, use `get_permit2_funding_data` to inspect the typed
@@ -1425,7 +1427,9 @@ pub enum SwapFunding {
     /// Permit2-signed transaction so the user never pays gas.
     Gasless {
         /// EVM depositor address recorded by the server. New locally owned
-        /// Rust swaps derive a separate key at `m/83696968'/121923'/{index}'/60'`.
+        /// Rust swaps derive a separate key at `m/83696968'/121923'/{index}'/60'`,
+        /// and creation refuses a server answer naming another address than the
+        /// one it sent.
         /// Recovered records can use TypeScript BIP44 or an external wallet.
         deposit_address: String,
     },
