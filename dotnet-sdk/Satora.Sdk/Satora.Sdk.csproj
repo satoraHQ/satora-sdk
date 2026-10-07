@@ -17,7 +17,7 @@
 
     <!-- NuGet package metadata (preliminary; bump on publish). -->
     <PackageId>Satora.Sdk</PackageId>
-    <Version>0.1.0-alpha</Version>
+    <Version>0.2.0-alpha</Version>
     <Authors>Satora</Authors>
     <Description>
       .NET bindings for the Satora SDK. Thin wrapper over a Rust core

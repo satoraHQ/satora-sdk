@@ -706,6 +706,52 @@ public sealed class Client : IDisposable
     }
 
     /// <summary>
+    /// Create a gasless swap from a stablecoin on Polygon or Arbitrum to BTC
+    /// on Arkade that pays exactly <paramref name="satsReceive"/> sats.
+    /// <see cref="SwapDetails.Funding"/> is <c>SwapFunding.Gasless</c> with the
+    /// swap's own deposit address, and <see cref="SwapDetails.DepositAmount"/>
+    /// the token amount to send there; fund it with
+    /// <see cref="FundSwapViaRelayAsync"/> once it arrives. This is
+    /// <see cref="CreateSwapAsync"/> with <c>gasless: true</c> and
+    /// <c>QuoteAmount.Target</c>, so it checks no more than that does: a
+    /// server answer whose deposit address is not the one this client derived
+    /// throws <see cref="SdkException"/> with <see cref="SdkErrorKind.InvalidSwap"/>.
+    /// </summary>
+    /// <param name="source">A Polygon or Arbitrum token, such as <c>new TokenId.UsdcPolygon()</c>.</param>
+    /// <param name="satsReceive">Sats the swap pays on Arkade.</param>
+    /// <param name="receiveTo">
+    /// Arkade address that receives them; null for the SDK's own Arkade wallet.
+    /// </param>
+    /// <param name="extraFeesBps">Optional per-swap fee surcharge, as for <see cref="CreateSwapAsync"/>.</param>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="source"/> is not a token this SDK names on Polygon or Arbitrum.
+    /// </exception>
+    public Task<SwapDetails> CreateEvmToArkadeSwapAsync(
+        TokenId source,
+        ulong satsReceive,
+        Address? receiveTo = null,
+        ushort? extraFeesBps = null,
+        CancellationToken cancellationToken = default)
+        => CreateSwapAsync(
+            EvmChainOf(source),
+            source,
+            new ChainId.Arkade(),
+            new TokenId.Btc(),
+            new QuoteAmount.Target(satsReceive),
+            receiveTo,
+            gasless: true,
+            extraFeesBps,
+            cancellationToken);
+
+    internal static ChainId EvmChainOf(TokenId token) => token switch
+    {
+        TokenId.UsdcPolygon or TokenId.UsdtPolygon or TokenId.WbtcPolygon => new ChainId.Polygon(),
+        TokenId.UsdcArbitrum or TokenId.Usdt0Arbitrum or TokenId.WbtcArbitrum => new ChainId.Arbitrum(),
+        _ => throw new ArgumentException(
+            $"{token} is not a Polygon or Arbitrum token; use CreateSwapAsync.", "source"),
+    };
+
+    /// <summary>
     /// Offchain VTXO balance of the SDK's internal Arkade wallet,
     /// broken into the three buckets ark-client distinguishes — see
     /// <see cref="ArkadeBalance"/>. Hits the Arkade server's gRPC

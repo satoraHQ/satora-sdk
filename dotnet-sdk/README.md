@@ -53,7 +53,12 @@ address, priced first by `GetArkadeOffboardQuoteAsync`, and keeps at
 least dust (330 sats today) as Arkade change, without which arkd would
 fail any batch the exit shares with others. `GetBulkStatusAsync` and
 `RecoverAllSwapsAsync` cover status polling and restoring swaps from the
-seed. The full matrix lives in the nuget README
+seed. EVM → Arkade has `CreateEvmToArkadeSwapAsync` for Polygon and
+Arbitrum tokens, funded through the server relay by
+`FundSwapViaRelayAsync` and resolved by `ReconcileRelayFundingAsync`;
+`GetDepositorBalanceAsync`, `SweepEvmDepositAsync` and
+`RefundEvmHtlcAsync` return deposits from a swap's deposit address and
+refund a funded swap that failed. The full matrix lives in the nuget README
 (`Satora.Sdk/README.md`); update both in lockstep when you add a
 direction.
 

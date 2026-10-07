@@ -247,6 +247,81 @@ public class ClientTests
         Assert.Equal("swap record missing", refund.Message);
     }
 
+    private const string ArkadeAddress =
+        "tark1qqellv77udfmr20tun8dvju5vgudpf9vxe8jwhthrkn26fz96pawqfdy8nk05rsmrf8h94j26905e7n6sng8y059z8ykn2j5xcuw4xt846qj6x";
+
+    public static TheoryData<Ffi.TokenId, Ffi.ChainId> PolygonAndArbitrumTokens => new()
+    {
+        { new Ffi.TokenId.UsdcPolygon(), new Ffi.ChainId.Polygon() },
+        { new Ffi.TokenId.UsdtPolygon(), new Ffi.ChainId.Polygon() },
+        { new Ffi.TokenId.WbtcPolygon(), new Ffi.ChainId.Polygon() },
+        { new Ffi.TokenId.UsdcArbitrum(), new Ffi.ChainId.Arbitrum() },
+        { new Ffi.TokenId.Usdt0Arbitrum(), new Ffi.ChainId.Arbitrum() },
+        { new Ffi.TokenId.WbtcArbitrum(), new Ffi.ChainId.Arbitrum() },
+    };
+
+    [Theory]
+    [MemberData(nameof(PolygonAndArbitrumTokens))]
+    public void EvmToArkadeCreationTakesTheChainOfItsToken(Ffi.TokenId token, Ffi.ChainId chain)
+    {
+        Assert.Equal(chain, Client.EvmChainOf(token));
+    }
+
+    [Fact]
+    public void EvmToArkadeCreationRefusesTokensOffPolygonAndArbitrum()
+    {
+        using var client = new Client(
+            TestMnemonic, BitcoinNetwork.Regtest, Unreachable, Unreachable, Unreachable);
+        foreach (var token in new Ffi.TokenId[]
+        {
+            new Ffi.TokenId.Btc(),
+            new Ffi.TokenId.UsdcEthereum(),
+            new Ffi.TokenId.Other("0x1111111111111111111111111111111111111111"),
+        })
+        {
+            var ex = Assert.Throws<ArgumentException>(() =>
+            {
+                _ = client.CreateEvmToArkadeSwapAsync(token, 100_000);
+            });
+            Assert.Equal("source", ex.ParamName);
+        }
+    }
+
+    [Fact]
+    public async Task EvmToArkadeCreationAsksForAGaslessSwapPayingExactlyTheSats()
+    {
+        var probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        probe.Start();
+        var port = ((System.Net.IPEndPoint)probe.LocalEndpoint).Port;
+        probe.Stop();
+        using var server = new System.Net.HttpListener();
+        server.Prefixes.Add($"http://127.0.0.1:{port}/");
+        server.Start();
+        var received = Task.Run(async () =>
+        {
+            var context = await server.GetContextAsync();
+            using var reader = new StreamReader(context.Request.InputStream);
+            var body = await reader.ReadToEndAsync();
+            context.Response.StatusCode = 500;
+            context.Response.Close();
+            return (context.Request.Url!.AbsolutePath, body);
+        });
+        using var client = new Client(
+            TestMnemonic, BitcoinNetwork.Regtest, $"http://127.0.0.1:{port}", Unreachable, Unreachable);
+
+        var ex = await Assert.ThrowsAsync<SdkException>(() => client.CreateEvmToArkadeSwapAsync(
+            new Ffi.TokenId.UsdcPolygon(), 12_345, new Ffi.Address.Arkade(ArkadeAddress)));
+
+        Assert.Equal(SdkErrorKind.Api, ex.Kind);
+        var (path, body) = await received;
+        Assert.Equal("/swap/evm/arkade", path);
+        using var request = System.Text.Json.JsonDocument.Parse(body);
+        Assert.True(request.RootElement.GetProperty("gasless").GetBoolean());
+        Assert.Equal(12_345, request.RootElement.GetProperty("amount_out").GetInt64());
+        Assert.False(request.RootElement.TryGetProperty("amount_in", out _));
+        Assert.Equal(ArkadeAddress, request.RootElement.GetProperty("target_address").GetString());
+    }
+
     [Fact]
     public void ContractDbPathMustNotBeTheSwapStore()
     {

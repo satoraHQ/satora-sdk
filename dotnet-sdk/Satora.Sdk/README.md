@@ -120,6 +120,11 @@ Notes:
 - Pass `receiveTo: null` to `CreateSwapAsync` to land funds in the
   SDK's own Arkade wallet (the identity derived from your mnemonic).
   Otherwise pass an `Address.Arkade("tark1q…")`.
+- `CreateEvmToArkadeSwapAsync(source, satsReceive)` is `CreateSwapAsync`
+  with `gasless: true` and an exact Arkade amount, for Polygon and
+  Arbitrum tokens. Each swap gets its own deposit address, derived from
+  your mnemonic; a server answer naming any other address throws
+  `InvalidSwap`.
 
 ## Funding swaps (gasless)
 
@@ -161,6 +166,78 @@ var receipt = await client.FundSwapAsync(
         paymasterContextJson: null,
         gasOverrides: null));
 ```
+
+### Relay funding
+
+The swap server can also submit the funding itself and pay its gas, so
+the depositor needs no native gas and no bundler is involved. This is
+the path for a checkout where the customer makes one plain token
+transfer:
+
+1. `CreateEvmToArkadeSwapAsync` returns the deposit address in
+   `SwapFunding.Gasless` and the token amount in `DepositAmount`.
+2. Poll `CheckDepositAsync(swapId)` until `HasSufficientSourceToken`.
+3. `FundSwapViaRelayAsync(swapId, permitDeadline, timeout)` signs a
+   Permit2 transfer with the depositor's key and returns once the
+   funding's receipt proves it.
+4. Once the swap reaches `SwapStatus.ServerFunded`, `ClaimAsync` sweeps
+   the Arkade VHTLC.
+
+```csharp
+var swap = await client.CreateEvmToArkadeSwapAsync(
+    new TokenId.UsdcPolygon(), satsReceive: 50_000, new Address.Arkade(storeAddress));
+// ...once CheckDepositAsync reports the deposit:
+try
+{
+    await client.FundSwapViaRelayAsync(
+        swap.Id, permitDeadline: TimeSpan.FromMinutes(30), timeout: TimeSpan.FromMinutes(3));
+}
+catch (SdkException e) when (e.Kind == SdkErrorKind.UnresolvedFunding)
+{
+    var state = await client.ReconcileRelayFundingAsync(swap.Id, TimeSpan.FromMinutes(1));
+}
+```
+
+Every attempt for a swap signs the same Permit2 nonce, so at most one
+can fund it and calling `FundSwapViaRelayAsync` again after any error is
+safe. When the request may already be with the relay, the next call
+throws `UnresolvedFunding` without sending anything, and only
+`ReconcileRelayFundingAsync` resolves it: `Funded`, `Pending` (wait, and
+with `nonceConsumed` never fund again) or `Expired` (fund again). The
+signatures stay valid for `permitDeadline`, so a funding can land until
+then; pass a shorter one when there is less time left before the swap
+must be claimed. The relay charges a fee only on Ethereum, capped by
+`maxRelayFee`.
+
+### Returning deposits
+
+A deposit that cannot fund the swap, such as an underpayment past the
+funding window, a payment after the swap expired, or the excess over a
+funding, stays at the swap's deposit address, which only your mnemonic
+controls. `GetDepositorBalanceAsync(swapId)` reads its token and native
+gas balances, and `SweepEvmDepositAsync(swapId, destination, timeout)`
+sends its whole token balance on. The depositor pays that transfer's gas,
+so first send it a little ETH (Arbitrum) or POL (Polygon); without
+enough the sweep throws `InsufficientGas` before anything is reserved. A
+sweep waits, with `UnresolvedFunding`, while a relay funding signature
+could still pull the deposit.
+
+If the swap was funded but the server never funded the Arkade side,
+`RefundEvmHtlcAsync(swapId, timeout)` refunds the HTLC once chain time
+reaches `EvmRefundLocktime`. The refund pays the token the HTLC locked,
+a BTC-pegged token rather than the stablecoin, to the deposit address.
+Its result names that token's contract as `LockToken`, and
+`SweepEvmDepositAsync` with it as `token` sends it on. The depositor
+pays this gas too.
+
+### EVM node
+
+Every EVM call here takes an optional `nodeRpcUrl`. Without it the Rust
+core uses the chain's public RPC, which rate-limits; a service polling
+many deposits should pass its own node. The URL only reads chain state
+and broadcasts the depositor's own transactions: a node that lies can
+delay a funding or a sweep, and the SDK verifies every receipt it acts
+on.
 
 ## Bitcoin → Arkade
 
@@ -364,12 +441,13 @@ HTTP status in `StatusCode`. A failure inside the bindings, a Rust panic
 included, and a Rust SDK error this version does not name yet have
 `Kind` `Internal` and keep the original as `InnerException`.
 
-Apart from `UnresolvedFunding`, `Kind` is not a retry signal. After a
-`Transport` or `Timeout` error from `SendArkadeAsync`, `FundSwapAsync`,
-`SettleArkadeAsync` or `OffboardArkadeAsync`, or any `Storage` error
-from `FundSwapAsync`, the outcome is unknown: check the swap status or
-the balance before trying again (a `FundSwapAsync` retry throws
-`InvalidSwap` when the operation's hash was recorded and
+Apart from `UnresolvedFunding` and `InsufficientGas` (nothing was sent;
+send the depositor native gas, then call again), `Kind` is not a retry
+signal. After a `Transport` or `Timeout` error from `SendArkadeAsync`,
+`FundSwapAsync`, `SettleArkadeAsync` or `OffboardArkadeAsync`, or any
+`Storage` error from `FundSwapAsync`, the outcome is unknown: check the
+swap status or the balance before trying again (a `FundSwapAsync` retry
+throws `InvalidSwap` when the operation's hash was recorded and
 `UnresolvedFunding` when it was not, which no call through this SDK
 resolves, so checking first is safe). After one from `ClaimAsync` or
 `SettleAsync`, or a `Storage` error from them once arkd may hold the
@@ -380,7 +458,15 @@ from it after a fee bump, call it again with the same destination, which
 returns the pending or confirmed refund instead of building another. A
 chain read that straddled a new block, such as
 `Bitcoin tip changed during observation`, is a `Transport` error too, so
-the same retry applies.
+the same retry applies. After any error from `FundSwapViaRelayAsync`,
+call it again: it throws `UnresolvedFunding` while the funding may be
+out, and `ReconcileRelayFundingAsync` resolves that. After a
+`Transport`, `Timeout` or `Storage` error from `SweepEvmDepositAsync` or
+`RefundEvmHtlcAsync`, call it again, which verifies a recorded
+transaction instead of sending another, and sends again one whose hash
+was never recorded: a second whole-balance transfer to the same
+destination moves only what is there, and a second refund of the same
+deposit reverts.
 
 `UnresolvedFunding` means an earlier funding of the swap may have gone
 out and the SDK cannot tell: never fund the swap by other means, and do
