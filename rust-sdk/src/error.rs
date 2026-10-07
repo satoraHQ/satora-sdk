@@ -60,8 +60,18 @@ pub enum Error {
     /// `reconcile_gasless_relay_funding` reports it funded or expired. A funding whose
     /// hash is recorded is refused with [`Error::InvalidSwap`] instead, as its receipt
     /// tells the outcome.
+    ///
+    /// From `recover_evm_deposit_with_wallet` and `sweep_evm_deposit`, a relay funding
+    /// signature can still pull the deposit, and nothing was sent. It resolves on its
+    /// own once `reconcile_gasless_relay_funding` reports the relay funding funded or
+    /// expired, or once chain time passes the signatures' deadline by 120 seconds.
     #[error("unresolved funding: {0}")]
     UnresolvedFunding(String),
+
+    /// The wallet holds less native gas than the transaction's estimated fee.
+    /// Nothing was reserved or sent: send the wallet gas and call again.
+    #[error("insufficient native gas: {0}")]
+    InsufficientGas(String),
 }
 
 impl From<rusqlite::Error> for Error {

@@ -228,9 +228,11 @@ unresolved reservation. Reconcile the original transaction with
 `attach_evm_recovery_transaction`, then verify its receipt. If the application
 proves nothing was sent, release the reservation by merging `Some(false)` into
 `evm_fund_started`, `evm_refund_started` or `evm_recovery_started` with
-`update_swap_metadata`. The tracker never releases these on its own;
-`resolve_attempt` covers only the cases listed under automation. Retrying a known
-refund verifies the receipt even after the coordinator deletes its deposit entry.
+`update_swap_metadata`. A depositor sweep or HTLC refund reserved without a hash is
+sent again instead, as `sweep_evm_deposit` and `refund_evm_htlc` describe. The
+tracker never releases these on its own; `resolve_attempt` covers only the cases
+listed under automation. Retrying a known refund verifies the receipt even after
+the coordinator deletes its deposit entry.
 Each kind of execution through a `Client` and its clones, such as wallet spends or
 swap claims, runs one at a time, and different kinds can overlap. Separate `Client`
 instances over the same storage are not coordinated, so keep one `Client` per wallet
@@ -272,9 +274,11 @@ contract version and remaining claim window before signing. Wallet-submitted
 claims/refunds verify the exact terminal event in the mined receipt.
 `refund_evm_with_wallet` derives the locked amount from the funding receipt and
 checks chain time. A coordinator refund can be sent from any funded wallet and
-pays the recorded depositor; a direct HTLC refund must come from the owner. EVM
-cooperative refunds are intentionally unsupported by HTLC v6 and are not exposed
-by the Rust SDK. Arkade cooperative refunds remain supported.
+pays the recorded depositor; a direct HTLC refund must come from the owner. A
+refund that mined and reverted refunded nothing, so it is released and the next
+call sends a new one while the HTLC is active. EVM cooperative refunds are
+intentionally unsupported by HTLC v6 and are not exposed by the Rust SDK. Arkade
+cooperative refunds remain supported.
 These operations require complete stored records and the relevant contract
 addresses and output limits supplied by the caller.
 
@@ -290,13 +294,29 @@ Refund recovery APIs (`gasless` feature):
 - `recover_evm_deposit_with_wallet` transfers an explicit ERC-20 amount to an
   explicit destination, verifies the transfer receipt, and resumes a stored submission.
   Repeating the most recently settled recovery with identical parameters returns
-  its receipt; any other parameters start a new transfer.
+  its receipt; any other parameters start a new transfer. While a relay funding
+  signature could still pull the deposit it fails with `UnresolvedFunding`: until
+  the relay journal is `Funded` or `Expired`, or chain time passes the signatures'
+  deadline by 120 seconds. A transfer that mined and reverted moved nothing, so it
+  is released and the next call sends a new one.
+- `depositor_wallet`, `depositor_balance`, `sweep_evm_deposit` and `refund_evm_htlc`
+  act as an EVM-sourced swap's depositor with the key this client derives for it.
+  `sweep_evm_deposit` moves the depositor's whole balance of a token through the
+  recovery above, and a repeat once that balance is gone returns the settled
+  receipt. `refund_evm_htlc` sends the coordinator's `refundTo` from the depositor,
+  which receives the lock token. The depositor pays the gas of both, and both
+  refuse with `InsufficientGas` before reserving anything when it holds less
+  native gas than the transaction's estimated fee. A sweep or refund reserved
+  without a recorded hash is sent again: a second whole-balance transfer to the
+  same destination moves what is there or reverts, and a second `refundTo` of the
+  same deposit reverts.
 - `resume_gasless_funding` resolves a previously submitted UserOperation without
   sending it again. An operation receipt is not a substitute for verifying the
   HTLC funding event before proceeding with settlement.
 
 Refresh the original swap before refund continuation. The latest recovery submission
-is retained in storage; a failed or mismatched receipt requires explicit investigation.
+is retained in storage; a mismatched receipt, or a successful one without the expected
+transfer, requires explicit investigation.
 Use one executor per swap across processes. Replacement creation and local storage
 cannot be atomic across the server boundary: a crash immediately after the API
 accepts creation may require swap recovery before attempting continuation again.

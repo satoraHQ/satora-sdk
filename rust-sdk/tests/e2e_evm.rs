@@ -651,17 +651,17 @@ impl AnvilRelay {
     }
 }
 
-#[tokio::test]
-#[ignore = "requires Anvil and freshly compiled repository contracts; run scripts/e2e/test-rust-sdk-local.sh"]
-async fn relay_funding_signatures_are_accepted_by_real_permit2_and_coordinator() -> TestResult {
-    let f = Fixture::new().await?;
-    // An EIP-2612 token with no Permit2 allowance, locked as is, so the relay needs both
-    // signatures and no DEX.
+/// A gasless swap from an EIP-2612 token with no Permit2 allowance, locked as is, so
+/// the relay needs both signatures and no DEX. The depositor holds `deposit` of it.
+/// Returns a client whose API relays the funding through Anvil once, the API, which
+/// must stay alive, and the token.
+async fn relay_swap(
+    f: &Fixture,
+    deposit: u64,
+) -> TestResult<(lendaswap_sdk::Client, MockServer, Address)> {
     let usdc = f
         .deploy("HTLCCoordinatorSwapAndLock.t.sol/MockUSDC.json", vec![])
         .await?;
-    let usdc_balance =
-        |account: Address| f.word(usdc, Token::balanceOfCall { account }.abi_encode());
     f.save_swap(true, None)?;
     let mut stored = f.store.get_swap(ID)?.ok_or("stored swap missing")?;
     let mut response = serde_json::to_value(&stored.response)?;
@@ -674,7 +674,7 @@ async fn relay_funding_signatures_are_accepted_by_real_permit2_and_coordinator()
         usdc,
         Token::transferCall {
             to: f.owner,
-            amount: U256::from(AMOUNT),
+            amount: U256::from(deposit),
         },
     )
     .await?;
@@ -722,11 +722,26 @@ async fn relay_funding_signatures_are_accepted_by_real_permit2_and_coordinator()
         .expect(1)
         .mount(&api)
         .await;
-    let client = f.reopen(&api.uri())?;
+    Ok((f.reopen(&api.uri())?, api, usdc))
+}
+
+fn relay_options(f: &Fixture) -> RelayFundingOptions {
     let mut options = RelayFundingOptions::new(U256::ZERO);
     options.node_rpc_url = Some(f.url.clone());
     options.timeout = Duration::from_secs(30);
-    let funded = client.fund_swap_gasless_relay(ID, options).await?;
+    options
+}
+
+#[tokio::test]
+#[ignore = "requires Anvil and freshly compiled repository contracts; run scripts/e2e/test-rust-sdk-local.sh"]
+async fn relay_funding_signatures_are_accepted_by_real_permit2_and_coordinator() -> TestResult {
+    let f = Fixture::new().await?;
+    let (client, _api, usdc) = relay_swap(&f, AMOUNT).await?;
+    let usdc_balance =
+        |account: Address| f.word(usdc, Token::balanceOfCall { account }.abi_encode());
+    let funded = client
+        .fund_swap_gasless_relay(ID, relay_options(&f))
+        .await?;
     assert!(funded.eip2612_permit);
     assert_eq!(funded.htlc.amount, U256::from(AMOUNT));
     assert_eq!(usdc_balance(f.owner).await?, U256::ZERO);
@@ -752,5 +767,86 @@ async fn relay_funding_signatures_are_accepted_by_real_permit2_and_coordinator()
         )
         .await?;
     assert_eq!(refundable, funded.htlc);
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires Anvil and freshly compiled repository contracts; run scripts/e2e/test-rust-sdk-local.sh"]
+async fn a_relay_funded_depositor_sweeps_and_refunds_paying_its_own_gas() -> TestResult {
+    let f = Fixture::new().await?;
+    let excess = 500;
+    let (client, _api, usdc) = relay_swap(&f, AMOUNT + excess).await?;
+    let usdc_balance =
+        |account: Address| f.word(usdc, Token::balanceOfCall { account }.abi_encode());
+    let nonce = || f.rpc("eth_getTransactionCount", json!([f.owner, "latest"]));
+    let (destination, timeout) = (Address::repeat_byte(0x77), Duration::from_secs(30));
+    let sweep = || client.sweep_evm_deposit(ID, None, destination, Some(&f.url), timeout);
+    client
+        .fund_swap_gasless_relay(ID, relay_options(&f))
+        .await?;
+    assert_eq!(
+        client
+            .depositor_balance(ID, None, Some(&f.url))
+            .await?
+            .token_units,
+        U256::from(excess)
+    );
+    // The relay funding is proven, so no signature can pull the excess any more.
+    sweep().await?;
+    assert_eq!(usdc_balance(destination).await?, U256::from(excess));
+    assert_eq!(usdc_balance(f.owner).await?, U256::ZERO);
+
+    // A later deposit stays put while the depositor has no gas.
+    f.transact(
+        f.deployer,
+        usdc,
+        Token::transferCall {
+            to: f.owner,
+            amount: U256::from(7),
+        },
+    )
+    .await?;
+    let gas = f.rpc("eth_getBalance", json!([f.owner, "latest"])).await?;
+    for poor in ["0x0", "0x1"] {
+        f.rpc("anvil_setBalance", json!([f.owner, poor])).await?;
+        let before = nonce().await?;
+        let refused = sweep().await;
+        assert!(
+            matches!(&refused, Err(lendaswap_sdk::Error::InsufficientGas(_))),
+            "{refused:?}"
+        );
+        assert_eq!(nonce().await?, before);
+    }
+    f.rpc("anvil_setBalance", json!([f.owner, gas])).await?;
+    sweep().await?;
+    assert_eq!(usdc_balance(destination).await?, U256::from(excess + 7));
+
+    // The HTLC refund waits for its locktime, then pays the lock token back once.
+    let early = client.refund_evm_htlc(ID, Some(&f.url), timeout).await;
+    assert!(
+        matches!(&early, Err(lendaswap_sdk::Error::InvalidSwap(message)) if message.contains("timelock")),
+        "{early:?}"
+    );
+    f.rpc("evm_setNextBlockTimestamp", json!([f.timelock + 1]))
+        .await?;
+    f.rpc("evm_mine", json!([])).await?;
+    let refund = client.refund_evm_htlc(ID, Some(&f.url), timeout).await?;
+    assert_eq!(refund.lock_token, usdc);
+    assert_eq!(usdc_balance(f.owner).await?, U256::from(AMOUNT));
+    let before = nonce().await?;
+    assert_eq!(
+        client
+            .refund_evm_htlc(ID, Some(&f.url), timeout)
+            .await?
+            .receipt
+            .transaction_hash,
+        refund.receipt.transaction_hash
+    );
+    assert_eq!(nonce().await?, before);
+    sweep().await?;
+    assert_eq!(
+        usdc_balance(destination).await?,
+        U256::from(AMOUNT + excess + 7)
+    );
     Ok(())
 }

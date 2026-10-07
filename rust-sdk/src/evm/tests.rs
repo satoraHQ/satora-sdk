@@ -55,6 +55,10 @@ struct Wallet {
     spent_nonces: Arc<Mutex<Vec<U256>>>,
     /// `None` fails the lookup.
     code: Mutex<Option<Bytes>>,
+    native_wei: AtomicU64,
+    fee_wei: AtomicU64,
+    /// Hashes the next broadcasts return, before falling back to one fixed hash.
+    next_hashes: Mutex<Vec<B256>>,
 }
 fn secp256k1_order() -> U256 {
     U256::from_str_radix(
@@ -169,7 +173,12 @@ impl EvmWallet for Wallet {
             if self.fail_send.load(Ordering::Relaxed) {
                 return Err(Error::Transport("broadcast response lost".into()));
             }
-            Ok(B256::repeat_byte(99))
+            let mut next = self.next_hashes.lock().unwrap();
+            Ok(if next.is_empty() {
+                B256::repeat_byte(99)
+            } else {
+                next.remove(0)
+            })
         })
     }
     fn wait_for_receipt(&self, hash: B256) -> WalletFuture<'_, EvmReceipt> {
@@ -253,6 +262,12 @@ impl EvmWallet for Wallet {
                 .clone()
                 .ok_or_else(|| Error::Transport("code lookup failed".into()))
         })
+    }
+    fn native_balance(&self) -> WalletFuture<'_, U256> {
+        Box::pin(async { Ok(U256::from(self.native_wei.load(Ordering::Relaxed))) })
+    }
+    fn transaction_fee<'a>(&'a self, _: &'a EvmTransaction) -> WalletFuture<'a, U256> {
+        Box::pin(async { Ok(U256::from(self.fee_wei.load(Ordering::Relaxed))) })
     }
 }
 
@@ -378,6 +393,9 @@ fn setup_fixture(
         permit_nonce: AtomicU64::new(0),
         spent_nonces: Arc::default(),
         code: Mutex::new(None),
+        native_wei: AtomicU64::new(1_000_000),
+        fee_wei: AtomicU64::new(21_000),
+        next_hashes: Mutex::new(vec![]),
     };
     (client, wallet, store)
 }
@@ -1976,6 +1994,501 @@ async fn second_recovery_lost_response_blocks_until_attached() {
         .await
         .unwrap();
     assert_eq!(wallet.sent.lock().unwrap().len(), 2);
+}
+
+fn sent_transfer(wallet: &Wallet, index: usize) -> (Address, Address, U256) {
+    let sent = wallet.sent.lock().unwrap()[index].clone();
+    let transfer = super::recovery::RecoveryToken::transferCall::abi_decode(&sent.data).unwrap();
+    (sent.to, transfer.to, transfer.amount)
+}
+
+#[tokio::test]
+async fn a_sweep_the_depositor_cannot_pay_for_reserves_nothing() {
+    let (client, wallet, store) = setup(false);
+    let destination = Address::repeat_byte(80);
+    for native in [0, 20_999] {
+        wallet.native_wei.store(native, Ordering::Relaxed);
+        let result = client
+            .sweep_with_wallet("test", &wallet, None, destination)
+            .await;
+        assert!(
+            matches!(&result, Err(Error::InsufficientGas(_))),
+            "{result:?}"
+        );
+    }
+    let metadata = store.get_swap("test").unwrap().unwrap().metadata;
+    assert_eq!(metadata.evm_recovery_started, None);
+    assert_eq!(metadata.evm_recovery_intent, None);
+    assert!(wallet.sent.lock().unwrap().is_empty());
+    wallet.native_wei.store(21_000, Ordering::Relaxed);
+    client
+        .sweep_with_wallet("test", &wallet, None, destination)
+        .await
+        .unwrap();
+    assert_eq!(wallet.sent.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_sweep_moves_the_whole_balance_and_a_repeat_returns_its_receipt() {
+    let (client, wallet, _) = setup(false);
+    let destination = Address::repeat_byte(80);
+    let sweep = || client.sweep_with_wallet("test", &wallet, None, destination);
+    wallet.token_balance.store(12_345, Ordering::Relaxed);
+    let first = sweep().await.unwrap();
+    // `None` sweeps the swap's source token.
+    assert_eq!(
+        sent_transfer(&wallet, 0),
+        (wallet.htlc.token, destination, U256::from(12_345))
+    );
+    // The transfer moved the balance, so a repeat only verifies it.
+    wallet.token_balance.store(0, Ordering::Relaxed);
+    assert_eq!(
+        sweep().await.unwrap().transaction_hash,
+        first.transaction_hash
+    );
+    assert_eq!(wallet.sent.lock().unwrap().len(), 1);
+    // A later deposit is swept too, even one of the same amount.
+    wallet.token_balance.store(12_345, Ordering::Relaxed);
+    sweep().await.unwrap();
+    assert_eq!(wallet.sent.lock().unwrap().len(), 2);
+    let other = Address::repeat_byte(81);
+    wallet.token_balance.store(0, Ordering::Relaxed);
+    let empty = client.sweep_with_wallet("test", &wallet, None, other).await;
+    assert!(
+        matches!(&empty, Err(Error::InvalidSwap(message)) if message.contains("holds none")),
+        "{empty:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_sweep_whose_receipt_was_lost_verifies_the_reserved_amount() {
+    let (client, wallet, store) = setup(false);
+    let destination = Address::repeat_byte(80);
+    let sweep = || client.sweep_with_wallet("test", &wallet, None, destination);
+    wallet.token_balance.store(500, Ordering::Relaxed);
+    let sent = B256::repeat_byte(99);
+    wallet.missing_receipts.lock().unwrap().push(sent);
+    assert!(matches!(sweep().await, Err(Error::Timeout(_))));
+    let metadata = store.get_swap("test").unwrap().unwrap().metadata;
+    assert_eq!(metadata.evm_recovery_txid, Some(sent.to_string()));
+    // The transfer mined meanwhile, so only the reservation knows its amount.
+    wallet.missing_receipts.lock().unwrap().clear();
+    wallet.token_balance.store(0, Ordering::Relaxed);
+    assert_eq!(sweep().await.unwrap().transaction_hash, sent);
+    assert_eq!(wallet.sent.lock().unwrap().len(), 1);
+    let other = client
+        .sweep_with_wallet("test", &wallet, None, Address::repeat_byte(81))
+        .await;
+    assert!(
+        matches!(&other, Err(Error::InvalidSwap(message)) if message.contains("holds none")),
+        "{other:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_sweep_reserved_without_a_hash_is_sent_again() {
+    let (client, wallet, store) = setup(false);
+    let (token, destination) = (wallet.htlc.token, Address::repeat_byte(80));
+    let sweep = |destination| client.sweep_with_wallet("test", &wallet, None, destination);
+    wallet.token_balance.store(500, Ordering::Relaxed);
+    wallet.fail_send.store(true, Ordering::Relaxed);
+    assert!(matches!(sweep(destination).await, Err(Error::Transport(_))));
+    wallet.fail_send.store(false, Ordering::Relaxed);
+    let elsewhere = sweep(Address::repeat_byte(81)).await;
+    assert!(
+        matches!(&elsewhere, Err(Error::InvalidSwap(message)) if message.contains(&format!("sweep {token} to {destination} first"))),
+        "{elsewhere:?}"
+    );
+    let explicit = client
+        .recover_evm_deposit_with_wallet(
+            "test",
+            &wallet,
+            DepositRecovery {
+                token,
+                destination,
+                amount: U256::from(500),
+                timeout: Duration::from_secs(5),
+            },
+        )
+        .await;
+    assert!(
+        matches!(&explicit, Err(Error::InvalidSwap(message)) if message.contains("unresolved")),
+        "{explicit:?}"
+    );
+    assert_eq!(wallet.sent.lock().unwrap().len(), 1);
+    let receipt = sweep(destination).await.unwrap();
+    assert_eq!(
+        sent_transfer(&wallet, 1),
+        (token, destination, U256::from(500))
+    );
+    let metadata = store.get_swap("test").unwrap().unwrap().metadata;
+    assert_eq!(
+        metadata.evm_recovery_settled,
+        Some(receipt.transaction_hash.to_string())
+    );
+    assert_eq!(metadata.evm_recovery_started, Some(false));
+}
+
+#[tokio::test]
+async fn a_sweep_reserved_without_a_hash_is_released_once_the_balance_is_gone() {
+    let (client, wallet, store) = setup(false);
+    let (token, destination) = (wallet.htlc.token, Address::repeat_byte(80));
+    let sweep = |destination| client.sweep_with_wallet("test", &wallet, None, destination);
+    wallet.token_balance.store(500, Ordering::Relaxed);
+    wallet.fail_send.store(true, Ordering::Relaxed);
+    assert!(matches!(sweep(destination).await, Err(Error::Transport(_))));
+    // The lost transfer mined.
+    wallet.fail_send.store(false, Ordering::Relaxed);
+    wallet.token_balance.store(0, Ordering::Relaxed);
+    let gone = sweep(destination).await;
+    assert!(
+        matches!(&gone, Err(Error::InvalidSwap(message)) if message.contains("holds none")),
+        "{gone:?}"
+    );
+    let metadata = store.get_swap("test").unwrap().unwrap().metadata;
+    assert_eq!(metadata.evm_recovery_started, Some(false));
+    assert_eq!(wallet.sent.lock().unwrap().len(), 1);
+    let other = Address::repeat_byte(81);
+    wallet.token_balance.store(300, Ordering::Relaxed);
+    sweep(other).await.unwrap();
+    assert_eq!(sent_transfer(&wallet, 1), (token, other, U256::from(300)));
+}
+
+#[tokio::test]
+async fn a_reverted_sweep_is_released_and_sent_again() {
+    let (client, wallet, store) = setup(false);
+    let destination = Address::repeat_byte(80);
+    let reverted = B256::repeat_byte(55);
+    wallet.next_hashes.lock().unwrap().push(reverted);
+    wallet.reverted_receipts.lock().unwrap().push(reverted);
+    let result = client
+        .sweep_with_wallet("test", &wallet, None, destination)
+        .await;
+    assert!(
+        matches!(&result, Err(Error::InvalidSwap(message)) if message.contains("reverted")),
+        "{result:?}"
+    );
+    let metadata = store.get_swap("test").unwrap().unwrap().metadata;
+    assert_eq!(metadata.evm_recovery_started, Some(false));
+    assert_eq!(metadata.evm_recovery_reverted, Some(reverted.to_string()));
+    let receipt = client
+        .sweep_with_wallet("test", &wallet, None, destination)
+        .await
+        .unwrap();
+    assert_eq!(receipt.transaction_hash, B256::repeat_byte(99));
+    assert_eq!(wallet.sent.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn deposit_spends_wait_until_no_relay_signature_can_pull_the_deposit() {
+    use super::funding::RELAY_SIGNATURE_SPENDABLE;
+    use crate::storage::RelayFundingOutcome;
+    let destination = Address::repeat_byte(80);
+    for outcome in [
+        RelayFundingOutcome::Sending,
+        RelayFundingOutcome::Rejected,
+        RelayFundingOutcome::Reverted,
+        RelayFundingOutcome::Accepted,
+        RelayFundingOutcome::Uncertain,
+        RelayFundingOutcome::Funded,
+        RelayFundingOutcome::Expired,
+    ] {
+        let (client, wallet, _) = setup(false);
+        let deadline = wallet.now.load(Ordering::Relaxed) + 1800;
+        client
+            .update_swap_metadata(
+                "test",
+                SwapMetadata {
+                    evm_fund_relay: Some(crate::storage::RelayFundingJournal {
+                        permit2_nonce: "7".into(),
+                        permit2_deadline: deadline,
+                        depositor: wallet.owner.to_string(),
+                        coordinator: wallet.coordinator.to_string(),
+                        lock_token: wallet.htlc.token.to_string(),
+                        eip2612_permit: true,
+                        tx_hash: None,
+                        outcome,
+                    }),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        wallet.now.store(deadline + 120, Ordering::Relaxed);
+        let recovered = client
+            .recover_evm_deposit_with_wallet(
+                "test",
+                &wallet,
+                DepositRecovery {
+                    token: wallet.htlc.token,
+                    destination,
+                    amount: U256::from(100),
+                    timeout: Duration::from_secs(5),
+                },
+            )
+            .await
+            .map(|_| ());
+        let swept = client
+            .sweep_with_wallet("test", &wallet, None, destination)
+            .await
+            .map(|_| ());
+        if matches!(
+            outcome,
+            RelayFundingOutcome::Funded | RelayFundingOutcome::Expired
+        ) {
+            recovered.unwrap();
+            swept.unwrap();
+            continue;
+        }
+        for result in [recovered, swept] {
+            assert!(
+                matches!(&result, Err(Error::UnresolvedFunding(message)) if message == RELAY_SIGNATURE_SPENDABLE),
+                "{outcome:?}: {result:?}"
+            );
+        }
+        assert!(wallet.sent.lock().unwrap().is_empty(), "{outcome:?}");
+        wallet.now.store(deadline + 121, Ordering::Relaxed);
+        client
+            .sweep_with_wallet("test", &wallet, None, destination)
+            .await
+            .unwrap();
+    }
+}
+
+/// Records the swap as funded through the relay, whose journal names its lock token.
+fn record_relay_funding(client: &Client, wallet: &Wallet) {
+    client
+        .update_swap_metadata(
+            "test",
+            SwapMetadata {
+                evm_fund_relay: Some(crate::storage::RelayFundingJournal {
+                    permit2_nonce: "7".into(),
+                    permit2_deadline: 1,
+                    depositor: wallet.owner.to_string(),
+                    coordinator: wallet.coordinator.to_string(),
+                    lock_token: wallet.htlc.token.to_string(),
+                    eip2612_permit: true,
+                    tx_hash: Some(wallet.funding_hash.to_string()),
+                    outcome: crate::storage::RelayFundingOutcome::Funded,
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+}
+
+#[tokio::test]
+async fn an_htlc_refund_waits_for_the_timelock_and_gas_and_verifies_on_retry() {
+    let (client, wallet, store) = setup(false);
+    let refund = || client.refund_htlc_with_wallet("test", &wallet, Duration::from_secs(5));
+    // An EVM to Arkade response names no lock token; the relay journal does.
+    let unknown = refund().await;
+    assert!(
+        matches!(&unknown, Err(Error::InvalidSwap(message)) if message.contains("lock token")),
+        "{unknown:?}"
+    );
+    record_relay_funding(&client, &wallet);
+    wallet
+        .now
+        .store(wallet.htlc.timelock - 1, Ordering::Relaxed);
+    let early = refund().await;
+    assert!(
+        matches!(&early, Err(Error::InvalidSwap(message)) if message.contains("timelock")),
+        "{early:?}"
+    );
+    wallet.now.store(wallet.htlc.timelock, Ordering::Relaxed);
+    wallet.native_wei.store(0, Ordering::Relaxed);
+    let poor = refund().await;
+    assert!(matches!(&poor, Err(Error::InsufficientGas(_))), "{poor:?}");
+    assert_eq!(
+        store
+            .get_swap("test")
+            .unwrap()
+            .unwrap()
+            .metadata
+            .evm_refund_started,
+        None
+    );
+    assert!(wallet.sent.lock().unwrap().is_empty());
+    wallet.native_wei.store(1_000_000, Ordering::Relaxed);
+    // The lock token, not the source token, is what the refund pays back.
+    let source = Address::repeat_byte(9);
+    rewrite_response(&store, |r| r["source_token"]["token_id"] = json!(source));
+    assert_eq!(refund().await.unwrap().lock_token, wallet.htlc.token);
+    {
+        let sent = wallet.sent.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].to, wallet.coordinator);
+        assert!(
+            sent[0]
+                .data
+                .starts_with(&Coordinator::refundToCall::SELECTOR)
+        );
+    }
+    refund().await.unwrap();
+    assert_eq!(wallet.sent.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn an_htlc_refund_reserved_without_a_hash_is_sent_again_while_the_htlc_is_active() {
+    let (client, wallet, store) = setup(false);
+    let refund = || client.refund_htlc_with_wallet("test", &wallet, Duration::from_secs(5));
+    record_relay_funding(&client, &wallet);
+    wallet.now.store(wallet.htlc.timelock, Ordering::Relaxed);
+    wallet.fail_send.store(true, Ordering::Relaxed);
+    assert!(matches!(refund().await, Err(Error::Transport(_))));
+    wallet.fail_send.store(false, Ordering::Relaxed);
+    let receipt = refund().await.unwrap().receipt;
+    {
+        let sent = wallet.sent.lock().unwrap();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[1].to, wallet.coordinator);
+        assert_eq!(sent[1].data, sent[0].data);
+    }
+    assert_eq!(
+        store
+            .get_swap("test")
+            .unwrap()
+            .unwrap()
+            .metadata
+            .evm_refund_txid,
+        Some(receipt.transaction_hash.to_string())
+    );
+}
+
+#[tokio::test]
+async fn an_htlc_refund_reserved_without_a_hash_is_not_sent_again_once_it_settled() {
+    let (client, wallet, _) = setup(false);
+    let refund = || client.refund_htlc_with_wallet("test", &wallet, Duration::from_secs(5));
+    record_relay_funding(&client, &wallet);
+    wallet.now.store(wallet.htlc.timelock, Ordering::Relaxed);
+    wallet.fail_send.store(true, Ordering::Relaxed);
+    assert!(matches!(refund().await, Err(Error::Transport(_))));
+    // The lost refund mined: the HTLC is settled and the coordinator dropped its deposit.
+    wallet.fail_send.store(false, Ordering::Relaxed);
+    wallet.settled.store(true, Ordering::Relaxed);
+    let settled = refund().await;
+    assert!(
+        matches!(&settled, Err(Error::InvalidSwap(message)) if message.contains("refunded or claimed")),
+        "{settled:?}"
+    );
+    assert_eq!(wallet.sent.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_reverted_htlc_refund_is_released_and_sent_again() {
+    let (client, wallet, store) = setup(false);
+    let refund = || client.refund_htlc_with_wallet("test", &wallet, Duration::from_secs(5));
+    record_relay_funding(&client, &wallet);
+    wallet.now.store(wallet.htlc.timelock, Ordering::Relaxed);
+    let reverted = B256::repeat_byte(55);
+    wallet.next_hashes.lock().unwrap().push(reverted);
+    wallet.reverted_receipts.lock().unwrap().push(reverted);
+    let result = refund().await;
+    assert!(
+        matches!(&result, Err(Error::InvalidSwap(message)) if message.contains("reverted")),
+        "{result:?}"
+    );
+    let metadata = store.get_swap("test").unwrap().unwrap().metadata;
+    assert_eq!(metadata.evm_refund_started, Some(false));
+    assert_eq!(metadata.evm_refund_reverted, Some(reverted.to_string()));
+    let receipt = refund().await.unwrap().receipt;
+    assert_eq!(receipt.transaction_hash, B256::repeat_byte(99));
+    assert_eq!(wallet.sent.lock().unwrap().len(), 2);
+    assert_eq!(
+        store
+            .get_swap("test")
+            .unwrap()
+            .unwrap()
+            .metadata
+            .evm_refund_txid,
+        Some(receipt.transaction_hash.to_string())
+    );
+}
+
+#[tokio::test]
+async fn a_lost_refund_after_a_reverted_one_can_be_attached() {
+    let (client, wallet, _) = setup(false);
+    let options = RefundOptions {
+        htlc: wallet.htlc.address,
+        lock_token: wallet.htlc.token,
+        coordinator: Some(wallet.coordinator),
+        timeout: Duration::from_secs(5),
+    };
+    let refund = || client.refund_evm_with_wallet("test", &wallet, options.clone());
+    wallet.now.store(wallet.htlc.timelock, Ordering::Relaxed);
+    let reverted = B256::repeat_byte(55);
+    wallet.next_hashes.lock().unwrap().push(reverted);
+    wallet.reverted_receipts.lock().unwrap().push(reverted);
+    assert!(refund().await.is_err());
+    wallet.fail_send.store(true, Ordering::Relaxed);
+    assert!(matches!(refund().await, Err(Error::Transport(_))));
+    let unresolved = refund().await;
+    assert!(
+        matches!(&unresolved, Err(Error::InvalidSwap(message)) if message.contains("unresolved")),
+        "{unresolved:?}"
+    );
+    let lost = B256::repeat_byte(77);
+    client
+        .attach_evm_refund_transaction("test", lost)
+        .await
+        .unwrap();
+    assert_eq!(refund().await.unwrap().transaction_hash, lost);
+    assert_eq!(wallet.sent.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn depositor_balance_reads_the_derived_depositor_and_the_source_token() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::Request;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::body_partial_json;
+    let (client, wallet, _) = setup(false);
+    let node = MockServer::start().await;
+    for (method, result) in [
+        ("eth_chainId", json!("0x89")),
+        ("eth_getBalance", json!("0x2a")),
+        ("eth_call", json!(format!("0x{:064x}", 12_345))),
+    ] {
+        Mock::given(body_partial_json(json!({ "method": method })))
+            .respond_with(move |request: &Request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap();
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"jsonrpc": "2.0", "id": body["id"], "result": result}))
+            })
+            .mount(&node)
+            .await;
+    }
+    let url: url::Url = node.uri().parse().unwrap();
+    assert_eq!(
+        client
+            .depositor_balance("test", None, Some(&url))
+            .await
+            .unwrap(),
+        DepositorBalance {
+            token_units: U256::from(12_345),
+            native_wei: U256::from(42),
+        }
+    );
+    let bodies: Vec<Value> = node
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|request| serde_json::from_slice(&request.body).unwrap())
+        .collect();
+    let param = |method: &str| {
+        bodies.iter().find(|body| body["method"] == method).unwrap()["params"][0].clone()
+    };
+    let address = |value: &Value| value.as_str().unwrap().parse::<Address>().unwrap();
+    assert_eq!(address(&param("eth_getBalance")), wallet.owner);
+    assert_eq!(address(&param("eth_call")["to"]), wallet.htlc.token);
+    let (claimer, _, _) = setup(true);
+    let refused = claimer.depositor_balance("test", None, Some(&url)).await;
+    assert!(
+        matches!(&refused, Err(Error::InvalidSwap(message)) if message.contains("EVM-sourced")),
+        "{refused:?}"
+    );
 }
 
 #[tokio::test]

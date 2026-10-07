@@ -38,7 +38,7 @@ pub struct DepositRecovery {
     pub timeout: Duration,
 }
 
-async fn balance(wallet: &dyn EvmWallet, token: Address) -> Result<U256> {
+pub(super) async fn balance(wallet: &dyn EvmWallet, token: Address) -> Result<U256> {
     word(
         &wallet
             .call(&transaction(
@@ -83,13 +83,54 @@ fn verify_transfer(
     }
 }
 
+async fn settled_receipt(
+    wallet: &dyn EvmWallet,
+    settled: &str,
+    token: Address,
+    destination: Address,
+    amount: U256,
+) -> Result<EvmReceipt> {
+    let prior = parse(settled)?;
+    let receipt = wallet.wait_for_receipt(prior).await?;
+    if receipt.transaction_hash != prior {
+        return Err(invalid("recovery receipt hash mismatch"));
+    }
+    verify_transfer(&receipt, token, Some(wallet.address()), destination, amount)?;
+    Ok(receipt)
+}
+
 /// The recovery hash still awaiting verification. Once verified it is copied to
-/// `evm_recovery_settled`, because merge cannot clear `evm_recovery_txid`.
+/// `evm_recovery_settled`, and once its revert is seen to `evm_recovery_reverted`,
+/// because merge cannot clear `evm_recovery_txid`.
 fn pending_recovery(metadata: &SwapMetadata) -> Option<&String> {
-    metadata
-        .evm_recovery_txid
-        .as_ref()
-        .filter(|hash| metadata.evm_recovery_settled.as_ref() != Some(*hash))
+    metadata.evm_recovery_txid.as_ref().filter(|hash| {
+        metadata.evm_recovery_settled.as_ref() != Some(*hash)
+            && metadata.evm_recovery_reverted.as_ref() != Some(*hash)
+    })
+}
+
+fn recovery_intent(token: Address, destination: Address, amount: U256) -> String {
+    format!("{token}:{destination}:{amount}")
+}
+
+/// The token, destination and amount of a recorded recovery intent.
+fn parse_intent(intent: Option<&String>) -> Option<(Address, Address, U256)> {
+    let mut parts = intent?.split(':');
+    let (token, destination, amount) = (parts.next()?, parts.next()?, parts.next()?);
+    Some((
+        parse(token).ok()?,
+        parse(destination).ok()?,
+        decimal(amount).ok()?,
+    ))
+}
+
+/// The amount of a recorded recovery intent, if it moves `token` to `destination`.
+fn intent_amount(intent: Option<&String>, token: Address, destination: Address) -> Option<U256> {
+    parse_intent(intent)
+        .filter(|(recorded_token, recorded_destination, _)| {
+            (*recorded_token, *recorded_destination) == (token, destination)
+        })
+        .map(|(_, _, amount)| amount)
 }
 
 impl Client {
@@ -134,7 +175,7 @@ impl Client {
             .metadata;
         if hash.is_zero()
             || metadata.evm_refund_started != Some(true)
-            || metadata.evm_refund_txid.is_some()
+            || super::refund::pending_refund(&metadata).is_some()
         {
             return Err(invalid("no unresolved refund submission to reconcile"));
         }
@@ -418,117 +459,214 @@ impl Client {
     /// A persisted submission is verified on retry, never sent a second time.
     /// Once settled, identical parameters return the settled receipt and
     /// different parameters start a new transfer.
+    ///
+    /// While a relay funding signature for the swap can still pull the deposit,
+    /// it fails with [`Error::UnresolvedFunding`] before anything is sent: until
+    /// [`Self::reconcile_gasless_relay_funding`] reports the relay funding
+    /// funded or expired, or chain time passes its signatures' deadline by 120
+    /// seconds, which needs a wallet that exposes chain time. A transfer that
+    /// mined and reverted moved nothing: it is released with
+    /// [`Error::InvalidSwap`], and the next call sends a new one.
     pub async fn recover_evm_deposit_with_wallet(
         &self,
         id: &str,
         wallet: &dyn EvmWallet,
         options: DepositRecovery,
     ) -> Result<EvmReceipt> {
-        tokio::time::timeout(options.timeout, async {
-            let _execution = self.evm_execution.lock().await;
-            let stored = self
-                .get_stored_swap(id)?
-                .ok_or_else(|| invalid("swap record missing"))?;
-            let context = EvmContext::from_response(&stored.response)?;
-            context.validate_wallet(wallet)?;
-            if !context.is_source
-                || options.destination.is_zero()
-                || options.destination == wallet.address()
-                || options.token.is_zero()
-                || options.amount.is_zero()
-            {
-                return Err(invalid("invalid deposit recovery parameters"));
-            }
-            let metadata = stored.metadata;
-            let intent = format!(
-                "{}:{}:{}",
-                options.token, options.destination, options.amount
-            );
-            let hash = if let Some(hash) = pending_recovery(&metadata) {
-                parse(hash)?
-            } else {
-                if metadata.evm_recovery_started == Some(true) {
-                    return Err(invalid(
-                        "recovery submission unresolved; attach its transaction, or release evm_recovery_started once nothing was sent",
-                    ));
-                }
-                // Only a repeat of the settled request needs its receipt, so a node
-                // that no longer serves an old receipt cannot block a different recovery.
-                if let Some(settled) = &metadata.evm_recovery_settled
-                    && metadata.evm_recovery_settled_intent.as_ref() == Some(&intent)
-                {
-                    let prior = parse(settled)?;
-                    let receipt = wallet.wait_for_receipt(prior).await?;
-                    if receipt.transaction_hash != prior {
-                        return Err(invalid("recovery receipt hash mismatch"));
-                    }
-                    verify_transfer(
-                        &receipt,
-                        options.token,
-                        Some(wallet.address()),
-                        options.destination,
-                        options.amount,
-                    )?;
-                    return Ok(receipt);
-                }
-                if balance(wallet, options.token).await? < options.amount {
-                    return Err(invalid("insufficient token balance for recovery"));
-                }
-                let tx = transaction(
-                    wallet,
-                    options.token,
-                    RecoveryToken::transferCall {
-                        to: options.destination,
-                        amount: options.amount,
-                    }
-                    .abi_encode(),
-                );
-                let result = wallet.call(&tx).await?;
-                if !result.is_empty() && word(&result)? != U256::ONE {
-                    return Err(invalid("token transfer simulation returned false"));
-                }
-                self.update_swap_metadata(
-                    id,
-                    SwapMetadata {
-                        evm_recovery_started: Some(true),
-                        ..Default::default()
-                    },
-                )?;
-                let hash = wallet.send_transaction(&tx).await?;
-                self.update_swap_metadata(
-                    id,
-                    SwapMetadata {
-                        evm_recovery_txid: Some(hash.to_string()),
-                        ..Default::default()
-                    },
-                )?;
-                hash
-            };
-            let receipt = wallet.wait_for_receipt(hash).await?;
-            if receipt.transaction_hash != hash {
-                return Err(invalid("recovery receipt hash mismatch"));
-            }
-            verify_transfer(
-                &receipt,
-                options.token,
-                Some(wallet.address()),
-                options.destination,
-                options.amount,
-            )?;
-            self.update_swap_metadata(
+        tokio::time::timeout(
+            options.timeout,
+            self.recover_deposit(
                 id,
-                SwapMetadata {
-                    evm_recovery_started: Some(false),
-                    evm_recovery_settled: Some(hash.to_string()),
-                    evm_recovery_settled_intent: Some(intent),
-                    ..Default::default()
-                },
-            )?;
-            Ok(receipt)
-        })
+                wallet,
+                options.token,
+                options.destination,
+                Some(options.amount),
+            ),
+        )
         .await
         .map_err(|_| {
             Error::Timeout("deposit recovery timed out; inspect its stored transaction".into())
         })?
+    }
+
+    /// With no `amount`, sweeps the whole balance once the wallet can pay the gas.
+    pub(super) async fn recover_deposit(
+        &self,
+        id: &str,
+        wallet: &dyn EvmWallet,
+        token: Address,
+        destination: Address,
+        amount: Option<U256>,
+    ) -> Result<EvmReceipt> {
+        let _execution = self.evm_execution.lock().await;
+        let stored = self
+            .get_stored_swap(id)?
+            .ok_or_else(|| invalid("swap record missing"))?;
+        let context = EvmContext::from_response(&stored.response)?;
+        context.validate_wallet(wallet)?;
+        if !context.is_source
+            || destination.is_zero()
+            || destination == wallet.address()
+            || token.is_zero()
+            || amount.is_some_and(|amount| amount.is_zero())
+        {
+            return Err(invalid("invalid deposit recovery parameters"));
+        }
+        let sweep = amount.is_none();
+        let metadata = stored.metadata;
+        let (hash, amount) = if let Some(hash) = pending_recovery(&metadata) {
+            let amount = match amount {
+                Some(amount) => amount,
+                None => intent_amount(metadata.evm_recovery_intent.as_ref(), token, destination)
+                    .ok_or_else(|| {
+                        invalid(
+                            "another deposit recovery is unresolved; finish it with its own token and destination",
+                        )
+                    })?,
+            };
+            (parse(hash)?, amount)
+        } else {
+            // A sweep reserved without a recorded hash is sent again from the balance
+            // now held: a second whole-balance transfer to the same destination moves
+            // what is there or reverts.
+            let resend = metadata.evm_recovery_started == Some(true);
+            if resend {
+                match parse_intent(metadata.evm_recovery_intent.as_ref()) {
+                    Some((reserved_token, reserved_destination, _)) if sweep => {
+                        if (reserved_token, reserved_destination) != (token, destination) {
+                            return Err(invalid(format!(
+                                "another deposit recovery is unresolved; sweep {reserved_token} to {reserved_destination} first"
+                            )));
+                        }
+                    }
+                    _ => {
+                        return Err(invalid(
+                            "recovery submission unresolved; attach its transaction, or release evm_recovery_started once nothing was sent",
+                        ));
+                    }
+                }
+            }
+            let settled = metadata.evm_recovery_settled.as_ref();
+            let amount = match amount {
+                Some(amount) => {
+                    // Only a repeat of the settled request needs its receipt, so a node
+                    // that no longer serves an old receipt cannot block a different recovery.
+                    if let Some(settled) = settled
+                        && metadata.evm_recovery_settled_intent
+                            == Some(recovery_intent(token, destination, amount))
+                    {
+                        return settled_receipt(wallet, settled, token, destination, amount).await;
+                    }
+                    if balance(wallet, token).await? < amount {
+                        return Err(invalid("insufficient token balance for recovery"));
+                    }
+                    amount
+                }
+                None => {
+                    let held = balance(wallet, token).await?;
+                    if held.is_zero() && resend {
+                        // Nothing is left for the reserved sweep to move twice. Its
+                        // settled receipt is unknown, and an older one is not it.
+                        self.update_swap_metadata(
+                            id,
+                            SwapMetadata {
+                                evm_recovery_started: Some(false),
+                                ..Default::default()
+                            },
+                        )?;
+                        return Err(invalid(
+                            "the depositor holds none of this token; the sweep whose hash was not recorded has most likely moved it",
+                        ));
+                    }
+                    if held.is_zero() {
+                        // A sweep repeated once it settled finds the balance it moved gone.
+                        if let Some(settled) = settled
+                            && let Some(amount) = intent_amount(
+                                metadata.evm_recovery_settled_intent.as_ref(),
+                                token,
+                                destination,
+                            )
+                        {
+                            return settled_receipt(wallet, settled, token, destination, amount)
+                                .await;
+                        }
+                        return Err(invalid("the depositor holds none of this token"));
+                    }
+                    held
+                }
+            };
+            if let Some(journal) = &metadata.evm_fund_relay
+                && metadata.relay_signature_outstanding()
+                && wallet.block_timestamp().await?
+                    <= journal
+                        .permit2_deadline
+                        .saturating_add(super::relay::EXPIRY_MARGIN)
+            {
+                return Err(Error::UnresolvedFunding(
+                    super::funding::RELAY_SIGNATURE_SPENDABLE.into(),
+                ));
+            }
+            let tx = transaction(
+                wallet,
+                token,
+                RecoveryToken::transferCall {
+                    to: destination,
+                    amount,
+                }
+                .abi_encode(),
+            );
+            let result = wallet.call(&tx).await?;
+            if !result.is_empty() && word(&result)? != U256::ONE {
+                return Err(invalid("token transfer simulation returned false"));
+            }
+            if sweep {
+                super::depositor::ensure_gas(wallet, &tx).await?;
+            }
+            self.update_swap_metadata(
+                id,
+                SwapMetadata {
+                    evm_recovery_started: Some(true),
+                    evm_recovery_intent: Some(recovery_intent(token, destination, amount)),
+                    ..Default::default()
+                },
+            )?;
+            let hash = wallet.send_transaction(&tx).await?;
+            self.update_swap_metadata(
+                id,
+                SwapMetadata {
+                    evm_recovery_txid: Some(hash.to_string()),
+                    ..Default::default()
+                },
+            )?;
+            (hash, amount)
+        };
+        let receipt = wallet.wait_for_receipt(hash).await?;
+        if receipt.transaction_hash != hash {
+            return Err(invalid("recovery receipt hash mismatch"));
+        }
+        if !receipt.success {
+            self.update_swap_metadata(
+                id,
+                SwapMetadata {
+                    evm_recovery_started: Some(false),
+                    evm_recovery_reverted: Some(hash.to_string()),
+                    ..Default::default()
+                },
+            )?;
+            return Err(invalid(format!(
+                "recovery transaction {hash} reverted and moved nothing; the next call sends a new one"
+            )));
+        }
+        verify_transfer(&receipt, token, Some(wallet.address()), destination, amount)?;
+        self.update_swap_metadata(
+            id,
+            SwapMetadata {
+                evm_recovery_started: Some(false),
+                evm_recovery_settled: Some(hash.to_string()),
+                evm_recovery_settled_intent: Some(recovery_intent(token, destination, amount)),
+                ..Default::default()
+            },
+        )?;
+        Ok(receipt)
     }
 }

@@ -23,6 +23,7 @@ use std::time::UNIX_EPOCH;
 /// A funding reserved with no recorded hash: sent or not, only the caller can tell.
 pub(crate) const UNRESOLVED_FUNDING: &str = "funding may already be submitted; attach its transaction, or release evm_fund_started once nothing was sent";
 pub(crate) const UNRESOLVED_RELAY_FUNDING: &str = "a relay funding signature may still be used; run reconcile_gasless_relay_funding until it reports Funded or Expired";
+pub(crate) const RELAY_SIGNATURE_SPENDABLE: &str = "a relay funding signature can still pull this deposit; move the depositor's tokens only once reconcile_gasless_relay_funding reports Funded or Expired, or chain time passes the signatures' deadline by 120 seconds";
 pub(crate) const UNRESOLVED_CCTP_FUNDING: &str = "a CCTP funding batch may already be submitted; attach its transaction to cctp_fund with attach_bridge_transaction";
 
 /// A `cctp_fund` batch is journaled before the bundler can receive it, so with no

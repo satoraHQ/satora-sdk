@@ -1,5 +1,6 @@
 //! Server-relayed Permit2 funding (`POST /swap/{id}/fund-gasless`): the depositor
 //! only signs, and the server submits the funding and pays its gas.
+use super::depositor::connect;
 use super::funding::FundingCall;
 use super::funding::FundingOptions;
 use super::funding::Permit2FundingData;
@@ -18,7 +19,6 @@ use super::refund::first_verified;
 use super::refund::verify_funding_receipt;
 use super::*;
 use crate::Client;
-use crate::StoredSwap;
 use crate::SwapMetadata;
 use crate::aa::abi::Call;
 use crate::aa::abi::IERC20;
@@ -28,7 +28,6 @@ use crate::aa::kernel::wrap_erc1271_signature;
 use crate::aa::permit2::PERMIT2_ADDRESS;
 use crate::aa::signing::sign_hash;
 use crate::logging::sdk_log;
-use crate::signer::EvmKey;
 use crate::storage::RelayFundingJournal;
 use crate::storage::RelayFundingOutcome;
 use crate::types::GetSwapResponse;
@@ -50,7 +49,7 @@ alloy::sol! {
 
 /// Chain time past a signature's deadline before its unspent nonce counts as dead,
 /// so a lagging node cannot report a nonce as dead while a block could still spend it.
-const EXPIRY_MARGIN: u64 = 120;
+pub(super) const EXPIRY_MARGIN: u64 = 120;
 
 /// What `tokio::time::timeout` waits for a duration too large to add to an instant.
 const FAR_FUTURE: Duration = Duration::from_secs(86_400 * 365 * 30);
@@ -71,7 +70,9 @@ pub struct RelayFundingOptions {
     /// Node for the balance, allowance, permit and receipt reads. `None` uses the
     /// chain's default.
     pub node_rpc_url: Option<Url>,
-    /// How long the signatures stay valid.
+    /// How long the signatures stay valid. The relay can submit the funding until
+    /// then, so recovering the deposit waits until chain time passes the latest
+    /// such deadline by 120 seconds unless the funding is proven or expired.
     pub permit_deadline: Duration,
     /// Bounds the whole call, including the relay's wait for its receipt. A pinned
     /// `FundingOptions::timeout` applies when it is shorter.
@@ -154,17 +155,17 @@ struct RelayRequest<'a> {
     eip2612_permit: Option<Value>,
 }
 
-struct RelaySwap {
-    context: EvmContext,
-    coordinator: Address,
+pub(super) struct RelaySwap {
+    pub(super) context: EvmContext,
+    pub(super) coordinator: Address,
     /// EVM to Arkade responses omit it.
-    lock_token: Option<Address>,
+    pub(super) lock_token: Option<Address>,
     source_amount: U256,
     gasless: bool,
 }
 
 impl RelaySwap {
-    fn from_response(response: &GetSwapResponse) -> Result<Self> {
+    pub(super) fn from_response(response: &GetSwapResponse) -> Result<Self> {
         let (coordinator, lock_token, amount, gasless) = match response {
             GetSwapResponse::EvmToArkade(r) => (
                 &r.evm_coordinator_address,
@@ -306,23 +307,6 @@ async fn prove_relay(
     Ok(htlc)
 }
 
-async fn connect_reader(
-    key: &EvmKey,
-    context: &EvmContext,
-    options: &RelayFundingOptions,
-) -> Result<RpcWallet> {
-    let url = match &options.node_rpc_url {
-        Some(url) => url.clone(),
-        None => {
-            let default = crate::types::KnownChain::from_wire_str(&context.chain_id.to_string())
-                .and_then(|chain| chain.default_node_rpc_url())
-                .ok_or_else(|| invalid("swap chain has no default node RPC; set node_rpc_url"))?;
-            Url::parse(default).map_err(|e| invalid(e.to_string()))?
-        }
-    };
-    RpcWallet::connect(key, context.chain_id, url).await
-}
-
 impl Client {
     /// Fund an EVM-sourced gasless swap through the server relay, like the
     /// TypeScript `fundSwapGasless`: the swap's EVM key signs a Permit2 transfer and,
@@ -396,13 +380,6 @@ impl Client {
                 "relay funding timed out before its request was sent; it can be repeated".into()
             }))
         })
-    }
-
-    fn relay_key(&self, stored: &StoredSwap, context: &EvmContext) -> Result<EvmKey> {
-        self.signer
-            .as_ref()
-            .ok_or_else(|| Error::InvalidSigner("relay funding requires the swap seed".into()))?
-            .evm_key_for_address(stored.key_index, &context.owner.to_string())
     }
 
     fn save_relay(&self, id: &str, journal: &RelayFundingJournal) -> Result<()> {
@@ -517,12 +494,12 @@ impl Client {
             ));
         }
         super::verify_derived_hash_lock(self, &stored, context)?;
-        let key = self.relay_key(&stored, context)?;
+        let key = self.depositor_key(&stored, context)?;
         let connected;
         let reader: &dyn EvmWallet = match reader {
             Some(reader) => reader,
             None => {
-                connected = connect_reader(&key, context, options).await?;
+                connected = connect(&key, context, options.node_rpc_url.as_ref()).await?;
                 &connected
             }
         };
@@ -807,12 +784,12 @@ impl Client {
             return Ok(RelayFundingState::Expired);
         }
         let context = EvmContext::from_response(&stored.response)?;
-        let key = self.relay_key(&stored, &context)?;
+        let key = self.depositor_key(&stored, &context)?;
         let connected;
         let reader: &dyn EvmWallet = match reader {
             Some(reader) => reader,
             None => {
-                connected = connect_reader(&key, &context, options).await?;
+                connected = connect(&key, &context, options.node_rpc_url.as_ref()).await?;
                 &connected
             }
         };

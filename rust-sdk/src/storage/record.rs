@@ -40,12 +40,19 @@ pub struct SwapMetadata {
     pub evm_refund_started: Option<bool>,
     pub evm_fund_txid: Option<String>,
     pub evm_refund_txid: Option<String>,
+    /// The last refund hash that mined and reverted, which refunded nothing.
+    pub evm_refund_reverted: Option<String>,
     /// Reserved immediately before a claim can leave this process.
     pub evm_claim_started: Option<bool>,
     pub evm_claim_userop_hash: Option<String>,
     pub evm_claim_txid: Option<String>,
     pub evm_recovery_started: Option<bool>,
+    /// Token, destination and amount of the recovery reserved by
+    /// `evm_recovery_started`.
+    pub evm_recovery_intent: Option<String>,
     pub evm_recovery_txid: Option<String>,
+    /// The last recovery hash that mined and reverted, which moved nothing.
+    pub evm_recovery_reverted: Option<String>,
     /// The last recovery hash whose transfer was verified.
     pub evm_recovery_settled: Option<String>,
     /// Token, destination and amount of `evm_recovery_settled`.
@@ -126,11 +133,14 @@ impl SwapMetadata {
             evm_refund_started,
             evm_fund_txid,
             evm_refund_txid,
+            evm_refund_reverted,
             evm_claim_started,
             evm_claim_userop_hash,
             evm_claim_txid,
             evm_recovery_started,
+            evm_recovery_intent,
             evm_recovery_txid,
+            evm_recovery_reverted,
             evm_recovery_settled,
             evm_recovery_settled_intent,
             continuation_swap_id,

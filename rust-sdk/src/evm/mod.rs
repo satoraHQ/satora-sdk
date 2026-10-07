@@ -13,9 +13,12 @@ use std::future::Future;
 use std::pin::Pin;
 
 pub mod claim;
+pub mod depositor;
 pub mod funding;
 pub use claim::EvmClaimOptions;
 pub use claim::RedeemCalldata;
+pub use depositor::DepositorBalance;
+pub use depositor::DepositorRefund;
 pub mod htlc;
 pub mod permit;
 pub mod recovery;
@@ -120,6 +123,17 @@ pub trait EvmWallet: Send + Sync {
     /// hint. Adapters may omit it.
     fn code(&self, _address: Address) -> WalletFuture<'_, Bytes> {
         Box::pin(async { Err(invalid("wallet adapter does not expose account code")) })
+    }
+    /// The wallet's native-token balance in wei, used with
+    /// [`Self::transaction_fee`] before a depositor sweep or HTLC refund that
+    /// pays its own gas. Adapters may omit both.
+    fn native_balance(&self) -> WalletFuture<'_, U256> {
+        Box::pin(async { Err(invalid("wallet adapter does not expose its native balance")) })
+    }
+    /// The most native token, in wei, `transaction` can pay for gas at current
+    /// prices: its gas estimate times the maximum fee per gas.
+    fn transaction_fee<'a>(&'a self, _transaction: &'a EvmTransaction) -> WalletFuture<'a, U256> {
+        Box::pin(async { Err(invalid("wallet adapter does not estimate fees")) })
     }
 }
 

@@ -41,6 +41,15 @@ pub struct EvmSubmission {
 
 const SERVER_FUNDING_HEDGE: Duration = Duration::from_secs(2);
 
+/// The refund hash still awaiting verification. Once its revert is seen it is
+/// copied to `evm_refund_reverted`, because merge cannot clear `evm_refund_txid`.
+pub(super) fn pending_refund(metadata: &SwapMetadata) -> Option<&String> {
+    metadata
+        .evm_refund_txid
+        .as_ref()
+        .filter(|hash| metadata.evm_refund_reverted.as_ref() != Some(*hash))
+}
+
 /// A failed funding check: whether the receipt was unavailable (so the server may
 /// know a different hash that mined), and why.
 pub(super) type Unverified = (bool, Error);
@@ -87,7 +96,14 @@ pub(super) async fn verify_funding_receipt(
             ))
             .await
             .map_err(rejected)?;
-        let bytes = word(&depositor).map_err(rejected)?.to_be_bytes::<32>();
+        let depositor = word(&depositor).map_err(rejected)?;
+        if depositor.is_zero() {
+            // The coordinator deletes a deposit once it refunds or claims its HTLC.
+            return Err(rejected(invalid(
+                "the coordinator holds no deposit for this HTLC: it was refunded or claimed; check the depositor's balance of the lock token",
+            )));
+        }
+        let bytes = depositor.to_be_bytes::<32>();
         if bytes[..12] != [0u8; 12] || Address::from_slice(&bytes[12..]) != context.owner {
             return Err(rejected(invalid(
                 "coordinator depositor does not match this swap",
@@ -337,11 +353,30 @@ impl Client {
             .map(str::to_owned)
     }
 
+    /// Refund the swap's funded EVM HTLC from `wallet`. A refund whose hash is
+    /// recorded is verified on retry, never sent a second time, and one that
+    /// mined and reverted refunded nothing: it is released with
+    /// [`Error::InvalidSwap`], and the next call sends a new one while the HTLC
+    /// is active.
     pub async fn refund_evm_with_wallet(
         &self,
         id: &str,
         wallet: &dyn EvmWallet,
         options: RefundOptions,
+    ) -> Result<EvmReceipt> {
+        self.refund_evm(id, wallet, options, false).await
+    }
+
+    /// With `depositor`, the swap's own depositor pays the gas: the refund is
+    /// refused before anything is reserved when it cannot, and a refund reserved
+    /// without a recorded hash is sent again while the HTLC is active, since a
+    /// second refund of the same deposit reverts.
+    pub(super) async fn refund_evm(
+        &self,
+        id: &str,
+        wallet: &dyn EvmWallet,
+        options: RefundOptions,
+        depositor: bool,
     ) -> Result<EvmReceipt> {
         tokio::time::timeout(options.timeout, async {
             let _execution = self.evm_execution.lock().await;
@@ -349,31 +384,25 @@ impl Client {
                 .get_stored_swap(id)?
                 .ok_or_else(|| invalid("swap record missing"))?
                 .metadata;
+            let pending = pending_refund(&metadata);
             let htlc = self
-                .read_funded_evm_htlc(
-                    id,
-                    wallet,
-                    &options,
-                    metadata.evm_refund_txid.is_none(),
-                    true,
-                )
+                .read_funded_evm_htlc(id, wallet, &options, pending.is_none(), true)
                 .await?;
-            if let Some(hash) = metadata.evm_refund_txid {
-                let hash = parse::<B256>(&hash)?;
-                let receipt = wallet.wait_for_receipt(hash).await?;
-                if receipt.transaction_hash != hash {
-                    return Err(invalid("refund receipt hash mismatch"));
-                }
-                htlc.verify_refund_receipt(&receipt)?;
-                return Ok(receipt);
+            if let Some(hash) = pending {
+                return self.verified_refund(id, wallet, &htlc, parse(hash)?).await;
             }
-            if metadata.evm_refund_started == Some(true) {
+            let resend = metadata.evm_refund_started == Some(true);
+            if resend && !depositor {
                 return Err(invalid(
                     "refund submission unresolved; attach its transaction, or release evm_refund_started once nothing was sent",
                 ));
             }
             if !htlc.is_active(wallet).await? {
-                return Err(invalid("HTLC is no longer active"));
+                return Err(invalid(if resend {
+                    "HTLC is no longer active: the refund whose hash was not recorded, or a claim, settled it; check the depositor's balance of the lock token"
+                } else {
+                    "HTLC is no longer active"
+                }));
             }
             if wallet.block_timestamp().await? < htlc.timelock {
                 return Err(invalid("refund timelock has not expired on chain"));
@@ -424,6 +453,9 @@ impl Client {
             };
             let tx = transaction(wallet, to, data);
             wallet.call(&tx).await?;
+            if depositor {
+                super::depositor::ensure_gas(wallet, &tx).await?;
+            }
             self.update_swap_metadata(
                 id,
                 SwapMetadata {
@@ -439,16 +471,41 @@ impl Client {
                     ..Default::default()
                 },
             )?;
-            let receipt = wallet.wait_for_receipt(hash).await?;
-            if receipt.transaction_hash != hash {
-                return Err(invalid("refund receipt hash mismatch"));
-            }
-            htlc.verify_refund_receipt(&receipt)?;
-            Ok(receipt)
+            self.verified_refund(id, wallet, &htlc, hash).await
         })
         .await
         .map_err(|_| {
             Error::Timeout("EVM refund timed out; inspect its stored transaction".into())
         })?
+    }
+
+    /// A refund that mined and reverted refunded nothing, so it is released for
+    /// the next call to send anew.
+    async fn verified_refund(
+        &self,
+        id: &str,
+        wallet: &dyn EvmWallet,
+        htlc: &EvmHtlc,
+        hash: B256,
+    ) -> Result<EvmReceipt> {
+        let receipt = wallet.wait_for_receipt(hash).await?;
+        if receipt.transaction_hash != hash {
+            return Err(invalid("refund receipt hash mismatch"));
+        }
+        if !receipt.success {
+            self.update_swap_metadata(
+                id,
+                SwapMetadata {
+                    evm_refund_started: Some(false),
+                    evm_refund_reverted: Some(hash.to_string()),
+                    ..Default::default()
+                },
+            )?;
+            return Err(invalid(format!(
+                "refund transaction {hash} reverted and refunded nothing; the next call sends a new one while the HTLC is active"
+            )));
+        }
+        htlc.verify_refund_receipt(&receipt)?;
+        Ok(receipt)
     }
 }

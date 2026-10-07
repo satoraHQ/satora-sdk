@@ -152,4 +152,28 @@ impl EvmWallet for RpcWallet {
     fn code(&self, address: Address) -> WalletFuture<'_, Bytes> {
         Box::pin(async move { self.provider.get_code_at(address).await.map_err(transport) })
     }
+    fn native_balance(&self) -> WalletFuture<'_, U256> {
+        Box::pin(async {
+            self.provider
+                .get_balance(self.signer.address())
+                .await
+                .map_err(transport)
+        })
+    }
+    fn transaction_fee<'a>(&'a self, tx: &'a EvmTransaction) -> WalletFuture<'a, U256> {
+        Box::pin(async move {
+            // The same estimates the provider's fillers sign a transaction with.
+            let gas = self
+                .provider
+                .estimate_gas(self.request(tx)?)
+                .await
+                .map_err(transport)?;
+            let fees = self
+                .provider
+                .estimate_eip1559_fees()
+                .await
+                .map_err(transport)?;
+            Ok(U256::from(gas).saturating_mul(U256::from(fees.max_fee_per_gas)))
+        })
+    }
 }
