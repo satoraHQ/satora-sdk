@@ -282,6 +282,46 @@ fn known_field_names_in_extra_do_not_corrupt_sqlite_records() {
     assert!(store.unreadable_swaps().unwrap().is_empty());
 }
 
+/// The fixture swap as the server reports it once it lowered the payout.
+fn lowered(index: u32) -> StoredSwap {
+    let fixtures: Value =
+        serde_json::from_str(include_str!("fixtures/swap-responses.json")).unwrap();
+    let mut response = fixtures["evm_to_arkade"].clone();
+    response["target_amount"] = json!("99908");
+    StoredSwap::new(
+        index,
+        serde_json::from_value(response).unwrap(),
+        SwapMetadata::default(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_refresh_never_moves_the_amounts_a_swap_was_created_with() {
+    let dir = tempfile::tempdir().unwrap();
+    let sqlite = SqliteSwapStorage::open(dir.path().join("swaps.db"), "wallet").unwrap();
+    let memory = InMemorySwapStorage::new();
+    for store in [&memory as &dyn SwapStorage, &sqlite] {
+        // A record stored before `created_amounts` existed has none.
+        let mut legacy = record(7);
+        legacy.metadata.created_amounts = None;
+        for created in [record(7), legacy] {
+            let id = created.response.id().to_owned();
+            store.store_swap(created).unwrap();
+            store.store_swap(lowered(7)).unwrap();
+            let stored = store.get_swap(&id).unwrap().unwrap();
+            let GetSwapResponse::EvmToArkade(response) = &stored.response else {
+                panic!("direction changed");
+            };
+            assert_eq!(response.target_amount, "99908");
+            let amounts = stored.metadata.created_amounts.unwrap();
+            assert_eq!(amounts.target_amount, "100000");
+            assert_eq!(amounts.evm_expected_sats, "100000");
+            store.delete_swap(&id).unwrap();
+        }
+    }
+}
+
 #[derive(Default)]
 struct IndexOnly {
     indices: std::sync::Mutex<std::collections::HashMap<String, u32>>,

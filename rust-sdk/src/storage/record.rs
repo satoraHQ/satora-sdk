@@ -55,9 +55,36 @@ pub struct SwapMetadata {
     pub evm_fund_relay: Option<RelayFundingJournal>,
     pub evm_coordinator_address: Option<String>,
     pub evm_key_source: Option<EvmKeySource>,
+    /// Written once, when the swap is first stored, normally from its creation
+    /// response. A refresh replaces the response but never this, so a claim floor
+    /// derived from it cannot follow a payout the server lowers later. A record
+    /// first stored by recovery, or rebuilt after a restart by an index-only store,
+    /// takes the server's amounts at that time.
+    pub created_amounts: Option<CreatedAmounts>,
     /// Fields written by a newer SDK, preserved across this build's rewrites.
     #[serde(flatten)]
     pub extra: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+/// An EVM to Arkade swap's amounts as first stored, as decimal strings.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CreatedAmounts {
+    /// Sats the VHTLC was to pay.
+    pub target_amount: String,
+    /// Smallest units of the chain's BTC token the EVM HTLC was to lock.
+    pub evm_expected_sats: String,
+}
+
+impl CreatedAmounts {
+    pub(crate) fn of(response: &GetSwapResponse) -> Option<Self> {
+        match response {
+            GetSwapResponse::EvmToArkade(r) => Some(Self {
+                target_amount: r.target_amount.clone(),
+                evm_expected_sats: r.evm_expected_sats.clone(),
+            }),
+            _ => None,
+        }
+    }
 }
 
 impl SwapMetadata {
@@ -110,6 +137,10 @@ impl SwapMetadata {
             evm_coordinator_address,
             evm_key_source
         );
+        if self.created_amounts.is_none() {
+            self.created_amounts = update.created_amounts;
+        }
+        self.extra.remove("created_amounts");
     }
 }
 
@@ -126,7 +157,14 @@ pub struct StoredSwap {
 }
 
 impl StoredSwap {
-    pub fn new(key_index: u32, response: GetSwapResponse, metadata: SwapMetadata) -> Result<Self> {
+    pub fn new(
+        key_index: u32,
+        response: GetSwapResponse,
+        mut metadata: SwapMetadata,
+    ) -> Result<Self> {
+        if metadata.created_amounts.is_none() {
+            metadata.created_amounts = CreatedAmounts::of(&response);
+        }
         let now = now()?;
         let record = Self {
             version: 1,
@@ -159,6 +197,10 @@ impl StoredSwap {
             return Err(Error::Storage(
                 "cannot replace a stored swap's identity or key index".into(),
             ));
+        }
+        // A record from before `created_amounts` existed keeps its own response's.
+        if self.metadata.created_amounts.is_none() {
+            self.metadata.created_amounts = CreatedAmounts::of(&self.response);
         }
         self.response = newer.response;
         self.metadata.merge(newer.metadata);

@@ -115,7 +115,7 @@ impl Client {
             let pair=Keypair::from_secret_key(&Secp256k1::new(),&secp256k1::SecretKey::from_slice(&params.secret).map_err(decode)?);
             let preimage=(operation==ArkadeSpend::Claim).then_some(params.preimage);
             let vtxos=validate_vtxos(&htlc,backend.vtxos(htlc.address()).await?)?;
-            // A replaced claim whose request may have delivered the preimage skips the window check.
+            // A replaced claim whose request may have delivered the preimage skips the window and amount checks.
             let mut delivered=false;
             let mut superseded=Vec::new();
             let persisted=if let Some(state)=stored.metadata.arkade_delegate {
@@ -174,7 +174,7 @@ impl Client {
                 let amount=available.iter().try_fold(0u64,|sum,v|sum.checked_add(v.amount.to_sat()).filter(|sum|*sum<=Amount::MAX_MONEY.to_sat()).ok_or_else(||invalid("Arkade amount overflow")))?;
                 let log=self.log.child("delegate","delegate.settle").swap_id(id).with("destinationAddress",options.destination.as_str()).with("networkName",htlc.network.to_string());
                 sdk_log!(log,Info,"delegate.settle.vtxos_found","Found settleable VTXOs for delegate settlement","vtxoCount"=>available.len(),"totalAmount"=>amount.to_string());
-                if operation==ArkadeSpend::Claim && amount<htlc.expected_amount.to_sat() {return Err(invalid("Arkade HTLC is underfunded"));}
+                if operation==ArkadeSpend::Claim && !delivered {self.ensure_claim_covered(id,&htlc,amount,&log,true).await?;}
                 let control=htlc.script.taproot_spend_info().control_block(&(script.clone(),LeafVersion::TapScript)).ok_or_else(||invalid("Arkade control block missing"))?;
                 let lock=(operation==ArkadeSpend::Refund).then(||bitcoin::absolute::LockTime::from_consensus(htlc.options.refund_locktime));
                 let inputs=available.iter().map(|v|Input::new_with_extra_witness(v.outpoint,if lock.is_some() {Sequence::ENABLE_LOCKTIME_NO_RBF} else {Sequence::MAX},lock,TxOut {value:v.amount,script_pubkey:v.script.clone()},htlc.script.tapscripts(),(script.clone(),control.clone()),false,v.is_swept,vec![],preimage.map(|p|vec![p.to_vec()]).unwrap_or_default())).collect();

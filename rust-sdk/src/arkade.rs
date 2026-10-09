@@ -555,6 +555,10 @@ pub use execution::VhtlcBalance;
 impl Client {
     /// Claim an EVM, Lightning, or Bitcoin to Arkade swap. Progress is persisted
     /// before submission and finalization so the same call can resume after restart.
+    /// An EVM to Arkade VHTLC funded below the target the swap was created with
+    /// needs an EVM reader for its chain (`Client::set_evm_reader`, `gasless`
+    /// feature) and a shortfall limit that covers it
+    /// (`Client::set_conversion_shortfall_limit`).
     #[tracing::instrument(name = "claim", skip_all, fields(%swap_id))]
     pub async fn claim(&self, swap_id: &str, destination: &str) -> Result<ClaimReceipt> {
         if self.get_stored_swap(swap_id)?.is_none() {

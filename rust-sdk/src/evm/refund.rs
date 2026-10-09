@@ -130,6 +130,56 @@ impl Client {
             .await
     }
 
+    /// The HTLC an EVM to Arkade swap owner's own funding created, locking
+    /// `lock_token`: the funding receipt, the coordinator as lock sender and the
+    /// owner as the coordinator's depositor are all checked, so a lock someone
+    /// else made under the same hash cannot stand in for it. A refresh can rewrite
+    /// the stored response, so the hash lock, the owner and the coordinator must
+    /// be what this wallet holds: its own hash lock, one of its own addresses, and
+    /// the coordinator its own funding went through. Only that funding can make
+    /// one of its addresses a depositor under its hash.
+    pub(crate) async fn owner_funded_evm_htlc(
+        &self,
+        id: &str,
+        reader: &dyn EvmWallet,
+        lock_token: Address,
+    ) -> Result<EvmHtlc> {
+        let stored = self
+            .get_stored_swap(id)?
+            .ok_or_else(|| invalid("swap record missing"))?;
+        let crate::types::GetSwapResponse::EvmToArkade(response) = &stored.response else {
+            return Err(invalid("not an EVM to Arkade swap"));
+        };
+        let context = EvmContext::from_response(&stored.response)?;
+        let signer = self
+            .signer
+            .as_ref()
+            .ok_or_else(|| invalid("reading a swap's own EVM lock requires a signer"))?;
+        if context.hash != B256::from(signer.derive_swap_params(stored.key_index)?.hash_lock) {
+            return Err(invalid("the swap's EVM hash lock is not this wallet's"));
+        }
+        signer
+            .evm_key_for_address(stored.key_index, &context.owner.to_string())
+            .map_err(|_| invalid("the swap's EVM owner is not an address of this wallet"))?;
+        let coordinator = parse(
+            stored
+                .metadata
+                .evm_coordinator_address
+                .as_deref()
+                .ok_or_else(|| {
+                    invalid("the coordinator this wallet funded the swap through is unknown")
+                })?,
+        )?;
+        let options = RefundOptions {
+            htlc: parse(&response.evm_htlc_address)?,
+            lock_token,
+            coordinator: Some(coordinator),
+            timeout: RESUME_TIMEOUT,
+        };
+        self.read_funded_evm_htlc(id, reader, &options, true, true)
+            .await
+    }
+
     pub(super) async fn read_funded_evm_htlc(
         &self,
         id: &str,

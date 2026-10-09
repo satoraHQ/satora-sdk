@@ -73,7 +73,7 @@ impl Client {
     }
 
     /// Persists a server snapshot from refresh or recovery.
-    pub(super) fn persist_server_swap(&self, index: u32, response: GetSwapResponse) -> Result<()> {
+    pub(crate) fn persist_server_swap(&self, index: u32, response: GetSwapResponse) -> Result<()> {
         let id = response.id().to_owned();
         let journal_unknown = self.process_records.get_swap(&id)?.is_none();
         let evm_source = matches!(

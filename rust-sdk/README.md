@@ -295,6 +295,19 @@ and `spend_arkade` expose reconstruction, spend observations, and an injectable
 default endpoints; the TypeScript SDK defaults to `https://arkade.computer` on
 mainnet and `https://mutinynet.arkade.sh` on signet (Mutinynet).
 
+The expected amount is the target the swap was created with, which a refresh
+never moves. When an EVM→Arkade source converts to less than quoted, the daemon
+funds the VHTLC below that target. A claim, offchain or delegated, then reads the
+swap owner's own EVM lock through the reader `Client::set_evm_reader` sets for
+its chain (`gasless` feature) and accepts the VHTLC only if it covers the target
+less the lock's shortfall, computed as the daemon does. The lock must be one this
+wallet funded, through the coordinator its funding recorded. The shortfall is
+measured against the lock the server said to expect, so a VHTLC further below the
+target than `Client::set_conversion_shortfall_limit` allows (none by default) is
+refused whatever the lock shows. Without a reader for the chain the claim is
+refused. A record rebuilt from the server, by recovery or after a restart with an
+index-only store, takes the server's amounts at that time as its targets.
+
 Offchain progress retains exact PSBTs with condition witnesses removed. Resume
 with the same operation and destination (a claim whose submit was attempted
 resumes whatever destination it pays): the SDK re-derives the preimage, queries

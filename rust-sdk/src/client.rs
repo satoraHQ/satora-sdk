@@ -136,7 +136,16 @@ pub struct Client {
     pub(crate) arkade_wallet: Arc<tokio::sync::OnceCell<crate::arkade::ArkadeWallet>>,
     pub(crate) log: SdkLogger,
     pub(crate) bitcoin_depth: crate::observation::BitcoinDepth,
+    #[cfg(feature = "gasless")]
+    pub(crate) evm_readers: EvmReaders,
+    /// Basis points of the created target.
+    #[cfg(feature = "gasless")]
+    pub(crate) shortfall_limit: Arc<std::sync::atomic::AtomicU32>,
 }
+
+#[cfg(feature = "gasless")]
+pub(crate) type EvmReaders =
+    Arc<std::sync::RwLock<std::collections::HashMap<u64, Arc<dyn crate::evm::EvmWallet>>>>;
 
 impl std::fmt::Debug for Client {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -171,6 +180,10 @@ impl Client {
             evm_execution: Arc::default(),
             log: SdkLogger::tracing(),
             bitcoin_depth: crate::observation::BitcoinDepth::new(None),
+            #[cfg(feature = "gasless")]
+            evm_readers: Arc::default(),
+            #[cfg(feature = "gasless")]
+            shortfall_limit: Arc::default(),
         })
     }
 
@@ -212,6 +225,46 @@ impl Client {
     /// every swap its trackers watch, including swaps already tracked.
     pub fn set_bitcoin_min_confirmations(&self, confirmations: Option<u32>) {
         self.bitcoin_depth.set(confirmations);
+    }
+
+    /// Read EVM chain `reader.chain_id()` through `reader`, replacing any earlier
+    /// reader for that chain. When the daemon funds an EVM to Arkade swap's VHTLC
+    /// below the target it was created with, because the source converted to less
+    /// than quoted, a claim within [`Self::set_conversion_shortfall_limit`] reads
+    /// the swap's own EVM lock through this and accepts the VHTLC only if it covers
+    /// that target less the lock's shortfall. Without a reader for the swap's chain
+    /// such a claim is refused. Only reads are made, so an
+    /// [`crate::evm::RpcWallet`] over a node of that chain serves with any key.
+    /// Every clone of this client shares the readers.
+    #[cfg(feature = "gasless")]
+    pub fn set_evm_reader(&self, reader: Arc<dyn crate::evm::EvmWallet>) {
+        self.evm_readers
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(reader.chain_id(), reader);
+    }
+
+    /// Accept an EVM to Arkade VHTLC funded up to `basis_points` hundredths of a
+    /// percent below the target its swap was created with, when the swap's own EVM
+    /// lock shows a conversion shortfall that large (see [`Self::set_evm_reader`]).
+    /// The default of 0 refuses any VHTLC below that target. The shortfall is
+    /// measured against the lock the server said to expect, which nothing else
+    /// checks, so this limit is all that bounds how far a dishonest server can
+    /// lower a payout. A merchant's payment tolerance for such payments is a
+    /// natural value. Every clone of this client shares the limit.
+    #[cfg(feature = "gasless")]
+    pub fn set_conversion_shortfall_limit(&self, basis_points: u32) {
+        self.shortfall_limit
+            .store(basis_points, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[cfg(feature = "gasless")]
+    pub(crate) fn evm_reader(&self, chain_id: u64) -> Option<Arc<dyn crate::evm::EvmWallet>> {
+        self.evm_readers
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&chain_id)
+            .cloned()
     }
 
     /// Internal dispatch chokepoint for every endpoint described by
@@ -1014,6 +1067,10 @@ impl ClientBuilder {
             evm_execution: Arc::default(),
             log,
             bitcoin_depth: crate::observation::BitcoinDepth::new(self.bitcoin_min_confirmations),
+            #[cfg(feature = "gasless")]
+            evm_readers: Arc::default(),
+            #[cfg(feature = "gasless")]
+            shortfall_limit: Arc::default(),
         })
     }
 }

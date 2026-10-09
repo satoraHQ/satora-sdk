@@ -123,6 +123,21 @@ pub trait EvmWallet: Send + Sync {
     }
 }
 
+/// The BTC token the daemon locks for EVM-sourced swaps on a chain, with its
+/// decimals: the daemon's configured `wbtc` and `EvmChain::wbtc_decimals`. EVM to
+/// Arkade responses name no lock token, and an amount locked in any other token
+/// says nothing about the BTC the swap is owed.
+pub(crate) fn lock_asset(chain_id: u64) -> Option<(Address, u32)> {
+    use alloy::primitives::address;
+    match chain_id {
+        1 => Some((address!("0x18084fba666a33d37592fa2633fd49a74dd93a88"), 18)),
+        137 => Some((address!("0x1bfd67037b42cf73acf2047067bd4f2c47d9bfd6"), 8)),
+        42161 => Some((address!("0x6c84a8f1c29108f47a79964b5fe888d4f4d0de40"), 18)),
+        30 | 31 => Some((Address::ZERO, 18)),
+        _ => None,
+    }
+}
+
 pub(super) fn invalid(message: impl Into<String>) -> Error {
     Error::InvalidSwap(message.into())
 }

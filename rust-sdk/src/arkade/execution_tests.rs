@@ -2840,3 +2840,694 @@ async fn delegated_settlement_logs_its_outputs_and_a_cosigner_key_fallback() {
         "{fallback:?}"
     );
 }
+
+const EVM_FUNDING: &str = "0xabababababababababababababababababababababababababababababababab";
+
+/// An EVM to Arkade swap created to pay 100_000 sats out of a lock of 101_000
+/// sats of Arbitrum tBTC, funded by this wallet's per-swap address through the
+/// coordinator it recorded, whose VHTLC the daemon funded with `vhtlc` sats.
+/// Also returns the swap as the server now reports it, with `server_target`.
+fn converted_swap(
+    vhtlc: u64,
+    server_target: &str,
+) -> (Backend, Arc<InMemorySwapStorage>, String, Value) {
+    let (_, mut backend, store, destination) = setup("evm_to_arkade");
+    let mut response =
+        serde_json::to_value(&store.get_swap("arkade").unwrap().unwrap().response).unwrap();
+    store.delete_swap("arkade").unwrap();
+    response["evm_chain_id"] = json!(42161);
+    response["evm_htlc_address"] = json!(format!("0x{}", "01".repeat(20)));
+    response["evm_coordinator_address"] = json!(format!("0x{}", "02".repeat(20)));
+    response["server_evm_address"] = json!(format!("0x{}", "04".repeat(20)));
+    response["evm_refund_locktime"] = json!(2_000_000_000u64);
+    response["target_amount"] = json!("100000");
+    response["evm_expected_sats"] = json!("1010000000000000");
+    response["client_evm_address"] = json!(own_evm_address());
+    store
+        .store_swap(
+            StoredSwap::new(
+                0,
+                serde_json::from_value(response.clone()).unwrap(),
+                SwapMetadata {
+                    evm_coordinator_address: Some(format!("0x{}", "02".repeat(20))),
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    backend.vtxos[1].amount = Amount::from_sat(vhtlc - 50_000);
+    response["status"] = json!("serverfunded");
+    response["target_amount"] = json!(server_target);
+    response["evm_fund_txid"] = json!(EVM_FUNDING);
+    (backend, store, destination, response)
+}
+
+fn own_evm_address() -> String {
+    Signer::from_mnemonic(MNEMONIC)
+        .unwrap()
+        .derive_evm_key(0)
+        .unwrap()
+        .address
+}
+
+async fn swap_api(refreshed: Value, refreshes: u64, settles: u64) -> wiremock::MockServer {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/swap/arkade"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(refreshed))
+        .expect(refreshes)
+        .mount(&server)
+        .await;
+    Mock::given(wiremock::matchers::path("/api/delegate/settle"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"commitment_txid": Txid::from_byte_array([15; 32])})),
+        )
+        .expect(settles)
+        .mount(&server)
+        .await;
+    server
+}
+
+/// The coordinator's tBTC lock for `converted_swap`, made by the swap owner's
+/// funding: what an Arbitrum node would show.
+#[cfg(feature = "gasless")]
+struct EvmLock {
+    htlc: crate::evm::htlc::EvmHtlc,
+    owner: crate::evm::Address,
+}
+#[cfg(feature = "gasless")]
+impl EvmLock {
+    fn new(locked_units: crate::evm::U256) -> Self {
+        use crate::evm::Address;
+        let params = Signer::from_mnemonic(MNEMONIC)
+            .unwrap()
+            .derive_swap_params(0)
+            .unwrap();
+        Self {
+            htlc: crate::evm::htlc::EvmHtlc {
+                chain_id: 42161,
+                address: Address::repeat_byte(1),
+                hash_lock: params.hash_lock.into(),
+                amount: locked_units,
+                token: crate::evm::lock_asset(42161).unwrap().0,
+                sender: Address::repeat_byte(2),
+                claimer: Address::repeat_byte(4),
+                timelock: 2_000_000_000,
+            },
+            owner: own_evm_address().parse().unwrap(),
+        }
+    }
+}
+#[cfg(feature = "gasless")]
+impl crate::evm::EvmWallet for EvmLock {
+    fn address(&self) -> crate::evm::Address {
+        crate::evm::Address::repeat_byte(9)
+    }
+    fn chain_id(&self) -> u64 {
+        self.htlc.chain_id
+    }
+    fn sign_typed_data<'a>(
+        &'a self,
+        _: &'a crate::evm::EvmTypedData,
+    ) -> crate::evm::WalletFuture<'a, crate::evm::Signature> {
+        Box::pin(async { Err(invalid("read only")) })
+    }
+    fn call<'a>(
+        &'a self,
+        tx: &'a crate::evm::EvmTransaction,
+    ) -> crate::evm::WalletFuture<'a, crate::evm::Bytes> {
+        Box::pin(async move {
+            use alloy::sol_types::SolCall;
+            let deposits = crate::evm::htlc::Coordinator::depositsCall {
+                key: self.htlc.key(),
+            }
+            .abi_encode();
+            if tx.to != self.htlc.sender || tx.data.as_ref() != deposits.as_slice() {
+                return Err(invalid("unexpected EVM call"));
+            }
+            Ok(crate::evm::B256::left_padding_from(self.owner.as_slice())
+                .to_vec()
+                .into())
+        })
+    }
+    fn send_transaction<'a>(
+        &'a self,
+        _: &'a crate::evm::EvmTransaction,
+    ) -> crate::evm::WalletFuture<'a, crate::evm::B256> {
+        Box::pin(async { Err(invalid("read only")) })
+    }
+    fn wait_for_receipt(
+        &self,
+        hash: crate::evm::B256,
+    ) -> crate::evm::WalletFuture<'_, crate::evm::EvmReceipt> {
+        Box::pin(async move {
+            use alloy::sol_types::SolEvent;
+            if hash != EVM_FUNDING.parse::<crate::evm::B256>().unwrap() {
+                return Err(Error::Timeout("receipt not served".into()));
+            }
+            let h = &self.htlc;
+            let log = crate::evm::funding::SwapCreated {
+                preimageHash: h.hash_lock,
+                refundAddress: h.sender,
+                claimAddress: h.claimer,
+                token: h.token,
+                amount: h.amount,
+                timelock: crate::evm::U256::from(h.timelock),
+                key: h.key(),
+            }
+            .encode_log_data();
+            Ok(crate::evm::EvmReceipt {
+                transaction_hash: hash,
+                success: true,
+                block_number: 1,
+                logs: vec![crate::evm::EvmLog {
+                    address: h.address,
+                    topics: log.topics().to_vec(),
+                    data: log.data,
+                }],
+            })
+        })
+    }
+}
+
+/// 100_908 sats and half a sat of tBTC: 92 sats short of the 101_000 expected,
+/// so the daemon pays 99_908. The half sat is truncated, as the daemon does.
+#[cfg(feature = "gasless")]
+fn short_lock() -> Arc<EvmLock> {
+    let units = crate::evm::U256::from(100_908u64) * crate::evm::U256::from(10u64.pow(10))
+        + crate::evm::U256::from(5_000_000_000u64);
+    Arc::new(EvmLock::new(units))
+}
+
+#[cfg(feature = "gasless")]
+#[tokio::test]
+async fn a_claim_short_by_the_evm_conversion_shortfall_succeeds() {
+    let (backend, store, destination, refreshed) = converted_swap(99_908, "99908");
+    let server = swap_api(refreshed, 1, 0).await;
+    let mut client = Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .base_url(server.uri())
+        .build()
+        .unwrap();
+    let logger = record(&mut client);
+    client.set_evm_reader(short_lock());
+    client.set_conversion_shortfall_limit(100);
+    let receipt = client
+        .spend_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            spend_options(destination),
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt.claim_amount_sats, 99_908);
+    let stored = store.get_swap("arkade").unwrap().unwrap();
+    let GetSwapResponse::EvmToArkade(response) = &stored.response else {
+        panic!("direction changed");
+    };
+    assert_eq!(response.target_amount, "99908");
+    assert_eq!(
+        stored.metadata.created_amounts.unwrap().target_amount,
+        "100000"
+    );
+    let accepted = logger.find("arkade.claim.shortfall_accepted").unwrap();
+    assert_eq!(accepted.level, crate::logging::LogLevel::Info);
+    assert_eq!(accepted.swap_id.as_deref(), Some("arkade"));
+    assert_eq!(accepted.data["targetAmount"], json!("100000"));
+    assert_eq!(accepted.data["vhtlcAmount"], json!("99908"));
+    assert_eq!(accepted.data["evmShortfallSats"], json!("92"));
+}
+
+#[cfg(feature = "gasless")]
+#[tokio::test]
+async fn a_claim_short_by_more_than_the_evm_conversion_shortfall_is_refused() {
+    // The server's lowered target matches the VHTLC; only the chain counts.
+    let (backend, store, destination, refreshed) = converted_swap(99_907, "99907");
+    let server = swap_api(refreshed, 2, 0).await;
+    let client = Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .base_url(server.uri())
+        .build()
+        .unwrap();
+    client.set_evm_reader(short_lock());
+    client.set_conversion_shortfall_limit(100);
+    let error = client
+        .spend_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            spend_options(destination.clone()),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("underfunded"), "{error}");
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 0);
+    assert!(
+        store
+            .get_swap("arkade")
+            .unwrap()
+            .unwrap()
+            .metadata
+            .arkade_pending
+            .is_none()
+    );
+    // Nor is it refreshed into a floor: the stored target is now the server's.
+    let error = client
+        .spend_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            spend_options(destination),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("underfunded"), "{error}");
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 0);
+}
+
+#[cfg(feature = "gasless")]
+#[tokio::test]
+async fn a_delegated_settle_short_by_the_evm_conversion_shortfall_succeeds() {
+    let (mut backend, store, destination, refreshed) = converted_swap(99_908, "99908");
+    backend.vtxos[0].is_swept = true;
+    backend.vtxos[0].expires_at = 0;
+    let server = swap_api(refreshed, 1, 1).await;
+    let mut client = Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .base_url(server.uri())
+        .build()
+        .unwrap();
+    let logger = record(&mut client);
+    client.set_evm_reader(short_lock());
+    client.set_conversion_shortfall_limit(100);
+    assert_eq!(
+        delegate_claim(&client, &backend, &destination)
+            .await
+            .unwrap(),
+        Txid::from_byte_array([15; 32])
+    );
+    let state = store
+        .get_swap("arkade")
+        .unwrap()
+        .unwrap()
+        .metadata
+        .arkade_delegate
+        .unwrap();
+    assert_eq!(state.amount_sats, 99_908);
+    let accepted = logger.find("delegate.settle.shortfall_accepted").unwrap();
+    assert_eq!(accepted.data["evmShortfallSats"], json!("92"));
+}
+
+#[cfg(feature = "gasless")]
+#[tokio::test]
+async fn a_delegated_settle_short_by_more_than_the_evm_conversion_shortfall_is_refused() {
+    let (mut backend, store, destination, refreshed) = converted_swap(99_907, "99907");
+    backend.vtxos[0].is_swept = true;
+    backend.vtxos[0].expires_at = 0;
+    let server = swap_api(refreshed, 1, 0).await;
+    let client = Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .base_url(server.uri())
+        .build()
+        .unwrap();
+    client.set_evm_reader(short_lock());
+    client.set_conversion_shortfall_limit(100);
+    let error = delegate_claim(&client, &backend, &destination)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("underfunded"), "{error}");
+    assert!(
+        store
+            .get_swap("arkade")
+            .unwrap()
+            .unwrap()
+            .metadata
+            .arkade_delegate
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn a_claim_below_the_created_target_needs_an_evm_reader() {
+    for delegated in [false, true] {
+        let (mut backend, store, destination, refreshed) = converted_swap(99_908, "99908");
+        if delegated {
+            backend.vtxos[0].is_swept = true;
+            backend.vtxos[0].expires_at = 0;
+        }
+        let server = swap_api(refreshed, 0, 0).await;
+        let client = Client::builder()
+            .mnemonic(MNEMONIC)
+            .storage(store)
+            .base_url(server.uri())
+            .build()
+            .unwrap();
+        #[cfg(feature = "gasless")]
+        client.set_conversion_shortfall_limit(100);
+        let error = if delegated {
+            delegate_claim(&client, &backend, &destination)
+                .await
+                .unwrap_err()
+        } else {
+            client
+                .spend_arkade(
+                    "arkade",
+                    &backend,
+                    None,
+                    ArkadeSpend::Claim,
+                    spend_options(destination),
+                )
+                .await
+                .unwrap_err()
+        };
+        assert!(
+            error.to_string().contains("underfunded") && error.to_string().contains("EVM reader"),
+            "{error}"
+        );
+        assert_eq!(backend.submit_count.load(Ordering::Relaxed), 0);
+    }
+}
+
+#[cfg(feature = "gasless")]
+#[tokio::test]
+async fn a_shortfall_counts_only_from_the_owners_own_lock_of_the_chains_btc_token() {
+    for (case, refusal) in [
+        ("token", "does not contain this HTLC"),
+        ("depositor", "depositor does not match"),
+    ] {
+        let (backend, store, destination, refreshed) = converted_swap(99_908, "99908");
+        let server = swap_api(refreshed, 1, 0).await;
+        let client = Client::builder()
+            .mnemonic(MNEMONIC)
+            .storage(store)
+            .base_url(server.uri())
+            .build()
+            .unwrap();
+        let mut lock = EvmLock::new(short_lock().htlc.amount);
+        if case == "token" {
+            lock.htlc.token = crate::evm::Address::repeat_byte(7);
+        } else {
+            lock.owner = crate::evm::Address::repeat_byte(8);
+        }
+        client.set_evm_reader(Arc::new(lock));
+        client.set_conversion_shortfall_limit(100);
+        let error = client
+            .spend_arkade(
+                "arkade",
+                &backend,
+                None,
+                ArkadeSpend::Claim,
+                spend_options(destination),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(refusal), "{case}: {error}");
+        assert_eq!(backend.submit_count.load(Ordering::Relaxed), 0);
+    }
+}
+
+#[cfg(feature = "gasless")]
+#[tokio::test]
+async fn a_refresh_naming_another_evm_lock_is_refused_and_not_stored() {
+    let (backend, store, destination, mut refreshed) = converted_swap(99_908, "99908");
+    refreshed["evm_htlc_address"] = json!(format!("0x{}", "0e".repeat(20)));
+    let server = swap_api(refreshed, 1, 0).await;
+    let client = Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .base_url(server.uri())
+        .build()
+        .unwrap();
+    client.set_evm_reader(short_lock());
+    client.set_conversion_shortfall_limit(100);
+    let error = client
+        .spend_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            spend_options(destination),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("differ"), "{error}");
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 0);
+    let GetSwapResponse::EvmToArkade(stored) = store.get_swap("arkade").unwrap().unwrap().response
+    else {
+        panic!("direction changed");
+    };
+    assert_eq!(stored.target_amount, "100000");
+    assert_eq!(stored.evm_htlc_address, format!("0x{}", "01".repeat(20)));
+}
+
+#[cfg(feature = "gasless")]
+#[tokio::test]
+async fn a_shortfall_beyond_the_clients_limit_is_refused_before_anything_is_read() {
+    // 92 sats short of a 100_000-sat target is 9.2 basis points.
+    let (backend, store, destination, refreshed) = converted_swap(99_908, "99908");
+    let server = swap_api(refreshed, 1, 0).await;
+    let client = Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(store)
+        .base_url(server.uri())
+        .build()
+        .unwrap();
+    client.set_evm_reader(short_lock());
+    for limit in [0, 9] {
+        client.set_conversion_shortfall_limit(limit);
+        let error = client
+            .spend_arkade(
+                "arkade",
+                &backend,
+                None,
+                ArkadeSpend::Claim,
+                spend_options(destination.clone()),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains(&format!(
+                "Arkade HTLC is underfunded: the VHTLC holds 99908 sats, 92 below the target of 100000, which is more than this client's limit of {limit} basis points; raise it with Client::set_conversion_shortfall_limit"
+            )),
+            "{limit}: {error}"
+        );
+    }
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 0);
+    client.set_conversion_shortfall_limit(10);
+    let receipt = client
+        .spend_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            spend_options(destination),
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt.claim_amount_sats, 99_908);
+}
+
+#[cfg(feature = "gasless")]
+#[tokio::test]
+async fn an_expected_lock_inflated_at_creation_cannot_lower_a_claim_past_the_limit() {
+    // The chain lock of the honest case, but the creation response named an
+    // expected lock of 140_908 sats, which by the daemon's formula alone would
+    // make a 60_000-sat VHTLC enough.
+    let (backend, store, destination, mut refreshed) = converted_swap(60_000, "60000");
+    let created = store.get_swap("arkade").unwrap().unwrap();
+    let mut response = serde_json::to_value(&created.response).unwrap();
+    response["evm_expected_sats"] = json!("1409080000000000");
+    refreshed["evm_expected_sats"] = json!("1409080000000000");
+    store.delete_swap("arkade").unwrap();
+    store
+        .store_swap(
+            StoredSwap::new(
+                0,
+                serde_json::from_value(response).unwrap(),
+                SwapMetadata {
+                    created_amounts: None,
+                    ..created.metadata
+                },
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let server = swap_api(refreshed, 0, 0).await;
+    let client = Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(store)
+        .base_url(server.uri())
+        .build()
+        .unwrap();
+    client.set_evm_reader(short_lock());
+    client.set_conversion_shortfall_limit(100);
+    let error = client
+        .spend_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            spend_options(destination),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("basis points"), "{error}");
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 0);
+}
+
+#[cfg(feature = "gasless")]
+#[tokio::test]
+async fn a_shortfall_counts_only_from_a_lock_this_wallet_funded() {
+    use crate::evm::U256;
+    for (case, refusal) in [
+        ("owner", "owner is not an address of this wallet"),
+        (
+            "coordinator",
+            "coordinator this wallet funded the swap through is unknown",
+        ),
+    ] {
+        let (backend, store, destination, mut refreshed) = converted_swap(60_000, "60000");
+        // A 61_000-sat lock under the swap's hash through the same coordinator,
+        // which would make a 60_000-sat VHTLC enough.
+        let mut lock = EvmLock::new(U256::from(61_000u64) * U256::from(10u64.pow(10)));
+        let server_key = crate::evm::Address::repeat_byte(0x55);
+        let refreshes = if case == "owner" {
+            // An earlier refresh named the server's own key as the swap's owner.
+            refreshed["client_evm_address"] = json!(server_key.to_string());
+            lock.owner = server_key;
+            2
+        } else {
+            // No funding of this wallet's recorded the coordinator.
+            let mut stored = store.get_swap("arkade").unwrap().unwrap();
+            stored.metadata.evm_coordinator_address = None;
+            store.delete_swap("arkade").unwrap();
+            store.store_swap(stored).unwrap();
+            1
+        };
+        let server = swap_api(refreshed, refreshes, 0).await;
+        let client = Client::builder()
+            .mnemonic(MNEMONIC)
+            .storage(store)
+            .base_url(server.uri())
+            .build()
+            .unwrap();
+        client.set_evm_reader(Arc::new(lock));
+        client.set_conversion_shortfall_limit(10_000);
+        if case == "owner" {
+            client.refresh_swap("arkade").await.unwrap();
+        }
+        let error = client
+            .spend_arkade(
+                "arkade",
+                &backend,
+                None,
+                ArkadeSpend::Claim,
+                spend_options(destination),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(refusal), "{case}: {error}");
+        assert_eq!(backend.submit_count.load(Ordering::Relaxed), 0);
+    }
+}
+
+#[cfg(feature = "gasless")]
+#[tokio::test]
+async fn a_replaced_delegated_claim_that_may_have_sent_the_preimage_skips_the_amount_check() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    let (mut backend, store, destination, refreshed) = converted_swap(99_908, "99908");
+    backend.vtxos[0].is_swept = true;
+    backend.vtxos[0].expires_at = 0;
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/swap/arkade"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(refreshed))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let commitment = Txid::from_byte_array([20; 32]);
+    let posts = Arc::new(AtomicUsize::new(0));
+    let seen = posts.clone();
+    Mock::given(wiremock::matchers::path("/api/delegate/settle"))
+        .respond_with(move |_: &wiremock::Request| {
+            if seen.fetch_add(1, Ordering::Relaxed) == 0 {
+                return ResponseTemplate::new(500);
+            }
+            ResponseTemplate::new(200).set_body_json(json!({"commitment_txid":commitment}))
+        })
+        .mount(&server)
+        .await;
+    let client = || {
+        Client::builder()
+            .mnemonic(MNEMONIC)
+            .storage(store.clone())
+            .base_url(server.uri())
+            .build()
+            .unwrap()
+    };
+    let checked = client();
+    checked.set_evm_reader(short_lock());
+    checked.set_conversion_shortfall_limit(100);
+    assert!(
+        delegate_claim(&checked, &backend, &destination)
+            .await
+            .is_err()
+    );
+    age_delegation(
+        &store,
+        super::super::delegate::INTENT_REPLACEMENT_GRACE_SECS + 1,
+    );
+    // Neither a reader nor a limit: the server may already hold the preimage, so
+    // refusing the replacement would only strand the claim.
+    assert_eq!(
+        delegate_claim(&client(), &backend, &destination)
+            .await
+            .unwrap(),
+        commitment
+    );
+    assert_eq!(posts.load(Ordering::Relaxed), 2);
+}
+
+#[cfg(feature = "gasless")]
+#[tokio::test]
+async fn the_lock_read_refuses_a_hash_lock_this_wallet_did_not_derive() {
+    // What a refresh racing the claim could leave behind after the claim checked
+    // its VHTLC against the stored hash lock.
+    let (_, store, _, _) = converted_swap(60_000, "60000");
+    let mut stored = store.get_swap("arkade").unwrap().unwrap();
+    let mut response = serde_json::to_value(&stored.response).unwrap();
+    response["hash_lock"] = json!(format!("0x{}", "22".repeat(32)));
+    stored.response = serde_json::from_value(response).unwrap();
+    store.delete_swap("arkade").unwrap();
+    store.store_swap(stored).unwrap();
+    let client = Client::builder()
+        .mnemonic(MNEMONIC)
+        .storage(store)
+        .build()
+        .unwrap();
+    let mut lock = EvmLock::new(crate::evm::U256::from(61_000u64));
+    lock.htlc.hash_lock = crate::evm::B256::repeat_byte(0x22);
+    let error = client
+        .owner_funded_evm_htlc("arkade", &lock, lock.htlc.token)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("hash lock is not this wallet's"),
+        "{error}"
+    );
+}

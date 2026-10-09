@@ -585,10 +585,9 @@ impl Client {
                                     destination.to_p2tr_script_pubkey().to_hex_string()
                             );
                         }
-                        if operation == ArkadeSpend::Claim
-                            && amount < htlc.expected_amount.to_sat()
-                        {
-                            return Err(invalid("Arkade HTLC is underfunded"));
+                        if operation == ArkadeSpend::Claim {
+                            self.ensure_claim_covered(id, &htlc, amount, &log, false)
+                                .await?;
                         }
                         let inputs = vtxo_inputs(&htlc, operation, &script, &vtxos)?;
                         let OffchainTransactions {
@@ -772,6 +771,168 @@ impl Client {
                 ..Default::default()
             },
         )?;
+        Ok(())
+    }
+
+    /// Refuse to claim a VHTLC of `amount` sats below what the swap is owed, since
+    /// the claim hands the server the preimage to the client's funds. An EVM to
+    /// Arkade swap is owed the target it was created with, less any conversion
+    /// shortfall its own EVM lock shows; any other swap its stored target.
+    pub(super) async fn ensure_claim_covered(
+        &self,
+        id: &str,
+        htlc: &ArkadeHtlc,
+        amount: u64,
+        log: &SdkLogger,
+        delegated: bool,
+    ) -> Result<()> {
+        let stored = self
+            .get_stored_swap(id)?
+            .ok_or_else(|| invalid("swap record missing"))?;
+        if !matches!(stored.response, GetSwapResponse::EvmToArkade(_)) {
+            return if amount < htlc.expected_amount.to_sat() {
+                Err(invalid("Arkade HTLC is underfunded"))
+            } else {
+                Ok(())
+            };
+        }
+        let created = stored
+            .metadata
+            .created_amounts
+            .clone()
+            .or_else(|| crate::storage::CreatedAmounts::of(&stored.response))
+            .ok_or_else(|| invalid("swap amounts missing"))?;
+        let target: u64 = created.target_amount.parse().map_err(decode)?;
+        if amount >= target {
+            return Ok(());
+        }
+        #[cfg(feature = "gasless")]
+        {
+            self.accept_conversion_shortfall(id, &stored, &created, amount, log, delegated)
+                .await
+        }
+        #[cfg(not(feature = "gasless"))]
+        {
+            let _ = (log, delegated);
+            Err(invalid(
+                "Arkade HTLC is underfunded; accepting an EVM conversion shortfall needs an EVM reader, which needs the gasless feature",
+            ))
+        }
+    }
+
+    /// The daemon pays a short EVM lock its value in sats less the fees fixed at
+    /// creation, so the claim is owed `target - (expected - locked)` with target
+    /// and expected lock as created, each lock amount truncated to sats as the
+    /// daemon does. The locked amount comes from the owner's own funding. Only
+    /// the server states the expected lock, so a claim further below the target
+    /// than the caller's limit is refused whatever the lock shows.
+    #[cfg(feature = "gasless")]
+    async fn accept_conversion_shortfall(
+        &self,
+        id: &str,
+        stored: &crate::StoredSwap,
+        created: &crate::storage::CreatedAmounts,
+        amount: u64,
+        log: &SdkLogger,
+        delegated: bool,
+    ) -> Result<()> {
+        use crate::evm::U256;
+        let (accepted, refresh_failed) = if delegated {
+            (
+                "delegate.settle.shortfall_accepted",
+                "delegate.settle.refresh_failed",
+            )
+        } else {
+            (
+                "arkade.claim.shortfall_accepted",
+                "arkade.claim.refresh_failed",
+            )
+        };
+        let GetSwapResponse::EvmToArkade(response) = &stored.response else {
+            return Err(invalid("not an EVM to Arkade swap"));
+        };
+        let target: u64 = created.target_amount.parse().map_err(decode)?;
+        let limit = self
+            .shortfall_limit
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let short = target.saturating_sub(amount);
+        if u128::from(short) * 10_000 > u128::from(target) * u128::from(limit) {
+            return Err(invalid(format!(
+                "Arkade HTLC is underfunded: the VHTLC holds {amount} sats, {short} below the target of {target}, which is more than this client's limit of {limit} basis points; raise it with Client::set_conversion_shortfall_limit"
+            )));
+        }
+        let chain_id = response.evm_chain_id;
+        let reader = self.evm_reader(chain_id).ok_or_else(|| {
+            invalid(format!(
+                "Arkade HTLC is underfunded; accepting an EVM conversion shortfall needs an EVM reader for chain {chain_id} (Client::set_evm_reader)"
+            ))
+        })?;
+        let (token, decimals) = crate::evm::lock_asset(chain_id).ok_or_else(|| {
+            invalid(format!(
+                "Arkade HTLC is underfunded; the BTC token locked on EVM chain {chain_id} is unknown, so its shortfall cannot be read"
+            ))
+        })?;
+        // The stored record follows the server only while the EVM lock it names
+        // stays the same; the floor below never follows it.
+        match self.get_swap_details(id).await {
+            Ok(current) => {
+                let coordinator = |response: &GetSwapResponse| match response {
+                    GetSwapResponse::EvmToArkade(r) => {
+                        Some(r.evm_coordinator_address.to_ascii_lowercase())
+                    }
+                    _ => None,
+                };
+                if current.id() != id
+                    || coordinator(&current) != coordinator(&stored.response)
+                    || crate::evm::EvmContext::from_response(&current)?
+                        != crate::evm::EvmContext::from_response(&stored.response)?
+                {
+                    return Err(invalid("server swap details differ from the stored swap"));
+                }
+                self.persist_server_swap(stored.key_index, current)?;
+            }
+            Err(error) => sdk_log!(
+                log,
+                Warn,
+                refresh_failed,
+                "Could not refresh the swap before reading its EVM lock";
+                error = error
+            ),
+        }
+        let locked = self
+            .owner_funded_evm_htlc(id, reader.as_ref(), token)
+            .await?
+            .amount;
+        let scale = U256::from(10u64.pow(decimals.saturating_sub(8)));
+        let sats = |units: U256| {
+            u64::try_from(units / scale).map_err(|_| invalid("EVM amount out of range"))
+        };
+        let expected = sats(U256::from_str_radix(&created.evm_expected_sats, 10).map_err(decode)?)?;
+        let locked = sats(locked)?;
+        // The daemon funds neither of these.
+        let fees = expected.checked_sub(target).ok_or_else(|| {
+            invalid("Arkade HTLC is underfunded; the swap's target exceeds its expected EVM lock")
+        })?;
+        let floor = locked
+            .checked_sub(fees)
+            .filter(|floor| *floor > 0)
+            .ok_or_else(|| {
+                invalid("Arkade HTLC is underfunded; the swap's EVM lock does not cover its fees")
+            })?;
+        if amount < floor {
+            return Err(invalid(format!(
+                "Arkade HTLC is underfunded: {amount} sats, but its target of {target} adjusted by its EVM lock is {floor}"
+            )));
+        }
+        sdk_log!(
+            log,
+            Info,
+            accepted,
+            "Accepting an Arkade claim below target by the swap's EVM conversion shortfall",
+            "targetAmount" => target.to_string(),
+            "vhtlcAmount" => amount.to_string(),
+            "evmShortfallSats" => (target - floor).to_string()
+        );
         Ok(())
     }
 
