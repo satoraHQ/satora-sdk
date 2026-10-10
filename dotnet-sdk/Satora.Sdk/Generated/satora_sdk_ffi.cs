@@ -821,6 +821,10 @@ static class _UniFFILib {
     
     
     
+    
+    
+    
+    
 
     static _UniFFILib() {
         _UniFFILib.uniffiCheckContractApiVersion();
@@ -962,6 +966,14 @@ static class _UniFFILib {
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_refund_evm_htlc(IntPtr @ptr,RustBuffer @swapId,RustBuffer @nodeRpcUrl,ulong @timeoutSecs,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void uniffi_satora_sdk_ffi_fn_method_satoraclient_set_conversion_shortfall_limit(IntPtr @ptr,uint @basisPoints,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void uniffi_satora_sdk_ffi_fn_method_satoraclient_set_evm_reader(IntPtr @ptr,ulong @chainId,RustBuffer @nodeRpcUrl,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -1333,6 +1345,14 @@ static class _UniFFILib {
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_set_conversion_shortfall_limit(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_set_evm_reader(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_settle(
     );
 
@@ -1556,6 +1576,18 @@ static class _UniFFILib {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_refund_evm_htlc();
             if (checksum != 37928) {
                 throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_refund_evm_htlc` checksum `37928`, library returned `{checksum}`");
+            }
+        }
+        {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_set_conversion_shortfall_limit();
+            if (checksum != 18619) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_set_conversion_shortfall_limit` checksum `18619`, library returned `{checksum}`");
+            }
+        }
+        {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_set_evm_reader();
+            if (checksum != 26188) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_set_evm_reader` checksum `26188`, library returned `{checksum}`");
             }
         }
         {
@@ -2335,6 +2367,35 @@ public interface ISatoraClient {
     /// </summary>
     /// <exception cref="SdkException"></exception>
     HtlcRefund RefundEvmHtlc(string @swapId, string? @nodeRpcUrl, ulong @timeoutSecs);
+    /// <summary>
+    /// Accept an EVM to Arkade VHTLC up to `basis_points` hundredths of a
+    /// percent below the target its swap was created with, when the swap's
+    /// EVM lock shows a conversion shortfall that large (see
+    /// [`Self::set_evm_reader`]). The default of 0 refuses any VHTLC below
+    /// that target. Only the server states the lock it expected, so this
+    /// limit is all that bounds how far a dishonest server can lower a
+    /// payout. More than 10000, a whole target, is `SdkError::InvalidSwap`.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    void SetConversionShortfallLimit(uint @basisPoints);
+    /// <summary>
+    /// Read EVM chain `chain_id` through the node at `node_rpc_url`, or with
+    /// `None` through that chain's public default, replacing any earlier
+    /// reader for the chain. When the server funds an EVM to Arkade swap's
+    /// VHTLC below the target the swap was created with, because the deposit
+    /// converted to less than quoted, a claim within
+    /// [`Self::set_conversion_shortfall_limit`] reads the swap's own EVM lock
+    /// through this reader and accepts the VHTLC only if it covers that
+    /// target less the lock's shortfall. Without a reader for the swap's
+    /// chain such a claim is refused.
+    ///
+    /// Connects once and refuses a node that serves another chain, keeping
+    /// the earlier reader. The public defaults are mainnet nodes, and a test
+    /// fork keeps mainnet's chain id, so pass a fork's own node. The reader
+    /// only reads, under a key of this client's seed.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    void SetEvmReader(ulong @chainId, string? @nodeRpcUrl);
     /// <summary>
     /// Claim or refund a swap's Arkade VHTLC to `destination`, an Arkade
     /// address. This spends a swap's VHTLC; [`Self::arkade_settle`]
@@ -3234,6 +3295,51 @@ public class SatoraClient : ISatoraClient, IDisposable {
     _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_refund_evm_htlc(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterOptionalString.INSTANCE.Lower(@nodeRpcUrl), FfiConverterUInt64.INSTANCE.Lower(@timeoutSecs), ref _status)
 )));
     }
+    
+    
+    /// <summary>
+    /// Accept an EVM to Arkade VHTLC up to `basis_points` hundredths of a
+    /// percent below the target its swap was created with, when the swap's
+    /// EVM lock shows a conversion shortfall that large (see
+    /// [`Self::set_evm_reader`]). The default of 0 refuses any VHTLC below
+    /// that target. Only the server states the lock it expected, so this
+    /// limit is all that bounds how far a dishonest server can lower a
+    /// payout. More than 10000, a whole target, is `SdkError::InvalidSwap`.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public void SetConversionShortfallLimit(uint @basisPoints) {
+        CallWithPointer(thisPtr =>
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_set_conversion_shortfall_limit(thisPtr, FfiConverterUInt32.INSTANCE.Lower(@basisPoints), ref _status)
+));
+    }
+    
+    
+    
+    /// <summary>
+    /// Read EVM chain `chain_id` through the node at `node_rpc_url`, or with
+    /// `None` through that chain's public default, replacing any earlier
+    /// reader for the chain. When the server funds an EVM to Arkade swap's
+    /// VHTLC below the target the swap was created with, because the deposit
+    /// converted to less than quoted, a claim within
+    /// [`Self::set_conversion_shortfall_limit`] reads the swap's own EVM lock
+    /// through this reader and accepts the VHTLC only if it covers that
+    /// target less the lock's shortfall. Without a reader for the swap's
+    /// chain such a claim is refused.
+    ///
+    /// Connects once and refuses a node that serves another chain, keeping
+    /// the earlier reader. The public defaults are mainnet nodes, and a test
+    /// fork keeps mainnet's chain id, so pass a fork's own node. The reader
+    /// only reads, under a key of this client's seed.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public void SetEvmReader(ulong @chainId, string? @nodeRpcUrl) {
+        CallWithPointer(thisPtr =>
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_set_evm_reader(thisPtr, FfiConverterUInt64.INSTANCE.Lower(@chainId), FfiConverterOptionalString.INSTANCE.Lower(@nodeRpcUrl), ref _status)
+));
+    }
+    
     
     
     /// <summary>

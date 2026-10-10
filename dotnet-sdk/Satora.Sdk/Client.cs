@@ -1826,6 +1826,70 @@ public sealed class Client : IDisposable
     }
 
     /// <summary>
+    /// Read EVM chain <paramref name="chainId"/> through
+    /// <paramref name="nodeRpcUrl"/>, replacing any earlier reader for that
+    /// chain. When the server funds an EVM to Arkade swap's VHTLC below the
+    /// target the swap was created with, because the deposit converted to
+    /// less than quoted, <see cref="ClaimAsync"/> and <see cref="SettleAsync"/>
+    /// accept it only within <see cref="SetConversionShortfallLimit"/> and
+    /// only if the swap's own EVM lock, read through this reader, shows that
+    /// shortfall. Without a reader for the swap's chain such a claim is
+    /// refused.
+    /// </summary>
+    /// <param name="chainId">EVM chain id, such as 42161 for Arbitrum.</param>
+    /// <param name="nodeRpcUrl">
+    /// EVM node of that chain; null for its public default, a mainnet node.
+    /// A test fork keeps mainnet's chain id, so pass the fork's own node.
+    /// </param>
+    /// <remarks>
+    /// Connects once. It throws <see cref="SdkException"/> and keeps the
+    /// earlier reader for a node that serves another chain
+    /// (<see cref="SdkErrorKind.InvalidSwap"/>) or cannot be reached
+    /// (<see cref="SdkErrorKind.Transport"/>), and before connecting for a
+    /// URL that does not parse or, with <paramref name="nodeRpcUrl"/> null,
+    /// a chain without a public default (both
+    /// <see cref="SdkErrorKind.InvalidSwap"/>), or for a client built
+    /// without a mnemonic (<see cref="SdkErrorKind.InvalidSigner"/>). The
+    /// reader only reads.
+    /// </remarks>
+    public Task SetEvmReaderAsync(
+        ulong chainId,
+        string? nodeRpcUrl = null,
+        CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        return Task.Run(
+            () => TryOrThrow(() =>
+            {
+                ffi.SetEvmReader(chainId, nodeRpcUrl);
+                return 0; // TryOrThrow wants a T; the void method returns nothing.
+            }),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Accept an EVM to Arkade VHTLC up to <paramref name="basisPoints"/>
+    /// hundredths of a percent below the target its swap was created with,
+    /// when the swap's EVM lock shows a conversion shortfall that large (see
+    /// <see cref="SetEvmReaderAsync"/>). The default of 0 refuses any VHTLC
+    /// below that target. Only the server states the lock it expected, so
+    /// this limit is all that bounds how far a dishonest server can lower a
+    /// payout; a merchant's payment tolerance is a natural value. Every claim
+    /// whose amount is checked after this returns uses the new limit.
+    /// </summary>
+    /// <param name="basisPoints">At most 10000, a whole target.</param>
+    /// <exception cref="SdkException">
+    /// <paramref name="basisPoints"/> is over 10000, with
+    /// <see cref="SdkErrorKind.InvalidSwap"/>.
+    /// </exception>
+    public void SetConversionShortfallLimit(uint basisPoints) =>
+        TryOrThrow(() =>
+        {
+            _ffi.SetConversionShortfallLimit(basisPoints);
+            return 0;
+        });
+
+    /// <summary>
     /// Find this wallet's swaps on the server, from wallet key index
     /// <paramref name="startIndex"/> (null for 0) until the server's gap
     /// limit, and store each with its key index so this client can claim

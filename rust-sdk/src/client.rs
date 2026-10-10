@@ -272,6 +272,19 @@ impl Client {
             .store(basis_points, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// The limit last set with [`Self::set_conversion_shortfall_limit`], 0 if none.
+    #[cfg(feature = "gasless")]
+    pub fn conversion_shortfall_limit(&self) -> u32 {
+        self.shortfall_limit
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Whether [`Self::set_evm_reader`] gave this client a reader for `chain_id`.
+    #[cfg(feature = "gasless")]
+    pub fn has_evm_reader(&self, chain_id: u64) -> bool {
+        self.evm_reader(chain_id).is_some()
+    }
+
     #[cfg(feature = "gasless")]
     pub(crate) fn evm_reader(&self, chain_id: u64) -> Option<Arc<dyn crate::evm::EvmWallet>> {
         self.evm_readers

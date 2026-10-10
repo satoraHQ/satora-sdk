@@ -323,6 +323,50 @@ public class ClientTests
     }
 
     [Fact]
+    public async Task AnEvmReaderMustServeTheChainItReads()
+    {
+        using var node = new StubEvmNode(chainId: 42161);
+        using var client = new Client(
+            TestMnemonic, BitcoinNetwork.Regtest, Unreachable, Unreachable, Unreachable);
+
+        await client.SetEvmReaderAsync(42161, node.Url);
+        Assert.Contains("eth_chainId", node.Methods);
+
+        var ex = await Assert.ThrowsAsync<SdkException>(() => client.SetEvmReaderAsync(137, node.Url));
+        Assert.Equal(SdkErrorKind.InvalidSwap, ex.Kind);
+        Assert.Equal("RPC chain does not match wallet", ex.Message);
+    }
+
+    [Fact]
+    public async Task AnEvmReaderRefusesANodeItCannotRead()
+    {
+        using var client = new Client(
+            TestMnemonic, BitcoinNetwork.Regtest, Unreachable, Unreachable, Unreachable);
+        var badUrl = await Assert.ThrowsAsync<SdkException>(
+            () => client.SetEvmReaderAsync(42161, "not a url"));
+        Assert.Equal(SdkErrorKind.InvalidSwap, badUrl.Kind);
+        Assert.StartsWith("node_rpc_url", badUrl.Message);
+        var noDefault = await Assert.ThrowsAsync<SdkException>(() => client.SetEvmReaderAsync(31337));
+        Assert.Equal(SdkErrorKind.InvalidSwap, noDefault.Kind);
+        Assert.Equal("chain 31337 has no default node RPC; pass node_rpc_url", noDefault.Message);
+        var unreachable = await Assert.ThrowsAsync<SdkException>(
+            () => client.SetEvmReaderAsync(42161, Unreachable));
+        Assert.Equal(SdkErrorKind.Transport, unreachable.Kind);
+    }
+
+    [Fact]
+    public void AConversionShortfallLimitIsAtMostAWholeTarget()
+    {
+        using var client = new Client(
+            TestMnemonic, BitcoinNetwork.Regtest, Unreachable, Unreachable, Unreachable);
+        client.SetConversionShortfallLimit(0);
+        client.SetConversionShortfallLimit(10_000);
+        var ex = Assert.Throws<SdkException>(() => client.SetConversionShortfallLimit(10_001));
+        Assert.Equal(SdkErrorKind.InvalidSwap, ex.Kind);
+        Assert.Contains("10001 basis points", ex.Message);
+    }
+
+    [Fact]
     public void ContractDbPathMustNotBeTheSwapStore()
     {
         using var temp = new TempDirectory();
@@ -332,6 +376,55 @@ public class ClientTests
             contractDbPath: Path.Combine(temp.Path, ".", "swaps.sqlite"),
             dataDirectory: temp.Path));
         Assert.Equal(SdkErrorKind.Storage, ex.Kind);
+    }
+
+    // A JSON-RPC node answering eth_chainId with chainId and null to anything
+    // else, recording each method asked for.
+    private sealed class StubEvmNode : IDisposable
+    {
+        private readonly System.Net.HttpListener _listener = new();
+
+        public System.Collections.Concurrent.ConcurrentQueue<string> Methods { get; } = new();
+
+        public string Url { get; }
+
+        public StubEvmNode(ulong chainId)
+        {
+            var probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+            probe.Start();
+            var port = ((System.Net.IPEndPoint)probe.LocalEndpoint).Port;
+            probe.Stop();
+            Url = $"http://127.0.0.1:{port}/";
+            _listener.Prefixes.Add(Url);
+            _listener.Start();
+            _ = Task.Run(async () =>
+            {
+                while (true)
+                {
+                    System.Net.HttpListenerContext context;
+                    try
+                    {
+                        context = await _listener.GetContextAsync();
+                    }
+                    catch (Exception) when (!_listener.IsListening)
+                    {
+                        return;
+                    }
+                    using var reader = new StreamReader(context.Request.InputStream);
+                    using var request = System.Text.Json.JsonDocument.Parse(await reader.ReadToEndAsync());
+                    var method = request.RootElement.GetProperty("method").GetString()!;
+                    Methods.Enqueue(method);
+                    var result = method == "eth_chainId" ? $"\"0x{chainId:x}\"" : "null";
+                    var body = System.Text.Encoding.UTF8.GetBytes(
+                        $"{{\"jsonrpc\":\"2.0\",\"id\":{request.RootElement.GetProperty("id").GetRawText()},\"result\":{result}}}");
+                    context.Response.ContentType = "application/json";
+                    await context.Response.OutputStream.WriteAsync(body);
+                    context.Response.Close();
+                }
+            });
+        }
+
+        public void Dispose() => _listener.Close();
     }
 
     private sealed class TempDirectory : IDisposable

@@ -209,6 +209,35 @@ then; pass a shorter one when there is less time left before the swap
 must be claimed. The relay charges a fee only on Ethereum, capped by
 `maxRelayFee`.
 
+### Claims below the target
+
+The funding converts the deposit on a DEX into the BTC token the swap's
+EVM lock holds. When that delivers less than quoted, the server funds
+the Arkade VHTLC below the swap's target by the difference. `ClaimAsync`
+and `SettleAsync` refuse such a VHTLC unless the client has both:
+
+- `SetConversionShortfallLimit(basisPoints)`: the most below the target
+  you accept, such as a merchant's payment tolerance. The default of 0
+  refuses any shortfall.
+- `SetEvmReaderAsync(chainId, nodeRpcUrl)` for the swap's chain. The
+  claim reads the swap's own EVM lock through it and accepts the VHTLC
+  only if it covers the target less what the lock fell short by. Null
+  takes the chain's public node, a mainnet one; a test fork keeps
+  mainnet's chain id, so pass its own node.
+
+```csharp
+client.SetConversionShortfallLimit(100); // 1%
+await client.SetEvmReaderAsync(42161, "https://your-arbitrum-node.example");
+var receipt = await client.ClaimAsync(swap.Id, storeAddress);
+```
+
+Only the server states the lock it expected, so the limit is all that
+bounds how far a dishonest server can lower a payout. A refused claim
+can be retried with a higher limit before the claim window closes;
+otherwise the swap refunds through its EVM lock. Both settings apply to
+every claim of the client, so a caller with per-payment limits sets the
+limit before each claim.
+
 ### Returning deposits
 
 A deposit that cannot fund the swap, such as an underpayment past the

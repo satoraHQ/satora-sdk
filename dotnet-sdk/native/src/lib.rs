@@ -36,6 +36,7 @@ use lendaswap_sdk::bitcoin::EsploraBackend;
 use lendaswap_sdk::evm::Address as EvmAddress;
 use lendaswap_sdk::evm::RelayFundingOptions as SdkRelayFundingOptions;
 use lendaswap_sdk::evm::RelayFundingState as SdkRelayFundingState;
+use lendaswap_sdk::evm::RpcWallet;
 use lendaswap_sdk::evm::U256 as EvmU256;
 use lendaswap_sdk::types::Address as SdkAddress;
 use lendaswap_sdk::types::BulkStatusResponse;
@@ -2232,6 +2233,69 @@ impl SatoraClient {
     }
 }
 
+#[uniffi::export]
+impl SatoraClient {
+    /// Read EVM chain `chain_id` through the node at `node_rpc_url`, or with
+    /// `None` through that chain's public default, replacing any earlier
+    /// reader for the chain. When the server funds an EVM to Arkade swap's
+    /// VHTLC below the target the swap was created with, because the deposit
+    /// converted to less than quoted, a claim within
+    /// [`Self::set_conversion_shortfall_limit`] reads the swap's own EVM lock
+    /// through this reader and accepts the VHTLC only if it covers that
+    /// target less the lock's shortfall. Without a reader for the swap's
+    /// chain such a claim is refused.
+    ///
+    /// Connects once and refuses a node that serves another chain, keeping
+    /// the earlier reader. The public defaults are mainnet nodes, and a test
+    /// fork keeps mainnet's chain id, so pass a fork's own node. The reader
+    /// only reads, under a key of this client's seed.
+    pub fn set_evm_reader(
+        &self,
+        chain_id: u64,
+        node_rpc_url: Option<String>,
+    ) -> Result<(), SdkError> {
+        let url = match optional_url(node_rpc_url, "node_rpc_url")? {
+            Some(url) => url,
+            None => SdkKnownChain::from_wire_str(&chain_id.to_string())
+                .and_then(|chain| chain.default_node_rpc_url())
+                .ok_or_else(|| {
+                    invalid_argument(format!(
+                        "chain {chain_id} has no default node RPC; pass node_rpc_url"
+                    ))
+                })
+                .and_then(|default| {
+                    url::Url::parse(default).map_err(|e| invalid_argument(e.to_string()))
+                })?,
+        };
+        let mnemonic = self.inner.mnemonic().ok_or_else(|| {
+            SdkError::from(SdkErrorInner::InvalidSigner(
+                "an EVM reader needs a client built with a mnemonic".into(),
+            ))
+        })?;
+        let key = Signer::from_mnemonic(mnemonic)?.derive_wallet_evm_key()?;
+        let reader = runtime().block_on(RpcWallet::connect(&key, chain_id, url))?;
+        self.inner.set_evm_reader(std::sync::Arc::new(reader));
+        Ok(())
+    }
+
+    /// Accept an EVM to Arkade VHTLC up to `basis_points` hundredths of a
+    /// percent below the target its swap was created with, when the swap's
+    /// EVM lock shows a conversion shortfall that large (see
+    /// [`Self::set_evm_reader`]). The default of 0 refuses any VHTLC below
+    /// that target. Only the server states the lock it expected, so this
+    /// limit is all that bounds how far a dishonest server can lower a
+    /// payout. More than 10000, a whole target, is `SdkError::InvalidSwap`.
+    pub fn set_conversion_shortfall_limit(&self, basis_points: u32) -> Result<(), SdkError> {
+        if basis_points > 10_000 {
+            return Err(invalid_argument(format!(
+                "a conversion shortfall limit of {basis_points} basis points is more than a whole target (10000)"
+            )));
+        }
+        self.inner.set_conversion_shortfall_limit(basis_points);
+        Ok(())
+    }
+}
+
 // ─── Arkade wallet spends ──────────────────────────────────────────────
 
 /// What [`SatoraClient::arkade_offboard`] pays on chain, and the server's
@@ -3327,6 +3391,109 @@ mod tests {
         refused(sweep(None, DESTINATION, None), "swap record missing");
         refused(balance(Some(DESTINATION), None), "swap record missing");
         refused(refund(None), "swap record missing");
+    }
+
+    #[test]
+    fn evm_reader_refuses_what_cannot_read_the_chain() {
+        let client = SatoraClient::new_signing(UNREACHABLE.into(), MNEMONIC.into(), None).unwrap();
+        let bad_url = client.set_evm_reader(42161, Some("not a url".into()));
+        assert!(
+            matches!(&bad_url, Err(SdkError::InvalidSwap { message }) if message.starts_with("node_rpc_url")),
+            "{bad_url:?}"
+        );
+        let no_default = client.set_evm_reader(31337, None);
+        assert!(
+            matches!(&no_default, Err(SdkError::InvalidSwap { message }) if message == "chain 31337 has no default node RPC; pass node_rpc_url"),
+            "{no_default:?}"
+        );
+        let unreachable = client.set_evm_reader(42161, Some(UNREACHABLE.into()));
+        assert!(
+            matches!(&unreachable, Err(SdkError::Transport { .. })),
+            "{unreachable:?}"
+        );
+        let read_only = SatoraClient::new(UNREACHABLE.into(), None).unwrap();
+        let unsigned = read_only.set_evm_reader(42161, Some(UNREACHABLE.into()));
+        assert!(
+            matches!(&unsigned, Err(SdkError::InvalidSigner { .. })),
+            "{unsigned:?}"
+        );
+        assert!(!client.inner.has_evm_reader(42161));
+    }
+
+    #[test]
+    fn evm_reader_reaches_the_rust_client() {
+        let client = SatoraClient::new_signing(UNREACHABLE.into(), MNEMONIC.into(), None).unwrap();
+        let node = evm_node(42161);
+        let other_chain = client.set_evm_reader(137, Some(node.clone()));
+        assert!(
+            matches!(&other_chain, Err(SdkError::InvalidSwap { message }) if message == "RPC chain does not match wallet"),
+            "{other_chain:?}"
+        );
+        assert!(!client.inner.has_evm_reader(137));
+        assert_eq!(client.set_evm_reader(42161, Some(node)), Ok(()));
+        assert!(client.inner.has_evm_reader(42161));
+        assert!(!client.inner.has_evm_reader(137));
+    }
+
+    #[test]
+    fn conversion_shortfall_limit_is_at_most_a_whole_target() {
+        let client = SatoraClient::new(UNREACHABLE.into(), None).unwrap();
+        assert_eq!(client.inner.conversion_shortfall_limit(), 0);
+        assert_eq!(client.set_conversion_shortfall_limit(10_000), Ok(()));
+        assert_eq!(client.inner.conversion_shortfall_limit(), 10_000);
+        assert_eq!(client.set_conversion_shortfall_limit(250), Ok(()));
+        assert_eq!(client.inner.conversion_shortfall_limit(), 250);
+        assert!(matches!(
+            client.set_conversion_shortfall_limit(10_001),
+            Err(SdkError::InvalidSwap { .. })
+        ));
+        assert_eq!(client.inner.conversion_shortfall_limit(), 250);
+        assert_eq!(client.set_conversion_shortfall_limit(0), Ok(()));
+        assert_eq!(client.inner.conversion_shortfall_limit(), 0);
+    }
+
+    /// The URL of a JSON-RPC node on loopback that answers `eth_chainId`
+    /// with `chain_id`, and anything else with null, one request per
+    /// connection.
+    fn evm_node(chain_id: u64) -> String {
+        use std::io::BufRead;
+        use std::io::Read;
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut reader = std::io::BufReader::new(stream);
+                let mut length = 0;
+                let mut line = String::new();
+                while reader.read_line(&mut line).is_ok_and(|read| read > 2) {
+                    if let Some((name, value)) = line.split_once(':')
+                        && name.eq_ignore_ascii_case("content-length")
+                    {
+                        length = value.trim().parse().unwrap_or(0);
+                    }
+                    line.clear();
+                }
+                let mut body = vec![0; length];
+                if reader.read_exact(&mut body).is_err() {
+                    continue;
+                }
+                let request: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+                let result = if request["method"] == "eth_chainId" {
+                    json!(format!("{chain_id:#x}"))
+                } else {
+                    serde_json::Value::Null
+                };
+                let response =
+                    json!({"jsonrpc": "2.0", "id": request["id"], "result": result}).to_string();
+                let _ = write!(
+                    reader.into_inner(),
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                    response.len()
+                );
+            }
+        });
+        url
     }
 
     #[test]

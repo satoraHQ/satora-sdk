@@ -58,7 +58,10 @@ Arbitrum tokens, funded through the server relay by
 `FundSwapViaRelayAsync` and resolved by `ReconcileRelayFundingAsync`;
 `GetDepositorBalanceAsync`, `SweepEvmDepositAsync` and
 `RefundEvmHtlcAsync` return deposits from a swap's deposit address and
-refund a funded swap that failed. The full matrix lives in the nuget README
+refund a funded swap that failed. `SetConversionShortfallLimit` and
+`SetEvmReaderAsync` let a claim accept a VHTLC funded below the target
+by what the swap's EVM lock fell short of its quote, read from the
+chain. The full matrix lives in the nuget README
 (`Satora.Sdk/README.md`); update both in lockstep when you add a
 direction.
 
