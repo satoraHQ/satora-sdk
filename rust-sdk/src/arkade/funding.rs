@@ -330,7 +330,7 @@ pub(super) fn select_inputs(
     let expires_soon = |coin: &Coin| expires_within(coin.expire_at, now, margin);
     if let Some(coin) = kept.iter().find(|coin| expires_soon(coin)) {
         return Err(Error::Transport(format!(
-            "a previous VHTLC funding's input of {} sats expires within {margin} s, and a new payment must spend it while that funding may still be in flight; retry once it has expired",
+            "a previous VHTLC funding's input of {} sats expires within {margin} s, and a new payment must spend it while that funding may still be in flight; renew it with arkade_renew, or retry once it has expired",
             coin.amount.to_sat()
         )));
     }
@@ -416,7 +416,8 @@ impl Client {
     /// progress has finished. Once arkd accepted the payment, a failure to journal its
     /// txid is logged and the txid returned; a retry resolves it from the journaled
     /// inputs. A journaled input that the new payment must spend but that expires
-    /// within the margin also fails with [`Error::Transport`], until it has expired.
+    /// within the margin also fails with [`Error::Transport`], until
+    /// [`Client::arkade_renew`] renews it or it has expired.
     pub async fn fund_arkade_swap(&self, swap_id: &str) -> Result<Txid> {
         self.wallet_spend(
             crate::client::WALLET_PAYMENT_TIMEOUT,
@@ -1047,7 +1048,7 @@ mod tests {
         };
         assert_eq!(
             refusal(0),
-            "insufficient spendable Arkade balance: 0 < 15045 sats; 15045 sats expire within 256 s and can be settled with arkade_settle once expired"
+            "insufficient spendable Arkade balance: 0 < 15045 sats; 15045 sats expire within 256 s and can be renewed with arkade_renew, or settled with arkade_settle once expired"
         );
         let message = refusal(1_000);
         assert!(

@@ -299,7 +299,11 @@ the `InvalidSwap` message names the sats left out as expiring or
 recoverable. `SendArkadeAsync` and `FundArkadeSwapAsync` leave out the
 same expiring VTXOs and refuse a short balance the same way, as a
 payment's outputs expire with its soonest-expiring input: a VHTLC paid
-from one could expire before the server claims it.
+from one could expire before the server claims it. `RenewArkadeAsync`
+rolls the VTXOs inside the margin into the next batch as fresh ones,
+while `SettleArkadeAsync` takes them only once they have expired, so
+renew often enough to catch them: on regtest, whose VTXOs live 512 s,
+within the last 256 s of their life.
 
 ```csharp
 var quote = await client.GetArkadeOffboardQuoteAsync("bc1q…", amountSats: null);
@@ -387,12 +391,13 @@ swap recovered on another device, or after a restart without
 `dataDirectory`, has none.
 
 The Arkade wallet's own spends (`SendArkadeAsync`, `FundArkadeSwapAsync`,
-`SettleArkadeAsync` and `OffboardArkadeAsync`) take one lock per `Client`;
-`GetArkadeOffboardQuoteAsync` waits for it too, while claims and refunds
-never do. Each holds it for at most 120 seconds (`SendArkadeAsync`,
-`FundArkadeSwapAsync`), 300 seconds (`SettleArkadeAsync`,
-`GetArkadeOffboardQuoteAsync`) or 600 seconds (`OffboardArkadeAsync`,
-whose batch join is retried) and then fails with `Timeout`.
+`SettleArkadeAsync`, `RenewArkadeAsync` and `OffboardArkadeAsync`) take
+one lock per `Client`; `GetArkadeOffboardQuoteAsync` waits for it too,
+while claims and refunds never do. Each holds it for at most 120 seconds
+(`SendArkadeAsync`, `FundArkadeSwapAsync`), 300 seconds
+(`SettleArkadeAsync`, `RenewArkadeAsync`, `GetArkadeOffboardQuoteAsync`)
+or 600 seconds (`OffboardArkadeAsync`, whose batch join is retried) and
+then fails with `Timeout`.
 
 ## Cancellation
 

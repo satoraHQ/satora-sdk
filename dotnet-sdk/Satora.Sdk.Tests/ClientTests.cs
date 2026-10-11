@@ -171,6 +171,17 @@ public class ClientTests
     }
 
     [Fact]
+    public async Task RenewArkadeGoesThroughTheArkadeWallet()
+    {
+        using var temp = new TempDirectory();
+        using var client = new Client(
+            TestMnemonic, BitcoinNetwork.Regtest, Unreachable, Unreachable, Unreachable, dataDirectory: temp.Path);
+        // The wallet connects to arkd before it reads any VTXO.
+        var ex = await Assert.ThrowsAsync<SdkException>(() => client.RenewArkadeAsync());
+        Assert.Equal(SdkErrorKind.Transport, ex.Kind);
+    }
+
+    [Fact]
     public async Task ArkadeClaimPossibleReadsTheStoredSwapBeforeArkd()
     {
         using var client = new Client(

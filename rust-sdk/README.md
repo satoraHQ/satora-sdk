@@ -352,21 +352,25 @@ refused whatever the lock shows. Without a reader for the chain the claim is
 refused. A record rebuilt from the server, by recovery or after a restart with an
 index-only store, takes the server's amounts at that time as its targets.
 
-The internal wallet's spends (`arkade_send`, `arkade_settle`, `arkade_offboard` and
-`fund_arkade_swap`) take one lock shared by every clone of a `Client`, which
-`arkade_offboard_quote` also waits for; claims and refunds never wait for it. Each
-holds it for at most 120 seconds (`arkade_send`, `fund_arkade_swap`), 300 seconds
-(`arkade_settle` and the quote) or 600 seconds (`arkade_offboard`, whose batch join
-ark-client retries) and then fails with `Timeout`. A `Transport` or `Timeout` error
-from `arkade_send`, `arkade_settle`, `arkade_offboard` or `fund_arkade_swap` leaves
-the outcome unknown: check the balance or destination before sending or offboarding
-again, settle again freely, and call `fund_arkade_swap` again, which resolves it from
+The internal wallet's spends (`arkade_send`, `arkade_settle`, `arkade_renew`,
+`arkade_offboard` and `fund_arkade_swap`) take one lock shared by every clone of a
+`Client`, which `arkade_offboard_quote` also waits for; claims and refunds never wait
+for it. Each holds it for at most 120 seconds (`arkade_send`, `fund_arkade_swap`),
+300 seconds (`arkade_settle`, `arkade_renew` and the quote) or 600 seconds
+(`arkade_offboard`, whose batch join ark-client retries) and then fails with
+`Timeout`. A `Transport` or `Timeout` error from `arkade_send`, `arkade_settle`,
+`arkade_renew`, `arkade_offboard` or `fund_arkade_swap` leaves the outcome unknown:
+check the balance or destination before sending or offboarding again, settle or
+renew again freely, and call `fund_arkade_swap` again, which resolves it from
 its journal (each method's docs say more). Sends and offboards spend confirmed and
 pre-confirmed VTXOs; recoverable ones need `arkade_settle`. Sends and fundings leave
 out VTXOs that expire within the margin `arkade_offboard` leaves (below), since a
 payment's outputs expire with its soonest-expiring input: a VHTLC paid from one could
 expire before the server claims it. When the rest falls short they are refused with
-`InvalidSwap`, naming the sats left out as expiring or recoverable.
+`InvalidSwap`, naming the sats left out as expiring or recoverable. `arkade_renew`
+rolls the VTXOs inside the margin into the next batch as fresh ones, while
+`arkade_settle` takes them only once they have expired, so renew often enough to
+catch them: on regtest, whose VTXOs live 512 s, within the last 256 s of their life.
 
 `fund_arkade_swap` pays an Arkade→Lightning or Arkade→EVM VHTLC. It finalizes the
 wallet's pending transactions, refuses with `InvalidSwap` a swap that is not pending,

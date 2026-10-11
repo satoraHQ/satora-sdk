@@ -1,7 +1,9 @@
-//! Collaborative exit of the client's own Arkade wallet to an on-chain address.
+//! Collaborative exit of the client's own Arkade wallet to an on-chain address, and
+//! renewal of the wallet's VTXOs before they expire.
 use super::delegate::unix_now;
 use super::execution::decode;
 use super::execution::invalid;
+use super::funding::PaymentCoins;
 use super::*;
 use crate::client::WALLET_OFFBOARD_TIMEOUT;
 use ark_rs::core::server::FeeInfo;
@@ -75,7 +77,7 @@ impl LeftOut {
         let mut hint = String::new();
         if self.expiring > 0 {
             hint.push_str(&format!(
-                "; {} sats expire within {} s and can be settled with arkade_settle once expired",
+                "; {} sats expire within {} s and can be renewed with arkade_renew, or settled with arkade_settle once expired",
                 self.expiring, self.margin
             ));
         }
@@ -296,6 +298,17 @@ fn offboard_inputs<'a>(
     Ok((inputs, total, expiring))
 }
 
+/// The VTXOs a renewal rolls into a batch: those offboards and offchain payments leave
+/// out because they expire within the margin.
+fn renewal_inputs(wallet: &PaymentCoins) -> Vec<OutPoint> {
+    wallet
+        .coins
+        .iter()
+        .filter(|coin| expires_within(coin.expire_at, wallet.now, wallet.margin))
+        .map(|coin| coin.outpoint)
+        .collect()
+}
+
 impl ArkadeWallet {
     /// Destination, inputs and quote of an offboard. The inputs come from the
     /// wallet's spendable VTXOs without assets that do not expire soon; recoverable
@@ -390,6 +403,20 @@ impl ArkadeWallet {
             )
             .await
             .map_err(|e| Error::Transport(format!("offboard: {e}")))
+    }
+
+    pub(crate) async fn renew(&self) -> Result<Option<Txid>> {
+        // As in offchain_balance: list the default contract's VTXOs too.
+        let _ = self.offchain_address().await?;
+        let inputs = renewal_inputs(&self.payment_coins().await?);
+        if inputs.is_empty() {
+            return Ok(None);
+        }
+        let mut rng = rand::rngs::OsRng;
+        self.client
+            .settle_vtxos(&mut rng, &inputs, &[])
+            .await
+            .map_err(|e| Error::Transport(format!("renew: {e}")))
     }
 }
 
@@ -616,8 +643,7 @@ mod tests {
     #[test]
     fn a_short_spendable_balance_names_what_was_left_out() {
         let settle = "settle the 134955 recoverable sats with arkade_settle first";
-        let expiring =
-            "60000 sats expire within 256 s and can be settled with arkade_settle once expired";
+        let expiring = "60000 sats expire within 256 s and can be renewed with arkade_renew, or settled with arkade_settle once expired";
         let both = LeftOut {
             recoverable: 134_955,
             expiring: 60_000,
@@ -734,6 +760,39 @@ mod tests {
             offboard_inputs(vtxos.iter(), Amount::from_sat(DUST), now, mainnet).unwrap();
         assert_eq!(inputs, [0, 2, 3, 12].map(|index| &vtxos[index]).to_vec());
         assert_eq!((total, expiring), (55_800, 10_600));
+    }
+
+    #[test]
+    fn a_renewal_takes_the_vtxos_payments_leave_out() {
+        use super::super::funding::select_inputs;
+        use ark_rs::core::coin_select::VirtualTxOutPoint as Coin;
+        let now = 2_000_000_000;
+        let coin = |vout, expire_at| Coin {
+            outpoint: OutPoint::new(Txid::from_byte_array([4; 32]), vout),
+            script_pubkey: bitcoin::ScriptBuf::new(),
+            expire_at,
+            amount: Amount::from_sat(10_000),
+            assets: vec![],
+        };
+        let wallet = || PaymentCoins {
+            coins: vec![
+                coin(0, now + 6),
+                coin(1, now + 256),
+                coin(2, now + 257),
+                coin(3, now + 10_000),
+            ],
+            now,
+            margin: expiry_margin(30, Some(512)),
+            recoverable: 0,
+            dust: Amount::from_sat(DUST),
+        };
+        let outpoints = |vouts: [u32; 2]| vouts.map(|vout| coin(vout, 0).outpoint).to_vec();
+        assert_eq!(renewal_inputs(&wallet()), outpoints([0, 1]));
+        // A payment of everything else spends the rest.
+        assert_eq!(
+            select_inputs(&[], wallet(), Amount::from_sat(20_000)).unwrap(),
+            outpoints([2, 3])
+        );
     }
 
     #[test]

@@ -809,6 +809,8 @@ static class _UniFFILib {
     
     
     
+    
+    
 
     static _UniFFILib() {
         _UniFFILib.uniffiCheckContractApiVersion();
@@ -862,6 +864,10 @@ static class _UniFFILib {
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_arkade_offchain_address(IntPtr @ptr,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_arkade_renew(IntPtr @ptr,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -1209,6 +1215,10 @@ static class _UniFFILib {
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_renew(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_send(
     );
 
@@ -1364,6 +1374,12 @@ static class _UniFFILib {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_offchain_address();
             if (checksum != 21763) {
                 throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_offchain_address` checksum `21763`, library returned `{checksum}`");
+            }
+        }
+        {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_renew();
+            if (checksum != 11122) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_arkade_renew` checksum `11122`, library returned `{checksum}`");
             }
         }
         {
@@ -1830,6 +1846,24 @@ public interface ISatoraClient {
     /// </summary>
     /// <exception cref="SdkException"></exception>
     string ArkadeOffchainAddress();
+    /// <summary>
+    /// Roll the wallet's VTXOs that expire within the margin
+    /// [`Self::arkade_send`], [`Self::fund_arkade_swap`] and
+    /// [`Self::arkade_offboard`] leave out into the next Arkade batch, as
+    /// fresh confirmed VTXOs at the same address. `None` => none due;
+    /// `Some(txid)` => hex commitment txid (`0x…`) of the batch that renewed
+    /// them. [`Self::arkade_settle`] takes VTXOs only once they have
+    /// expired, so call this often enough to catch them inside the margin
+    /// (regtest: the last 256 s of a 512 s life). Recoverable VTXOs and
+    /// boarding outputs are left to `arkade_settle`.
+    ///
+    /// A `Transport` error, or `Timeout` after 300 seconds, leaves the
+    /// outcome unknown: the batch may still settle. Renewing again is safe,
+    /// since it only pays the wallet itself. The 300 seconds start once any
+    /// wallet spend in progress has finished.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    string? ArkadeRenew();
     /// <summary>
     /// Send `amount_sats` from the SDK's internal Arkade wallet to
     /// `destination` (any `tark1q…` Arkade address) via an offchain
@@ -2461,6 +2495,31 @@ public class SatoraClient : ISatoraClient, IDisposable {
         return CallWithPointer(thisPtr => FfiConverterString.INSTANCE.Lift(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
     _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_arkade_offchain_address(thisPtr,  ref _status)
+)));
+    }
+    
+    
+    /// <summary>
+    /// Roll the wallet's VTXOs that expire within the margin
+    /// [`Self::arkade_send`], [`Self::fund_arkade_swap`] and
+    /// [`Self::arkade_offboard`] leave out into the next Arkade batch, as
+    /// fresh confirmed VTXOs at the same address. `None` => none due;
+    /// `Some(txid)` => hex commitment txid (`0x…`) of the batch that renewed
+    /// them. [`Self::arkade_settle`] takes VTXOs only once they have
+    /// expired, so call this often enough to catch them inside the margin
+    /// (regtest: the last 256 s of a 512 s life). Recoverable VTXOs and
+    /// boarding outputs are left to `arkade_settle`.
+    ///
+    /// A `Transport` error, or `Timeout` after 300 seconds, leaves the
+    /// outcome unknown: the batch may still settle. Renewing again is safe,
+    /// since it only pays the wallet itself. The 300 seconds start once any
+    /// wallet spend in progress has finished.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public string? ArkadeRenew() {
+        return CallWithPointer(thisPtr => FfiConverterOptionalString.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_arkade_renew(thisPtr,  ref _status)
 )));
     }
     

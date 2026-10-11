@@ -688,6 +688,36 @@ public sealed class Client : IDisposable
     }
 
     /// <summary>
+    /// Roll the wallet's VTXOs that expire within the margin
+    /// <see cref="SendArkadeAsync"/>, <see cref="FundArkadeSwapAsync"/> and
+    /// <see cref="OffboardArkadeAsync"/> leave out into the next Arkade
+    /// batch, as fresh confirmed VTXOs at the same address. Returns the hex
+    /// commitment txid of the batch that renewed them, or <c>null</c> if none
+    /// was due.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="SettleArkadeAsync"/> takes VTXOs only once they have
+    /// expired, so call this often enough to catch them inside the margin:
+    /// on regtest, whose VTXOs live 512 s, within the last 256 s of their
+    /// life. Recoverable VTXOs and boarding outputs are left to
+    /// <see cref="SettleArkadeAsync"/>.
+    /// </para>
+    /// <para>
+    /// A <see cref="SdkErrorKind.Transport"/> error, or
+    /// <see cref="SdkErrorKind.Timeout"/> after 300 seconds, leaves the
+    /// outcome unknown; the balance shows whether the batch went through, and
+    /// renewing again is safe. The 300 seconds start once any wallet spend in
+    /// progress on this client has finished.
+    /// </para>
+    /// </remarks>
+    public Task<string?> RenewArkadeAsync(CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        return Task.Run(() => TryOrThrow(() => ffi.ArkadeRenew()), cancellationToken);
+    }
+
+    /// <summary>
     /// Derive the SDK's internal Arkade wallet address. The same
     /// identity mnemonic always produces the same address (BIP-85
     /// derivation), so this is the destination for funds from an

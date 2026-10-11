@@ -1699,6 +1699,27 @@ impl SatoraClient {
         })
     }
 
+    /// Roll the wallet's VTXOs that expire within the margin
+    /// [`Self::arkade_send`], [`Self::fund_arkade_swap`] and
+    /// [`Self::arkade_offboard`] leave out into the next Arkade batch, as
+    /// fresh confirmed VTXOs at the same address. `None` => none due;
+    /// `Some(txid)` => hex commitment txid (`0x…`) of the batch that renewed
+    /// them. [`Self::arkade_settle`] takes VTXOs only once they have
+    /// expired, so call this often enough to catch them inside the margin
+    /// (regtest: the last 256 s of a 512 s life). Recoverable VTXOs and
+    /// boarding outputs are left to `arkade_settle`.
+    ///
+    /// A `Transport` error, or `Timeout` after 300 seconds, leaves the
+    /// outcome unknown: the batch may still settle. Renewing again is safe,
+    /// since it only pays the wallet itself. The 300 seconds start once any
+    /// wallet spend in progress has finished.
+    pub fn arkade_renew(&self) -> Result<Option<String>, SdkError> {
+        runtime().block_on(async {
+            let txid = self.inner.arkade_renew().await?;
+            Ok(txid.map(|t| format!("{:#x}", t)))
+        })
+    }
+
     /// Derive the SDK's internal Arkade wallet address. The same
     /// mnemonic always produces the same address (BIP-85 derivation),
     /// so this is the destination for funds from an address-less
@@ -2688,6 +2709,17 @@ mod tests {
         assert!(
             matches!(&quote, Err(SdkError::InvalidSwap { message }) if no_wallet(message)),
             "{quote:?}"
+        );
+    }
+
+    #[test]
+    fn arkade_renew_refuses_a_client_without_arkade_config() {
+        // Refused before any server is dialled.
+        let client = SatoraClient::new_signing(UNREACHABLE.into(), MNEMONIC.into(), None).unwrap();
+        let renewed = client.arkade_renew();
+        assert!(
+            matches!(&renewed, Err(SdkError::InvalidSwap { message }) if message.contains("arkade_config")),
+            "{renewed:?}"
         );
     }
 

@@ -897,7 +897,8 @@ impl Client {
     }
 
     /// Roll the wallet's recoverable VTXOs (expired, swept or below dust) and its
-    /// boarding outputs into the next Arkade batch; healthy VTXOs are left alone.
+    /// boarding outputs into the next Arkade batch; healthy VTXOs are left alone, and
+    /// [`Self::arkade_renew`] renews those about to expire.
     /// Returns `Ok(None)` if there's nothing to settle, or
     /// `Ok(Some(commitment_txid))` for the batch that absorbed them.
     ///
@@ -911,6 +912,35 @@ impl Client {
             Box::pin(async {
                 let wallet = self.arkade_wallet().await?;
                 wallet.settle().await
+            }),
+        )
+        .await
+    }
+
+    /// Roll the wallet's VTXOs that expire within the margin [`Self::arkade_send`],
+    /// [`Self::fund_arkade_swap`] and [`Self::arkade_offboard`] leave out into the next
+    /// Arkade batch, as fresh confirmed VTXOs at the same offchain address. Returns
+    /// `Ok(None)` if none is due, or `Ok(Some(commitment_txid))` for the batch that
+    /// renewed them. [`Self::arkade_settle`] takes VTXOs only once they have expired,
+    /// so call this often enough to catch them inside the margin, which is at most
+    /// 600 s and at most half the VTXO lifetime (regtest: the last 256 s of a 512 s
+    /// life).
+    ///
+    /// Recoverable VTXOs and boarding outputs are left to `arkade_settle`, since a batch
+    /// that mixes an expired, unswept VTXO with healthy ones fails for every
+    /// participant. One that expires while the batch is pending fails it the same way,
+    /// and is recoverable afterwards.
+    ///
+    /// [`Error::Transport`], or [`Error::Timeout`] after 300 seconds, leaves the
+    /// outcome unknown: the batch may still settle. Renewing again is safe, since it
+    /// only pays the wallet itself. The 300 seconds start once any wallet spend in
+    /// progress has finished.
+    pub async fn arkade_renew(&self) -> Result<Option<bitcoin::Txid>> {
+        self.wallet_spend(
+            WALLET_BATCH_TIMEOUT,
+            Box::pin(async {
+                let wallet = self.arkade_wallet().await?;
+                wallet.renew().await
             }),
         )
         .await
