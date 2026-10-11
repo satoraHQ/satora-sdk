@@ -1422,8 +1422,8 @@ static class _UniFFILib {
         }
         {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_fund_arkade_swap();
-            if (checksum != 16314) {
-                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_fund_arkade_swap` checksum `16314`, library returned `{checksum}`");
+            if (checksum != 42294) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_fund_arkade_swap` checksum `42294`, library returned `{checksum}`");
             }
         }
         {
@@ -2002,8 +2002,12 @@ public interface ISatoraClient {
     /// lock is not the swap's: the hash of this client's preimage for
     /// Arkade → EVM, the payment hash of the stored invoice for Arkade →
     /// Lightning. A new selection draws on confirmed and pre-confirmed
-    /// VTXOs. A swap this client never created or recovered fails with
-    /// `SdkError::Storage`.
+    /// VTXOs, less those that expire within the margin
+    /// [`Self::arkade_offboard`] leaves, since the VHTLC would expire with
+    /// them; a balance short without them is refused with
+    /// `SdkError::InvalidSwap` naming the sats left out as expiring or
+    /// recoverable. A swap this client never created or recovered fails
+    /// with `SdkError::Storage`.
     ///
     /// A retry returns a journaled txid. Otherwise an Ark transaction arkd
     /// names as the spender of any journaled input may be the payment, or
@@ -2038,7 +2042,9 @@ public interface ISatoraClient {
     /// means such as [`Self::arkade_send`]. The 120 seconds start once any
     /// wallet spend in progress has finished. Once arkd accepted the
     /// payment, a failure to journal its txid is logged and the txid
-    /// returned; a retry resolves it from the journaled inputs.
+    /// returned; a retry resolves it from the journaled inputs. A journaled
+    /// input that the new payment must spend but that expires within the
+    /// margin also fails with `Transport`, until it has expired.
     /// </summary>
     /// <exception cref="SdkException"></exception>
     string FundArkadeSwap(string @swapId);
@@ -2694,8 +2700,12 @@ public class SatoraClient : ISatoraClient, IDisposable {
     /// lock is not the swap's: the hash of this client's preimage for
     /// Arkade → EVM, the payment hash of the stored invoice for Arkade →
     /// Lightning. A new selection draws on confirmed and pre-confirmed
-    /// VTXOs. A swap this client never created or recovered fails with
-    /// `SdkError::Storage`.
+    /// VTXOs, less those that expire within the margin
+    /// [`Self::arkade_offboard`] leaves, since the VHTLC would expire with
+    /// them; a balance short without them is refused with
+    /// `SdkError::InvalidSwap` naming the sats left out as expiring or
+    /// recoverable. A swap this client never created or recovered fails
+    /// with `SdkError::Storage`.
     ///
     /// A retry returns a journaled txid. Otherwise an Ark transaction arkd
     /// names as the spender of any journaled input may be the payment, or
@@ -2730,7 +2740,9 @@ public class SatoraClient : ISatoraClient, IDisposable {
     /// means such as [`Self::arkade_send`]. The 120 seconds start once any
     /// wallet spend in progress has finished. Once arkd accepted the
     /// payment, a failure to journal its txid is logged and the txid
-    /// returned; a retry resolves it from the journaled inputs.
+    /// returned; a retry resolves it from the journaled inputs. A journaled
+    /// input that the new payment must spend but that expires within the
+    /// margin also fails with `Transport`, until it has expired.
     /// </summary>
     /// <exception cref="SdkException"></exception>
     public string FundArkadeSwap(string @swapId) {
@@ -3060,9 +3072,9 @@ class FfiConverterTypeSatoraClient: FfiConverter<SatoraClient, IntPtr> {
 ///
 /// Offchain sends ([`SatoraClient::arkade_send`] and
 /// [`SatoraClient::fund_arkade_swap`]) and offboards
-/// ([`SatoraClient::arkade_offboard`], less VTXOs about to expire and the
-/// dust it keeps as change) spend `confirmed_sats` and
-/// `pre_confirmed_sats`. `recoverable_sats` moves only through
+/// ([`SatoraClient::arkade_offboard`], which also keeps dust as change)
+/// spend `confirmed_sats` and `pre_confirmed_sats`, less VTXOs about to
+/// expire. `recoverable_sats` moves only through
 /// [`SatoraClient::arkade_settle`].
 /// </summary>
 public record ArkadeBalance (

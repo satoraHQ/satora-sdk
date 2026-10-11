@@ -129,8 +129,8 @@ impl std::fmt::Debug for ArkadeConfig {
 /// distinguishes. Offchain sends ([`crate::Client::arkade_send`] and
 /// [`crate::Client::fund_arkade_swap`]) and offboards
 /// ([`crate::Client::arkade_offboard`]) select from `confirmed_sats` and
-/// `pre_confirmed_sats`; `recoverable_sats` moves only in a batch, through
-/// [`crate::Client::arkade_settle`].
+/// `pre_confirmed_sats`, less VTXOs about to expire; `recoverable_sats` moves only
+/// in a batch, through [`crate::Client::arkade_settle`].
 ///
 /// A total-only view would overstate what a send can spend while recoverable VTXOs
 /// wait for a batch.
@@ -362,8 +362,9 @@ impl ArkadeWallet {
         })?;
         let amount = Amount::from_sat(amount_sats);
         let _ = self.offchain_address().await?;
+        let inputs = funding::select_inputs(&[], self.payment_coins().await?, amount)?;
         self.client
-            .send(vec![SendReceiver::bitcoin(address, amount)])
+            .send_selection(&inputs, vec![SendReceiver::bitcoin(address, amount)])
             .await
             .map_err(|e| Error::Transport(format!("send_offchain: {e}")))
     }

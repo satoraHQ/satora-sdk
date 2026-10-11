@@ -654,9 +654,9 @@ public sealed class Client : IDisposable
     /// </summary>
     /// <remarks>
     /// <see cref="SendArkadeAsync"/>, <see cref="FundArkadeSwapAsync"/> and
-    /// <see cref="OffboardArkadeAsync"/> (less VTXOs about to expire and the
-    /// dust it keeps as change) spend <c>balance.confirmedSats</c> plus
-    /// <c>balance.preConfirmedSats</c>.
+    /// <see cref="OffboardArkadeAsync"/> spend <c>balance.confirmedSats</c>
+    /// plus <c>balance.preConfirmedSats</c>, less VTXOs about to expire; the
+    /// offboard also keeps dust as change.
     /// <c>balance.recoverableSats</c> moves only through
     /// <see cref="SettleArkadeAsync"/>.
     /// </remarks>
@@ -715,6 +715,13 @@ public sealed class Client : IDisposable
     /// resolves its journal.
     /// </para>
     /// <para>
+    /// VTXOs that expire within the margin <see cref="OffboardArkadeAsync"/>
+    /// leaves stay out, since the payment's outputs would expire with them.
+    /// When the rest falls short, the send throws
+    /// <see cref="SdkErrorKind.InvalidSwap"/> before anything is sent, naming
+    /// the sats left out as expiring or recoverable.
+    /// </para>
+    /// <para>
     /// A <see cref="SdkErrorKind.Transport"/> error, or
     /// <see cref="SdkErrorKind.Timeout"/> after 120 seconds, leaves the
     /// outcome unknown: the payment may have gone out, so check the balance
@@ -750,7 +757,11 @@ public sealed class Client : IDisposable
     /// and a VHTLC whose hash lock is not the swap's: the hash of this
     /// client's preimage for Arkade → EVM, the payment hash of the stored
     /// invoice for Arkade → Lightning. A new selection draws on confirmed
-    /// and pre-confirmed VTXOs. A swap this client never created or
+    /// and pre-confirmed VTXOs, less those that expire within the margin
+    /// <see cref="OffboardArkadeAsync"/> leaves, since the VHTLC would expire
+    /// with them; a balance short without them throws
+    /// <see cref="SdkErrorKind.InvalidSwap"/> naming the sats left out as
+    /// expiring or recoverable. A swap this client never created or
     /// recovered throws <see cref="SdkException"/> with
     /// <see cref="SdkErrorKind.Storage"/>.
     /// </para>
@@ -793,9 +804,12 @@ public sealed class Client : IDisposable
     /// such as <see cref="SendArkadeAsync"/>. The 120 seconds start once any
     /// wallet spend in progress on this client has finished. Once arkd
     /// accepted the payment, a failure to journal its txid is logged and the
-    /// txid returned; a retry resolves it from the journaled inputs.
-    /// Disposing the client does not stop a running call, so build no
-    /// replacement over the same storage until it has returned.
+    /// txid returned; a retry resolves it from the journaled inputs. A
+    /// journaled input that the new payment must spend but that expires
+    /// within the margin also throws <see cref="SdkErrorKind.Transport"/>,
+    /// until it has expired. Disposing the client does not stop a running
+    /// call, so build no replacement over the same storage until it has
+    /// returned.
     /// </para>
     /// </remarks>
     public Task<string> FundArkadeSwapAsync(

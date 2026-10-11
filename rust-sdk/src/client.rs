@@ -887,10 +887,10 @@ impl Client {
 
     /// Offchain VTXO balance of the internal Arkade wallet, broken into confirmed,
     /// pre-confirmed and recoverable buckets; see [`crate::arkade::ArkadeBalance`].
-    /// [`Self::arkade_send`] and [`Self::fund_arkade_swap`] spend
-    /// `confirmed_sats + pre_confirmed_sats`, and so does [`Self::arkade_offboard`],
-    /// less VTXOs about to expire and the dust it keeps as change; `total_sats()` adds
-    /// the recoverable bucket, which only [`Self::arkade_settle`] spends.
+    /// [`Self::arkade_send`], [`Self::fund_arkade_swap`] and [`Self::arkade_offboard`]
+    /// spend `confirmed_sats + pre_confirmed_sats` less VTXOs about to expire, and the
+    /// offboard keeps dust as change; `total_sats()` adds the recoverable bucket, which
+    /// only [`Self::arkade_settle`] spends.
     pub async fn arkade_balance(&self) -> Result<crate::arkade::ArkadeBalance> {
         let wallet = self.arkade_wallet().await?;
         wallet.offchain_balance().await
@@ -933,6 +933,11 @@ impl Client {
     /// It spends confirmed and pre-confirmed VTXOs, including inputs a failed
     /// [`Self::fund_arkade_swap`] journaled; once arkd names and returns this spend,
     /// which pays nothing to its VHTLC, that call resolves its journal.
+    ///
+    /// VTXOs that expire within the margin [`Self::arkade_offboard`] leaves stay out,
+    /// since the payment's outputs would expire with them. When the rest falls short,
+    /// the send is refused with [`Error::InvalidSwap`] before anything is sent,
+    /// naming the sats left out as expiring or recoverable.
     ///
     /// [`Error::Transport`], or [`Error::Timeout`] after 120 seconds, leaves the
     /// outcome unknown: arkd may have accepted the payment, so check the destination

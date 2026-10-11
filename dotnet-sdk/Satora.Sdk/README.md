@@ -296,7 +296,10 @@ expiring input. The lifetime is read off the wallet's confirmed VTXOs, so
 a wallet that has only received offchain gets the full margin until a
 settle or boarding gives it one. When the spendable balance falls short,
 the `InvalidSwap` message names the sats left out as expiring or
-recoverable.
+recoverable. `SendArkadeAsync` and `FundArkadeSwapAsync` leave out the
+same expiring VTXOs and refuse a short balance the same way, as a
+payment's outputs expire with its soonest-expiring input: a VHTLC paid
+from one could expire before the server claims it.
 
 ```csharp
 var quote = await client.GetArkadeOffboardQuoteAsync("bc1q…", amountSats: null);

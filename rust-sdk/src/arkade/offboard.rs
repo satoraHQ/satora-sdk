@@ -30,7 +30,11 @@ const BATCH_JOIN_BACKOFF_SECS: u64 = 1 + 2 + 4;
 /// VTXOs live minutes (regtest: 512 s) that would leave nothing to offboard, so the
 /// margin stays within half the VTXO lifetime, and a retried offboard there can still
 /// meet an expiring input.
-fn expiry_margin(session_duration: u64, vtxo_lifetime: Option<u64>) -> u64 {
+///
+/// Offchain payments from the wallet leave out the same VTXOs: a payment's outputs
+/// expire with its soonest-expiring input, so a VHTLC paid from one inside the margin
+/// can expire before the server claims it.
+pub(super) fn expiry_margin(session_duration: u64, vtxo_lifetime: Option<u64>) -> u64 {
     let attempts = INTENT_VALIDITY_SECS
         .saturating_add(session_duration)
         .saturating_mul(BATCH_JOIN_ATTEMPTS)
@@ -42,25 +46,32 @@ fn expiry_margin(session_duration: u64, vtxo_lifetime: Option<u64>) -> u64 {
 /// The lifetime arkd gives a batch's VTXOs, which ark-core 0.11's `server::Info` does
 /// not carry: arkd dates a confirmed VTXO at its batch and expires it one lifetime
 /// later. Pre-confirmed VTXOs inherit an earlier expiry, so they would understate it.
-fn vtxo_lifetime<'a>(vtxos: impl Iterator<Item = &'a VirtualTxOutPoint>) -> Option<u64> {
+pub(super) fn vtxo_lifetime<'a>(vtxos: impl Iterator<Item = &'a VirtualTxOutPoint>) -> Option<u64> {
     vtxos
         .filter(|vtxo| !vtxo.is_preconfirmed)
         .filter_map(|vtxo| u64::try_from(vtxo.expires_at.checked_sub(vtxo.created_at)?).ok())
         .max()
 }
 
-/// Sats an offboard cannot spend, which a refusal for want of balance names.
+/// Whether a VTXO that expires at `expires_at` expires within `margin` seconds of
+/// `now`, which keeps it out of the wallet's offboards and offchain payments.
+pub(super) fn expires_within(expires_at: i64, now: i64, margin: u64) -> bool {
+    expires_at <= now.saturating_add(i64::try_from(margin).unwrap_or(i64::MAX))
+}
+
+/// Sats an offboard or offchain payment cannot spend, which a refusal for want of
+/// balance names.
 #[derive(Debug, Default, Clone, Copy)]
-struct LeftOut {
+pub(super) struct LeftOut {
     /// Recoverable sats, which only `arkade_settle` spends.
-    recoverable: u64,
+    pub(super) recoverable: u64,
     /// Sats in VTXOs that expire within `margin` seconds.
-    expiring: u64,
-    margin: u64,
+    pub(super) expiring: u64,
+    pub(super) margin: u64,
 }
 
 impl LeftOut {
-    fn hint(&self, dust: u64) -> String {
+    pub(super) fn hint(&self, dust: u64) -> String {
         let mut hint = String::new();
         if self.expiring > 0 {
             hint.push_str(&format!(
@@ -270,11 +281,10 @@ fn offboard_inputs<'a>(
     now: i64,
     margin: u64,
 ) -> Result<(Vec<&'a VirtualTxOutPoint>, u64, u64)> {
-    let expires_after = now.saturating_add(i64::try_from(margin).unwrap_or(i64::MAX));
     let mut inputs = Vec::new();
     let (mut total, mut expiring) = (0u64, 0u64);
     for vtxo in vtxos.filter(|vtxo| vtxo.is_spendable_offchain(dust) && vtxo.assets.is_empty()) {
-        if vtxo.expires_at <= expires_after {
+        if expires_within(vtxo.expires_at, now, margin) {
             expiring = expiring.saturating_add(vtxo.amount.to_sat());
             continue;
         }

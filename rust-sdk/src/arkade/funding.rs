@@ -4,6 +4,10 @@ use super::execution::decode;
 use super::execution::invalid;
 use super::execution::validate_info;
 use super::execution::validate_vtxos;
+use super::offboard::LeftOut;
+use super::offboard::expires_within;
+use super::offboard::expiry_margin;
+use super::offboard::vtxo_lifetime;
 use super::*;
 use crate::SwapMetadata;
 use crate::logging::sdk_log;
@@ -237,14 +241,82 @@ pub(super) fn not_awaiting(status: &SwapStatus) -> Error {
     invalid(format!("swap is not awaiting funding (status {status:?})"))
 }
 
+/// The wallet's VTXOs an offchain payment may draw on, confirmed and pre-confirmed, and
+/// what [`select_inputs`] needs to leave out those that expire within the margin.
+#[derive(Debug)]
+pub(super) struct PaymentCoins {
+    pub(super) coins: Vec<Coin>,
+    pub(super) now: i64,
+    /// From [`expiry_margin`], as offboards use it.
+    pub(super) margin: u64,
+    /// Recoverable sats, which a refusal for want of balance names.
+    pub(super) recoverable: u64,
+    pub(super) dust: Amount,
+}
+
+impl ArkadeWallet {
+    /// The coins an offchain payment from this wallet may spend now.
+    pub(super) async fn payment_coins(&self) -> Result<PaymentCoins> {
+        let info = self
+            .client
+            .server_info()
+            .await
+            .map_err(|e| Error::Transport(format!("server_info: {e}")))?;
+        let vtxos = self
+            .client
+            .list_vtxos()
+            .await
+            .map_err(|e| Error::Transport(format!("list_vtxos: {e}")))?;
+        let now = i64::try_from(unix_now()?).map_err(decode)?;
+        Ok(PaymentCoins {
+            coins: vtxos
+                .spendable_offchain_at(&info, now)
+                .map(|entry| Coin {
+                    outpoint: entry.vtxo().outpoint,
+                    script_pubkey: entry.vtxo().script.clone(),
+                    expire_at: entry.vtxo().expires_at,
+                    amount: entry.vtxo().amount,
+                    assets: entry.vtxo().assets.clone(),
+                })
+                .collect(),
+            now,
+            margin: expiry_margin(
+                info.session_duration,
+                vtxo_lifetime(vtxos.all().map(|entry| entry.vtxo())),
+            ),
+            recoverable: vtxos
+                .recoverable()
+                .map(|entry| entry.vtxo().amount.to_sat())
+                .fold(0, u64::saturating_add),
+            dust: info.dust,
+        })
+    }
+}
+
+fn total(coins: &[Coin]) -> Result<Amount> {
+    coins
+        .iter()
+        .try_fold(Amount::ZERO, |sum, coin| sum.checked_add(coin.amount))
+        .ok_or_else(|| invalid("Arkade balance overflow"))
+}
+
 /// Inputs paying `amount`: every coin in `required`, topped up from the other coins by
-/// ark-core's selection when they fall short.
+/// ark-core's selection when they fall short. Coins that expire within the margin stay
+/// out, as the payment's outputs would expire with them. A balance short without them
+/// is refused naming them; a required one fails the call until it has expired, as a
+/// payment that left it out would not conflict with one still in flight.
 pub(super) fn select_inputs(
     required: &[OutPoint],
-    coins: Vec<Coin>,
+    wallet: PaymentCoins,
     amount: Amount,
-    dust: Amount,
 ) -> Result<Vec<OutPoint>> {
+    let PaymentCoins {
+        coins,
+        now,
+        margin,
+        recoverable,
+        dust,
+    } = wallet;
     let (kept, others): (Vec<_>, Vec<_>) = coins
         .into_iter()
         .partition(|coin| required.contains(&coin.outpoint));
@@ -255,15 +327,37 @@ pub(super) fn select_inputs(
             "an input of a previous VHTLC funding is no longer spendable; retry".into(),
         ));
     }
-    let held = kept
-        .iter()
-        .try_fold(Amount::ZERO, |sum, coin| sum.checked_add(coin.amount))
+    let expires_soon = |coin: &Coin| expires_within(coin.expire_at, now, margin);
+    if let Some(coin) = kept.iter().find(|coin| expires_soon(coin)) {
+        return Err(Error::Transport(format!(
+            "a previous VHTLC funding's input of {} sats expires within {margin} s, and a new payment must spend it while that funding may still be in flight; retry once it has expired",
+            coin.amount.to_sat()
+        )));
+    }
+    let (expiring, others): (Vec<_>, Vec<_>) =
+        others.into_iter().partition(|coin| expires_soon(coin));
+    let held = total(&kept)?;
+    let spendable = held
+        .checked_add(total(&others)?)
         .ok_or_else(|| invalid("Arkade balance overflow"))?;
+    if spendable < amount {
+        let left_out = LeftOut {
+            recoverable,
+            expiring: total(&expiring)?.to_sat(),
+            margin,
+        };
+        return Err(invalid(format!(
+            "insufficient spendable Arkade balance: {} < {} sats{}",
+            spendable.to_sat(),
+            amount.to_sat(),
+            left_out.hint(dust.to_sat())
+        )));
+    }
     let mut inputs = required.to_vec();
     match amount.checked_sub(held).filter(|rest| *rest > Amount::ZERO) {
         Some(rest) => inputs.extend(
             select_vtxos(others, rest, dust, true)
-                .map_err(|e| invalid(format!("cannot fund the swap from the wallet: {e}")))?
+                .map_err(|e| invalid(format!("Arkade coin selection: {e}")))?
                 .into_iter()
                 .map(|coin| coin.outpoint),
         ),
@@ -290,7 +384,10 @@ impl Client {
     /// journaling, it also refuses a VHTLC amount below arkd's dust, and a VHTLC whose
     /// hash lock is not the swap's: the hash of this client's preimage for Arkade to
     /// EVM, the payment hash of the stored invoice for Arkade to Lightning. A new
-    /// selection draws on confirmed and pre-confirmed VTXOs.
+    /// selection draws on confirmed and pre-confirmed VTXOs, less those that expire
+    /// within the margin [`Client::arkade_offboard`] leaves, since the VHTLC would
+    /// expire with them; a balance short without them is refused with
+    /// [`Error::InvalidSwap`] naming the sats left out as expiring or recoverable.
     ///
     /// A retry returns a journaled txid. Otherwise an Ark transaction arkd names as the
     /// spender of any journaled input may be the payment, or that of an earlier attempt
@@ -318,7 +415,8 @@ impl Client {
     /// pay the VHTLC by other means. The 120 seconds start once any wallet spend in
     /// progress has finished. Once arkd accepted the payment, a failure to journal its
     /// txid is logged and the txid returned; a retry resolves it from the journaled
-    /// inputs.
+    /// inputs. A journaled input that the new payment must spend but that expires
+    /// within the margin also fails with [`Error::Transport`], until it has expired.
     pub async fn fund_arkade_swap(&self, swap_id: &str) -> Result<Txid> {
         self.wallet_spend(
             crate::client::WALLET_PAYMENT_TIMEOUT,
@@ -419,21 +517,11 @@ impl Client {
         self.validate_funding_hash_lock(&htlc, &stored)?;
         validate_funding_signer(&htlc, &info)?;
         validate_funding_amount(&htlc, &info)?;
-        let coins = wallet
-            .client
-            .list_vtxos()
-            .await
-            .map_err(|e| Error::Transport(format!("list_vtxos: {e}")))?
-            .spendable_offchain_at(&info, now)
-            .map(|entry| Coin {
-                outpoint: entry.vtxo().outpoint,
-                script_pubkey: entry.vtxo().script.clone(),
-                expire_at: entry.vtxo().expires_at,
-                amount: entry.vtxo().amount,
-                assets: entry.vtxo().assets.clone(),
-            })
-            .collect();
-        let inputs = select_inputs(&required, coins, htlc.expected_amount, info.dust)?;
+        let inputs = select_inputs(
+            &required,
+            wallet.payment_coins().await?,
+            htlc.expected_amount,
+        )?;
         let journal = ArkadeFunding {
             inputs: inputs.iter().map(ToString::to_string).collect(),
             address: Some(htlc.address().encode()),
@@ -876,16 +964,28 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_new_selection_keeps_the_required_inputs_and_tops_them_up() {
-        let dust = Amount::from_sat(330);
-        let coin = |vout, sats, expire_at| Coin {
+    fn coin(vout: u32, sats: u64, expire_at: i64) -> Coin {
+        Coin {
             outpoint: outpoint(2, vout),
             script_pubkey: bitcoin::ScriptBuf::new(),
             expire_at,
             amount: Amount::from_sat(sats),
             assets: vec![],
-        };
+        }
+    }
+
+    fn payment_coins(coins: Vec<Coin>, now: i64, margin: u64) -> PaymentCoins {
+        PaymentCoins {
+            coins,
+            now,
+            margin,
+            recoverable: 0,
+            dust: Amount::from_sat(330),
+        }
+    }
+
+    #[test]
+    fn a_new_selection_keeps_the_required_inputs_and_tops_them_up() {
         let coins = || {
             vec![
                 coin(0, 40_000, 10),
@@ -894,7 +994,11 @@ mod tests {
             ]
         };
         let select = |required: &[OutPoint], sats| {
-            select_inputs(required, coins(), Amount::from_sat(sats), dust)
+            select_inputs(
+                required,
+                payment_coins(coins(), 0, 0),
+                Amount::from_sat(sats),
+            )
         };
         assert_eq!(
             select(&[outpoint(2, 2)], 50_000).unwrap(),
@@ -924,6 +1028,94 @@ mod tests {
             select(&[outpoint(9, 0)], 1_000),
             Err(Error::Transport(_))
         ));
+    }
+
+    #[test]
+    fn a_send_or_funding_from_only_expiring_vtxos_is_refused_naming_them() {
+        // The VTXO that paid a regtest VHTLC 6 s before it expired.
+        let now = 1_791_718_556;
+        let margin = expiry_margin(30, Some(512));
+        let refusal = |recoverable| {
+            let wallet = PaymentCoins {
+                recoverable,
+                ..payment_coins(vec![coin(0, 15_045, now + 6)], now, margin)
+            };
+            match select_inputs(&[], wallet, Amount::from_sat(15_045)) {
+                Err(Error::InvalidSwap(message)) => message,
+                other => panic!("expected a refusal, got {other:?}"),
+            }
+        };
+        assert_eq!(
+            refusal(0),
+            "insufficient spendable Arkade balance: 0 < 15045 sats; 15045 sats expire within 256 s and can be settled with arkade_settle once expired"
+        );
+        let message = refusal(1_000);
+        assert!(
+            message.contains("15045 sats expire within 256 s")
+                && message.contains("settle the 1000 recoverable sats with arkade_settle first"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_send_or_funding_spends_only_vtxos_outside_the_margin() {
+        let now = 2_000_000_000;
+        let margin = expiry_margin(30, Some(512));
+        let coins = || {
+            vec![
+                coin(0, 20_000, now + 6),
+                // Each side of the margin, where offboards draw it too.
+                coin(1, 30_000, now + 256),
+                coin(2, 50_000, now + 257),
+                coin(3, 40_000, now + 10_000),
+            ]
+        };
+        let select = |required: &[OutPoint], sats| {
+            select_inputs(
+                required,
+                payment_coins(coins(), now, margin),
+                Amount::from_sat(sats),
+            )
+        };
+        // ark-core's selection alone would take the two soonest-expiring coins.
+        assert_eq!(select(&[], 45_000).unwrap(), vec![outpoint(2, 2)]);
+        assert_eq!(
+            select(&[], 90_000).unwrap(),
+            vec![outpoint(2, 2), outpoint(2, 3)]
+        );
+        assert_eq!(
+            select(&[outpoint(2, 3)], 60_000).unwrap(),
+            vec![outpoint(2, 3), outpoint(2, 2)]
+        );
+        // Sub-dust change takes the soonest-expiring coin outside the margin.
+        assert_eq!(
+            select(&[outpoint(2, 3)], 39_900).unwrap(),
+            vec![outpoint(2, 3), outpoint(2, 2)]
+        );
+        let message = select(&[], 90_001).unwrap_err().to_string();
+        assert!(
+            message.contains("90000 < 90001 sats; 50000 sats expire within 256 s"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_retry_fails_while_a_journaled_input_expires_within_the_margin() {
+        let now = 2_000_000_000;
+        let margin = expiry_margin(30, Some(512));
+        let coins = vec![coin(0, 20_000, now + 200), coin(1, 50_000, now + 10_000)];
+        // Paying from the other coin alone would not conflict with a payment of the
+        // journaled one still in flight.
+        let error = select_inputs(
+            &[outpoint(2, 0)],
+            payment_coins(coins, now, margin),
+            Amount::from_sat(10_000),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&error, Error::Transport(message) if message.contains("input of 20000 sats expires within 256 s")),
+            "{error:?}"
+        );
     }
 
     #[test]
