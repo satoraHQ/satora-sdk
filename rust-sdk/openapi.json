@@ -3990,6 +3990,17 @@
           "chain": {
             "$ref": "#/components/schemas/Chain",
             "description": "Chain identifier — EVM chain id as a string (`\"1\"`, `\"137\"`,\n`\"42161\"`), matching the encoding used elsewhere in the API."
+          },
+          "rif_relay": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RifRelayInfo",
+                "description": "Where the client claims a native lock on this chain (RIF Relay,\nrelayer paid out of the claimed coin). Absent = the server relays the\nclaim through `/swap/{id}/claim-gasless`."
+              }
+            ]
           }
         }
       },
@@ -7066,6 +7077,42 @@
           "coordinator_address": {
             "type": "string",
             "description": "The HTLCCoordinator contract address"
+          }
+        }
+      },
+      "RifRelayInfo": {
+        "type": "object",
+        "description": "A RIF Relay deployment. The recipient's smart wallet (the factory's\nCREATE2 proxy for (recipient, no recoverer, index 0), deployed on its\nfirst claim) is the native lock's claim address: it calls\n`HTLCNative.redeem` and pays the relayer from the redeemed coin, then\nforwards the rest to the recipient. Addresses are lowercase hex (`0x`-prefixed).",
+        "required": [
+          "server_url",
+          "relay_hub",
+          "smart_wallet_factory",
+          "smart_wallet_template",
+          "deploy_verifier",
+          "relay_verifier"
+        ],
+        "properties": {
+          "deploy_verifier": {
+            "type": "string",
+            "description": "Verifier for a request that deploys the smart wallet."
+          },
+          "relay_hub": {
+            "type": "string"
+          },
+          "relay_verifier": {
+            "type": "string",
+            "description": "Verifier for a request from an already deployed smart wallet."
+          },
+          "server_url": {
+            "type": "string",
+            "description": "The relay server's base URL (`POST /estimate`, `POST /relay`)."
+          },
+          "smart_wallet_factory": {
+            "type": "string"
+          },
+          "smart_wallet_template": {
+            "type": "string",
+            "description": "The implementation the factory's smart wallet proxies delegate to:\nwith the factory it fixes the smart wallet of an owner, which must be\nthe native lock's `claiming_address`."
           }
         }
       },

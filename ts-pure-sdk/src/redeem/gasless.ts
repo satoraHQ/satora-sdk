@@ -165,7 +165,7 @@ export async function claimViaGasless(
  * reported on the responses of the directions that can lock native coin;
  * absent means the ERC-20 family.
  */
-function nativeHtlcKind(swap: GaslessSwapResponse): boolean {
+export function nativeHtlcKind(swap: GaslessSwapResponse): boolean {
   return (swap as { evm_htlc_kind?: string }).evm_htlc_kind === "native";
 }
 

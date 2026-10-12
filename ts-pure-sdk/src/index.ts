@@ -285,6 +285,11 @@ export {
   type ArkadeClaimParams,
   type ArkadeClaimResult,
   buildArkadeClaim,
+  RIF_SMART_WALLET_INDEX,
+  type RifRelayConfig,
+  rifSmartWallet,
+  rifSmartWalletAddress,
+  WalletClaimRequiredError,
 } from "./redeem/index.js";
 // Refund module
 export {

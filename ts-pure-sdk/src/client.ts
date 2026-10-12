@@ -150,6 +150,7 @@ import {
   type SdkLogger,
 } from "./logging.js";
 import { PROTOCOL_HEADERS } from "./protocol.js";
+import { nativeHtlcKind } from "./redeem/gasless.js";
 import {
   buildArkadeClaim,
   type ClaimGaslessResult,
@@ -160,6 +161,12 @@ import {
   claimViaGasless as gaslessClaim,
   claim as redeemClaim,
 } from "./redeem/index.js";
+import {
+  claimNativeViaRifRelay,
+  type RifRelayConfig,
+  rifSmartWalletAddress,
+  WalletClaimRequiredError,
+} from "./redeem/rif-relay.js";
 import {
   type BitcoinNetwork,
   buildArkadeRefund,
@@ -1948,6 +1955,48 @@ export class Client {
   }
 
   /**
+   * The RIF Relay a native lock on EVM chain `chainId` is claimed through,
+   * or `undefined` where the server relays the claim. A swap claimed through
+   * RIF Relay needs the receiving wallet to sign: `claimEvmWithSigner`.
+   */
+  async getRifRelay(chainId: number): Promise<RifRelayConfig | undefined> {
+    const config = await this.#composeStatic("chain-config", () =>
+      this.getChainConfig(),
+    );
+    return config.chains.find((c) => String(c.chain) === String(chainId))
+      ?.rif_relay;
+  }
+
+  /**
+   * The claim address of a native lock on a chain that claims through RIF
+   * Relay: the recipient's smart wallet, which only the recipient's wallet
+   * can claim from (the server rejects any other). `undefined` elsewhere.
+   */
+  async #rifClaimAddress(options: {
+    targetAddress: string;
+    tokenAddress: string;
+    evmChainId: number;
+    bridgeParams?: unknown;
+  }): Promise<string | undefined> {
+    if (options.bridgeParams != null) return undefined;
+    if (!isNativeLockTarget(String(options.evmChainId), options.tokenAddress)) {
+      return undefined;
+    }
+    const relay = await this.getRifRelay(options.evmChainId);
+    return relay
+      ? rifSmartWalletAddress(relay, options.targetAddress)
+      : undefined;
+  }
+
+  /** The RIF Relay a swap's claim must go through, if it is a native lock there. */
+  async #rifRelayForClaim(
+    swap: ArkadeToEvmSwapResponse,
+  ): Promise<RifRelayConfig | undefined> {
+    if (!nativeHtlcKind(swap)) return undefined;
+    return this.getRifRelay(swap.evm_chain_id);
+  }
+
+  /**
    * The referral/extra-fee delta for a referral code — a decimal fraction to
    * add on top of `getSwapPairs()`'s per-pair `fee_percentage` when composing
    * a quote. The fourth composition primitive; the server resolves the key's
@@ -3156,6 +3205,19 @@ export class Client {
         `Wallet is on chain ${signer.chainId}; switch it to chain ${swap.evm_chain_id} to claim.`,
       );
     }
+    const rifRelay = await this.#rifRelayForClaim(swap);
+    if (rifRelay) {
+      // The lock's claim address is the recipient's smart wallet: only the
+      // recipient's wallet can sign its claim, and it receives the coin.
+      const result = await claimNativeViaRifRelay({
+        swap,
+        preimage: stored.preimage,
+        signer,
+        relay: rifRelay,
+      });
+      await this.getSwap(id, { updateStorage: true }).catch(() => undefined);
+      return result;
+    }
     const cls = this.#classifyEvmClaim(swap);
     if (!cls.arbitrumHubClaim) {
       throw new Error(
@@ -3216,6 +3278,12 @@ export class Client {
     } = {},
   ): Promise<ClaimGaslessResult> {
     const { stored, swap } = await this.#loadEvmClaimSwap(id);
+
+    // Where clients claim through RIF Relay the server does not relay the
+    // claim, and the receiving wallet has to sign it.
+    if (await this.#rifRelayForClaim(swap)) {
+      throw new WalletClaimRequiredError(id, swap.evm_chain_id);
+    }
 
     // Client-side claim via a paymaster-sponsored UserOp. Covers Arbitrum-hub
     // DEX swaps (e.g. EURe — LI.FI-only, broken on the legacy fixed-gas Uniswap
@@ -5929,7 +5997,11 @@ export class Client {
   async createArkadeToEvmSwapGeneric(
     options: ArkadeToEvmSwapOptions,
   ): Promise<ArkadeToEvmSwapResult> {
-    return createArkadeToEvmSwapGeneric(options, this.#getCreateContext());
+    return createArkadeToEvmSwapGeneric(
+      options,
+      this.#getCreateContext(),
+      await this.#rifClaimAddress(options),
+    );
   }
 
   /**
@@ -5955,7 +6027,11 @@ export class Client {
   async createBitcoinToEvmSwap(
     options: BitcoinToEvmSwapOptions,
   ): Promise<BitcoinToEvmSwapResult> {
-    return createBitcoinToEvmSwap(options, this.#getCreateContext());
+    return createBitcoinToEvmSwap(
+      options,
+      this.#getCreateContext(),
+      await this.#rifClaimAddress(options),
+    );
   }
 
   // =========================================================================
@@ -6083,7 +6159,11 @@ export class Client {
   async createLightningToEvmSwap(
     options: LightningToEvmSwapOptions,
   ): Promise<LightningToEvmSwapResult> {
-    return createLightningToEvmSwap(options, this.#getCreateContext());
+    return createLightningToEvmSwap(
+      options,
+      this.#getCreateContext(),
+      await this.#rifClaimAddress(options),
+    );
   }
 
   // =========================================================================

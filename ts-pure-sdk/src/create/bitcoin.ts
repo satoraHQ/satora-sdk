@@ -43,6 +43,11 @@ import type {
 export async function createBitcoinToEvmSwap(
   options: BitcoinToEvmSwapOptions,
   ctx: CreateSwapContext,
+  /**
+   * The lock's claim address when it is not this swap's own key: the
+   * recipient's RIF Relay smart wallet on a chain that claims through RIF.
+   */
+  claimingAddressOverride?: string,
 ): Promise<BitcoinToEvmSwapResult> {
   return retryOnHashCollision(ctx, async () => {
     const swapParams = await ctx.deriveSwapParams();
@@ -55,7 +60,8 @@ export async function createBitcoinToEvmSwap(
     // EIP-7702 delegation (Kernel) on the claiming address; keeping that
     // off the deposit address means Permit2 / EIP-2612 keep seeing a plain
     // EOA there. Recovery re-derives this key from the swap's index.
-    const claimingAddress = deriveEvmAddress(swapParams.secretKey);
+    const claimingAddress =
+      claimingAddressOverride ?? deriveEvmAddress(swapParams.secretKey);
 
     const body = {
       hash_lock: hashLock,

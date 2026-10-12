@@ -30,6 +30,15 @@ export {
 export { encodeClaimSwapCallData, uuidToBytes32 } from "./ethereum.js";
 // Re-export gasless claim
 export { claimViaGasless, type GaslessClaimParams } from "./gasless.js";
+export {
+  claimNativeViaRifRelay,
+  RIF_SMART_WALLET_INDEX,
+  type RifRelayClaimParams,
+  type RifRelayConfig,
+  rifSmartWallet,
+  rifSmartWalletAddress,
+  WalletClaimRequiredError,
+} from "./rif-relay.js";
 export { claimViaSigner, type SignerClaimParams } from "./signer-claim.js";
 // Re-export types
 export type {

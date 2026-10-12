@@ -325,6 +325,13 @@ export class Client {
   }
 
   /** Delegated to the legacy client (migration checkpoint). */
+  getRifRelay(
+    ...args: Parameters<LegacyClient["getRifRelay"]>
+  ): ReturnType<LegacyClient["getRifRelay"]> {
+    return this.#legacy.getRifRelay(...args);
+  }
+
+  /** Delegated to the legacy client (migration checkpoint). */
   getReferralFee(
     ...args: Parameters<LegacyClient["getReferralFee"]>
   ): ReturnType<LegacyClient["getReferralFee"]> {

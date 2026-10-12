@@ -103,6 +103,11 @@ export class SwapWorker {
   readonly #executing = new Set<string>();
   /** Swaps with a scheduled auto-claim retry (backoff timer + attempt count). */
   readonly #retries = new Map<string, Retry>();
+  /**
+   * Swaps whose claim needs the user's wallet (RIF Relay): handed to
+   * `onActionRequired` once and not auto-run while the claim is recommended.
+   */
+  readonly #needsUser = new Set<string>();
   #unsubs: Array<() => void> = [];
   #started = false;
 
@@ -157,6 +162,7 @@ export class SwapWorker {
     this.#hintSource.stop();
     for (const { timer } of this.#retries.values()) clearTimeout(timer);
     this.#retries.clear();
+    this.#needsUser.clear();
     this.#executing.clear();
   }
 
@@ -189,9 +195,11 @@ export class SwapWorker {
     // Observe-only mode (no execute): fall through — an auto action is nobody's
     // to run, and it doesn't need surfacing either (subscribers see it live).
     if (recommended && AUTO_EXECUTABLE.has(recommended) && this.#execute) {
+      if (this.#needsUser.has(swapId)) return; // already surfaced
       this.#autoExecute(swapId, actions);
       return;
     }
+    this.#needsUser.delete(swapId);
     // No longer an auto-claim (moved to wait/fund/refund, or nothing): drop any
     // pending retry — a fresh derivation supersedes it.
     this.#cancelRetry(swapId);
@@ -215,6 +223,13 @@ export class SwapWorker {
     void execute(swapId, actionId)
       .then(() => this.#cancelRetry(swapId)) // submitted — reset the attempt budget
       .catch((error) => {
+        if (needsWallet(error)) {
+          // No retry can sign for the user's wallet: hand it over now.
+          this.#cancelRetry(swapId);
+          this.#needsUser.add(swapId);
+          this.#onActionRequired?.(swapId, actions);
+          return;
+        }
         console.warn(`SwapWorker: ${actionId}(${swapId}) failed:`, error);
         this.#scheduleRetry(swapId, actions);
       })
@@ -268,4 +283,12 @@ export class SwapWorker {
     const existing = this.#retries.get(swapId);
     if (existing) clearTimeout(existing.timer);
   }
+}
+
+/**
+ * The claim needs the receiving wallet's signature (the SDK's
+ * `WalletClaimRequiredError`); matched by name so it holds across bundles.
+ */
+function needsWallet(error: unknown): boolean {
+  return error instanceof Error && error.name === "WalletClaimRequiredError";
 }

@@ -5,6 +5,7 @@
  *
  * Hand-written; identity-shaped with the OpenAPI codegen today.
  */
+import type { RifRelayConfig } from "../redeem/rif-relay.js";
 import type { Chain } from "./chain.js";
 
 export interface TokenRef {
@@ -31,6 +32,12 @@ export interface ChainConfigEntry {
    * Slow-moving but not static — refresh on the same cadence as a quote.
    */
   btc_peg_rate: string;
+  /**
+   * Where a native lock on this chain is claimed: RIF Relay, from a smart
+   * wallet owned by the claim destination, relayer paid out of the claimed
+   * coin. Absent = the server relays the claim (`claim()`).
+   */
+  rif_relay?: RifRelayConfig;
 }
 
 export interface ChainConfigResponse {
@@ -49,6 +56,7 @@ export interface WireChainConfigEntry {
   chain: Chain;
   btc_pegged_token: WireTokenRef;
   btc_peg_rate: string;
+  rif_relay?: RifRelayConfig | null;
 }
 
 export interface WireChainConfigResponse {
@@ -67,6 +75,7 @@ export function fromWireChainConfigResponse(
         symbol: c.btc_pegged_token.symbol,
       },
       btc_peg_rate: c.btc_peg_rate,
+      ...(c.rif_relay ? { rif_relay: { ...c.rif_relay } } : {}),
     })),
   };
 }

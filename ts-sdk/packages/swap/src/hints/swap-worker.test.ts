@@ -143,6 +143,34 @@ describe("SwapWorker", () => {
     expect(execute).toHaveBeenCalledWith("s1", "claim");
   });
 
+  it("hands a claim that needs the user's wallet over once, without retrying", async () => {
+    const walletRequired = Object.assign(new Error("needs wallet"), {
+      name: "WalletClaimRequiredError",
+    });
+    const execute = vi.fn(async () => {
+      throw walletRequired;
+    });
+    const { tracker, worker, onActionRequired } = setup(execute, {
+      baseDelayMs: 1,
+    });
+    worker.start();
+    const claim = acts("claim");
+    tracker.emit("s1", claim);
+    await vi.waitFor(() => expect(onActionRequired).toHaveBeenCalledTimes(1));
+    expect(onActionRequired).toHaveBeenCalledWith("s1", claim);
+
+    // A re-emit of the same claim is not run again.
+    tracker.emit("s1", claim);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(onActionRequired).toHaveBeenCalledTimes(1);
+
+    // Once the claim stops being recommended, a later one is tried again.
+    tracker.emit("s1", acts("wait"));
+    tracker.emit("s1", claim);
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
   it("observe-only mode (no execute): hints verify, but a claim is never run", () => {
     const tracker = new FakeTracker();
     const hintSource = new FakeHintSource();
