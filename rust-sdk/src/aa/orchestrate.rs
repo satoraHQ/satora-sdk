@@ -484,6 +484,8 @@ pub async fn publish_batch_observed(
         apply_paymaster(&mut userop, &final_pm);
     }
 
+    resolve_paymaster_limits(&mut userop)?;
+
     // 10. Sign the userOpHash (EIP-191).
     let hash = user_op_hash(&userop, inputs.entry_point, inputs.chain_id);
     info!(user_op_hash = %hash, "fund_swap: signing userOpHash");
@@ -619,6 +621,34 @@ async fn fetch_gas_prices(provider: &RootProvider) -> Result<(u128, u128)> {
     let max_priority = MIN_PRIORITY_FEE_WEI.max(gas_price / 10);
     let max_fee = gas_price.saturating_mul(2).saturating_add(max_priority);
     Ok((max_fee, max_priority))
+}
+
+/// Pin the paymaster gas limits before the operation is hashed and signed.
+///
+/// ERC-7677 leaves both limits optional in the stub, `pm_getPaymasterData`
+/// never carries them, and Alchemy's `eth_estimateUserOperationGas` returns
+/// only the verification limit. The packed layout has no "absent" value, so
+/// whatever is unset here would be signed as zero implicitly. A zero
+/// verification limit cannot validate, so it is an error. A zero post-op
+/// limit is the documented meaning of a paymaster without a `postOp` hook
+/// (viem packs a missing limit as zero as well), so it is recorded
+/// explicitly and logged.
+fn resolve_paymaster_limits(userop: &mut PackedUserOperation) -> Result<()> {
+    if userop.paymaster.is_none() {
+        return Ok(());
+    }
+    if userop.paymaster_verification_gas_limit.is_none() {
+        return Err(Error::InvalidSwap(
+            "paymaster verification gas limit unknown: the paymaster stub omitted it and \
+             gas estimation did not supply it (estimation is skipped with gas overrides)"
+                .into(),
+        ));
+    }
+    if userop.paymaster_post_op_gas_limit.is_none() {
+        info!("fund_swap: paymaster declared no post-op gas limit; signing it as zero");
+        userop.paymaster_post_op_gas_limit = Some(U256::ZERO);
+    }
+    Ok(())
 }
 
 /// Apply paymaster fields onto an in-flight userOp. Used both for the
@@ -1024,5 +1054,69 @@ mod tests {
         let mut reverted = receipt(vec![event]);
         reverted.success = false;
         assert!(verify_user_operation_receipt(&reverted, entry_point, operation, tx).is_err());
+    }
+
+    fn sponsored_op() -> PackedUserOperation {
+        PackedUserOperation {
+            sender: Address::ZERO,
+            nonce: U256::ZERO,
+            factory: None,
+            factory_data: None,
+            call_data: Bytes::new(),
+            call_gas_limit: U256::from(1u64),
+            verification_gas_limit: U256::from(1u64),
+            pre_verification_gas: U256::from(1u64),
+            max_fee_per_gas: U256::from(1u64),
+            max_priority_fee_per_gas: U256::from(1u64),
+            paymaster: Some(Address::repeat_byte(0x44)),
+            paymaster_verification_gas_limit: Some(U256::from(50_000u64)),
+            paymaster_post_op_gas_limit: None,
+            paymaster_data: Some(Bytes::from_static(&[0xca, 0xfe])),
+            signature: Bytes::new(),
+        }
+    }
+
+    /// A missing post-op limit is a paymaster without `postOp`: signed as zero.
+    #[test]
+    fn missing_post_op_limit_is_pinned_to_zero() {
+        let mut op = sponsored_op();
+        resolve_paymaster_limits(&mut op).unwrap();
+        assert_eq!(op.paymaster_post_op_gas_limit, Some(U256::ZERO));
+        assert_eq!(
+            op.paymaster_verification_gas_limit,
+            Some(U256::from(50_000u64))
+        );
+    }
+
+    /// Limits the paymaster did supply are kept as they are.
+    #[test]
+    fn supplied_limits_are_kept() {
+        let mut op = sponsored_op();
+        op.paymaster_post_op_gas_limit = Some(U256::from(7u64));
+        resolve_paymaster_limits(&mut op).unwrap();
+        assert_eq!(op.paymaster_post_op_gas_limit, Some(U256::from(7u64)));
+    }
+
+    /// Nothing supplied the verification limit (stub omitted it and estimation
+    /// was skipped): refuse rather than sign a zero limit.
+    #[test]
+    fn missing_verification_limit_is_an_error() {
+        let mut op = sponsored_op();
+        op.paymaster_verification_gas_limit = None;
+        let err = resolve_paymaster_limits(&mut op).unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidSwap(ref m) if m.contains("verification gas limit")),
+            "{err:?}"
+        );
+    }
+
+    /// Without a paymaster there is nothing to resolve.
+    #[test]
+    fn no_paymaster_is_untouched() {
+        let mut op = sponsored_op();
+        op.paymaster = None;
+        op.paymaster_verification_gas_limit = None;
+        resolve_paymaster_limits(&mut op).unwrap();
+        assert_eq!(op.paymaster_post_op_gas_limit, None);
     }
 }
