@@ -451,6 +451,15 @@ pub async fn publish_batch_observed(
         userop.call_gas_limit = gas.call_gas_limit;
         userop.verification_gas_limit = gas.verification_gas_limit;
         userop.pre_verification_gas = gas.pre_verification_gas;
+        // A stub without paymaster limits leaves them to the estimate.
+        if userop.paymaster.is_some() {
+            if let Some(limit) = gas.paymaster_verification_gas_limit {
+                userop.paymaster_verification_gas_limit = Some(limit);
+            }
+            if let Some(limit) = gas.paymaster_post_op_gas_limit {
+                userop.paymaster_post_op_gas_limit = Some(limit);
+            }
+        }
         info!(
             call_gas_limit = %userop.call_gas_limit,
             verification_gas_limit = %userop.verification_gas_limit,
@@ -603,8 +612,12 @@ async fn fetch_gas_prices(provider: &RootProvider) -> Result<(u128, u128)> {
         .get_gas_price()
         .await
         .map_err(|e| Error::Transport(format!("eth_gasPrice: {e}")))?;
-    let max_priority = MIN_PRIORITY_FEE_WEI;
-    let max_fee = gas_price.max(max_priority);
+    // Bundlers only include an operation whose max fee covers the base fee
+    // plus their own minimum priority fee at bundling time (Alchemy's rundler
+    // on Arbitrum asks for ~1.1M wei). `eth_gasPrice` alone leaves no
+    // headroom, so the operation is accepted, never bundled, then dropped.
+    let max_priority = MIN_PRIORITY_FEE_WEI.max(gas_price / 10);
+    let max_fee = gas_price.saturating_mul(2).saturating_add(max_priority);
     Ok((max_fee, max_priority))
 }
 
@@ -615,8 +628,14 @@ fn apply_paymaster(
     fields: &crate::aa::paymaster::PaymasterFields,
 ) {
     userop.paymaster = Some(fields.paymaster);
-    userop.paymaster_verification_gas_limit = Some(fields.paymaster_verification_gas_limit);
-    userop.paymaster_post_op_gas_limit = Some(fields.paymaster_post_op_gas_limit);
+    // Limits the paymaster leaves out keep their current value: the stub's,
+    // or the bundler's estimate once it has run (ERC-7677 makes them optional).
+    if let Some(limit) = fields.paymaster_verification_gas_limit {
+        userop.paymaster_verification_gas_limit = Some(limit);
+    }
+    if let Some(limit) = fields.paymaster_post_op_gas_limit {
+        userop.paymaster_post_op_gas_limit = Some(limit);
+    }
     userop.paymaster_data = Some(fields.paymaster_data.clone());
 }
 

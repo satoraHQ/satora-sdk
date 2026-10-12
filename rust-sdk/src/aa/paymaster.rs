@@ -48,8 +48,12 @@ use url::Url;
 #[serde(rename_all = "camelCase")]
 pub struct PaymasterFields {
     pub paymaster: Address,
-    pub paymaster_verification_gas_limit: U256,
-    pub paymaster_post_op_gas_limit: U256,
+    /// Optional under ERC-7677: a paymaster may leave the limits to gas
+    /// estimation (Alchemy's `pm_getPaymasterStubData` omits them).
+    #[serde(default)]
+    pub paymaster_verification_gas_limit: Option<U256>,
+    #[serde(default)]
+    pub paymaster_post_op_gas_limit: Option<U256>,
     pub paymaster_data: Bytes,
     /// Only meaningful on the stub-data response: when `true`, this
     /// stub IS the final data and `pm_getPaymasterData` can be skipped.
@@ -170,9 +174,12 @@ mod tests {
         );
         assert_eq!(
             fields.paymaster_verification_gas_limit,
-            U256::from(100_000u64)
+            Some(U256::from(100_000u64))
         );
-        assert_eq!(fields.paymaster_post_op_gas_limit, U256::from(50_000u64));
+        assert_eq!(
+            fields.paymaster_post_op_gas_limit,
+            Some(U256::from(50_000u64))
+        );
         assert_eq!(&fields.paymaster_data[..], &[0xca, 0xfe, 0xba, 0xbe]);
         assert!(!fields.is_final, "missing isFinal must default to false");
     }
@@ -190,5 +197,20 @@ mod tests {
         });
         let fields: PaymasterFields = serde_json::from_value(json).expect("deserializes");
         assert!(fields.is_final);
+    }
+
+    /// ERC-7677 leaves the paymaster gas limits optional; Alchemy's
+    /// `pm_getPaymasterStubData` omits them and relies on estimation.
+    #[test]
+    fn paymaster_fields_accept_missing_gas_limits() {
+        let json = serde_json::json!({
+            "paymaster": "0x2cc0c7981d846b9f2a16276556f6e8cb52bfb633",
+            "paymasterData": "0xff",
+            "sponsor": {"name": "Satora Policy"},
+        });
+        let fields: PaymasterFields = serde_json::from_value(json).expect("deserializes");
+        assert_eq!(fields.paymaster_verification_gas_limit, None);
+        assert_eq!(fields.paymaster_post_op_gas_limit, None);
+        assert!(!fields.is_final);
     }
 }
