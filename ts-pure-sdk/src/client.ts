@@ -10,6 +10,7 @@ import {
   type EvmToLightningSwapResponse,
   type GetSwapResponse,
   type LightningToArkadeSwapResponse,
+  type LightningToBitcoinSwapResponse,
   type paths,
   type RedeemAndSwapResponse,
   type StatusResponse,
@@ -56,6 +57,8 @@ import {
   type BitcoinToArkadeSwapResult,
   type BitcoinToEvmSwapOptions,
   type BitcoinToEvmSwapResult,
+  type BitcoinToLightningSwapOptions,
+  type BitcoinToLightningSwapResult,
   type CreateSwapContext,
   type CreateSwapOptions,
   type CreateSwapResult,
@@ -63,10 +66,12 @@ import {
   createArkadeToLightningSwap,
   createBitcoinToArkadeSwap,
   createBitcoinToEvmSwap,
+  createBitcoinToLightningSwap,
   createEvmToArkadeSwapGeneric,
   createEvmToBitcoinSwap,
   createEvmToLightningSwap,
   createLightningToArkadeSwap,
+  createLightningToBitcoinSwap,
   createLightningToEvmSwap,
   type EvmToArkadeSwapGenericOptions,
   type EvmToArkadeSwapGenericResult,
@@ -76,6 +81,8 @@ import {
   type EvmToLightningSwapResult,
   type LightningToArkadeSwapOptions,
   type LightningToArkadeSwapResult,
+  type LightningToBitcoinSwapOptions,
+  type LightningToBitcoinSwapResult,
   type LightningToEvmSwapOptions,
   type LightningToEvmSwapResult,
 } from "./create/index.js";
@@ -90,6 +97,7 @@ import {
 import {
   broadcastTransactionWithRetry,
   type EsploraUrls,
+  fetchFeeRateEstimate,
   fetchTransactionOutputs,
   findOutputByAddress,
 } from "./esplora.js";
@@ -232,6 +240,8 @@ export type {
   BitcoinToEvmSwapOptions,
   BitcoinToEvmSwapResponse,
   BitcoinToEvmSwapResult,
+  BitcoinToLightningSwapOptions,
+  BitcoinToLightningSwapResult,
   BtcToEvmSwapOptions,
   CreateSwapOptions,
   CreateSwapResult,
@@ -244,6 +254,8 @@ export type {
   EvmToBitcoinSwapResult,
   EvmToLightningSwapOptions,
   EvmToLightningSwapResult,
+  LightningToBitcoinSwapOptions,
+  LightningToBitcoinSwapResult,
   LightningToEvmSwapOptions,
   LightningToEvmSwapResponse,
   LightningToEvmSwapResult,
@@ -642,9 +654,15 @@ export interface ClaimOptions {
    * and stored on the server. This option is ignored for arkade_to_evm swaps.
    */
   destination?: string;
-  /** Bitcoin destination address for EVM-to-Bitcoin claims (required for evm_to_bitcoin direction) */
+  /**
+   * Bitcoin destination address for on-chain claims (evm_to_bitcoin and
+   * lightning_to_bitcoin); falls back to the address the swap was created with.
+   */
   destinationAddress?: string;
-  /** Fee rate in sat/vB for on-chain Bitcoin claims (default: 2) */
+  /**
+   * Fee rate in sat/vB for on-chain Bitcoin claims (default: the explorer's
+   * two-block estimate, at least 2)
+   */
   feeRateSatPerVb?: number;
   /**
    * For EVM-to-Bitcoin claims: if the funding (HTLC) output has not been
@@ -769,6 +787,7 @@ export interface GetQuoteParams {
 /** Source chains `/quote/lightning-send` can price. */
 export type LightningSendSourceChain =
   | "Arkade"
+  | "Bitcoin"
   | "1"
   | "137"
   | "42161"
@@ -782,16 +801,17 @@ export type LightningSendSourceChain =
  */
 export interface GetLightningSendQuoteParams {
   /**
-   * Source chain of the swap: "Arkade" (default) or an EVM chain id
-   * ("137", "1", "42161"). EVM sources also need `sourceToken`.
+   * Source chain of the swap: "Arkade" (default), "Bitcoin" (on-chain)
+   * or an EVM chain id ("137", "1", "42161"). EVM sources also need
+   * `sourceToken`.
    */
   sourceChain?: LightningSendSourceChain;
   /** ERC-20 contract address of the source token (EVM sources only). */
   sourceToken?: string;
   /**
    * Total to lock on the source chain, in the source token's smallest
-   * unit (sats for Arkade, token units for EVM); fees are deducted from
-   * the Lightning payout (send-max). `lightningAddress`/`lnurl` only;
+   * unit (sats for Arkade and Bitcoin, token units for EVM); fees are
+   * deducted from the Lightning payout (send-max). `lightningAddress`/`lnurl` only;
    * mutually exclusive with `targetAmountSats`.
    */
   sourceAmount?: bigint | number | string;
@@ -856,7 +876,8 @@ export interface LightningSendQuote {
   maxAmountSats: number;
   /**
    * Source tokens (human-readable units) per 1 BTC locked, as `/quote`
-   * reports it. "1" for Arkade sources, where the source is already sats.
+   * reports it. "1" for Arkade and Bitcoin sources, where the source is
+   * already sats.
    */
   exchangeRate: string;
 }
@@ -874,6 +895,51 @@ function classifyLightningDestination(
   if (d.startsWith("lnurl1")) return "lnurl";
   if (d.startsWith("ln")) return "invoice";
   return undefined;
+}
+
+/**
+ * Options for a sats-denominated (Arkade or on-chain Bitcoin) → Lightning
+ * create from the generic `createSwap` inputs. A BOLT11 invoice pins the
+ * payout (`targetAmount` is an optional cross-check, `sourceAmount` is not
+ * applicable); an LNURL or lightning address takes exactly one of the two.
+ */
+function satsToLightningOptions(
+  options: CreateSwapOptions,
+  sourceName: string,
+): ArkadeToLightningSwapOptions {
+  const destination = options.targetAddress;
+  const kind = classifyLightningDestination(destination);
+  const common = {
+    referralCode: options.referralCode,
+    extraFees: options.extraFees,
+  };
+  if (kind === "invoice") {
+    if (options.sourceAmount != null) {
+      throw new Error(
+        "sourceAmount cannot be combined with a BOLT11 invoice destination (the invoice fixes the payout)",
+      );
+    }
+    return {
+      lightningInvoice: destination,
+      ...(options.targetAmount != null
+        ? { targetAmountSats: Number(options.targetAmount) }
+        : {}),
+      ...common,
+    };
+  }
+  if ((options.sourceAmount == null) === (options.targetAmount == null)) {
+    throw new Error(
+      `Provide exactly one of sourceAmount (sats to lock on ${sourceName}) or targetAmount (sats to receive over Lightning) for ${sourceName} → Lightning swaps`,
+    );
+  }
+  const amount =
+    options.sourceAmount != null
+      ? { sourceAmountSats: Number(options.sourceAmount) }
+      : { targetAmountSats: Number(options.targetAmount) };
+  if (kind === "lnurl") {
+    return { lnurl: destination, ...amount, ...common };
+  }
+  return { lightningAddress: destination, ...amount, ...common };
 }
 
 const DEFAULT_BASE_URL = "https://api.satora.io/";
@@ -2055,15 +2121,16 @@ export class Client {
    * @throws Error if the request fails.
    */
   async getQuote(params: GetQuoteParams): Promise<QuoteResponse> {
-    // Arkade/EVM → Lightning with a concrete destination: serve the quote from
-    // /quote/lightning-send, which prices the provider's real send fee for
-    // that exact payment. Fall back to the estimate paths on any failure
-    // (bad destination, LNURL service down, ...) — a create would surface
-    // the real error.
+    // Arkade/Bitcoin/EVM → Lightning with a concrete destination: serve the
+    // quote from /quote/lightning-send, which prices the provider's real
+    // send fee for that exact payment. Fall back to the estimate paths on
+    // any failure (bad destination, LNURL service down, ...): a create
+    // would surface the real error.
     if (
       params.lightningDestination &&
       params.targetChain === "Lightning" &&
       (params.sourceChain === "Arkade" ||
+        params.sourceChain === "Bitcoin" ||
         isEvmSwapSource(params.sourceChain, params.sourceToken))
     ) {
       try {
@@ -2112,8 +2179,8 @@ export class Client {
   }
 
   /**
-   * Exact quote for an Arkade → Lightning swap, from a concrete
-   * destination (BOLT11 invoice, lightning address or LNURL).
+   * Exact quote for an Arkade, Bitcoin or EVM → Lightning swap, from a
+   * concrete destination (BOLT11 invoice, lightning address or LNURL).
    *
    * Unlike {@link getQuote}, whose network fee for Lightning targets is an
    * estimate, this resolves the destination and prices the swap with the
@@ -2185,10 +2252,11 @@ export class Client {
   }
 
   /**
-   * Serve an Arkade/EVM → Lightning `getQuote` from `/quote/lightning-send`,
-   * adapted to the `QuoteResponse` shape (the server's rate: 1:1 for Arkade,
-   * DEX-derived for EVM sources; net amounts carry the exact lock/payout
-   * including the provider's real send fee).
+   * Serve an Arkade/Bitcoin/EVM → Lightning `getQuote` from
+   * `/quote/lightning-send`, adapted to the `QuoteResponse` shape (the
+   * server's rate: 1:1 for Arkade and Bitcoin, DEX-derived for EVM
+   * sources; net amounts carry the exact lock/payout including the
+   * provider's real send fee).
    */
   async #lightningSendQuoteAsQuote(
     params: GetQuoteParams,
@@ -2210,9 +2278,10 @@ export class Client {
         : undefined;
 
     const q = await this.getLightningSendQuote({
-      sourceChain: evmSource
-        ? (params.sourceChain as LightningSendSourceChain)
-        : undefined,
+      sourceChain:
+        evmSource || params.sourceChain === "Bitcoin"
+          ? (params.sourceChain as LightningSendSourceChain)
+          : undefined,
       sourceToken: evmSource ? params.sourceToken : undefined,
       sourceAmount,
       lightningInvoice: kind === "invoice" ? destination : undefined,
@@ -2223,9 +2292,10 @@ export class Client {
       extraFees: params.extraFees,
     });
 
-    // Arkade is 1:1, so the pinned side carries the pre-fee amount on both
-    // sides (mirroring the server's /quote for that route). EVM sources are
-    // DEX-priced: the source side is the token amount create persists.
+    // Arkade and Bitcoin are 1:1, so the pinned side carries the pre-fee
+    // amount on both sides (mirroring the server's /quote for those
+    // routes). EVM sources are DEX-priced: the source side is the token
+    // amount create persists.
     const sourceAmountOut = evmSource
       ? q.sourceAmount
       : sourcePinned
@@ -2804,8 +2874,11 @@ export class Client {
       };
     }
 
-    // EVM-to-Bitcoin: user claims BTC from on-chain Taproot HTLC with preimage
-    if (swap.direction === "evm_to_bitcoin") {
+    // Server-funded on-chain HTLC: the user claims BTC with the preimage
+    if (
+      swap.direction === "evm_to_bitcoin" ||
+      swap.direction === "lightning_to_bitcoin"
+    ) {
       return this.#claimOnchainBtc(id, options);
     }
 
@@ -3907,7 +3980,11 @@ export class Client {
     }
 
     // Bitcoin on-chain swaps require on-chain refund transaction
-    if (direction === "bitcoin_to_evm" || direction === "btc_to_arkade") {
+    if (
+      direction === "bitcoin_to_evm" ||
+      direction === "btc_to_arkade" ||
+      direction === "bitcoin_to_lightning"
+    ) {
       return this.#buildOnchainRefund(
         id,
         swap,
@@ -3937,9 +4014,12 @@ export class Client {
   }
 
   /**
-   * Claims BTC from an on-chain Taproot HTLC for an EVM-to-Bitcoin swap.
+   * Claims BTC from a server-funded on-chain Taproot HTLC (EVM-to-Bitcoin
+   * and Lightning-to-Bitcoin).
    *
-   * The user reveals the preimage to spend from the hashlock script path.
+   * The user reveals the preimage to spend from the hashlock script path;
+   * on Lightning-to-Bitcoin that spend is also what settles the hold
+   * invoice the user paid.
    * @internal
    */
   async #claimOnchainBtc(
@@ -3965,12 +4045,17 @@ export class Client {
     // Fetch the latest swap state from API
     const swap = (await this.getSwap(id, {
       updateStorage: false,
-    })) as EvmToBitcoinSwapResponse & { direction: "evm_to_bitcoin" };
+    })) as (EvmToBitcoinSwapResponse | LightningToBitcoinSwapResponse) & {
+      direction: "evm_to_bitcoin" | "lightning_to_bitcoin";
+    };
 
-    if (swap.direction !== "evm_to_bitcoin") {
+    if (
+      swap.direction !== "evm_to_bitcoin" &&
+      swap.direction !== "lightning_to_bitcoin"
+    ) {
       return {
         success: false,
-        message: `Expected evm_to_bitcoin swap, got ${swap.direction}`,
+        message: `Expected evm_to_bitcoin or lightning_to_bitcoin swap, got ${swap.direction}`,
       };
     }
 
@@ -4088,6 +4173,12 @@ export class Client {
       };
     }
 
+    // The claim reveals the preimage and has to confirm before the server
+    // can refund, so it pays for a two-block confirmation.
+    const feeRateSatPerVb =
+      options?.feeRateSatPerVb ??
+      Math.max(2, (await fetchFeeRateEstimate(esploraUrls, 2)) ?? 0);
+
     try {
       const result = buildOnchainClaimTransaction({
         fundingTxId: htlcOutput.txid,
@@ -4100,7 +4191,7 @@ export class Client {
         preimage: storedSwap.preimage,
         refundLocktime: btcRefundLocktime,
         destinationAddress,
-        feeRateSatPerVb: options?.feeRateSatPerVb ?? 2,
+        feeRateSatPerVb,
         network,
         btcHtlcScriptVersion,
       });
@@ -4181,11 +4272,12 @@ export class Client {
     // Ensure we have an on-chain funded swap
     if (
       swap.direction !== "bitcoin_to_evm" &&
-      swap.direction !== "btc_to_arkade"
+      swap.direction !== "btc_to_arkade" &&
+      swap.direction !== "bitcoin_to_lightning"
     ) {
       return {
         success: false,
-        message: `Expected bitcoin_to_evm or btc_to_arkade swap, got ${swap.direction}`,
+        message: `Expected bitcoin_to_evm, btc_to_arkade or bitcoin_to_lightning swap, got ${swap.direction}`,
       };
     }
 
@@ -4207,7 +4299,7 @@ export class Client {
       serverPubKeyFull = arkadeSwap.server_vhtlc_pk;
       networkStr = arkadeSwap.network;
     } else {
-      // OnchainToEvmSwapResponse (on-chain Bitcoin to EVM)
+      // Bitcoin to EVM and Bitcoin to Lightning name the HTLC fields alike
       const onchainSwap = swap as unknown as {
         btc_htlc_address: string;
         btc_refund_locktime: number;
@@ -5425,6 +5517,8 @@ export class Client {
    * - Lightning → EVM
    * - Bitcoin (on-chain) → EVM
    * - Bitcoin (on-chain) → Arkade
+   * - Bitcoin (on-chain) → Lightning
+   * - Lightning → Bitcoin (on-chain)
    * - EVM → Arkade
    * - EVM → Bitcoin (on-chain)
    * - EVM → Lightning
@@ -5577,52 +5671,16 @@ export class Client {
     // destination: a BOLT11 invoice ("ln..."), an LNURL ("lnurl1..."),
     // or a lightning address ("user@domain").
     if (isArkade(sourceAsset) && isLightning(targetAsset)) {
-      const destination = options.targetAddress;
-      const lower = destination.toLowerCase();
-      const common = {
-        referralCode: options.referralCode,
-        extraFees: options.extraFees,
-      };
-
-      if (!lower.startsWith("lnurl") && lower.startsWith("ln")) {
-        // The invoice pins the payout; targetAmount is an optional
-        // cross-check, sourceAmount is not applicable.
-        if (options.sourceAmount != null) {
-          throw new Error(
-            "sourceAmount cannot be combined with a BOLT11 invoice destination (the invoice fixes the payout)",
-          );
-        }
-        return this.createArkadeToLightningSwap({
-          lightningInvoice: destination,
-          ...(options.targetAmount != null
-            ? { targetAmountSats: Number(options.targetAmount) }
-            : {}),
-          ...common,
-        });
-      }
-
-      if ((options.sourceAmount == null) === (options.targetAmount == null)) {
-        throw new Error(
-          "Provide exactly one of sourceAmount (sats to lock on Arkade) or targetAmount (sats to receive over Lightning) for Arkade → Lightning swaps",
-        );
-      }
-      const amount =
-        options.sourceAmount != null
-          ? { sourceAmountSats: Number(options.sourceAmount) }
-          : { targetAmountSats: Number(options.targetAmount) };
-
-      if (lower.startsWith("lnurl")) {
-        return this.createArkadeToLightningSwap({
-          lnurl: destination,
-          ...amount,
-          ...common,
-        });
-      }
-      return this.createArkadeToLightningSwap({
-        lightningAddress: destination,
-        ...amount,
-        ...common,
-      });
+      return this.createArkadeToLightningSwap(
+        satsToLightningOptions(options, "Arkade"),
+      );
+    }
+    // Bitcoin (on-chain) → Lightning: the same destination and amount
+    // rules, with the lock in an on-chain HTLC.
+    if (isBtcOnchain(sourceAsset) && isLightning(targetAsset)) {
+      return this.createBitcoinToLightningSwap(
+        satsToLightningOptions(options, "Bitcoin"),
+      );
     }
 
     // Lightning → Arkade
@@ -5635,6 +5693,24 @@ export class Client {
       return this.createLightningToArkadeSwap({
         // The runtime check above guarantees exactly one amount is set;
         // branch so each arm satisfies the XOR options type.
+        ...(options.sourceAmount != null
+          ? { sourceAmountSats: Number(options.sourceAmount) }
+          : { targetAmountSats: Number(options.targetAmount) }),
+        targetAddress: options.targetAddress,
+        referralCode: options.referralCode,
+        extraFees: options.extraFees,
+      });
+    }
+
+    // Lightning → Bitcoin (on-chain). `targetAddress` is where the HTLC
+    // claim pays out.
+    if (isLightning(sourceAsset) && isBtcOnchain(targetAsset)) {
+      if ((options.sourceAmount == null) === (options.targetAmount == null)) {
+        throw new Error(
+          "Provide exactly one of sourceAmount (invoice sats) or targetAmount (sats to receive on-chain) for Lightning → Bitcoin swaps",
+        );
+      }
+      return this.createLightningToBitcoinSwap({
         ...(options.sourceAmount != null
           ? { sourceAmountSats: Number(options.sourceAmount) }
           : { targetAmountSats: Number(options.targetAmount) }),
@@ -5946,6 +6022,37 @@ export class Client {
   }
 
   // =========================================================================
+  // Swap Creation - Lightning to Bitcoin
+  // =========================================================================
+
+  /**
+   * Creates a new Lightning to Bitcoin (on-chain) swap.
+   *
+   * The user pays a hold invoice; the server funds an on-chain HTLC that
+   * `claim()` sweeps to `targetAddress`, which settles the invoice.
+   *
+   * @param options - The swap options.
+   * @returns The swap response and parameters for storage.
+   * @throws Error if the swap creation fails.
+   *
+   * @example
+   * ```ts
+   * // Provide exactly one of targetAmountSats (receive amount, fees added
+   * // on top) or sourceAmountSats (invoice amount, fees deducted from it).
+   * const result = await client.createLightningToBitcoinSwap({
+   *   targetAmountSats: 100000, // 100k sats to receive on-chain
+   *   targetAddress: "bc1q...", // Bitcoin address
+   * });
+   * console.log("Pay this invoice:", result.response.bolt11_invoice);
+   * ```
+   */
+  async createLightningToBitcoinSwap(
+    options: LightningToBitcoinSwapOptions,
+  ): Promise<LightningToBitcoinSwapResult> {
+    return createLightningToBitcoinSwap(options, this.#getCreateContext());
+  }
+
+  // =========================================================================
   // Swap Creation - Lightning to EVM
   // =========================================================================
 
@@ -6012,6 +6119,41 @@ export class Client {
     options: ArkadeToLightningSwapOptions,
   ): Promise<ArkadeToLightningSwapResult> {
     return createArkadeToLightningSwap(options, this.#getCreateContext());
+  }
+
+  // =========================================================================
+  // Swap Creation - Bitcoin to Lightning
+  // =========================================================================
+
+  /**
+   * Creates a new Bitcoin (on-chain) to Lightning swap.
+   *
+   * The user sends `source_amount` sats to the returned HTLC address
+   * (`btc_htlc_address`); after one confirmation the server pays the
+   * Lightning invoice and claims the HTLC. On failure the coins come back
+   * via `refundSwap()` once the HTLC's refund locktime has passed.
+   *
+   * @param options - The swap options.
+   * @returns The swap response and parameters for storage.
+   * @throws Error if the swap creation fails.
+   *
+   * @example
+   * ```ts
+   * // Destination is one of lightningInvoice (amount pinned by the
+   * // invoice), or lightningAddress/lnurl plus one of sourceAmountSats
+   * // (send-max) or targetAmountSats (exact payout).
+   * const result = await client.createBitcoinToLightningSwap({
+   *   lightningAddress: "user@wallet.com",
+   *   targetAmountSats: 100000,
+   * });
+   * console.log("Send BTC to:", result.response.btc_htlc_address);
+   * console.log("Amount to send:", result.response.source_amount);
+   * ```
+   */
+  async createBitcoinToLightningSwap(
+    options: BitcoinToLightningSwapOptions,
+  ): Promise<BitcoinToLightningSwapResult> {
+    return createBitcoinToLightningSwap(options, this.#getCreateContext());
   }
 
   // =========================================================================

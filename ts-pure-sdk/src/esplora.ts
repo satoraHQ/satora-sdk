@@ -171,6 +171,40 @@ export async function fetchTransactionOutputs(
 }
 
 /**
+ * Fee rate (sat/vB) the explorer expects to confirm within `targetBlocks`,
+ * from the Esplora `/fee-estimates` endpoint. Returns undefined when no
+ * explorer answers or none has an estimate for that target (regtest
+ * explorers have none).
+ *
+ * @param esploraUrls - Esplora API base URL(s), tried in order
+ * @param targetBlocks - Confirmation target in blocks
+ */
+export async function fetchFeeRateEstimate(
+  esploraUrls: EsploraUrls,
+  targetBlocks: number,
+): Promise<number | undefined> {
+  try {
+    return await withFallback(esploraUrls, async (esploraUrl) => {
+      const response = await fetchWithTimeout(
+        `${esploraUrl}/fee-estimates`,
+        LOOKUP_TIMEOUT_MS,
+      );
+      if (!response.ok) {
+        throw new Error(`Failed to fetch fee estimates: ${response.status}`);
+      }
+      const estimates = (await response.json()) as Record<string, unknown>;
+      const rate = estimates[String(targetBlocks)];
+      if (typeof rate !== "number" || !Number.isFinite(rate)) {
+        throw new Error(`No ${targetBlocks}-block fee estimate`);
+      }
+      return rate;
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Broadcasts a raw transaction to the Bitcoin network via Esplora API.
  *
  * With multiple URLs, each is tried in order until one accepts the

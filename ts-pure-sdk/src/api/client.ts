@@ -69,6 +69,14 @@ export type LightningToEvmSwapResponse =
 export type ArkadeToLightningSwapResponse =
   components["schemas"]["ArkadeToLightningSwapResponse"];
 
+// Bitcoin-to-Lightning types
+export type BitcoinToLightningSwapResponse =
+  components["schemas"]["BitcoinToLightningSwapResponse"];
+
+// Lightning-to-Bitcoin types
+export type LightningToBitcoinSwapResponse =
+  components["schemas"]["LightningToBitcoinSwapResponse"];
+
 // `SwapPairInfo`, `SwapPairsResponse`, `QuoteResponse`, `Chain`,
 // `Token`, `TokenAmount`, `DexQuote*`, and `NetworkFee*` are now
 // hand-written in `../types/`. Don't re-export them here — the SDK's

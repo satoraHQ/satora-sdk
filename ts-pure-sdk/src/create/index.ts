@@ -13,10 +13,12 @@ export { createArkadeToEvmSwapGeneric } from "./arkade.js";
 export { createArkadeToLightningSwap } from "./arkade-to-lightning.js";
 export { createBitcoinToEvmSwap } from "./bitcoin.js";
 export { createBitcoinToArkadeSwap } from "./bitcoin-to-arkade.js";
+export { createBitcoinToLightningSwap } from "./bitcoin-to-lightning.js";
 export { createEvmToArkadeSwapGeneric } from "./evm-to-arkade.js";
 export { createEvmToBitcoinSwap } from "./evm-to-bitcoin.js";
 export { createEvmToLightningSwap } from "./evm-to-lightning.js";
 export { createLightningToArkadeSwap } from "./lightning-to-arkade.js";
+export { createLightningToBitcoinSwap } from "./lightning-to-bitcoin.js";
 export { createLightningToEvmSwap } from "./lightning-to-evm.js";
 export { DuplicateInvoiceError } from "./retry.js";
 export type {
@@ -29,6 +31,8 @@ export type {
   BitcoinToEvmSwapOptions,
   BitcoinToEvmSwapResponse,
   BitcoinToEvmSwapResult,
+  BitcoinToLightningSwapOptions,
+  BitcoinToLightningSwapResult,
   BtcToEvmSwapOptions,
   CreateSwapContext,
   CreateSwapOptions,
@@ -44,6 +48,8 @@ export type {
   EvmToLightningSwapResult,
   LightningToArkadeSwapOptions,
   LightningToArkadeSwapResult,
+  LightningToBitcoinSwapOptions,
+  LightningToBitcoinSwapResult,
   LightningToEvmSwapOptions,
   LightningToEvmSwapResponse,
   LightningToEvmSwapResult,
