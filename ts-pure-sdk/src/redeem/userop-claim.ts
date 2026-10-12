@@ -13,8 +13,7 @@
  * redeem authorization), wrapped as a 7702 smart account — fully self-contained.
  */
 
-import { type Hex, toHex } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
+import type { Hex } from "viem";
 import { arbitrum } from "viem/chains";
 import { createSwapSmartAccountClient } from "../cctp-inbound/smartAccount.js";
 import type { AaConfig } from "../cctp-inbound/types.js";
@@ -25,7 +24,7 @@ import {
   encodeRedeemAndExecute,
   signEvmDigest,
 } from "../evm/index.js";
-import type { EvmSigner } from "../evm/wallet.js";
+import { keyToKernelOwnerSigner } from "../evm/key-signer.js";
 import type { GaslessSwapResponse } from "./gasless.js";
 import type { ClaimGaslessResult } from "./types.js";
 
@@ -49,50 +48,6 @@ export interface UserOpClaimParams {
   minAmountOut: bigint;
   /** AA config (bundler URL + Gas Manager policy id) — required for sponsorship. */
   aa: AaConfig;
-}
-
-/**
- * Wrap the swap's derived private key as the minimal {@link EvmSigner} the AA
- * client needs: `signMessage` (UserOp hash) + `signAuthorization` (7702 tuple).
- * The other `EvmSigner` methods are unused on the sponsored path and throw.
- */
-function derivedKeyToAaSigner(
-  secretKey: Uint8Array,
-  chainId: number,
-): EvmSigner {
-  const account = privateKeyToAccount(toHex(secretKey));
-  const unsupported = (m: string) => async (): Promise<never> => {
-    throw new Error(
-      `derivedKeyToAaSigner: ${m} is not supported on the sponsored UserOp path`,
-    );
-  };
-  return {
-    address: account.address,
-    chainId,
-    signMessage: ({ raw }) =>
-      account.signMessage({ message: { raw: raw as Hex } }),
-    signAuthorization: async (auth) => {
-      const signed = await account.signAuthorization({
-        chainId: auth.chainId,
-        address: auth.contractAddress as Hex,
-        nonce: auth.nonce,
-      });
-      return {
-        r: signed.r,
-        s: signed.s,
-        v: signed.v === undefined ? undefined : Number(signed.v),
-        yParity: signed.yParity ?? 0,
-        chainId: auth.chainId,
-        address: auth.contractAddress,
-        nonce: auth.nonce,
-      };
-    },
-    signTypedData: unsupported("signTypedData"),
-    sendTransaction: unsupported("sendTransaction"),
-    waitForReceipt: unsupported("waitForReceipt"),
-    getTransaction: unsupported("getTransaction"),
-    call: unsupported("call"),
-  };
 }
 
 /** Everything needed to build a signed `redeemAndExecute` transaction. */
@@ -181,7 +136,7 @@ export async function claimViaUserOp(
 ): Promise<ClaimGaslessResult> {
   const { secretKey, swap, aa } = params;
   const { to, data } = buildRedeemAndExecuteTx(params);
-  const signer = derivedKeyToAaSigner(secretKey, swap.evm_chain_id);
+  const signer = keyToKernelOwnerSigner(secretKey, swap.evm_chain_id);
   const { client } = await createSwapSmartAccountClient({
     signer,
     aa,

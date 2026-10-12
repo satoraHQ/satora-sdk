@@ -92,4 +92,53 @@ describe("SqliteSwapStorage schema migration", () => {
     expect((await reopened.get(SWAP_ID))?.evmFundTxid).toBe(FUND_TXID);
     reopened.close();
   });
+
+  it("persists a CCTP-inbound burn, added to a database created before it", async () => {
+    // Created with the funding columns but before `cctp_burn_txid`.
+    const path = oldDatabase(["evm_fund_txid", "evm_coordinator_address"]);
+    paths.push(path);
+    const burn = `0x${"b0".repeat(32)}`;
+
+    const storage = new SqliteSwapStorage(path);
+    expect((await storage.get(SWAP_ID))?.cctpBurnTxid).toBeUndefined();
+    await storage.store(storedSwap({ cctpBurnTxid: burn }));
+    // A server refresh rewrites only the response, never the recorded burn.
+    const stored = await storage.get(SWAP_ID);
+    if (!stored) throw new Error("swap not stored");
+    await storage.update(SWAP_ID, stored.response);
+    expect((await storage.get(SWAP_ID))?.cctpBurnTxid).toBe(burn);
+    storage.close();
+
+    const reopened = new SqliteSwapStorage(path);
+    expect((await reopened.get(SWAP_ID))?.cctpBurnTxid).toBe(burn);
+    reopened.close();
+  });
+
+  it("persists a Solana burn's expiry height, added to a database created before it", async () => {
+    // Created with the burn column but before its expiry height.
+    const path = oldDatabase([
+      "evm_fund_txid",
+      "evm_coordinator_address",
+      "cctp_burn_txid",
+    ]);
+    paths.push(path);
+
+    const storage = new SqliteSwapStorage(path);
+    expect(
+      (await storage.get(SWAP_ID))?.cctpBurnLastValidBlockHeight,
+    ).toBeUndefined();
+    await storage.store(
+      storedSwap({
+        cctpBurnTxid: "burn",
+        cctpBurnLastValidBlockHeight: 412_345_678,
+      }),
+    );
+    storage.close();
+
+    const reopened = new SqliteSwapStorage(path);
+    expect((await reopened.get(SWAP_ID))?.cctpBurnLastValidBlockHeight).toBe(
+      412_345_678,
+    );
+    reopened.close();
+  });
 });

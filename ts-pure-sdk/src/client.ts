@@ -16,7 +16,11 @@ import {
   type TokenInfos,
 } from "./api/client.js";
 import { getVhtlcAmounts, type VhtlcAmounts } from "./arkade.js";
-import { USDC_ADDRESSES } from "./cctp/constants.js";
+import {
+  CCTP_DOMAINS,
+  type CctpChainName,
+  USDC_ADDRESSES,
+} from "./cctp/constants.js";
 import { computeCctpFastFee, getCachedCctpFee } from "./cctp/fee.js";
 import {
   cctpMetaForChainId,
@@ -27,6 +31,16 @@ import type {
   CctpFundSwapResult,
   CctpProgressStep,
 } from "./cctp-inbound/fundSwap.js";
+import {
+  type RecoverCctpInboundResult,
+  type RecoveryProgress,
+  recoverCctpInbound,
+} from "./cctp-inbound/recover.js";
+import type {
+  CctpFundSwapFromSolanaResult,
+  SolanaCctpProgressStep,
+} from "./cctp-inbound/solana/fundSwap.js";
+import type { SolanaSigner } from "./cctp-inbound/solana/types.js";
 import type { AaConfig } from "./cctp-inbound/types.js";
 import {
   type ComposeQuoteParams,
@@ -109,6 +123,7 @@ import {
   type UnsignedPermit2FundingData,
   wrapKernelErc1271Signature,
 } from "./evm/index.js";
+import { keyToKernelOwnerSigner } from "./evm/key-signer.js";
 import {
   decodeUint256,
   type EvmSigner,
@@ -580,6 +595,9 @@ export interface ContinueRefundedEvmSwapInfo {
   oldSwap?: GetSwapResponse;
 }
 
+/** What a continued swap pays out to. */
+export type ContinueTarget = "bitcoin" | "arkade" | "lightning";
+
 export interface ContinueRefundedEvmSwapResult {
   oldSwapId: string;
   newSwapId: string;
@@ -917,6 +935,11 @@ export interface ClientConfig {
    * on first CCTP API call if omitted.
    */
   aa?: AaConfig;
+  /**
+   * Optional Solana JSON-RPC URL, used to build and confirm the USDC burn of
+   * a swap funded from Solana ({@link Client.fundSwapFromSolana}).
+   */
+  solanaRpcUrl?: string;
   /** Optional logger sink. The SDK is silent by default. */
   logger?: Logger;
   /** Minimum log level to emit. Defaults to `silent`. */
@@ -977,6 +1000,7 @@ export class ClientBuilder {
   #mnemonic?: string;
   #xprv?: string;
   #aa?: AaConfig;
+  #solanaRpcUrl?: string;
   #logger?: Logger;
   #logLevel?: LogLevel;
 
@@ -1151,6 +1175,17 @@ export class ClientBuilder {
   }
 
   /**
+   * Sets the Solana JSON-RPC URL used to fund swaps from Solana
+   * ({@link Client.fundSwapFromSolana}): it fetches the blockhash, simulates
+   * the USDC burn and confirms it. Public endpoints rate-limit hard; use a
+   * dedicated one in production.
+   */
+  withSolanaRpcUrl(url: string): this {
+    this.#solanaRpcUrl = url;
+    return this;
+  }
+
+  /**
    * Sets the logger sink used by the SDK.
    *
    * The SDK is silent by default. Pair this with `withLogLevel()` to opt in
@@ -1232,6 +1267,7 @@ export class ClientBuilder {
         electrumWsUrl: this.#electrumWsUrl?.replace(/\/+$/, ""),
         arkadeServerUrl: this.#arkadeServerUrl?.replace(/\/+$/, ""),
         aa: this.#aa ?? defaultAaConfig(),
+        solanaRpcUrl: this.#solanaRpcUrl,
         logger: this.#logger,
         logLevel: this.#logLevel,
       },
@@ -2286,6 +2322,17 @@ export class Client {
       }
       bridgeSourceChain = source.name;
       bridgeSourceTokenAddress = source.usdc;
+      sourceChain = "42161" as Chain;
+      sourceToken = USDC_ADDRESSES.Arbitrum;
+    }
+    if (isSolanaToken(params.sourceChain)) {
+      if (params.sourceToken !== USDC_ADDRESSES.Solana) {
+        throw new Error(
+          `Quote on Solana requires native USDC (${USDC_ADDRESSES.Solana}); got ${params.sourceToken}. Only USDC is bridgeable via CCTP.`,
+        );
+      }
+      bridgeSourceChain = "Solana";
+      bridgeSourceTokenAddress = USDC_ADDRESSES.Solana;
       sourceChain = "42161" as Chain;
       sourceToken = USDC_ADDRESSES.Arbitrum;
     }
@@ -4744,6 +4791,74 @@ export class Client {
   }
 
   /**
+   * The Kernel owner for a swap's sponsored UserOps on Arbitrum (the
+   * CCTP-inbound settlement, a sponsored refund, a continuation). The owner's
+   * address is the account the funds sit in and must be the swap's depositor,
+   * which the paymaster checks before sponsoring. A swap created gasless has the
+   * SDK's own key as depositor; that key can sign the EIP-7702 authorization a
+   * browser wallet usually cannot. Otherwise the wallet itself is the owner.
+   * `hint` is appended to the error when neither is.
+   */
+  #depositorOwnerSigner(
+    swapResponse: GetSwapResponse,
+    walletSigner?: EvmSigner,
+    hint?: string,
+  ): EvmSigner {
+    const depositor = (
+      swapResponse as { client_evm_address?: string }
+    ).client_evm_address?.toLowerCase();
+    if (depositor === this.getEvmAddress().toLowerCase()) {
+      return this.#keyOwnerSigner();
+    }
+    if (walletSigner && depositor === walletSigner.address.toLowerCase()) {
+      return walletSigner;
+    }
+    throw new Error(
+      `Swap ${swapResponse.id} was created for depositor ${depositor}, ` +
+        `which is neither this client's key nor the given wallet.${
+          hint ? ` ${hint}` : ""
+        }`,
+    );
+  }
+
+  /**
+   * Record the source-chain CCTP burn of a CCTP-inbound swap. From the moment
+   * it is broadcast the USDC has left the source chain, and this hash is what
+   * resuming the settlement or recovering the USDC needs, so it is kept beside
+   * the stored `response` (every server refresh replaces that copy).
+   * `undefined` clears it: the burn reverted or the wallet cancelled it, so
+   * nothing left the source chain and the next attempt must burn again.
+   * A Solana burn also records the last block height it can land at.
+   */
+  async #recordCctpBurn(
+    swapId: string,
+    burnTxHash: string | undefined,
+    lastValidBlockHeight?: number,
+  ): Promise<void> {
+    if (!this.#swapStorage) return;
+    try {
+      const stored = await this.#swapStorage.get(swapId);
+      if (!stored) return;
+      await this.#swapStorage.store({
+        ...stored,
+        cctpBurnTxid: burnTxHash,
+        cctpBurnLastValidBlockHeight: lastValidBlockHeight,
+        updatedAt: Date.now(),
+      });
+    } catch (error) {
+      // The burn is on-chain either way; a bookkeeping failure must not abort
+      // the settlement that follows it.
+      this.#logger.warn({
+        event: "client.fundSwap.recordCctpBurnFailed",
+        message: "could not record the CCTP burn tx on the stored swap",
+        swapId,
+        data: { burnTxHash },
+        error,
+      });
+    }
+  }
+
+  /**
    * Refund calldata for an EVM-sourced swap. With a signer it is built from
    * the funding tx's `SwapCreated` log, since the DEX swap inside that tx
    * decides the locked amount; the log's sender picks `refundTo` on the
@@ -5292,6 +5407,10 @@ export class Client {
       bridgeRecipientWallet: bridge?.recipientWallet,
       evmFundTxid: existing?.evmFundTxid,
       evmCoordinatorAddress: existing?.evmCoordinatorAddress,
+      // A CCTP-inbound burn is the only way to resume or recover once the
+      // USDC has left the source chain.
+      cctpBurnTxid: existing?.cctpBurnTxid,
+      cctpBurnLastValidBlockHeight: existing?.cctpBurnLastValidBlockHeight,
     };
 
     await this.#swapStorage.store(storedSwap);
@@ -5410,6 +5529,27 @@ export class Client {
       inboundBridgeParams = {
         sourceChain: source.name,
         sourceTokenAddress: source.usdc,
+      };
+      sourceChain = "42161";
+      sourceTokenId = USDC_ADDRESSES.Arbitrum;
+    }
+    // USDC on Solana: the same CCTP hop, burned from a Solana wallet (see
+    // `fundSwapFromSolana`). A Solana wallet has no EVM account to settle
+    // with on Arbitrum, so the swap must use this client's key (gasless).
+    if (!inboundBridgeParams && isSolanaToken(sourceChain)) {
+      if (sourceTokenId !== USDC_ADDRESSES.Solana) {
+        throw new Error(
+          `createSwap on Solana requires native USDC (${USDC_ADDRESSES.Solana}); got ${sourceTokenId}. Only USDC is bridgeable via CCTP.`,
+        );
+      }
+      if (!options.gasless) {
+        throw new Error(
+          "Swaps funded from Solana must be created with `gasless: true`: they settle on Arbitrum with this client's key.",
+        );
+      }
+      inboundBridgeParams = {
+        sourceChain: "Solana",
+        sourceTokenAddress: USDC_ADDRESSES.Solana,
       };
       sourceChain = "42161";
       sourceTokenId = USDC_ADDRESSES.Arbitrum;
@@ -6376,6 +6516,15 @@ export class Client {
         );
         return { txHash };
       }
+      // Burning on Solana needs a Solana wallet, not an EVM signer.
+      if (
+        (response as { bridge_source_chain?: string }).bridge_source_chain ===
+        "Solana"
+      ) {
+        throw new Error(
+          `Swap ${swapId} is funded from Solana; use fundSwapFromSolana with a Solana wallet.`,
+        );
+      }
     }
 
     // Dispatch the CCTP-inbound path only for chains the backend does
@@ -6432,19 +6581,43 @@ export class Client {
       const amount = BigInt(rawAmount);
 
       const destination = cctpMetaForChainId(42161);
-      const maxFee =
-        options?.maxFee ??
-        computeCctpFastFee(
-          await getCachedCctpFee({
-            sourceDomain: source.domain,
-            destinationDomain: destination.domain,
-          }),
-          amount,
-        );
+
+      // A burn recorded by an interrupted attempt: resume at the
+      // attestation instead of burning the USDC a second time. The swap must
+      // still be unfunded, or the settlement already landed.
+      const recordedBurn = stored?.cctpBurnTxid as `0x${string}` | undefined;
+      if (recordedBurn) {
+        const fresh = await this.getSwap(swapId, { updateStorage: true });
+        if (fresh.status !== "pending") {
+          throw new Error(
+            `Swap ${swapId} is already ${fresh.status}; its CCTP burn ${recordedBurn} was settled.`,
+          );
+        }
+      }
+
+      // Only a new burn uses the fee, so resuming one must not depend on the
+      // fee service being reachable.
+      const maxFee = recordedBurn
+        ? 0n
+        : (options?.maxFee ??
+          computeCctpFastFee(
+            await getCachedCctpFee({
+              sourceDomain: source.domain,
+              destinationDomain: destination.domain,
+            }),
+            amount,
+          ));
 
       const cctp = await this.cctpInbound.fundSwap({
         swapId,
         signer,
+        ownerSigner: this.#depositorOwnerSigner(
+          swapResponse,
+          signer,
+          "Create the swap with `gasless: true` to settle through the SDK's key.",
+        ),
+        burnTxHash: recordedBurn,
+        onBurn: (burnTxHash) => this.#recordCctpBurn(swapId, burnTxHash),
         amount,
         maxFee,
         onProgress: options?.onProgress,
@@ -6565,6 +6738,155 @@ export class Client {
       token: freshFunding.lockTokenAddress,
     });
     return { txHash: mined };
+  }
+
+  /**
+   * Fund a swap created with USDC on Solana as its source: burns the USDC on
+   * Solana through CCTP with the user's wallet, waits for Circle's
+   * attestation, then settles on Arbitrum with one paymaster-sponsored UserOp
+   * (`receiveMessage` + Permit2 approval + HTLC creation).
+   *
+   * The Arbitrum side is always this client's key, so the swap must have been
+   * created `gasless`. The burn is recorded on the stored swap as soon as the
+   * wallet sends it; calling this again for a still-pending swap resumes from
+   * that burn instead of burning twice, and
+   * {@link recoverCctpInboundSwap} uses it if the settlement never lands.
+   *
+   * @param swapId - The UUID of the swap
+   * @param signer - The user's Solana wallet, see {@link SolanaSigner}
+   * @param options.rpcUrl - Solana JSON-RPC URL; defaults to the one set with
+   *   `withSolanaRpcUrl` on the builder
+   * @param options.maxFee - CCTP fast-transfer fee cap in USDC units;
+   *   defaults to the IRIS-quoted fee
+   * @param options.priorityFeeMicroLamports - Solana priority fee per compute
+   *   unit; defaults to recent network fees
+   * @returns The Arbitrum settlement tx hash (or UserOp hash) and the burn
+   */
+  async fundSwapFromSolana(
+    swapId: string,
+    signer: SolanaSigner,
+    options?: {
+      rpcUrl?: string;
+      maxFee?: bigint;
+      priorityFeeMicroLamports?: bigint;
+      onProgress?: (step: SolanaCctpProgressStep) => void;
+      signal?: AbortSignal;
+    },
+  ): Promise<{ txHash: string; cctp: CctpFundSwapFromSolanaResult }> {
+    const rpcUrl = options?.rpcUrl ?? this.#config.solanaRpcUrl;
+    if (!rpcUrl) {
+      throw new Error(
+        "Funding from Solana needs a Solana RPC URL. Pass `rpcUrl` or call `.withSolanaRpcUrl(url)` on the ClientBuilder.",
+      );
+    }
+    const stored = await this.#swapStorage?.get(swapId);
+    const swapResponse =
+      stored?.response ?? (await this.getSwap(swapId, { updateStorage: true }));
+    const bridge = swapResponse as {
+      bridge_source_chain?: string;
+      bridge_source_token_address?: string;
+      source_amount?: number | string;
+    };
+    if (bridge.bridge_source_chain !== "Solana") {
+      throw new Error(
+        `Swap ${swapId} is not funded from Solana (bridge source: ${bridge.bridge_source_chain ?? "none"}).`,
+      );
+    }
+    if (
+      bridge.bridge_source_token_address &&
+      bridge.bridge_source_token_address !== USDC_ADDRESSES.Solana
+    ) {
+      throw new Error(
+        `fundSwapFromSolana requires native USDC (${USDC_ADDRESSES.Solana}), but the swap's bridge_source_token_address is ${bridge.bridge_source_token_address}.`,
+      );
+    }
+    if (bridge.source_amount === undefined) {
+      throw new Error(
+        `Swap ${swapId} has no source_amount — cannot route CCTP fund.`,
+      );
+    }
+    const amount = BigInt(bridge.source_amount);
+
+    // A burn recorded by an interrupted attempt: resume from it instead of
+    // burning the USDC a second time, if the swap is still unfunded.
+    const recordedBurn = stored?.cctpBurnTxid;
+    if (recordedBurn) {
+      const fresh = await this.getSwap(swapId, { updateStorage: true });
+      if (fresh.status !== "pending") {
+        throw new Error(
+          `Swap ${swapId} is already ${fresh.status}; its CCTP burn ${recordedBurn} was settled.`,
+        );
+      }
+    }
+
+    // Only a new burn uses the fee, so resuming one must not depend on the
+    // fee service being reachable.
+    const maxFee = recordedBurn
+      ? 0n
+      : (options?.maxFee ??
+        computeCctpFastFee(
+          await getCachedCctpFee({
+            sourceDomain: CCTP_DOMAINS.Solana,
+            destinationDomain: CCTP_DOMAINS.Arbitrum,
+          }),
+          amount,
+        ));
+
+    const { cctpFundSwapFromSolana } = await import(
+      "./cctp-inbound/solana/fundSwap.js"
+    );
+    // Built through the namespace so a missing AA config fails clearly.
+    const { aa } = this.cctpInbound;
+    const cctp = await cctpFundSwapFromSolana(
+      { apiClient: this.#apiClient, aa },
+      {
+        swapId,
+        signer,
+        ownerSigner: this.#depositorOwnerSigner(
+          swapResponse,
+          undefined,
+          "A swap funded from Solana must be created with `gasless: true`.",
+        ),
+        rpcUrl,
+        burnSignature: recordedBurn,
+        burnLastValidBlockHeight: stored?.cctpBurnLastValidBlockHeight,
+        onBurn: (burnSignature, lastValidBlockHeight) =>
+          this.#recordCctpBurn(swapId, burnSignature, lastValidBlockHeight),
+        amount,
+        maxFee,
+        priorityFeeMicroLamports: options?.priorityFeeMicroLamports,
+        onProgress: options?.onProgress,
+        signal: options?.signal,
+      },
+    );
+    return { txHash: cctp.transactionHash ?? cctp.userOpHash, cctp };
+  }
+
+  /**
+   * The USDC balance (6 decimals) of a Solana wallet: what its USDC
+   * associated token account holds, the account {@link fundSwapFromSolana}
+   * burns from. `0n` when the wallet has none.
+   *
+   * @param owner - The wallet's public key (base58)
+   * @param options.rpcUrl - Solana JSON-RPC URL; defaults to the one set with
+   *   `withSolanaRpcUrl` on the builder
+   */
+  async getSolanaUsdcBalance(
+    owner: string,
+    options?: { rpcUrl?: string },
+  ): Promise<bigint> {
+    const rpcUrl = options?.rpcUrl ?? this.#config.solanaRpcUrl;
+    if (!rpcUrl) {
+      throw new Error(
+        "Reading a Solana balance needs a Solana RPC URL. Pass `rpcUrl` or call `.withSolanaRpcUrl(url)` on the ClientBuilder.",
+      );
+    }
+    const [{ deriveAssociatedTokenAccount }, { getTokenAccountAmount }] =
+      await Promise.all([
+        import("./cctp-inbound/solana/burn.js"),
+        import("./cctp-inbound/solana/rpc.js"),
+      ]);
+    return getTokenAccountAmount(rpcUrl, deriveAssociatedTokenAccount(owner));
   }
 
   /**
@@ -6859,15 +7181,23 @@ export class Client {
     return transfers.at(-1) ?? null;
   }
 
+  /**
+   * Whether a refunded EVM-sourced swap can be swapped again from its refund:
+   * the refunded token must sit in the depositor's Kernel account on
+   * Arbitrum. Without `signer` the account is this client's key (swaps
+   * created gasless, incl. CCTP-inbound) and balances are read through the AA
+   * RPC; pass the owner's signer for any other account.
+   */
   async getRefundedEvmSwapContinuation(
     oldSwapId: string,
-    signer: EvmSigner,
+    signer?: EvmSigner,
   ): Promise<ContinueRefundedEvmSwapInfo> {
     const oldSwap = await this.getSwap(oldSwapId, { updateStorage: true });
 
     if (
       oldSwap.direction !== "evm_to_arkade" &&
-      oldSwap.direction !== "evm_to_bitcoin"
+      oldSwap.direction !== "evm_to_bitcoin" &&
+      oldSwap.direction !== "evm_to_lightning"
     ) {
       return {
         eligible: false,
@@ -6896,10 +7226,14 @@ export class Client {
       };
     }
 
+    const owner = signer ?? this.#keyOwnerSigner();
     const { accountAddress } = await this.cctpInbound.createSmartAccountClient({
-      signer,
+      signer: owner,
     });
     const smartAccountAddress = accountAddress;
+    const readCall = signer
+      ? (tx: { to: string; data: string }) => signer.call(tx)
+      : await this.#aaRpcCall();
 
     const chainConfig = await this.getChainConfig();
     const refundChain = "42161" as Chain;
@@ -6977,7 +7311,7 @@ export class Client {
         candidate.address,
         smartAccountAddress,
       );
-      const balanceResult = await signer.call({
+      const balanceResult = await readCall({
         to: balanceCall.to,
         data: balanceCall.data,
       });
@@ -7008,10 +7342,40 @@ export class Client {
     };
   }
 
+  /**
+   * Swap the refund of a failed EVM-sourced swap again, instead of leaving it
+   * in the depositor's Kernel account: creates a new swap funded from that
+   * balance and funds it with a paymaster-sponsored UserOp (no wallet, no
+   * gas).
+   *
+   * @param options.targetAddress - Where the new swap pays out: a Bitcoin
+   *   address, an Arkade address, or for Lightning a BOLT11 invoice (its amount
+   *   must be covered by the refund), a Lightning address or an LNURL.
+   * @param options.target - The payout type; defaults to the old swap's.
+   * @param options.signer - A signer for this client's key; defaults to one
+   *   derived from it. Any other owner is rejected: the new swap is created
+   *   gasless, which records this client's key as its depositor, and the
+   *   paymaster only sponsors funding from the depositor's account.
+   */
   async continueRefundedEvmSwap(
     oldSwapId: string,
-    options: { targetAddress: string; signer: EvmSigner },
+    options: {
+      targetAddress: string;
+      target?: ContinueTarget;
+      signer?: EvmSigner;
+    },
   ): Promise<ContinueRefundedEvmSwapResult> {
+    // Checked before anything is created: a swap whose depositor cannot fund
+    // it would be left behind unfunded.
+    if (
+      options.signer &&
+      options.signer.address.toLowerCase() !==
+        this.getEvmAddress().toLowerCase()
+    ) {
+      throw new Error(
+        `Cannot continue refunded swap ${oldSwapId} with signer ${options.signer.address}: a continuation is funded from this client's key (${this.getEvmAddress()}).`,
+      );
+    }
     const info = await this.getRefundedEvmSwapContinuation(
       oldSwapId,
       options.signer,
@@ -7020,7 +7384,14 @@ export class Client {
       throw new Error(info.reason ?? "Refunded swap cannot be continued.");
     }
 
-    let created: CreateSwapResult;
+    const target =
+      options.target ??
+      ({
+        evm_to_arkade: "arkade",
+        evm_to_bitcoin: "bitcoin",
+        evm_to_lightning: "lightning",
+      }[info.oldSwap.direction as string] as ContinueTarget | undefined);
+    const sourceAmount = BigInt(info.amount);
     const common = {
       tokenAddress: info.token.address,
       evmChainId: 42161,
@@ -7028,17 +7399,23 @@ export class Client {
       gasless: true,
     };
 
-    if (info.oldSwap.direction === "evm_to_arkade") {
+    let created: CreateSwapResult;
+    if (target === "arkade") {
       created = await this.createEvmToArkadeSwapGeneric({
         ...common,
         targetAddress: options.targetAddress,
-        sourceAmount: BigInt(info.amount),
+        sourceAmount,
       });
-    } else if (info.oldSwap.direction === "evm_to_bitcoin") {
+    } else if (target === "bitcoin") {
       created = await this.createEvmToBitcoinSwap({
         ...common,
         targetAddress: options.targetAddress,
-        sourceAmount: BigInt(info.amount),
+        sourceAmount,
+      });
+    } else if (target === "lightning") {
+      created = await this.createEvmToLightningSwap({
+        ...common,
+        ...lightningPayoutOf(options.targetAddress, sourceAmount),
       });
     } else {
       throw new Error(
@@ -7046,10 +7423,13 @@ export class Client {
       );
     }
 
+    // `expectedMaxSourceAmount` caps the spend at this refund: a Lightning
+    // invoice pins the payout, and one the refund cannot cover must fail
+    // rather than draw on unrelated balance in the account.
     const submitted = await this.cctpInbound.submitBalanceUserOp({
       swapId: created.response.id,
-      signer: options.signer,
-      expectedMaxSourceAmount: BigInt(info.amount),
+      signer: options.signer ?? this.#keyOwnerSigner(),
+      expectedMaxSourceAmount: sourceAmount,
     });
 
     return {
@@ -7061,6 +7441,138 @@ export class Client {
       amount: info.amount,
       token: info.token,
     };
+  }
+
+  /**
+   * Refund an EVM-sourced swap whose depositor is this client's key (created
+   * gasless, incl. CCTP-inbound) once its timelock has passed, as a
+   * paymaster-sponsored UserOp from that key's Kernel account: no wallet, no
+   * gas. The refunded token lands in that account, from where
+   * {@link continueRefundedEvmSwap} swaps it again. Arbitrum only, where the
+   * paymaster runs.
+   *
+   * Gasless swaps from older SDK versions were funded from the swap's own
+   * key instead; those are refunded from that key's account (a continuation
+   * cannot pick the refund up from there).
+   */
+  async refundEvmSponsored(
+    swapId: string,
+  ): Promise<{ txHash: string; userOpHash: string }> {
+    const aa = this.#config.aa;
+    if (!aa) {
+      throw new Error(
+        "A sponsored refund requires AA config. Call `.withAa({ bundlerUrl, paymasterPolicyId })` on the ClientBuilder before `.build()`.",
+      );
+    }
+    const stored = await this.getStoredSwap(swapId);
+    if (!stored) {
+      throw new Error(`Swap ${swapId} not found in local storage.`);
+    }
+    const chainId = (stored.response as { evm_chain_id?: number }).evm_chain_id;
+    if (chainId !== 42161) {
+      throw new Error(
+        `Sponsored refunds run on Arbitrum only; swap ${swapId} is on chain ${chainId}. Use refundEvmWithSigner.`,
+      );
+    }
+    // Only the depositor's account is sponsored. A wallet-funded swap's
+    // wallet is the depositor and sends the refund itself.
+    const { client_evm_address: depositor, gasless } = stored.response as {
+      client_evm_address?: string;
+      gasless?: boolean;
+    };
+    let owner: EvmSigner;
+    if (depositor?.toLowerCase() === this.getEvmAddress().toLowerCase()) {
+      owner = this.#keyOwnerSigner();
+    } else if (
+      gasless &&
+      depositor?.toLowerCase() ===
+        deriveEvmAddress(stored.secretKey).toLowerCase()
+    ) {
+      // A legacy gasless swap, funded from its per-swap key (as the
+      // collaborative refund's key selection also allows).
+      owner = keyToKernelOwnerSigner(
+        hexToBytes(stored.secretKey.replace(/^0x/, "")),
+        42161,
+      );
+    } else {
+      throw new Error(
+        `Swap ${swapId} was funded by ${depositor}, not this client's key; only gasless swaps can be refunded sponsored. Refund it with \`refundEvmWithSigner\` from that wallet.`,
+      );
+    }
+
+    const result = await this.refundSwap(swapId);
+    if (!result.evmRefundData) {
+      throw new Error(
+        `Unable to get EVM refund data for: ${swapId}. ${result.message}`,
+      );
+    }
+    if (!result.evmRefundData.timelockExpired) {
+      const expiryDate = new Date(
+        result.evmRefundData.timelockExpiry * 1000,
+      ).toISOString();
+      throw new Error(
+        `Refund timelock has not expired yet (expires ${expiryDate}).`,
+      );
+    }
+
+    const { client } = await this.cctpInbound.createSmartAccountClient({
+      signer: owner,
+    });
+    const userOpHash = await client.sendUserOperation({
+      calls: [
+        {
+          to: result.evmRefundData.to as `0x${string}`,
+          data: result.evmRefundData.data as `0x${string}`,
+          value: 0n,
+        },
+      ],
+    });
+    const { receipt, success, reason } =
+      await client.waitForUserOperationReceipt({ hash: userOpHash });
+    // An included UserOp can still revert (e.g. the server's collaborative
+    // refund won the race); the receipt then resolves with `success: false`
+    // instead of throwing. Nothing was refunded, so fail rather than report it.
+    if (!success) {
+      throw new Error(
+        `Sponsored refund UserOp ${userOpHash} reverted on-chain${
+          reason ? `: ${reason}` : ""
+        }`,
+      );
+    }
+    return { txHash: receipt.transactionHash, userOpHash };
+  }
+
+  /** This client's key as the Kernel owner on Arbitrum. */
+  #keyOwnerSigner(): EvmSigner {
+    return keyToKernelOwnerSigner(this.#signer.deriveEvmKey().secretKey, 42161);
+  }
+
+  /**
+   * An `eth_call` over the AA RPC, for reads on an account this client owns
+   * with its key (whose signer does not read the chain).
+   */
+  async #aaRpcCall(): Promise<
+    (tx: { to: string; data: string }) => Promise<string>
+  > {
+    const rpcUrl = this.#config.aa?.rpcUrl ?? this.#config.aa?.bundlerUrl;
+    if (!rpcUrl) {
+      throw new Error(
+        "Reading a refunded balance without a signer requires AA config (`.withAa(...)`).",
+      );
+    }
+    const { createPublicClient, http } = await import("viem");
+    const { arbitrum } = await import("viem/chains");
+    const publicClient = createPublicClient({
+      chain: arbitrum,
+      transport: http(rpcUrl),
+    });
+    return async ({ to, data }) =>
+      (
+        await publicClient.call({
+          to: to as `0x${string}`,
+          data: data as `0x${string}`,
+        })
+      ).data ?? "0x";
   }
 
   /**
@@ -7330,6 +7842,67 @@ export class Client {
   }
 
   /**
+   * Recover the USDC of a CCTP-inbound swap whose Arbitrum settlement never
+   * landed: mints it from the recorded burn if that has not happened yet, then
+   * sweeps the smart account's USDC to `recipient` on Arbitrum. Both steps are
+   * paymaster-sponsored UserOps. Uses the burn {@link fundSwap} recorded and
+   * the same owner rule, so a swap created gasless needs no wallet here.
+   *
+   * @param swapId - The UUID of the CCTP-inbound swap
+   * @param recipient - Arbitrum address that receives the recovered USDC
+   * @param options.ownerSigner - The owner when the swap's depositor is the
+   *   user's wallet rather than this client's key
+   * @param options.burnTxHash - The burn, when it was not recorded locally
+   *   (e.g. a funding started on another device); for a swap funded from
+   *   Solana, the burn's transaction signature
+   */
+  async recoverCctpInboundSwap(
+    swapId: string,
+    recipient: string,
+    options?: {
+      ownerSigner?: EvmSigner;
+      burnTxHash?: string;
+      onProgress?: (step: RecoveryProgress) => void;
+      signal?: AbortSignal;
+    },
+  ): Promise<RecoverCctpInboundResult> {
+    if (!this.#config.aa) {
+      throw new Error(
+        "Recovering a CCTP-inbound swap requires AA config. Call `.withAa({ bundlerUrl, paymasterPolicyId })` on the ClientBuilder before `.build()`.",
+      );
+    }
+    const stored = await this.getStoredSwap(swapId);
+    if (!stored) {
+      throw new Error(`Swap ${swapId} not found in local storage.`);
+    }
+    const sourceChain = (stored.response as { bridge_source_chain?: string })
+      .bridge_source_chain;
+    if (!sourceChain) {
+      throw new Error(`Swap ${swapId} is not a CCTP-inbound swap.`);
+    }
+    const burnTxHash = options?.burnTxHash ?? stored.cctpBurnTxid;
+    if (!burnTxHash) {
+      throw new Error(
+        `No CCTP burn is recorded for swap ${swapId}; pass it as \`burnTxHash\`.`,
+      );
+    }
+    return recoverCctpInbound(
+      { aa: this.#config.aa },
+      {
+        signer: this.#depositorOwnerSigner(
+          stored.response,
+          options?.ownerSigner,
+        ),
+        burnTxHash,
+        sourceChain: sourceChain as CctpChainName,
+        recipient: recipient as `0x${string}`,
+        onProgress: options?.onProgress,
+        signal: options?.signal,
+      },
+    );
+  }
+
+  /**
    * Recover ERC-20 tokens stuck in a gasless swap's ephemeral depositor address.
    *
    * When a gasless swap fails after the user transfers tokens to the
@@ -7475,4 +8048,25 @@ export class Client {
 
     return vtxos.some((v) => v.txid === receiveArkadeTxid);
   }
+}
+
+/**
+ * The Lightning payout fields for a continuation: a BOLT11 invoice pins the
+ * payout amount itself; a Lightning address or LNURL is paid the refund,
+ * minus fees.
+ */
+function lightningPayoutOf(
+  target: string,
+  sourceAmount: bigint,
+):
+  | { lightningInvoice: string }
+  | { lightningAddress: string; sourceAmount: bigint }
+  | { lnurl: string; sourceAmount: bigint } {
+  const value = target.trim().replace(/^lightning:/i, "");
+  if (/^ln(bc|tb|bcrt)[0-9]/i.test(value)) return { lightningInvoice: value };
+  if (/^lnurl/i.test(value)) return { lnurl: value, sourceAmount };
+  if (value.includes("@")) return { lightningAddress: value, sourceAmount };
+  throw new Error(
+    `"${target}" is not a Lightning invoice, Lightning address or LNURL.`,
+  );
 }

@@ -9,17 +9,19 @@
  *   3. `submitUserOp` on the settlement chain via the caller's Kernel
  *      smart account (paymaster-sponsored).
  *
- * The caller's single `EvmSigner` serves double duty: source-chain
- * signer for step 1 AND Kernel owner for step 3. The smart-account
- * address is derived once up-front and pinned as
- * `mintRecipient` / `destinationCaller` on the burn.
+ * `signer` sends the source-chain approve + burn. `ownerSigner` owns the
+ * Kernel account that settles on Arbitrum; it defaults to `signer`, but a
+ * browser wallet usually cannot sign an EIP-7702 authorization, so the
+ * `Client` passes the SDK's own key there for swaps created gasless. The
+ * smart-account address (the owner's address, under 7702) is derived once
+ * up-front and pinned as `mintRecipient` / `destinationCaller` on the burn.
  */
 
 import type { Chain, Hex } from "viem";
 import { arbitrum } from "viem/chains";
 import type { ApiClient } from "../api/client.js";
 import { fetchAttestation } from "../cctp/attestation.js";
-import { IRIS_API_MAINNET } from "../cctp/constants.js";
+import { IRIS_API_MAINNET, TOKEN_MESSENGER_V2 } from "../cctp/constants.js";
 import type { EvmSigner } from "../evm/wallet.js";
 import { approveAndBurn } from "./approveAndBurn.js";
 import { cctpMetaForChainId, finalityForChainId } from "./chainMap.js";
@@ -43,11 +45,33 @@ export interface CctpFundSwapParams {
   /** Swap ID from `client.createSwap(...)`. */
   swapId: string;
   /**
-   * SDK signer bound to the **source chain**. Its `address` is the
-   * source-chain sender AND the Kernel-account owner on the settlement
-   * chain. Requires `signer.signMessage` for the CCTP path.
+   * SDK signer bound to the **source chain**: sends the approve + burn.
+   * Also the Kernel-account owner unless `ownerSigner` is set, in which case
+   * it needs `signMessage` and `signAuthorization`.
    */
   signer: EvmSigner;
+  /**
+   * Kernel-account owner on the settlement chain (needs `signMessage`,
+   * `signTypedData` and `signAuthorization`). Defaults to `signer`. Its
+   * address receives the minted USDC and is the only allowed caller of
+   * `receiveMessage`, so it must match the swap's depositor.
+   */
+  ownerSigner?: EvmSigner;
+  /**
+   * A burn this swap already sent (e.g. recorded by a previous attempt that
+   * was interrupted). Skips approve + burn and resumes at the attestation.
+   */
+  burnTxHash?: Hex;
+  /**
+   * Called as soon as the burn is broadcast, before its receipt. Persist the
+   * hash here: from this point the USDC has left the source chain, and the
+   * hash is what resuming or recovering the settlement needs.
+   *
+   * Called again once the burn has mined: with the replacement's hash if the
+   * wallet sped it up, or with `undefined` if nothing was burned (the burn
+   * reverted, or the wallet cancelled it) so the next attempt burns afresh.
+   */
+  onBurn?: (burnTxHash: Hex | undefined) => void | Promise<void>;
   /** USDC amount in smallest units (6 decimals). */
   amount: bigint;
   /**
@@ -90,6 +114,42 @@ export interface CctpFundSwapContext {
 }
 
 /**
+ * Wait for the burn to mine and return the hash Circle attests it under.
+ *
+ * The receipt follows a replacement the wallet made, so the mined hash can
+ * differ from the one sent: a speed-up burned under the new hash, a
+ * cancellation (a self-send) burned nothing. Only a transaction to the
+ * TokenMessenger burns, so that decides which. A burn that reverted or was
+ * cancelled clears the recorded hash: nothing left the source chain, and the
+ * next attempt must burn again rather than wait on an attestation that will
+ * never come.
+ */
+async function confirmBurn(
+  signer: EvmSigner,
+  sentTxHash: Hex,
+  onBurn: CctpFundSwapParams["onBurn"],
+): Promise<Hex> {
+  const receipt = await signer.waitForReceipt(sentTxHash);
+  if (receipt.status !== "success") {
+    await onBurn?.(undefined);
+    throw new Error(`CCTP burn tx reverted: ${receipt.transactionHash}`);
+  }
+  const minedTxHash = (receipt.transactionHash ?? sentTxHash) as Hex;
+  if (minedTxHash.toLowerCase() === sentTxHash.toLowerCase()) {
+    return sentTxHash;
+  }
+  const mined = await signer.getTransaction(minedTxHash);
+  if (mined?.to?.toLowerCase() !== TOKEN_MESSENGER_V2.toLowerCase()) {
+    await onBurn?.(undefined);
+    throw new Error(
+      `The CCTP burn ${sentTxHash} was replaced by ${minedTxHash}, which did not burn (cancelled in the wallet?). No USDC left the source chain; try again.`,
+    );
+  }
+  await onBurn?.(minedTxHash);
+  return minedTxHash;
+}
+
+/**
  * Execute the full CCTP-inbound swap flow end to end. Most consumers
  * call this directly — the primitives (`approveAndBurn`,
  * `waitForAttestation`, `submitUserOp`) are available separately for
@@ -102,6 +162,9 @@ export async function cctpFundSwap(
   const {
     swapId,
     signer,
+    ownerSigner = signer,
+    burnTxHash: resumeBurnTxHash,
+    onBurn,
     amount,
     maxFee,
     settlementChain = arbitrum,
@@ -126,27 +189,34 @@ export async function cctpFundSwap(
   // `receiveMessage` call on it.
   const { accountAddress: smartAccountAddress } =
     await createSwapSmartAccountClient({
-      signer,
+      signer: ownerSigner,
       aa: context.aa,
       chain: settlementChain,
     });
 
-  // 1. Source-chain approve + burn.
-  onProgress?.({ phase: "approving" });
-  const { approveTxHash, burnTxHash } = await approveAndBurn({
-    signer,
-    amount,
-    usdcAddress: source.usdc,
-    destinationDomain: destination.domain,
-    smartAccountAddress,
-    maxFee,
-    minFinalityThreshold,
-  });
-  onProgress?.({ phase: "burning", burnTxHash });
-  const burnReceipt = await signer.waitForReceipt(burnTxHash);
-  if (burnReceipt.status !== "success") {
-    throw new Error(`CCTP burn tx reverted: ${burnTxHash}`);
+  // 1. Source-chain approve + burn, unless a previous attempt already burned.
+  let approveTxHash: Hex | undefined;
+  let burnTxHash: Hex;
+  if (resumeBurnTxHash) {
+    burnTxHash = resumeBurnTxHash;
+  } else {
+    onProgress?.({ phase: "approving" });
+    const burn = await approveAndBurn({
+      signer,
+      amount,
+      usdcAddress: source.usdc,
+      destinationDomain: destination.domain,
+      smartAccountAddress,
+      maxFee,
+      minFinalityThreshold,
+    });
+    approveTxHash = burn.approveTxHash;
+    burnTxHash = burn.burnTxHash;
+    // `approveAndBurn` returns as soon as the burn is broadcast.
+    await onBurn?.(burnTxHash);
   }
+  onProgress?.({ phase: "burning", burnTxHash });
+  burnTxHash = await confirmBurn(signer, burnTxHash, onBurn);
 
   // 2. Wait for the IRIS attestation to clear.
   onProgress?.({ phase: "attestation" });
@@ -161,7 +231,7 @@ export async function cctpFundSwap(
   onProgress?.({ phase: "submitting" });
   const submit = await submitCctpInboundUserOp(context, {
     swapId,
-    signer,
+    signer: ownerSigner,
     cctpMessage: message as Hex,
     cctpAttestation: attestation as Hex,
     chain: settlementChain,

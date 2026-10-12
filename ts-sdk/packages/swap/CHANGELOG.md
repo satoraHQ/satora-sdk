@@ -1,5 +1,11 @@
 # @satora/swap
 
+## 1.6.1
+
+### Patch Changes
+
+- d83926d: Target backend 0.3.17 in the x-satora-server-version header.
+
 ## 1.6.0
 
 ### Minor Changes

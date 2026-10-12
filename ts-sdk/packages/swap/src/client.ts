@@ -603,10 +603,31 @@ export class Client {
   }
 
   /** Delegated to the legacy client (migration checkpoint). */
+  fundSwapFromSolana(
+    ...args: Parameters<LegacyClient["fundSwapFromSolana"]>
+  ): ReturnType<LegacyClient["fundSwapFromSolana"]> {
+    return this.#legacy.fundSwapFromSolana(...args);
+  }
+
+  /** Delegated to the legacy client (migration checkpoint). */
+  getSolanaUsdcBalance(
+    ...args: Parameters<LegacyClient["getSolanaUsdcBalance"]>
+  ): ReturnType<LegacyClient["getSolanaUsdcBalance"]> {
+    return this.#legacy.getSolanaUsdcBalance(...args);
+  }
+
+  /** Delegated to the legacy client (migration checkpoint). */
   refundEvmWithSigner(
     ...args: Parameters<LegacyClient["refundEvmWithSigner"]>
   ): ReturnType<LegacyClient["refundEvmWithSigner"]> {
     return this.#legacy.refundEvmWithSigner(...args);
+  }
+
+  /** Delegated to the legacy client (migration checkpoint). */
+  refundEvmSponsored(
+    ...args: Parameters<LegacyClient["refundEvmSponsored"]>
+  ): ReturnType<LegacyClient["refundEvmSponsored"]> {
+    return this.#legacy.refundEvmSponsored(...args);
   }
 
   /** Delegated to the legacy client (migration checkpoint). */
@@ -649,6 +670,13 @@ export class Client {
     ...args: Parameters<LegacyClient["continueRefundedEvmSwap"]>
   ): ReturnType<LegacyClient["continueRefundedEvmSwap"]> {
     return this.#trackAfterRetry(this.#legacy.continueRefundedEvmSwap(...args));
+  }
+
+  /** Delegated to the legacy client (migration checkpoint). */
+  recoverCctpInboundSwap(
+    ...args: Parameters<LegacyClient["recoverCctpInboundSwap"]>
+  ): ReturnType<LegacyClient["recoverCctpInboundSwap"]> {
+    return this.#legacy.recoverCctpInboundSwap(...args);
   }
 
   /** Delegated to the legacy client (migration checkpoint). */
@@ -1196,6 +1224,13 @@ export class ClientBuilder {
 
   withAa(...args: Parameters<LegacyClientBuilder["withAa"]>): this {
     this.#inner.withAa(...args);
+    return this;
+  }
+
+  withSolanaRpcUrl(
+    ...args: Parameters<LegacyClientBuilder["withSolanaRpcUrl"]>
+  ): this {
+    this.#inner.withSolanaRpcUrl(...args);
     return this;
   }
 

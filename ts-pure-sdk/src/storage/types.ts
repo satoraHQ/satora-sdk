@@ -94,4 +94,19 @@ export interface StoredSwap {
 
   /** The HTLCCoordinator the funding went through; pins the refund target. */
   evmCoordinatorAddress?: string;
+
+  /**
+   * Source-chain CCTP burn of a CCTP-inbound swap, recorded as soon as it is
+   * broadcast. The USDC has left the source chain from then on: `fundSwap`
+   * resumes the Arbitrum settlement from it instead of burning again, and
+   * `recoverCctpInboundSwap` recovers the USDC with it if settlement fails.
+   */
+  cctpBurnTxid?: string;
+
+  /**
+   * The last block height at which a Solana {@link cctpBurnTxid} can land.
+   * Resuming gives the burn up only once the chain is past it, so an RPC that
+   * cannot find an older burn never causes a second one.
+   */
+  cctpBurnLastValidBlockHeight?: number;
 }

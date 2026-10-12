@@ -74,6 +74,26 @@ function extractDestinationCaller(cctpMessage: Hex): Address {
   return `0x${cctpMessage.slice(242, 282)}` as Address;
 }
 
+/**
+ * A UserOp can be included on-chain yet revert during execution;
+ * `waitForUserOperationReceipt` then resolves with `success: false` instead of
+ * throwing (see submit.ts). A reverted recovery step moved nothing, so it must
+ * fail rather than report funds as recovered. Both steps are safe to retry.
+ */
+function assertExecuted(
+  receipt: { success: boolean; reason?: string },
+  step: string,
+  userOpHash: Hex,
+): void {
+  if (!receipt.success) {
+    throw new Error(
+      `CCTP-inbound recovery ${step} UserOp ${userOpHash} reverted on-chain${
+        receipt.reason ? `: ${receipt.reason}` : ""
+      }`,
+    );
+  }
+}
+
 export type RecoveryProgress =
   | { phase: "attestation" }
   | { phase: "receiving"; userOpHash: Hex }
@@ -89,8 +109,11 @@ export type RecoveryProgress =
 export interface RecoverCctpInboundParams {
   /** Kernel-account owner; must match the original burn's `destinationCaller`. */
   signer: EvmSigner;
-  /** Source-chain `depositForBurn` tx hash. */
-  burnTxHash: Hex;
+  /**
+   * Source-chain `depositForBurn` tx hash (for Solana, the base58 transaction
+   * signature).
+   */
+  burnTxHash: string;
   /** SDK chain name the burn originated on (e.g. "HyperEVM"). */
   sourceChain: CctpChainName;
   /** EVM address that should receive the recovered USDC on the settlement chain. */
@@ -222,7 +245,11 @@ export async function recoverCctpInbound(
       ],
     });
     onProgress?.({ phase: "receiving", userOpHash: receiveUserOpHash });
-    await aaClient.waitForUserOperationReceipt({ hash: receiveUserOpHash });
+    assertExecuted(
+      await aaClient.waitForUserOperationReceipt({ hash: receiveUserOpHash }),
+      "receiveMessage",
+      receiveUserOpHash,
+    );
   }
 
   // 4. Read the smart account's USDC balance — this is the recoverable amount.
@@ -263,6 +290,7 @@ export async function recoverCctpInbound(
   const sweepReceipt = await aaClient.waitForUserOperationReceipt({
     hash: sweepUserOpHash,
   });
+  assertExecuted(sweepReceipt, "sweep", sweepUserOpHash);
   const sweepTxHash = sweepReceipt.receipt?.transactionHash as Hex | undefined;
 
   onProgress?.({
