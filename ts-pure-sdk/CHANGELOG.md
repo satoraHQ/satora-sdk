@@ -1,5 +1,90 @@
 # @lendasat/lendaswap-sdk-pure
 
+## 2.6.0
+
+### Minor Changes
+
+- 2e4486b: Bitcoin (on-chain) ↔ Lightning swaps.
+
+  `createBitcoinToLightningSwap` locks BTC in an on-chain HTLC against a
+  BOLT11 invoice, lightning address or LNURL; the server pays the invoice
+  after one confirmation and claims the HTLC with the revealed preimage.
+  `refundSwap` sweeps the HTLC after its locktime like the other on-chain
+  directions, and `getLightningSendQuote` / `getQuote` with a concrete
+  destination price the route exactly (`sourceChain: "Bitcoin"`).
+
+  `createLightningToBitcoinSwap` pays a hold invoice against an on-chain
+  HTLC the server funds; `claim()` sweeps it to the swap's target address,
+  which settles the invoice.
+
+  `createSwap` routes both directions.
+
+  On-chain claims (`evm_to_bitcoin` and `lightning_to_bitcoin`) now pay the
+  explorer's two-block fee estimate by default instead of a flat 2 sat/vB,
+  which stays the floor; `feeRateSatPerVb` still overrides it.
+
+- 180bb1f: `fundSwap` now funds a CCTP-inbound swap (USDC from Base, Optimism, Avalanche,
+  … to Bitcoin) straight from a browser wallet. The wallet sends the approve and
+  burn on the source chain; for a swap created with `gasless: true`, the
+  Arbitrum settlement is owned by the SDK's own key, which can sign the
+  EIP-7702 authorization browser wallets usually cannot. A swap whose depositor
+  is the wallet itself still settles with the wallet.
+
+  The burn is recorded on the stored swap (`cctpBurnTxid`) as soon as it is
+  broadcast. Calling `fundSwap` again after an interruption resumes at the
+  attestation instead of burning twice, and the new
+  `recoverCctpInboundSwap(swapId, recipient)` recovers the USDC from that burn
+  if the settlement never lands. `cctpFundSwap` gains `ownerSigner`,
+  `burnTxHash` and `onBurn` for callers composing the flow themselves.
+
+- 535b1c8: Send USDC from Solana to Bitcoin, Lightning or Arkade through CCTP. `getQuote`
+  and `createSwap` accept `{ chain: "Solana", tokenId: <USDC mint> }` as the
+  source (swaps must be created `gasless: true`), and the new
+  `fundSwapFromSolana(swapId, solanaSigner, options)` burns the USDC from any
+  Solana wallet wrapped as a `SolanaSigner`, waits for Circle's attestation and
+  settles on Arbitrum with the SDK's key in one sponsored UserOp. The burn
+  signature is recorded like an EVM burn, so a second call resumes instead of
+  burning twice and `recoverCctpInboundSwap` works for Solana burns too. A
+  recorded burn is given up only once the chain shows it never landed (past its
+  recorded `cctpBurnLastValidBlockHeight` and unknown to IRIS), never on a
+  timeout or an RPC without the transaction's history. Set the
+  Solana RPC with `withSolanaRpcUrl(url)` on the builder (or per call);
+  `getSolanaUsdcBalance(owner)` reads the wallet's USDC. The Solana code loads on
+  demand, so EVM-only consumers don't pay for it.
+- 20d07cd: Swap a refunded EVM-sourced swap again instead of leaving the refund behind.
+  `refundEvmSponsored(swapId)` refunds a swap whose depositor is this client's
+  key (created `gasless`, incl. CCTP-inbound) as a paymaster-sponsored UserOp on
+  Arbitrum, no wallet or gas needed. `continueRefundedEvmSwap` then swaps the
+  refund again: its `signer` is now optional (defaults to this client's key; any
+  other owner is rejected before a swap is created), it
+  takes a `target` (`"bitcoin" | "arkade" | "lightning"`, defaulting to the old
+  swap's), and it can pay out to a Lightning invoice, Lightning address or LNURL.
+  `getRefundedEvmSwapContinuation` accepts Lightning swaps and an optional signer.
+- 8617e57: Claim RBTC through RIF Relay where the server publishes one. `getRifRelay(chainId)`
+  reads it from `/chain-config` (new optional `rif_relay` on each entry). On such a
+  chain an RBTC swap is created with the recipient's RIF smart wallet as its claim
+  address (`rifSmartWalletAddress(relay, recipient)`; the server rejects any other),
+  so only the recipient's wallet can claim it: `claimEvmWithSigner(swapId, signer)`
+  with that wallet relays `HTLCNative.redeem` from the smart wallet, deploying it
+  on the first claim. The relayer's fee is paid out of the claimed RBTC and the
+  rest lands at the recipient, which needs no gas. `claim()` and
+  `claimViaGasless()` throw `WalletClaimRequiredError` for these swaps.
+
+### Patch Changes
+
+- bda65c0: Target backend 0.3.18 in the x-satora-server-version header.
+- 837b6ea: Target backend 0.3.19 in the x-satora-server-version header.
+- 48e9524: `refundEvmSponsored` also refunds gasless swaps created by older SDK versions,
+  whose depositor is the swap's own key rather than this client's key.
+- c9114e9: The generated API types include `LightningToBitcoinSwapResponse` in the
+  `getSwap` response union.
+- 46b5eea: `getStatus` types a `services.rootstock` entry. A daemon that serves Rootstock
+  reports its RPC health there; the field is absent otherwise.
+- c718a43: Outbound USDT0 quotes charge the LayerZero messaging fee in sats: the
+  `layerzero` bridge rate from `/dex-quote` now carries `native_fee_sats`, which
+  `getQuote` adds to `network_fee`. The bridged USDT0 is no longer reduced by a
+  token-denominated bridge fee.
+
 ## 2.5.1
 
 ### Patch Changes

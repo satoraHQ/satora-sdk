@@ -1,5 +1,48 @@
 # @satora/swap
 
+## 1.7.0
+
+### Minor Changes
+
+- 2e4486b: Track Bitcoin (on-chain) ↔ Lightning swaps: the client-funded BTC HTLC of
+  Bitcoin → Lightning is observed like the Bitcoin → EVM one, the
+  server-funded HTLC of Lightning → Bitcoin like the EVM → Bitcoin one; the
+  Lightning legs have no chain leg.
+
+  On mainnet the tracker stops recommending a claim of a Lightning → Bitcoin
+  HTLC 30 minutes before its refund locktime, so a slow claim cannot reveal the
+  preimage to a racing refund.
+
+- 180bb1f: `fundSwap` funds a CCTP-inbound swap (USDC from Base, Optimism, Avalanche, … to
+  Bitcoin) from a browser wallet, records the burn to resume after an
+  interruption, and `recoverCctpInboundSwap` recovers the USDC if settlement
+  never lands (see the legacy SDK changeset).
+- 535b1c8: Send USDC from Solana: `fundSwapFromSolana` burns USDC from a Solana wallet and
+  settles the swap on Arbitrum, `getSolanaUsdcBalance` reads the wallet's USDC,
+  and the builder gains `withSolanaRpcUrl` (see the legacy SDK changeset).
+- 20d07cd: Swap a refunded EVM-sourced swap again instead of leaving the refund behind.
+  `Client.refundEvmSponsored(swapId)` refunds a swap whose depositor is this client's
+  key (created `gasless`, incl. CCTP-inbound) as a paymaster-sponsored UserOp on
+  Arbitrum, no wallet or gas needed. `continueRefundedEvmSwap` then swaps the
+  refund again: its `signer` is now optional (defaults to this client's key; any
+  other owner is rejected before a swap is created), it
+  takes a `target` (`"bitcoin" | "arkade" | "lightning"`, defaulting to the old
+  swap's), and it can pay out to a Lightning invoice, Lightning address or LNURL.
+  `getRefundedEvmSwapContinuation` accepts Lightning swaps and an optional signer.
+- 8617e57: RBTC claims through RIF Relay: `getRifRelay(chainId)` and the RIF branch of
+  `claimEvmWithSigner` (see the legacy SDK changeset). The auto-claim worker hands
+  a swap that needs the user's wallet to `onActionRequired` once instead of
+  retrying it.
+
+### Patch Changes
+
+- bda65c0: Target backend 0.3.18 in the x-satora-server-version header.
+- 837b6ea: Target backend 0.3.19 in the x-satora-server-version header.
+- 48e9524: `refundEvmSponsored` also refunds gasless swaps created by older SDK versions,
+  whose depositor is the swap's own key rather than this client's key.
+- c718a43: Outbound USDT0 quotes charge the LayerZero messaging fee in sats as part of
+  the network fee (see the legacy SDK changeset).
+
 ## 1.6.1
 
 ### Patch Changes
