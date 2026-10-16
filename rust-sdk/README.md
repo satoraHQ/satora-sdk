@@ -99,9 +99,7 @@ Invoice-owned locks never retry.
 set, a Lightning payout from Arkade, Ethereum, Polygon, Arbitrum or native RBTC
 is quoted by `/quote/lightning-send` with the provider's fee for that
 destination. Otherwise a BTC to EVM route in either direction, or BTC to Solana,
-is composed locally at 100 bps slippage, unless a referral code applies: a key
-may carry a negotiated rate that only the server prices, so keyed quotes always
-come from `/quote`. Other routes, and failures of either
+is composed locally at 100 bps slippage. Other routes, and failures of either
 step, go to the server's `/quote`, and its error is the one returned. Both
 fallbacks log a warning through the client logger (see Logging), except for
 routes composition reports as unsupported. `get_server_quote` sends only the `/quote` request. Without

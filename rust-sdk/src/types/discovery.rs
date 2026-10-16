@@ -143,6 +143,10 @@ pub struct ChainConfigResponse {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ReferralFeeResponse {
     pub extra_fee_rate: f64,
+    /// A negotiated base fee that replaces the pair's `fee_percentage` before
+    /// `extra_fee_rate` is added. Absent when the pair fee applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_fee_rate: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub referral_label: Option<String>,
 }

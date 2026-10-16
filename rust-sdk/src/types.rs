@@ -17,6 +17,7 @@ pub use chain::KnownChain;
 pub use quote::QuoteAmount;
 pub use quote::QuoteRequest;
 pub use quote::QuoteResponse;
+pub use quote::ReferralRates;
 use serde::Deserialize;
 use serde::Serialize;
 pub use swap::ArkadeToLightningSwapResponse;
