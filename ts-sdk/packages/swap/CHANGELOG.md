@@ -1,5 +1,12 @@
 # @satora/swap
 
+## 1.7.1
+
+### Patch Changes
+
+- 4fbf4f9: Target backend 0.3.20 in the x-satora-server-version header.
+- 4e23daf: Target backend 0.3.21 in the x-satora-server-version header.
+
 ## 1.7.0
 
 ### Minor Changes

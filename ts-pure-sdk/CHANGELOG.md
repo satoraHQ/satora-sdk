@@ -1,5 +1,13 @@
 # @lendasat/lendaswap-sdk-pure
 
+## 2.6.1
+
+### Patch Changes
+
+- 4fbf4f9: Target backend 0.3.20 in the x-satora-server-version header.
+- 4e23daf: Target backend 0.3.21 in the x-satora-server-version header.
+- b758f5c: `/referral-fee` may return `base_fee_rate`, a negotiated partner rate that replaces the per-pair `fee_percentage`. `composeQuote` applies it before `extra_fee_rate`, matching server quotes and swap creation for keys with a base fee override.
+
 ## 2.6.0
 
 ### Minor Changes
