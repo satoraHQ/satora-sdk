@@ -2117,6 +2117,7 @@ export class Client {
       networkFees,
       chainConfig,
       referralExtraFeeRate: referral?.extra_fee_rate,
+      referralBaseFeeRate: referral?.base_fee_rate,
       getDexQuote: (p) => this.getDexQuote(p),
     });
   }

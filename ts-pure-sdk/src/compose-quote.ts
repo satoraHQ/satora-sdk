@@ -349,6 +349,13 @@ export interface ComposeQuoteDeps {
   referralExtraFeeRate?: number;
 
   /**
+   * Negotiated base fee (decimal fraction) from `/referral-fee`. When set it
+   * replaces the per-pair `fee_percentage` before `referralExtraFeeRate` is
+   * added. Omitted for keys without a partner rate.
+   */
+  referralBaseFeeRate?: number;
+
+  /**
    * DEX-leg quote primitive — `Client.getDexQuote` once bound to the
    * underlying HTTP client.
    */
@@ -492,10 +499,12 @@ async function composeBtcToEvm(
   // uses `rust_decimal` arithmetic on a `Decimal`; we use `BigInt`
   // multiplication after scaling the percentage by 1e18 to dodge
   // floating-point drift.
-  // Effective rate = per-pair base + referral/extra-fee delta (0 if none),
-  // mirroring the server's `effective_fee_pct = base + org_extra`.
+  // Effective rate = base + referral/extra-fee delta (0 if none), mirroring
+  // the server's `effective_fee_pct = base + org_extra`, where a partner's
+  // negotiated base replaces the per-pair fee.
   const effectiveFeePct =
-    pair.fee_percentage + (deps.referralExtraFeeRate ?? 0);
+    (deps.referralBaseFeeRate ?? pair.fee_percentage) +
+    (deps.referralExtraFeeRate ?? 0);
   const FEE_SCALE = 10n ** 18n;
   const feePctScaled = BigInt(Math.round(effectiveFeePct * Number(FEE_SCALE)));
   const protocolFee = Number((btcSats * feePctScaled) / FEE_SCALE);
@@ -737,9 +746,11 @@ async function composeEvmToBtc(
   const { btcSats, evmSmallest, evmDecimals, bridgeFee } = pivot;
 
   // Protocol fee in sats: floor(btc_sats × fee_percentage). Same fixed-
-  // point trick as composeBtcToEvm; effective rate = base + referral delta.
+  // point trick as composeBtcToEvm; effective rate = base + referral delta,
+  // with a partner's negotiated base replacing the per-pair fee.
   const effectiveFeePct =
-    pair.fee_percentage + (deps.referralExtraFeeRate ?? 0);
+    (deps.referralBaseFeeRate ?? pair.fee_percentage) +
+    (deps.referralExtraFeeRate ?? 0);
   const FEE_SCALE = 10n ** 18n;
   const feePctScaled = BigInt(Math.round(effectiveFeePct * Number(FEE_SCALE)));
   const protocolFee = Number((btcSats * feePctScaled) / FEE_SCALE);

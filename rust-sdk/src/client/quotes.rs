@@ -494,15 +494,17 @@ impl Client {
             .referral_code
             .as_deref()
             .or(self.referral_code.as_deref());
-        let extra = if referral.is_some() || request.extra_fees_bps.is_some() {
-            self.quote_static(
-                format!("referral:{:?}:{:?}", referral, request.extra_fees_bps),
-                self.get_referral_fee(referral, request.extra_fees_bps),
+        let rates = if referral.is_some() || request.extra_fees_bps.is_some() {
+            ReferralRates::from(
+                &self
+                    .quote_static(
+                        format!("referral:{:?}:{:?}", referral, request.extra_fees_bps),
+                        self.get_referral_fee(referral, request.extra_fees_bps),
+                    )
+                    .await?,
             )
-            .await?
-            .extra_fee_rate
         } else {
-            0.0
+            ReferralRates::default()
         };
         let pairs = self
             .quote_static("pairs".into(), self.get_swap_pairs())
@@ -511,11 +513,13 @@ impl Client {
             .quote_static("config".into(), self.get_chain_config())
             .await?;
         let fees = self.get_network_fees().await?;
-        self.compose_quote_with_data(request, slippage_bps, &pairs, &fees, &config, extra)
+        self.compose_quote_with_data(request, slippage_bps, &pairs, &fees, &config, rates)
             .await
     }
 
     /// Compose with caller-supplied discovery data; only the DEX leg may make an HTTP request.
+    /// `referral` is the `/referral-fee` response, or a bare extra-fee rate (`f64`) when the
+    /// pair fee applies.
     #[allow(clippy::too_many_arguments)]
     pub async fn compose_quote_with_data(
         &self,
@@ -524,8 +528,9 @@ impl Client {
         pairs: &SwapPairsResponse,
         fees: &NetworkFeesResponse,
         config: &ChainConfigResponse,
-        referral_rate: f64,
+        referral: impl Into<ReferralRates>,
     ) -> Result<QuoteResponse> {
+        let referral: ReferralRates = referral.into();
         let btc_source = request.source_token == TokenId::Btc;
         if btc_source == (request.target_token == TokenId::Btc) {
             return Err(unsupported(
@@ -683,7 +688,9 @@ impl Client {
                 integer(dex.bridge_fee.as_deref().unwrap_or("0"))?,
             )
         };
-        let effective_rate = pair.fee_percentage + referral_rate;
+        // A negotiated partner rate replaces the pair fee before the extra fee is added.
+        let effective_rate =
+            referral.base_fee_rate.unwrap_or(pair.fee_percentage) + referral.extra_fee_rate;
         if !effective_rate.is_finite() || !(0.0..=1.0).contains(&effective_rate) {
             return Err(invalid("invalid protocol fee rate"));
         }

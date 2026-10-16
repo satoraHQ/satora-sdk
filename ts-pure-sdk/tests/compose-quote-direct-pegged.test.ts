@@ -229,6 +229,38 @@ describe("composeQuote — direct BTC↔pegged pivot (no DEX)", () => {
     //            = (100_000 − 1_050) × 10^10
     expect(q.net_target_amount).toBe((98_950 * SAT_IN_TBTC_BASE).toString());
   });
+
+  it("a partner base fee replaces the pair fee before the extra fee is added", async () => {
+    const overrides: Partial<ComposeQuoteDeps> = {
+      swapPairs: {
+        pairs: [
+          {
+            source: "Bitcoin",
+            target: "42161",
+            min_sats: 1000,
+            max_sats: 100_000_000,
+            fee_percentage: 0.005,
+            network_fee_sats: 0,
+          },
+        ],
+      },
+      referralBaseFeeRate: 0.002,
+      referralExtraFeeRate: 0.001,
+    };
+    const q = await composeQuote(
+      {
+        sourceChain: "Bitcoin",
+        sourceToken: "btc",
+        targetChain: "42161",
+        targetToken: ARB_TBTC,
+        sourceAmount: 100_000,
+      },
+      deps(overrides),
+    );
+
+    expect(q.protocol_fee).toBe(300); // floor(100_000 × (0.002 + 0.001))
+    expect(q.protocol_fee_rate).toBeCloseTo(0.003, 12);
+  });
 });
 
 describe("composeQuote — bridge route-selection", () => {
