@@ -15,19 +15,12 @@ export interface ReferralFeeResponse {
    * this output is a fraction — the server converts once.)
    */
   extra_fee_rate: number;
-  /**
-   * Negotiated base fee as a decimal fraction. When present it **replaces**
-   * the per-pair `fee_percentage` before `extra_fee_rate` is added; absent
-   * means the pair fee applies.
-   */
-  base_fee_rate?: number;
   /** Partner label for the referral code, when registered. Informational. */
   referral_label?: string;
 }
 
 export interface WireReferralFeeResponse {
   extra_fee_rate: number;
-  base_fee_rate?: number | null;
   referral_label?: string | null;
 }
 
@@ -36,7 +29,6 @@ export function fromWireReferralFeeResponse(
 ): ReferralFeeResponse {
   return {
     extra_fee_rate: wire.extra_fee_rate,
-    base_fee_rate: wire.base_fee_rate ?? undefined,
     referral_label: wire.referral_label ?? undefined,
   };
 }

@@ -1886,7 +1886,6 @@ export interface components {
              *     `"42161"`), matching the encoding used elsewhere in the API.
              */
             chain: components["schemas"]["Chain"];
-            rif_relay?: null | components["schemas"]["RifRelayInfo"];
         };
         ChainConfigResponse: {
             chains: components["schemas"]["ChainConfigEntry"][];
@@ -3538,13 +3537,6 @@ export interface components {
         ReferralFeeResponse: {
             /**
              * Format: double
-             * @description Negotiated base fee for this key as a decimal fraction. When present it
-             *     **replaces** the pair's `fee_percentage` before `extra_fee_rate` is
-             *     added; absent means the pair fee applies.
-             */
-            base_fee_rate?: number | null;
-            /**
-             * Format: double
              * @description Extra fee as a **decimal fraction** (e.g. `0.005` = 0.5% = 50 bps), to be
              *     **added on top of** the per-pair `fee_percentage` from `/swap-pairs`
              *     (also a fraction) — so a client composes `fee_percentage + extra_fee_rate`
@@ -3569,29 +3561,6 @@ export interface components {
             calldata: string;
             /** @description The HTLCCoordinator contract address */
             coordinator_address: string;
-        };
-        /**
-         * @description A RIF Relay deployment. The recipient's smart wallet (the factory's
-         *     CREATE2 proxy for (recipient, no recoverer, index 0), deployed on its
-         *     first claim) is the native lock's claim address: it calls
-         *     `HTLCNative.redeem` and pays the relayer from the redeemed coin, then
-         *     forwards the rest to the recipient. Addresses are lowercase hex (`0x`-prefixed).
-         */
-        RifRelayInfo: {
-            /** @description Verifier for a request that deploys the smart wallet. */
-            deploy_verifier: string;
-            relay_hub: string;
-            /** @description Verifier for a request from an already deployed smart wallet. */
-            relay_verifier: string;
-            /** @description The relay server's base URL (`POST /estimate`, `POST /relay`). */
-            server_url: string;
-            smart_wallet_factory: string;
-            /**
-             * @description The implementation the factory's smart wallet proxies delegate to:
-             *     with the factory it fixes the smart wallet of an owner, which must be
-             *     the native lock's `claiming_address`.
-             */
-            smart_wallet_template: string;
         };
         /**
          * @description Per-service health datapoint.

@@ -2117,7 +2117,6 @@ export class Client {
       networkFees,
       chainConfig,
       referralExtraFeeRate: referral?.extra_fee_rate,
-      referralBaseFeeRate: referral?.base_fee_rate,
       getDexQuote: (p) => this.getDexQuote(p),
     });
   }
@@ -2161,9 +2160,10 @@ export class Client {
    * Composes the quote client-side from the `/swap-pairs` + `/network-fees` +
    * `/dex-quote` primitives when it can — BTC↔EVM both directions, direct
    * (hub chains) or bridged (via Arbitrum/CCTP/OFT), including EURe and the
-   * accurate Lightning routing fee. Falls back to the server-composed `/quote`
-   * for anything compose can't faithfully serve: referral / extra-fee pricing
-   * (only the server applies those), Solana destinations, and any path
+   * accurate Lightning routing fee. Uses the server-composed `/quote` instead
+   * for anything compose can't faithfully serve: any quote under a referral
+   * code (a key may carry a negotiated rate that only the server prices and
+   * that is not published to clients), Solana destinations, and any path
    * `composeQuote` doesn't handle. The returned shape is identical either way.
    *
    * @param params - Quote parameters.
@@ -2197,7 +2197,10 @@ export class Client {
         });
       }
     }
-    if (this.#canComposeQuote(params)) {
+    // A key's negotiated rate is applied by the server only, so keyed quotes
+    // are never composed locally.
+    const keyed = (params.referralCode ?? this.#config.referralCode) != null;
+    if (!keyed && this.#canComposeQuote(params)) {
       try {
         return await this.composeQuote({
           sourceChain: params.sourceChain,

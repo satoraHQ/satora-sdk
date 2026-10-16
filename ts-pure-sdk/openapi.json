@@ -6304,11 +6304,6 @@
         "type": "object",
         "required": ["extra_fee_rate"],
         "properties": {
-          "base_fee_rate": {
-            "type": ["number", "null"],
-            "format": "double",
-            "description": "Negotiated base fee for this key as a decimal fraction. When present it\n**replaces** the pair's `fee_percentage` before `extra_fee_rate` is\nadded; absent means the pair fee applies."
-          },
           "extra_fee_rate": {
             "type": "number",
             "format": "double",

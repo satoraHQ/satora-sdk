@@ -643,3 +643,35 @@ async fn server_quotes_move_bridge_only_chains_to_arbitrum() {
     ));
     assert_eq!(server.received_requests().await.unwrap().len(), requests);
 }
+
+/// A referral key may carry a negotiated rate that only the server knows, so a
+/// keyed BTC to EVM quote is never composed locally.
+#[tokio::test]
+async fn keyed_quotes_are_served_by_the_server() {
+    let server = MockServer::start().await;
+    mount_discovery(&server).await;
+    Mock::given(path("/quote"))
+        .respond_with(ok(server_quote()))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let request = request(true, Chain::arbitrum(), TBTC, QuoteAmount::Source(100_000));
+
+    // Client-level referral code.
+    let keyed_client = client(&server);
+    assert_eq!(
+        keyed_client.get_quote(request.clone()).await.unwrap(),
+        server_quote()
+    );
+    assert_eq!(query(&server, "/quote").await["ref"], "default");
+
+    // Request-level referral code on a plain client.
+    let plain = Client::new(&server.uri()).unwrap();
+    let mut keyed_request = request.clone();
+    keyed_request.referral_code = Some("partner".into());
+    assert_eq!(
+        plain.get_quote(keyed_request).await.unwrap(),
+        server_quote()
+    );
+    assert_eq!(query(&server, "/quote").await["ref"], "partner");
+}

@@ -136,36 +136,3 @@ pub struct QuoteResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bridge_fee: Option<u64>,
 }
-
-/// Referral pricing applied to a pair's `fee_percentage` when composing a quote.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ReferralRates {
-    /// Replaces the pair fee when set (a negotiated partner rate).
-    pub base_fee_rate: Option<f64>,
-    /// Added on top of the (possibly replaced) base fee.
-    pub extra_fee_rate: f64,
-}
-
-impl From<f64> for ReferralRates {
-    fn from(extra_fee_rate: f64) -> Self {
-        Self {
-            base_fee_rate: None,
-            extra_fee_rate,
-        }
-    }
-}
-
-impl From<&super::ReferralFeeResponse> for ReferralRates {
-    fn from(response: &super::ReferralFeeResponse) -> Self {
-        Self {
-            base_fee_rate: response.base_fee_rate,
-            extra_fee_rate: response.extra_fee_rate,
-        }
-    }
-}
-
-impl From<super::ReferralFeeResponse> for ReferralRates {
-    fn from(response: super::ReferralFeeResponse) -> Self {
-        Self::from(&response)
-    }
-}
