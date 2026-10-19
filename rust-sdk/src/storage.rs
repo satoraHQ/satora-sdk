@@ -259,6 +259,9 @@ impl SwapStorage for InMemorySwapStorage {
     }
 
     fn next_key_index(&self) -> Result<u32> {
+        // `fetch_update` is deprecated in favour of `try_update`, which is not
+        // stable on this crate's MSRV yet.
+        #[allow(deprecated)]
         self.next_index
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |index| {
                 (index < KEY_INDEX_LIMIT).then(|| index + 1)
