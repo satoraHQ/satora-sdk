@@ -126,6 +126,24 @@ export interface EvmSigner {
   }): Promise<string>;
 
   /**
+   * Estimate the gas a transaction needs (`eth_estimateGas`).
+   *
+   * Optional but strongly recommended: a funding transaction that routes
+   * through a multi-hop DEX swap can need more gas than the SDK's static
+   * fallback, and a wallet given too low a limit burns the whole limit on
+   * an out-of-gas revert. When present, the SDK sends with this estimate
+   * plus a safety margin; without it the static fallback is used.
+   *
+   * For viem: `(tx) => publicClient.estimateGas({ account: tx.from, to: tx.to, data: tx.data, value: tx.value })`.
+   */
+  estimateGas?(tx: {
+    to: string;
+    data: string;
+    value?: bigint;
+    from?: string;
+  }): Promise<bigint>;
+
+  /**
    * Native coin balance of `address`, in wei (`eth_getBalance`).
    *
    * Optional: consulted before funding a native lock so an underfunded
@@ -333,6 +351,30 @@ export async function simulateTransaction(
       msg.match(/reverted with.*?:\s*(.+)/i) ?? msg.match(/reason:\s*(.+)/i);
     const reason = match?.[1]?.trim() ?? msg;
     throw new SimulationRevertError(label, reason);
+  }
+}
+
+/**
+ * Gas limit to send `tx` with: the signer's `eth_estimateGas` plus a 30%
+ * margin when the signer can estimate, otherwise `fallback`.
+ *
+ * The margin covers state drift between estimate and inclusion (pool
+ * ticks crossed, Arbitrum's L1 calldata component). Unused gas is refunded,
+ * so erring high only raises the balance a wallet asks the user to hold,
+ * never the fee paid. An estimate that fails (e.g. the call reverts) falls
+ * back as well, since the simulation before it already reports reverts.
+ */
+export async function gasLimitFor(
+  signer: EvmSigner,
+  tx: { to: string; data: string; value?: bigint },
+  fallback: bigint,
+): Promise<bigint> {
+  if (!signer.estimateGas) return fallback;
+  try {
+    const estimate = await signer.estimateGas({ ...tx, from: signer.address });
+    return (estimate * 130n) / 100n;
+  } catch {
+    return fallback;
   }
 }
 

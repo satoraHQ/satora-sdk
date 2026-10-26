@@ -138,6 +138,7 @@ import {
   encodeAllowanceCall,
   encodeBalanceOfCall,
   encodeMaxApproveData,
+  gasLimitFor,
   getRevertReason,
   parseSignature,
   simulateTransaction,
@@ -471,6 +472,15 @@ const FUNDING_RECEIPT_WAIT_MS = 30_000;
  * headroom; the unused part is not charged.
  */
 const NATIVE_LOCK_GAS = 250_000n;
+/**
+ * Fallback gas limit for a Permit2 funding tx when the signer cannot
+ * estimate. Permit2 transfer + a two-hop Uniswap V3 route + HTLC creation
+ * measured ~504k on Arbitrum (the old 500k cap ran out of gas there), so
+ * leave headroom for three hops.
+ */
+const PERMIT2_FUND_GAS = 1_000_000n;
+/** Fallback gas limit for an HTLC refund when the signer cannot estimate. */
+const REFUND_GAS = 500_000n;
 
 function withDeadline<T>(
   promise: Promise<T>,
@@ -6951,7 +6961,7 @@ export class Client {
     const txHash = await signer.sendTransaction({
       to: encoded.to,
       data: encoded.data,
-      gas: 500_000n,
+      gas: await gasLimitFor(signer, encoded, PERMIT2_FUND_GAS),
     });
     const mined = await this.#awaitFunding(swapId, signer, txHash, encoded, {
       htlcAddress: freshFunding.htlcAddress,
@@ -7171,7 +7181,7 @@ export class Client {
       data: encoded.data,
       value: encoded.value,
       type: txTypeFor(signer.chainId),
-      gas: NATIVE_LOCK_GAS,
+      gas: await gasLimitFor(signer, encoded, NATIVE_LOCK_GAS),
     });
     return this.#awaitFunding(swapId, signer, txHash, encoded, {
       htlcAddress: swap.evm_htlc_address,
@@ -7313,7 +7323,7 @@ export class Client {
       to: result.evmRefundData.to,
       data: result.evmRefundData.data,
       type: txTypeFor(signer.chainId),
-      gas: 500_000n,
+      gas: await gasLimitFor(signer, result.evmRefundData, REFUND_GAS),
     });
 
     const receipt = await signer.waitForReceipt(txHash);
