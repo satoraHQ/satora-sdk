@@ -24,14 +24,15 @@ import {
   rifTypedData,
 } from "../src/redeem/rif-relay.js";
 
-// Rootstock testnet deployment (rif-relay-contracts#176, 2026-09-29).
+// Rootstock testnet full-wallet deployment (rif-relay-contracts
+// v2.2.1-beta.0, #181): factory and template 2026-10-15, verifiers 2026-10-23.
 const RELAY: RifRelayConfig = {
   server_url: "https://relay.test",
   relay_hub: "0xD2EFC2B1e5296235779A79B69e7511764E2FC8cd",
-  smart_wallet_factory: "0xc1341eFCCb521571Ce65a898D3a55F4DC9bD50cC",
-  smart_wallet_template: "0x0Accd2465EafBa4f663F324b43A2Ec975CA0a4f5",
-  deploy_verifier: "0xf9B7CAE09A339c3Bd351AF1Cc8026360a3145130",
-  relay_verifier: "0x22781Cb5bC8C07411C90913d3aC64783276615bD",
+  smart_wallet_factory: "0x85D9C99b8d2fB2f1cc5d54d4e15E3F39e66852B3",
+  smart_wallet_template: "0x57dfe76c0cd3d755a6b2a5a4ceedc846cebf4754",
+  deploy_verifier: "0x3D52678C7329C75590D35b8415F83c6EDF35BCF8",
+  relay_verifier: "0x485C241B07868CE8174e52EFFFe135bCD4E2ADE3",
 };
 const COORDINATOR = "0x447a4CD711CE66D25c7008d26D5f09cA7D621F48";
 const HTLC = "0x18123A31261a76c74C82ED2F8346002CaA78Ab39";
@@ -199,13 +200,13 @@ describe("rifSmartWalletAddress", () => {
         RELAY,
         "0x1111111111111111111111111111111111111111",
       ),
-    ).toBe("0x3fdbeefb82bceaa86dca5dc7318b3417ffe4e5de");
+    ).toBe("0x6109158443ac7fefe6398f087f24aaa960f11dff");
     expect(
       rifSmartWalletAddress(
         RELAY,
         "0xfD97fA3fCE801b67df009d09fA94F3f02147845e",
       ),
-    ).toBe("0x2364e007b1ed549ee6c0c5f2a86325a8d006fa61");
+    ).toBe("0x95cafafd048ca4643dc1fdeebf35b48ca47930c6");
   });
 });
 
@@ -214,7 +215,7 @@ describe("RIF RelayRequest typed data", () => {
     const td = rifTypedData(request("deploy"), 31);
     // factory.domainSeparator() on Rootstock testnet.
     expect(domainSeparatorOf(td)).toBe(
-      "0xb70b6154ae0b4e8ec8e8635022717806332559fd8b6ec3ebe13009f68246c734",
+      "0xa31bca2c701187bad79a467434cb78c013c6c24055651d89ec0393733ea45905",
     );
   });
 
