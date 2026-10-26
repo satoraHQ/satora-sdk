@@ -1,5 +1,15 @@
 # @lendasat/lendaswap-sdk-pure
 
+## 2.7.0
+
+### Minor Changes
+
+- 2fd6567: Estimate gas for funding and refund transactions instead of sending a fixed 500k limit. `EvmSigner` gains an optional `estimateGas`; when provided, the SDK sends with the estimate plus a 30% margin, otherwise it falls back to a static limit (1M for Permit2 funding). A two-hop DEX route on Arbitrum needed ~504k and ran out of gas under the old cap.
+
+### Patch Changes
+
+- 5a982d2: Target backend 0.3.22 in the x-satora-server-version header.
+
 ## 2.6.1
 
 ### Patch Changes
