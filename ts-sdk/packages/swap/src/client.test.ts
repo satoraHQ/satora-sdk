@@ -275,6 +275,87 @@ describe("Client tracking", () => {
     });
   });
 
+  it("re-verifies a swap against the chain once fundSwap resolves", async () => {
+    const m = managers();
+    const reconcile = vi.fn(async () => {});
+    m.evm.reconcile = reconcile;
+    m.arkade.reconcile = reconcile;
+    const legacy = fakeLegacy([arkadeEvmSwap]);
+    Object.assign(legacy, { fundSwap: async () => ({ txHash: "0xfunded" }) });
+    const client = new Client(legacy, withManagers(m.map));
+    await client.startTracking();
+    expect(reconcile).not.toHaveBeenCalled();
+
+    const result = await client.fundSwap(
+      "swap-1",
+      {} as Parameters<Client["fundSwap"]>[1],
+    );
+    expect(result).toEqual({ txHash: "0xfunded" });
+
+    // Both legs of the funded swap are re-read, no server hint needed.
+    await vi.waitFor(() => expect(reconcile).toHaveBeenCalledTimes(2));
+  });
+
+  it("a failing post-funding re-verify does not fail the funding", async () => {
+    const m = managers();
+    m.evm.reconcile = vi.fn(async () => {
+      throw new Error("rpc down");
+    });
+    const legacy = fakeLegacy([arkadeEvmSwap]);
+    Object.assign(legacy, { fundSwap: async () => ({ txHash: "0xfunded" }) });
+    const client = new Client(legacy, withManagers(m.map));
+    await client.startTracking();
+    await expect(
+      client.fundSwap("swap-1", {} as Parameters<Client["fundSwap"]>[1]),
+    ).resolves.toEqual({ txHash: "0xfunded" });
+  });
+
+  it("puts a swap tracked after start on the hint feed before it emits an action", async () => {
+    const m = managers();
+    const swaps: StoredSwap[] = [];
+    const legacy = Object.create(LegacyClient.prototype) as LegacyClient;
+    Object.assign(legacy, {
+      listAllSwaps: async () => swaps,
+      createArkadeToEvmSwapGeneric: async () => {
+        swaps.push(arkadeEvmSwap);
+        return { response: { id: "swap-1" } };
+      },
+    });
+    // A hint feed that records subscriptions and never opens a socket.
+    const sent: string[] = [];
+    const sockets: FakeSocket[] = [];
+    class FakeSocket {
+      onopen: (() => void) | null = null;
+      onmessage: ((event: { data: unknown }) => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: ((event: unknown) => void) | null = null;
+      constructor() {
+        sockets.push(this);
+      }
+      send(data: string): void {
+        sent.push(data);
+      }
+      close(): void {}
+    }
+    const client = new Client(legacy, {
+      ...withManagers(m.map),
+      serverUrl: "http://swap.test",
+      webSocketFactory: () => new FakeSocket(),
+    });
+    await client.startTracking();
+    sockets[0]?.onopen?.();
+
+    await client.createArkadeToEvmSwapGeneric(
+      {} as Parameters<Client["createArkadeToEvmSwapGeneric"]>[0],
+    );
+    // No chain clock in the fake managers, so the tracker derives nothing for
+    // the swap; the subscription must not depend on an emitted action.
+    await vi.waitFor(() =>
+      expect(sent.some((frame) => frame.includes("swap-1"))).toBe(true),
+    );
+    client.stopTracking();
+  });
+
   it("rejects creating a swap with an unreachable leg (throw-on-create)", async () => {
     const m = managers();
     m.evm.observable = false; // the created swap's EVM chain has no reader

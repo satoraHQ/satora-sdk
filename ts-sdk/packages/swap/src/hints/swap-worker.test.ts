@@ -129,6 +129,15 @@ describe("SwapWorker", () => {
     expect(hintSource.started).toBe(true);
   });
 
+  it("subscribe() puts a swap on the hint feed before it emits any action", () => {
+    const { hintSource, worker } = setup();
+    worker.start();
+    worker.subscribe(["late"]);
+    expect(hintSource.subscribed).toContain("late");
+    worker.subscribe([]);
+    expect(hintSource.subscribed.filter((id) => id === "late")).toHaveLength(1);
+  });
+
   it("verifies against the chain on a hint (applyHint)", () => {
     const { tracker, hintSource, worker } = setup();
     worker.start();

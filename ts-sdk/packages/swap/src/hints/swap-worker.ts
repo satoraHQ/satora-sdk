@@ -154,6 +154,18 @@ export class SwapWorker {
     );
   }
 
+  /**
+   * Put swaps on the hint feed as soon as they are tracked. {@link #onActions}
+   * subscribes a swap when its first action is emitted, but a swap whose leg
+   * cannot be classified yet (an unfunded lock on a chain without `eth_getLogs`)
+   * emits nothing, and without this it would never receive the server hint
+   * that its funding landed.
+   */
+  subscribe(swapIds: string[]): void {
+    if (swapIds.length === 0) return;
+    this.#hintSource.subscribe(swapIds);
+  }
+
   /** Stop reacting, cancel pending retries, and close the hint feed. */
   stop(): void {
     this.#started = false;

@@ -24,7 +24,10 @@ import { defaultEvmReaders } from "./contracts/evm-reader-viem.js";
 import type { ContractManager, Ledger } from "./contracts/types.js";
 import { HintTracker } from "./hints/hint-tracker.js";
 import { SwapWorker } from "./hints/swap-worker.js";
-import { WsStatusSource } from "./hints/ws-status-source.js";
+import {
+  type WebSocketLike,
+  WsStatusSource,
+} from "./hints/ws-status-source.js";
 import { swapToTracked } from "./tracker/from-swap.js";
 import {
   type ActionSubscriber,
@@ -61,6 +64,8 @@ type TrackingConfig = {
    * remain the source of truth.
    */
   serverUrl?: string;
+  /** WebSocket factory for the hint feed; defaults to the global `WebSocket` (testing). */
+  webSocketFactory?: (url: string) => WebSocketLike;
   /** Explicit per-ledger managers, bypassing auto-construction (advanced/testing). */
   managers?: Map<Ledger, ContractManager>;
   /** Ark server URL override; defaults to the mainnet server when unset. */
@@ -620,11 +625,16 @@ export class Client {
     return this.#legacy.getPermit2FundingParamsUnsigned(...args);
   }
 
-  /** Delegated to the legacy client (migration checkpoint). */
-  fundSwap(
+  /**
+   * Fund the swap, then re-verify it against the chain so the lock shows up
+   * in the derived actions without waiting on a server hint.
+   */
+  async fundSwap(
     ...args: Parameters<LegacyClient["fundSwap"]>
   ): ReturnType<LegacyClient["fundSwap"]> {
-    return this.#legacy.fundSwap(...args);
+    const result = await this.#legacy.fundSwap(...args);
+    this.#reverifyAfterFunding(args[0]);
+    return result;
   }
 
   /** Delegated to the legacy client (migration checkpoint). */
@@ -942,10 +952,34 @@ export class Client {
     for (const swap of swaps) {
       try {
         await tracker.track(swap);
+        // On the hint feed from the start: the worker subscribes a swap on its
+        // first emitted action, which a swap on a chain without `eth_getLogs`
+        // (Rootstock's public node) never produces while unfunded.
+        this.#worker?.subscribe([swap.swapId]);
       } catch (error) {
         console.warn(`Client: tracking swap ${swap.swapId} failed:`, error);
       }
     }
+  }
+
+  /**
+   * Re-verify a swap against the chain right after this client funded it.
+   * The funding is mined when `fundSwap` resolves, but nothing else tells the
+   * tracker so: a server hint arrives only after the server's own monitor
+   * sees the lock (on Rootstock, a 30 s poll plus confirmations), and the
+   * tracker's at-risk poll does not re-read an `absent` client leg. One
+   * targeted read moves the swap to `clientfunded` at once. Fire-and-forget:
+   * the funding succeeded whatever the re-verify does, and a swap that is not
+   * tracked is a no-op.
+   */
+  #reverifyAfterFunding(swapId: unknown): void {
+    if (typeof swapId !== "string" || !this.#tracker) return;
+    void this.#tracker.applyHint(swapId).catch((error) => {
+      console.warn(
+        `Client: re-verify after funding ${swapId} failed (the tracker's next read catches up):`,
+        error,
+      );
+    });
   }
 
   /**
@@ -968,7 +1002,10 @@ export class Client {
     if (!serverUrl) return;
     const autoClaim = this.#tracking.autoClaim;
 
-    const hintSource = new WsStatusSource({ serverUrl });
+    const hintSource = new WsStatusSource({
+      serverUrl,
+      webSocketFactory: this.#tracking.webSocketFactory,
+    });
     const worker = new SwapWorker({
       tracker,
       hintSource,
