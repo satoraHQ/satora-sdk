@@ -6,13 +6,7 @@
  */
 
 import type { ArkadeToEvmSwapResponse } from "../api/client.js";
-import {
-  buildNativeRedeemDigest,
-  buildRedeemDigest,
-  computeCoordinatorCallsHash,
-  NATIVE_TOKEN_ADDRESS,
-  signEvmDigest,
-} from "../evm/index.js";
+import { buildRedeemDigest, signEvmDigest } from "../evm/index.js";
 import { PROTOCOL_HEADERS } from "../protocol.js";
 import { CLIENT_AGENT } from "../version.js";
 import type { ClaimGaslessResult } from "./types.js";
@@ -88,33 +82,10 @@ export async function claimViaGasless(
   const wbtcAddress = swap.wbtc_address;
   const amount = BigInt(swap.evm_expected_sats);
 
-  // A native-coin lock (`evm_htlc_kind: "native"`, e.g. RBTC on Rootstock)
-  // has one claim shape, fixed by the server's relay: no calls, the coin
-  // swept to `destination`, the full amount as the floor. The calldata
-  // endpoint's DEX fields do not apply; only the digest's domain differs.
-  if (nativeHtlcKind(swap)) {
-    const digest = buildNativeRedeemDigest({
-      htlcAddress: swap.evm_htlc_address,
-      chainId: swap.evm_chain_id,
-      preimage: secretHex,
-      amount,
-      sender: swap.server_evm_address,
-      timelock: swap.evm_refund_locktime,
-      caller: swap.evm_coordinator_address,
-      destination,
-      sweepToken: NATIVE_TOKEN_ADDRESS,
-      minAmountOut: amount,
-      callsHash: computeCoordinatorCallsHash([]),
-      htlcVersion: swap.evm_htlc_version,
-    });
-    const sig = signEvmDigest(secretKey, digest);
-    return postClaim(baseUrl, swap.id, {
-      secret: secretHex,
-      destination,
-      v: sig.v,
-      r: sig.r,
-      s: sig.s,
-    });
+  if (swap.evm_chain_id === 30 || swap.evm_chain_id === 31) {
+    throw new Error(
+      "Rootstock RIF sponsorship is not configured. Call claimEvmWithSigner() with the payout wallet; the user pays claim gas.",
+    );
   }
 
   // target_token.token_id contains the ERC-20 contract address for the final token

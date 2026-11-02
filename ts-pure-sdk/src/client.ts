@@ -116,7 +116,6 @@ import {
   encodeHtlcErc20IsActiveCallData,
   encodeHtlcErc20RefundCallData,
   encodeHtlcNativeRefundCallData,
-  encodeNativeExecuteAndCreate,
   encodeNativeRefundTo,
   encodeRefundTo,
   findSwapCreated,
@@ -132,6 +131,7 @@ import {
   wrapKernelErc1271Signature,
 } from "./evm/index.js";
 import { keyToKernelOwnerSigner } from "./evm/key-signer.js";
+import { encodeNativeCreate } from "./evm/native.js";
 import {
   decodeUint256,
   type EvmSigner,
@@ -467,8 +467,7 @@ class FundingTxUnavailableError extends Error {}
 const FUNDING_RECEIPT_WAIT_MS = 30_000;
 
 /**
- * Gas limit for a plain native lock (`HTLCNativeCoordinator.executeAndCreate`
- * with no calls): the HTLC create plus the coordinator's bookkeeping, with
+ * Gas limit for a plain native lock (`HTLCNative.create`), with
  * headroom; the unused part is not charged.
  */
 const NATIVE_LOCK_GAS = 250_000n;
@@ -666,6 +665,8 @@ export interface ArkadeClaimOptions {
 
 /** Options for claiming a swap */
 export interface ClaimOptions {
+  /** Wallet that submits an EVM claim and pays gas when sponsorship is unavailable. */
+  signer?: EvmSigner;
   /**
    * @deprecated For Arkade-to-EVM swaps, the destination is now set at swap creation time
    * and stored on the server. This option is ignored for arkade_to_evm swaps.
@@ -1966,7 +1967,7 @@ export class Client {
 
   /**
    * The RIF Relay a native lock on EVM chain `chainId` is claimed through,
-   * or `undefined` where the server relays the claim. A swap claimed through
+   * or `undefined` when no relay is configured. A swap claimed through
    * RIF Relay needs the receiving wallet to sign: `claimEvmWithSigner`.
    */
   async getRifRelay(chainId: number): Promise<RifRelayConfig | undefined> {
@@ -2923,10 +2924,17 @@ export class Client {
             "in claim options. Derive it via `deriveSolanaUsdcAta` before calling claim.",
         };
       }
-      const gaslessResult = await this.claimViaGasless(id, destination, {
-        bridgeRecipient,
-        bridgeRecipientWallet,
-      });
+      const gaslessResult =
+        (swap.evm_chain_id === 30 || swap.evm_chain_id === 31) &&
+        options?.signer
+          ? await this.claimEvmWithSigner(id, options.signer, {
+              bridgeRecipient,
+              bridgeRecipientWallet,
+            })
+          : await this.claimViaGasless(id, destination, {
+              bridgeRecipient,
+              bridgeRecipientWallet,
+            });
       return {
         success: true,
         message: gaslessResult.message,
@@ -3192,8 +3200,8 @@ export class Client {
    * Uses the exact `redeemAndExecute` calldata the sponsored UserOp path
    * would publish - the swap's derived key signs the redeem, the wallet only
    * broadcasts - so it works without any AA / paymaster configuration and is
-   * the manual fallback when the automatic claim fails. Arbitrum-hub swaps
-   * only (same coverage as the sponsored path).
+   * the manual fallback when the automatic claim fails. Native claims call
+   * HTLCNative directly and require the payout wallet to submit.
    *
    * @param id - Swap ID.
    * @param signer - A connected wallet on the swap's EVM chain.
@@ -3230,9 +3238,11 @@ export class Client {
       return result;
     }
     const cls = this.#classifyEvmClaim(swap);
-    if (!cls.arbitrumHubClaim) {
+    const native =
+      (swap as { evm_htlc_kind?: string }).evm_htlc_kind === "native";
+    if (!native && !cls.arbitrumHubClaim) {
       throw new Error(
-        "Wallet-paid claims are only supported for Arbitrum-hub swaps (same-chain or CCTP targets).",
+        "Wallet-paid claims are only supported for Rootstock and Arbitrum-hub swaps (same-chain or CCTP targets).",
       );
     }
     const bridgeRecipient = options.bridgeRecipient ?? stored.bridgeRecipient;
@@ -3240,12 +3250,12 @@ export class Client {
       options.bridgeRecipient !== undefined
         ? options.bridgeRecipientWallet
         : stored.bridgeRecipientWallet;
-    const { calls, minAmountOut } = await this.#fetchArbitrumHubCalls(
-      swap,
-      destination,
-      cls,
-      { bridgeRecipient, bridgeRecipientWallet },
-    );
+    const { calls, minAmountOut } = native
+      ? { calls: [], minAmountOut: BigInt(swap.evm_expected_sats) }
+      : await this.#fetchArbitrumHubCalls(swap, destination, cls, {
+          bridgeRecipient,
+          bridgeRecipientWallet,
+        });
     const result = await claimViaSigner({
       preimage: stored.preimage,
       secretKey: hexToBytes(this.#getClaimEvmSigningKey(stored)),
@@ -3260,12 +3270,20 @@ export class Client {
     return result;
   }
 
+  /** Whether an EVM claim can use the existing automatic sponsorship path. */
+  canSponsorClaim(swap: GetSwapResponse): boolean {
+    return (
+      (swap.direction === "arkade_to_evm" ||
+        swap.direction === "bitcoin_to_evm" ||
+        swap.direction === "lightning_to_evm") &&
+      swap.evm_chain_id !== 30 &&
+      swap.evm_chain_id !== 31
+    );
+  }
+
   /**
-   * Claims an Arkade-to-EVM swap gaslessly via the server.
-   *
-   * The SDK builds the EIP-712 digest, signs it with the swap's internally
-   * derived EVM key, and sends the signature + secret to the server. The
-   * server submits the `coordinator.redeemAndExecute` transaction.
+   * Claims through the existing server relay or configured Arbitrum UserOp.
+   * Rootstock requires the payout wallet, using RIF Relay when configured.
    *
    * @param id - The UUID of the swap.
    * @param destination - The EVM address where tokens should be sent.
@@ -3289,11 +3307,18 @@ export class Client {
     } = {},
   ): Promise<ClaimGaslessResult> {
     const { stored, swap } = await this.#loadEvmClaimSwap(id);
-
     // Where clients claim through RIF Relay the server does not relay the
     // claim, and the receiving wallet has to sign it.
     if (await this.#rifRelayForClaim(swap)) {
       throw new WalletClaimRequiredError(id, swap.evm_chain_id);
+    }
+
+    if (swap.evm_chain_id === 30 || swap.evm_chain_id === 31) {
+      throw new WalletClaimRequiredError(
+        id,
+        swap.evm_chain_id,
+        "Rootstock RIF sponsorship is not configured. Call claimEvmWithSigner() with the payout wallet; the user pays claim gas.",
+      );
     }
 
     // Client-side claim via a paymaster-sponsored UserOp. Covers Arbitrum-hub
@@ -6728,7 +6753,7 @@ export class Client {
     },
   ): Promise<{ txHash: string; cctp?: CctpFundSwapResult }> {
     // A native lock (RBTC on Rootstock) is one payable transaction to the
-    // native coordinator: no token approval, no Permit2, no server calldata.
+    // native HTLC: no token approval, no Permit2, no server calldata.
     // The lock family is pinned on the swap at creation.
     {
       const stored = await this.#swapStorage?.get(swapId);
@@ -7123,8 +7148,8 @@ export class Client {
   }
 
   /**
-   * Fund a native lock: `HTLCNativeCoordinator.executeAndCreate` with no
-   * calls and the quoted amount as the transaction value. The amount is
+   * Fund a native lock directly with `HTLCNative.create` and the quoted
+   * amount as the transaction value. The amount is
    * pinned on the swap (`evm_expected_sats`, in wei): there is no DEX leg,
    * so nothing is re-quoted at funding time.
    */
@@ -7155,8 +7180,20 @@ export class Client {
       sourceTokenAddress: NATIVE_TOKEN_ADDRESS,
     });
 
-    const encoded = encodeNativeExecuteAndCreate(swap.evm_coordinator_address, {
-      calls: [],
+    if (swap.evm_coordinator_address.toLowerCase() !== NATIVE_TOKEN_ADDRESS) {
+      throw new Error(
+        "This legacy Rootstock swap requires coordinator funding. Create a new swap with the updated backend before funding.",
+      );
+    }
+    if (
+      signer.address.toLowerCase() !== swap.client_evm_address?.toLowerCase()
+    ) {
+      throw new Error(
+        "Connect the source wallet recorded on this swap to fund RBTC.",
+      );
+    }
+    const encoded = encodeNativeCreate({
+      htlcAddress: swap.evm_htlc_address,
       preimageHash: hashLock,
       amount,
       claimAddress: swap.server_evm_address,
@@ -7187,7 +7224,7 @@ export class Client {
       htlcAddress: swap.evm_htlc_address,
       preimageHash: hashLock,
       claimAddress: swap.server_evm_address,
-      coordinatorAddress: swap.evm_coordinator_address,
+      coordinatorAddress: signer.address,
       token: NATIVE_TOKEN_ADDRESS,
     });
   }

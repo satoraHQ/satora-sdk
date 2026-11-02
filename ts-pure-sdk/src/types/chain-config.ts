@@ -35,7 +35,7 @@ export interface ChainConfigEntry {
   /**
    * Where a native lock on this chain is claimed: RIF Relay, from a smart
    * wallet owned by the claim destination, relayer paid out of the claimed
-   * coin. Absent = the server relays the claim (`claim()`).
+   * coin. Absent on Rootstock = the payout wallet submits and pays gas.
    */
   rif_relay?: RifRelayConfig;
 }

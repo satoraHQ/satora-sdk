@@ -71,7 +71,11 @@ export type SwapWorkerOptions = {
    * Resolve once submitted. OMIT for observe-only mode: hints still trigger
    * chain re-verifies (fast, cheap derivations), but nothing is ever run.
    */
-  execute?: (swapId: string, actionId: SwapActionId) => Promise<void>;
+  execute?: (
+    swapId: string,
+    actionId: SwapActionId,
+    actions: SwapActions,
+  ) => Promise<void>;
   /**
    * Surface an action that needs the user rather than being auto-run — a manual
    * `fund`, a refund the user must confirm, or a claim whose retries are spent.
@@ -232,7 +236,7 @@ export class SwapWorker {
     const actionId = actions.recommended;
     if (!actionId) return;
     this.#executing.add(swapId);
-    void execute(swapId, actionId)
+    void execute(swapId, actionId, actions)
       .then(() => this.#cancelRetry(swapId)) // submitted — reset the attempt budget
       .catch((error) => {
         if (needsWallet(error)) {

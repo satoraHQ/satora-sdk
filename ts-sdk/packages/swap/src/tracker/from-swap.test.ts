@@ -541,3 +541,25 @@ describe("swapToTracked", () => {
     ).toBeUndefined();
   });
 });
+
+describe("direct native source funding", () => {
+  it("observes the source wallet as sender while preserving legacy coordinator senders", () => {
+    const response = {
+      ...arkadeEvmFields,
+      direction: "evm_to_lightning" as const,
+      evm_chain_id: 30,
+      evm_htlc_kind: "native" as const,
+      evm_coordinator_address: "0x0000000000000000000000000000000000000000",
+      wbtc_address: "0x0000000000000000000000000000000000000000",
+    };
+    const direct = swapToTracked(stored(response));
+    expect(direct?.clientHtlc).toMatchObject({
+      sender: "0xclient",
+      expectedToken: response.wbtc_address,
+    });
+    const legacy = swapToTracked(
+      stored({ ...response, evm_coordinator_address: "0xcoordinator" }),
+    );
+    expect(legacy?.clientHtlc).toMatchObject({ sender: "0xcoordinator" });
+  });
+});

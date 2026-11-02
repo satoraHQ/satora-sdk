@@ -5,20 +5,20 @@ import {
   type GaslessSwapResponse,
 } from "../src/redeem/gasless.js";
 
-/** A native-lock swap: the claim shape with the fewest fields. */
+/** A direct ERC20 payout retains the backend relay and its idempotency. */
 const swap = {
   id: "8d40ac5a-3b2a-4c1a-ba2e-5448ec6dcd34",
-  evm_htlc_kind: "native",
+  evm_htlc_kind: "erc20",
   evm_htlc_address: "0x18123a31261a76c74c82ed2f8346002caa78ab39",
   evm_coordinator_address: "0x447a4cd711ce66d25c7008d26d5f09ca7d621f48",
-  evm_chain_id: 30,
+  evm_chain_id: 137,
   evm_expected_sats: "1000000000000",
   server_evm_address: "0x3333333333333333333333333333333333333333",
   evm_refund_locktime: 1_800_000_000,
-  evm_htlc_version: 1,
-  wbtc_address: "0x0000000000000000000000000000000000000000",
+  evm_htlc_version: 4,
+  wbtc_address: "0x1111111111111111111111111111111111111111",
   target_token: {
-    token_id: "0x0000000000000000000000000000000000000000",
+    token_id: "0x1111111111111111111111111111111111111111",
   },
 } as unknown as GaslessSwapResponse;
 

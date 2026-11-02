@@ -1,6 +1,7 @@
 import {
   Client as LegacyClient,
   type StoredSwap,
+  WalletClaimRequiredError,
 } from "@lendasat/lendaswap-sdk-pure";
 import { describe, expect, it, vi } from "vitest";
 import type { HtlcObservation } from "./actions/types.js";
@@ -11,6 +12,8 @@ import {
   htlcKey,
   type Ledger,
 } from "./contracts/types.js";
+import { HintTracker } from "./hints/hint-tracker.js";
+import { WsStatusSource } from "./hints/ws-status-source.js";
 
 /** A monitor that records registrations and can replay chain observations. */
 class FakeManager implements ContractManager {
@@ -174,6 +177,64 @@ describe("Client bitcoinMinConfirmations", () => {
 });
 
 describe("Client tracking", () => {
+  it.each([
+    30, 31,
+  ])("surfaces a wallet-required claim only once on Rootstock chain %s", async (chainId) => {
+    const stored = {
+      ...arkadeEvmSwap,
+      response: {
+        ...arkadeEvmSwap.response,
+        evm_chain_id: chainId,
+        evm_htlc_kind: "native",
+        status: "serverfunded",
+        vhtlc_refund_locktime: Math.floor(Date.now() / 1000) + 7200,
+        evm_refund_locktime: Math.floor(Date.now() / 1000) + 3600,
+      },
+    } as StoredSwap;
+    const legacy = fakeLegacy([stored]);
+    const claim = vi.fn(async () => {
+      throw new WalletClaimRequiredError("swap-1", chainId);
+    });
+    Object.assign(legacy, {
+      claim,
+      getStoredSwap: async () => stored,
+      canSponsorClaim: () => false,
+    });
+    const onActionRequired = vi.fn();
+    const start = vi.spyOn(HintTracker.prototype, "startTracking");
+    const openWs = vi
+      .spyOn(WsStatusSource.prototype, "start")
+      .mockImplementation(() => {});
+    const client = new Client(legacy, {
+      enabled: true,
+      serverUrl: "https://example.test",
+      refreshIntervalMs: 0,
+      autoClaim: { onActionRequired },
+    });
+    try {
+      await client.startTracking();
+      await vi.waitFor(() => expect(onActionRequired).toHaveBeenCalledTimes(1));
+      const tracker = start.mock.contexts[0] as HintTracker;
+      for (let i = 0; i < 3; i++) {
+        await tracker.applyHint("swap-1", {
+          status: "serverfunded",
+          force: true,
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      expect(onActionRequired).toHaveBeenCalledTimes(1);
+      expect(onActionRequired).toHaveBeenCalledWith(
+        "swap-1",
+        expect.objectContaining({ recommended: "claim" }),
+      );
+      expect(claim).toHaveBeenCalledOnce();
+    } finally {
+      client.stopTracking();
+      start.mockRestore();
+      openWs.mockRestore();
+    }
+  });
+
   it("rejects startTracking when tracking is disabled", () => {
     const client = new Client(fakeLegacy([]), { enabled: false });
     return expect(client.startTracking()).rejects.toThrow(/disabled/);

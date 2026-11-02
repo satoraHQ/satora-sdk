@@ -456,6 +456,12 @@ export class Client {
   }
 
   /** Delegated to the legacy client (migration checkpoint). */
+  canSponsorClaim(
+    ...args: Parameters<LegacyClient["canSponsorClaim"]>
+  ): boolean {
+    return this.#legacy.canSponsorClaim(...args);
+  }
+
   claimEvmWithSigner(
     ...args: Parameters<LegacyClient["claimEvmWithSigner"]>
   ): ReturnType<LegacyClient["claimEvmWithSigner"]> {

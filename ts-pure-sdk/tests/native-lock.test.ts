@@ -48,7 +48,7 @@ const AMOUNT_WEI = 100_000_000_000_000n;
  * {@link REAL_LOG} as `HTLCNative` emits it: the same layout with the asset
  * word zeroed (the lock is the chain's coin) and the amount in wei.
  */
-function nativeLog(sender = COORDINATOR): ReceiptLog {
+function nativeLog(sender = SIGNER_ADDRESS): ReceiptLog {
   const log = logFrom(sender);
   const words = log.data.slice(2).match(/.{64}/g) ?? [];
   words[0] = "0".repeat(64);
@@ -60,9 +60,11 @@ function nativeSwapResponse(overrides: { fundTxid?: string | null } = {}) {
   return {
     ...(swapResponse({
       direction: "evm_to_lightning",
+      clientEvmAddress: SIGNER_ADDRESS,
       fundTxid: overrides.fundTxid,
     }) as object),
     evm_chain_id: 30,
+    evm_coordinator_address: NATIVE_TOKEN_ADDRESS,
     evm_htlc_kind: "native",
     evm_expected_sats: AMOUNT_WEI.toString(),
     source_amount: AMOUNT_WEI.toString(),
@@ -172,7 +174,7 @@ describe("fundSwap on a native lock", () => {
     return { client, storage };
   }
 
-  it("sends one payable executeAndCreate and never asks for Permit2 params", async () => {
+  it("funds the HTLC directly and never asks for Permit2 params", async () => {
     const fetchMock = serverAnswering({ swap: nativeSwapResponse() });
     const { client, storage } = await unfundedClient();
     const sent: Array<{
@@ -201,19 +203,27 @@ describe("fundSwap on a native lock", () => {
 
     expect(txHash).toBe(SENT);
     expect(sent).toHaveLength(1);
-    expect(sent[0].to).toBe(COORDINATOR);
+    expect(sent[0].to).toBe(HTLC);
     expect(sent[0].value).toBe(AMOUNT_WEI);
     // Rootstock rejects typed transactions
     expect(sent[0].type).toBe("legacy");
-    expect(sent[0].data.startsWith(NATIVE_EXECUTE_AND_CREATE_SELECTOR)).toBe(
-      true,
+    expect(sent[0].data).toBe(
+      encodeFunctionData({
+        abi: [
+          parseAbiItem(
+            "function create(bytes32 preimageHash, address claimAddress, uint256 timelock) payable",
+          ),
+        ],
+        functionName: "create",
+        args: [HASH_LOCK, SERVER, BigInt(TIMELOCK)],
+      }),
     );
     // simulated with the same value, so a short wallet fails before signing
     expect(simulated).toHaveLength(1);
     expect(simulated[0].value).toBe(AMOUNT_WEI);
     expect(await storage.get(SWAP_ID)).toMatchObject({
       evmFundTxid: SENT,
-      evmCoordinatorAddress: COORDINATOR,
+      evmCoordinatorAddress: SIGNER_ADDRESS,
     });
     for (const call of fetchMock.mock.calls) {
       expect(String(call[0])).not.toContain("swap-and-lock-calldata");
@@ -265,7 +275,7 @@ describe("refundSwap on a native lock", () => {
     );
 
     const result = await client.refundSwap(SWAP_ID, {
-      signer: signerWith({ chainId: 30, logs: [nativeLog()] }),
+      signer: signerWith({ chainId: 30, logs: [nativeLog(COORDINATOR)] }),
     });
 
     expect(result.success).toBe(true);

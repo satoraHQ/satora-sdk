@@ -263,12 +263,12 @@ export type NativeRedeemDigestParams = Omit<RedeemDigestParams, "token">;
 
 /**
  * Builds the EIP-712 digest a claimant signs for a native-coin lock
- * (`HTLCNative.redeemBySig`, relayed through `HTLCNativeCoordinator`).
+ * (`HTLCNative.redeemBySig`).
  *
  * Mirrors {@link buildRedeemDigest} with the domain name `HTLCNative` and the
- * token-less `Redeem` struct. The server relays a fixed claim shape: no calls
- * (`callsHash` of an empty array), `sweepToken` = {@link NATIVE_TOKEN_ADDRESS},
- * `minAmountOut` = the locked amount, `caller` = the native coordinator.
+ * token-less `Redeem` struct. For direct wallet claims, `caller` and
+ * `destination` must both name the payout wallet: the deployed HTLC pays
+ * its caller. No coordinator or backend relay is involved.
  */
 export function buildNativeRedeemDigest(
   params: NativeRedeemDigestParams,

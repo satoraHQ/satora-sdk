@@ -258,7 +258,11 @@ export function swapToTracked(stored: StoredSwap): TrackedSwap | undefined {
               : lockedTokenFallback(r.evm_chain_id, r.network),
           // The coordinator created the HTLC on the client's behalf, so it
           // is the lock's sender (refund address), as on evm_to_lightning.
-          sender: r.evm_coordinator_address,
+          sender:
+            r.evm_htlc_kind === "native" &&
+            r.evm_coordinator_address.toLowerCase() === NATIVE_TOKEN_ADDRESS
+              ? (r.client_evm_address ?? undefined)
+              : r.evm_coordinator_address,
           timelockSec: r.evm_refund_locktime,
           createdAt: r.created_at,
         }),
@@ -304,7 +308,11 @@ export function swapToTracked(stored: StoredSwap): TrackedSwap | undefined {
           token: r.wbtc_address,
           // The coordinator created the HTLC on the client's behalf, so it
           // is the lock's sender (refund address).
-          sender: r.evm_coordinator_address,
+          sender:
+            r.evm_htlc_kind === "native" &&
+            r.evm_coordinator_address.toLowerCase() === NATIVE_TOKEN_ADDRESS
+              ? (r.client_evm_address ?? undefined)
+              : r.evm_coordinator_address,
           timelockSec: r.evm_refund_locktime,
           createdAt: r.created_at,
         }),
@@ -399,7 +407,11 @@ export function swapToTracked(stored: StoredSwap): TrackedSwap | undefined {
           claimAddress: r.server_evm_address, // the server claims the client's EVM HTLC
           expectedSats: r.evm_expected_sats,
           token: r.wbtc_address,
-          sender: r.evm_coordinator_address, // the coordinator locks on the client's behalf
+          sender:
+            r.evm_htlc_kind === "native" &&
+            r.evm_coordinator_address.toLowerCase() === NATIVE_TOKEN_ADDRESS
+              ? (r.client_evm_address ?? undefined)
+              : r.evm_coordinator_address, // the coordinator locks on the client's behalf
           timelockSec: r.evm_refund_locktime,
           createdAt: r.created_at,
         }),

@@ -510,18 +510,20 @@ async function rifResponse<T>(response: Response, path: string): Promise<T> {
 }
 
 /**
- * The swap's claim goes through RIF Relay and needs the claim destination's
- * wallet to sign: `claim()` cannot do it unattended. Call
+ * The swap's claim needs the claim destination's wallet to sign, through
+ * RIF Relay or paying its own gas: `claim()` cannot do it unattended. Call
  * `claimEvmWithSigner(id, signer)` with that wallet.
  */
 export class WalletClaimRequiredError extends Error {
   constructor(
     readonly swapId: string,
     readonly chainId: number,
+    message?: string,
   ) {
     super(
-      `Swap ${swapId} is claimed through RIF Relay on chain ${chainId}: ` +
-        "call claimEvmWithSigner with the wallet that receives the coin.",
+      message ??
+        `Swap ${swapId} is claimed through RIF Relay on chain ${chainId}: ` +
+          "call claimEvmWithSigner with the wallet that receives the coin.",
     );
     this.name = "WalletClaimRequiredError";
   }

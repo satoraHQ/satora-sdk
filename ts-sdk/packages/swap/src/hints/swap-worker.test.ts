@@ -149,7 +149,7 @@ describe("SwapWorker", () => {
     const { tracker, worker, execute } = setup();
     worker.start();
     tracker.emit("s1", acts("claim"));
-    expect(execute).toHaveBeenCalledWith("s1", "claim");
+    expect(execute).toHaveBeenCalledWith("s1", "claim", acts("claim"));
   });
 
   it("hands a claim that needs the user's wallet over once, without retrying", async () => {
