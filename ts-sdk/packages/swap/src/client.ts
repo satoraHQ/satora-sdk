@@ -954,8 +954,14 @@ export class Client {
         await tracker.track(swap);
         // On the hint feed from the start: the worker subscribes a swap on its
         // first emitted action, which a swap on a chain without `eth_getLogs`
-        // (Rootstock's public node) never produces while unfunded.
-        this.#worker?.subscribe([swap.swapId]);
+        // (Rootstock's public node) never produces while unfunded. Only while
+        // the tracker still holds it: `track` returns normally for a swap it
+        // already saw through to a terminal action (or unregistered on a
+        // terminal first derivation), and the worker dropped that swap's
+        // subscription — re-adding it would leak one of the feed's 256 slots
+        // on every create.
+        if (tracker.trackedSwapIds().includes(swap.swapId))
+          this.#worker?.subscribe([swap.swapId]);
       } catch (error) {
         console.warn(`Client: tracking swap ${swap.swapId} failed:`, error);
       }
@@ -971,9 +977,14 @@ export class Client {
    * targeted read moves the swap to `clientfunded` at once. Fire-and-forget:
    * the funding succeeded whatever the re-verify does, and a swap that is not
    * tracked is a no-op.
+   *
+   * Chain-verified tracking only: a hints-only tracker has no chain to read,
+   * its `applyHint` re-fetches the server's stored status, which lags the
+   * lock by the same server-side delay this works around.
    */
   #reverifyAfterFunding(swapId: unknown): void {
-    if (typeof swapId !== "string" || !this.#tracker) return;
+    if (typeof swapId !== "string" || !(this.#tracker instanceof SwapTracker))
+      return;
     void this.#tracker.applyHint(swapId).catch((error) => {
       console.warn(
         `Client: re-verify after funding ${swapId} failed (the tracker's next read catches up):`,

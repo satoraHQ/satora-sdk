@@ -356,6 +356,97 @@ describe("Client tracking", () => {
     client.stopTracking();
   });
 
+  it("skips the post-funding re-verify on hints-only tracking (nothing on chain to read)", async () => {
+    const getSwap = vi.fn(async () => ({ status: "pending" }));
+    const legacy = fakeLegacy([arkadeEvmSwap]);
+    Object.assign(legacy, {
+      getSwap,
+      fundSwap: async () => ({ txHash: "0xfunded" }),
+    });
+    const client = new Client(legacy, { enabled: true, refreshIntervalMs: 0 });
+    await client.startTracking();
+    await client.fundSwap("swap-1", {} as Parameters<Client["fundSwap"]>[1]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // A HintTracker's applyHint would only re-fetch the server's stored status.
+    expect(getSwap).not.toHaveBeenCalled();
+    client.stopTracking();
+  });
+
+  it("does not re-subscribe a finished swap to the hint feed on a later create", async () => {
+    const m = managers();
+    m.arkade.now = 1;
+    m.evm.now = 1;
+    // Its own hash lock, so its legs are distinct HTLCs the fakes have not
+    // seen settle.
+    const second = {
+      response: {
+        ...(arkadeEvmSwap as { response: object }).response,
+        id: "swap-2",
+        hash_lock:
+          "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+      },
+    } as unknown as StoredSwap;
+    const swaps: StoredSwap[] = [arkadeEvmSwap];
+    const legacy = Object.create(LegacyClient.prototype) as LegacyClient;
+    Object.assign(legacy, {
+      listAllSwaps: async () => swaps,
+      createArkadeToEvmSwapGeneric: async () => {
+        swaps.push(second);
+        return { response: { id: "swap-2" } };
+      },
+    });
+    const frames: { op: string; args: string[] }[] = [];
+    const sockets: FakeSocket[] = [];
+    class FakeSocket {
+      onopen: (() => void) | null = null;
+      onmessage: ((event: { data: unknown }) => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: ((event: unknown) => void) | null = null;
+      constructor() {
+        sockets.push(this);
+      }
+      send(data: string): void {
+        frames.push(JSON.parse(data));
+      }
+      close(): void {}
+    }
+    const client = new Client(legacy, {
+      ...withManagers(m.map),
+      serverUrl: "http://swap.test",
+      webSocketFactory: () => new FakeSocket(),
+    });
+    await client.startTracking();
+    sockets[0]?.onopen?.();
+
+    // swap-1 completes on chain: both legs claimed → terminal → the worker
+    // drops its subscription.
+    for (const ref of m.arkade.refs.values()) m.arkade.emit(ref, "spent_claim");
+    for (const ref of m.evm.refs.values()) m.evm.emit(ref, "spent_claim");
+    await vi.waitFor(() =>
+      expect(
+        frames.some((f) => f.op === "unsubscribe" && f.args.includes("swap-1")),
+      ).toBe(true),
+    );
+    const subscribesBefore = frames.filter(
+      (f) => f.op === "subscribe" && f.args.includes("swap-1"),
+    ).length;
+
+    // A later create re-syncs every stored swap, including the finished one.
+    await client.createArkadeToEvmSwapGeneric(
+      {} as Parameters<Client["createArkadeToEvmSwapGeneric"]>[0],
+    );
+    await vi.waitFor(() =>
+      expect(
+        frames.some((f) => f.op === "subscribe" && f.args.includes("swap-2")),
+      ).toBe(true),
+    );
+    expect(
+      frames.filter((f) => f.op === "subscribe" && f.args.includes("swap-1"))
+        .length,
+    ).toBe(subscribesBefore);
+    client.stopTracking();
+  });
+
   it("rejects creating a swap with an unreachable leg (throw-on-create)", async () => {
     const m = managers();
     m.evm.observable = false; // the created swap's EVM chain has no reader
