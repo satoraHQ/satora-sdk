@@ -1,5 +1,5 @@
 //! Local-chain E2E tests against freshly built repository contracts and a fresh
-//! Anvil per test. No fork RPC, private credentials, Docker or production funds.
+//! Docker Anvil per test. No fork RPC, private credentials or production funds.
 //! API snapshots and the quote response are fixtures; no chain RPC is mocked.
 //! Run `scripts/e2e/test-rust-sdk-local.sh` from the repository root.
 #![cfg(feature = "gasless")]

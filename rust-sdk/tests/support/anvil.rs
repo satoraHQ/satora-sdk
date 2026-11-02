@@ -17,10 +17,11 @@ use lendaswap_sdk::evm::U256;
 use serde_json::Value;
 use serde_json::json;
 use std::path::PathBuf;
-use std::process::Child;
 use std::process::Command;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 pub const MNEMONIC: &str =
@@ -39,15 +40,19 @@ sol! {
         function create(bytes32 preimageHash, uint256 amount, address token, address claimAddress, uint256 timelock) external;
     }
 }
-struct Process(Child);
-impl Drop for Process {
+struct AnvilContainer(String);
+impl Drop for AnvilContainer {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        let _ = Command::new(foundry())
+            .args(["anvil-stop", &self.0])
+            .status();
     }
 }
+fn foundry() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/e2e/foundry.sh")
+}
 pub struct Fixture {
-    _process: Process,
+    _container: AnvilContainer,
     pub directory: tempfile::TempDir,
     pub url: url::Url,
     http: reqwest::Client,
@@ -84,25 +89,28 @@ fn artifact(relative: &str) -> TestResult<Vec<u8>> {
 }
 impl Fixture {
     pub async fn new() -> TestResult<Self> {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-        let port = listener.local_addr()?.port();
-        drop(listener);
-        let process = Process(
-            Command::new(std::env::var_os("ANVIL_BIN").unwrap_or_else(|| "anvil".into()))
-                .args([
-                    "--host",
-                    "127.0.0.1",
-                    "--port",
-                    &port.to_string(),
-                    "--chain-id",
-                    &CHAIN.to_string(),
-                    "--silent",
-                ])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .map_err(|e| format!("start Anvil: {e}; install Foundry first"))?,
-        );
+        static NEXT_CONTAINER: AtomicU64 = AtomicU64::new(0);
+        // The guard exists before startup, so readiness/deployment errors also
+        // remove the container. Killing a `docker run` client would leak its node.
+        let container = AnvilContainer(format!(
+            "satora-e2e-local-{}-{}",
+            std::process::id(),
+            NEXT_CONTAINER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let output = Command::new(foundry())
+            .args([
+                "anvil-start",
+                &container.0,
+                "--chain-id",
+                &CHAIN.to_string(),
+                "--silent",
+            ])
+            .stderr(Stdio::inherit())
+            .output()?;
+        if !output.status.success() {
+            return Err("start Docker Anvil failed; run scripts/e2e/test-rust-sdk-local.sh".into());
+        }
+        let port: u16 = std::str::from_utf8(&output.stdout)?.trim().parse()?;
         let url: url::Url = format!("http://127.0.0.1:{port}").parse()?;
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
@@ -184,7 +192,7 @@ impl Fixture {
             .storage(store.clone())
             .build()?;
         Ok(Self {
-            _process: process,
+            _container: container,
             directory,
             url,
             http,

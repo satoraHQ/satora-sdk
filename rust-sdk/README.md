@@ -932,7 +932,8 @@ Both SDKs pin the same `openapi.json`. Refresh it from the repository root with
 (`x-satora-bitcoin-htlc-version` and the others in `client.rs`).
 
 For real EVM execution tests, run `scripts/e2e/test-rust-sdk-local.sh` from the
-repository root (Rust, Foundry and native build dependencies required). The suite
+repository root (Rust, Docker and native build dependencies required; Foundry runs
+in the pinned Docker image). The suite
 starts isolated Anvil nodes, deploys the repository contracts, and verifies claims,
 Permit2 funding/refunds, restart recovery, tracker execution and reorgs. Swap API
 snapshots/quotes remain fixtures; full-daemon coverage uses the separate Rust
