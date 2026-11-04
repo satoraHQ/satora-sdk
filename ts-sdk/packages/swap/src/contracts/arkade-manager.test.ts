@@ -39,8 +39,9 @@ function vtxo(p: {
   value?: number;
 }): VirtualCoin {
   return {
-    virtualStatus: { state: p.state },
     isSpent: p.state === "spent",
+    isSwept: p.state === "swept",
+    isPreconfirmed: p.state === "preconfirmed",
     arkTxId: p.arkTxId,
     spentBy: p.spentBy,
     value: p.value ?? 1000,

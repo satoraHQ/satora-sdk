@@ -1,4 +1,8 @@
-import { type ArkInfo, CSVMultisigTapscript, networks } from "@arkade-os/sdk";
+import {
+  type ArkadeInfo,
+  CSVMultisigTapscript,
+  networks,
+} from "@arkade-os/sdk";
 import { schnorr } from "@noble/curves/secp256k1.js";
 import { hex } from "@scure/base";
 import { describe, expect, it } from "vitest";
@@ -61,13 +65,13 @@ const outputs = {
 };
 
 describe("escrowArkConfigFromInfo", () => {
-  it("derives config fields from ArkInfo", () => {
+  it("derives config fields from ArkadeInfo", () => {
     const info = {
       signerPubkey: hex.encode(arkadeServerPubKey),
       unilateralExitDelay: 144n,
       checkpointTapscript: hex.encode(serverUnrollScript.script),
       dust: 330n,
-    } as unknown as ArkInfo;
+    } as unknown as ArkadeInfo;
 
     const cfg = escrowArkConfigFromInfo(info);
     expect(cfg.arkadeServerPubKey).toEqual(arkadeServerPubKey);
@@ -81,7 +85,7 @@ describe("escrowArkConfigFromInfo", () => {
       signerPubkey: hex.encode(arkadeServerPubKey),
       unilateralExitDelay: 144n,
       dust: 330n,
-    } as unknown as ArkInfo;
+    } as unknown as ArkadeInfo;
     expect(() => escrowArkConfigFromInfo(info)).toThrow(/checkpointTapscript/);
   });
 });
@@ -107,13 +111,22 @@ describe("buildEscrowReleaseTx", () => {
 
   it("omits the fee output for a zero-fee release and still verifies", () => {
     const escrow = new EscrowVtxoScript(options);
-    const zeroFeeOutputs = { ...outputs, feeSats: 0 };
+    // The buyer takes the whole funding so inputs and outputs still balance.
+    const zeroFeeOutputs = {
+      ...outputs,
+      buyerAmountSats: funding.valueSats,
+      feeSats: 0,
+    };
     const built = buildEscrowReleaseTx(escrow, funding, zeroFeeOutputs, config);
 
     // Only buyer + the P2A anchor; no fee output.
     expect(built.arkTx.outputsLength).toBe(2);
     expect(() =>
-      verifyReleaseArkTx(built, { ...expectation, feeAmountSats: 0n }),
+      verifyReleaseArkTx(built, {
+        ...expectation,
+        buyerAmountSats: BigInt(funding.valueSats),
+        feeAmountSats: 0n,
+      }),
     ).not.toThrow();
   });
 

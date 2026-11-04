@@ -17,6 +17,24 @@ export const ESCROW_2OF2_CONTRACT_TYPE = "escrow-2of2";
 export type EscrowRole = "seller" | "arbiter";
 
 /**
+ * The wallet's x-only pubkey (lowercase hex) from `context.walletDescriptor`.
+ *
+ * Accepts a bare hex key (what the SDK's ContractManager passes for a
+ * `SingleKey` identity) or a static `tr(<key>)` descriptor, with or without a
+ * `#checksum`. HD descriptors carry no single key, so they resolve to
+ * `undefined` (pass `context.role`).
+ */
+function walletKeyFromDescriptor(
+  descriptor: string | undefined,
+): string | undefined {
+  if (!descriptor) return undefined;
+  const match = /^(?:tr\()?([0-9a-fA-F]{64})\)?(?:#[a-z0-9]{8})?$/.exec(
+    descriptor.trim(),
+  );
+  return match?.[1]?.toLowerCase();
+}
+
+/**
  * Resolve the wallet's role by matching its x-only pubkey (hex) against the
  * contract's seller/arbiter params. An explicit `context.role` wins.
  *
@@ -29,7 +47,7 @@ function resolveEscrowRole(
   if (context.role === "seller" || context.role === "arbiter") {
     return context.role;
   }
-  const walletKey = context.walletPubKey?.toLowerCase();
+  const walletKey = walletKeyFromDescriptor(context.walletDescriptor);
   if (!walletKey) return undefined;
   if (walletKey === contract.params.sellerPubKey?.toLowerCase()) {
     return "seller";

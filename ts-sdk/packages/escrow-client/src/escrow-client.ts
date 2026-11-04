@@ -353,8 +353,8 @@ export class EscrowClient {
   }
 
   /** Release the monitor's resources (stop watching, clear listeners). */
-  dispose(): void {
-    this.monitor.dispose();
+  dispose(): Promise<void> {
+    return this.monitor.dispose();
   }
 }
 

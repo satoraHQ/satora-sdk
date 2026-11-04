@@ -40,6 +40,10 @@ import {
   ARKADE_HTLC_SCRIPT_VERSION_STRICT,
   StrictVhtlcScript,
 } from "../strict-vhtlc.js";
+import {
+  attachClaimConditionWitness,
+  ensureConditionWitness,
+} from "./arkade-condition.js";
 
 /** Parameters needed to build an Arkade claim */
 export interface ArkadeClaimParams {
@@ -344,8 +348,9 @@ export async function buildArkadeClaim(
     );
   }
 
+  attachClaimConditionWitness(arkTx, checkpoints, preimageBytes);
+
   // Sign the ark transaction
-  setArkPsbtField(arkTx, 0, ConditionWitness, [preimageBytes]);
   const signedArkTx = await signer.sign(arkTx);
 
   // Submit the transaction to the Arkade server
@@ -359,7 +364,7 @@ export async function buildArkadeClaim(
   const finalCheckpoints = await Promise.all(
     signedCheckpointTxs.map(async (c) => {
       const tx = Transaction.fromPSBT(base64.decode(c));
-      setArkPsbtField(tx, 0, ConditionWitness, [preimageBytes]);
+      ensureConditionWitness(tx, 0, preimageBytes);
       const signedCheckpoint = await signer.sign(tx, [0]);
       return base64.encode(signedCheckpoint.toPSBT());
     }),
@@ -614,9 +619,9 @@ export async function continueArkadeClaim(
           witnessScript: claimScriptByte,
         });
 
-        // Inject preimage into all checkpoint inputs
+        // Inject the preimage into every checkpoint input (no-op if echoed)
         for (let i = 0; i < checkpointTx.inputsLength; i++) {
-          setArkPsbtField(checkpointTx, i, ConditionWitness, [preimageBytes]);
+          ensureConditionWitness(checkpointTx, i, preimageBytes);
         }
 
         // Sign input 0 (the checkpoint input)

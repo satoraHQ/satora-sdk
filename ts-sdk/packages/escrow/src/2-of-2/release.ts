@@ -1,6 +1,6 @@
 import {
   ArkAddress,
-  type ArkInfo,
+  type ArkadeInfo,
   type ArkProvider,
   type ArkTxInput,
   buildOffchainTx,
@@ -37,7 +37,7 @@ export interface EscrowArkConfig {
  * decode the checkpoint tapscript, and map the unilateral-exit delay to a
  * relative timelock.
  */
-export function escrowArkConfigFromInfo(info: ArkInfo): EscrowArkConfig {
+export function escrowArkConfigFromInfo(info: ArkadeInfo): EscrowArkConfig {
   if (!info.checkpointTapscript) {
     throw new Error("Arkade server info is missing checkpointTapscript");
   }

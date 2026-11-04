@@ -4,6 +4,7 @@ import {
   type ContractManagerConfig,
   type ContractVtxo,
   type IContractManager,
+  isContractVtxoEvent,
   type Network,
 } from "@arkade-os/sdk";
 import {
@@ -133,6 +134,7 @@ export class EscrowMonitor {
     return this.manager.onContractEvent((event) => {
       if (
         event.type === "vtxo_received" &&
+        isContractVtxoEvent(event) &&
         event.contract.type === ESCROW_2OF2_CONTRACT_TYPE
       ) {
         cb({
@@ -153,6 +155,7 @@ export class EscrowMonitor {
     return this.manager.onContractEvent((event) => {
       if (
         event.type === "vtxo_spent" &&
+        isContractVtxoEvent(event) &&
         event.contract.type === ESCROW_2OF2_CONTRACT_TYPE
       ) {
         cb({ contract: event.contract, vtxos: event.vtxos });
@@ -161,7 +164,7 @@ export class EscrowMonitor {
   }
 
   /** Release the manager's resources (stop watching, clear listeners). */
-  dispose(): void {
-    this.manager.dispose();
+  dispose(): Promise<void> {
+    return this.manager.dispose();
   }
 }

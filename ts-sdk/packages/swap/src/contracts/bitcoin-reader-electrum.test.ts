@@ -7,9 +7,9 @@ import { type ElectrumRpc, electrumReader } from "./bitcoin-reader-electrum.js";
 
 /** BIP173 test-vector P2WPKH — any address works, the reader only compares scripts. */
 const HTLC_ADDRESS = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
-const HTLC_SCRIPT = btc.OutScript.encode(
-  btc.Address(btc.NETWORK).decode(HTLC_ADDRESS),
-);
+const HTLC_OUT = btc.Address(btc.NETWORK).decode(HTLC_ADDRESS);
+if (!HTLC_OUT) throw new Error("test address must decode");
+const HTLC_SCRIPT = btc.OutScript.encode(HTLC_OUT);
 /** A different output script, for change/unrelated outputs. */
 const OTHER_SCRIPT = hex.decode("0014000000000000000000000000000000000000ffff");
 

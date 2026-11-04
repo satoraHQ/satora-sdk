@@ -67,8 +67,9 @@ class FakeManager implements EscrowManagerLike {
     return Promise.resolve();
   }
 
-  dispose(): void {
+  dispose(): Promise<void> {
     this.disposed = true;
+    return Promise.resolve();
   }
 
   emit(event: ContractEvent): void {

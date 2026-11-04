@@ -52,8 +52,7 @@ export type ArkadeContractManagerDeps = {
 
 /** True when a vtxo is a live funding of the contract (not yet spent). */
 function isFunded(vtxo: VirtualCoin): boolean {
-  const { state } = vtxo.virtualStatus;
-  return state === "preconfirmed" || state === "settled";
+  return !vtxo.isSpent && !vtxo.isSwept;
 }
 
 /**
@@ -66,10 +65,7 @@ function isFunded(vtxo: VirtualCoin): boolean {
  * as `confirmed` forever (never emitting spent_claim/spent_refund).
  */
 function spendTxid(vtxos: VirtualCoin[]): string | undefined {
-  const spent = vtxos.find(
-    (v) =>
-      v.arkTxId || v.spentBy || v.isSpent || v.virtualStatus.state === "spent",
-  );
+  const spent = vtxos.find((v) => v.arkTxId || v.spentBy || v.isSpent);
   return spent?.arkTxId ?? spent?.spentBy;
 }
 

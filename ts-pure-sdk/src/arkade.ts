@@ -82,8 +82,9 @@ export async function getVhtlcAmounts(
   let actualSpendable = 0;
   let expiredSpendable = 0;
   for (const v of spendableResult.vtxos) {
-    const expiry = v.virtualStatus?.batchExpiry;
-    if (expiry && expiry <= now) {
+    const expiry = v.expiresAt?.getTime();
+    // A zero/NaN expiry means "no expiry", not "expired at epoch 0".
+    if (expiry !== undefined && expiry > 0 && expiry <= now) {
       expiredSpendable += v.value;
     } else {
       actualSpendable += v.value;

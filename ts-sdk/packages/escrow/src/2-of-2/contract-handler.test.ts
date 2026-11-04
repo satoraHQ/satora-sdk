@@ -124,7 +124,7 @@ describe("EscrowContractHandler", () => {
     const ctx: PathContext = {
       collaborative: false,
       currentTime: 0,
-      walletPubKey: hex.encode(sellerPubKey),
+      walletDescriptor: hex.encode(sellerPubKey),
       vtxo: fakeVtxo(100),
       blockHeight: 1_000_000,
     };
@@ -147,6 +147,39 @@ describe("EscrowContractHandler", () => {
     expect(sel).not.toBeNull();
     expect(sel?.leaf).toEqual(script.escapeLeaf());
     expect(sel?.sequence).toBe(escapeSeq);
+  });
+
+  it.each([
+    ["bare hex", (k: string) => k],
+    ["tr() descriptor", (k: string) => `tr(${k})`],
+    ["tr() descriptor with checksum", (k: string) => `tr(${k})#abcd1234`],
+  ])("selectPath resolves the arbiter from a %s walletDescriptor", (_label, wrap) => {
+    const script = new EscrowVtxoScript(options);
+    const contract = makeContract();
+    const ctx: PathContext = {
+      collaborative: false,
+      currentTime: 0,
+      walletDescriptor: wrap(hex.encode(arbiterPubKey)),
+      vtxo: fakeVtxo(100),
+      blockHeight: 100 + 4320,
+    };
+
+    const sel = EscrowContractHandler.selectPath(script, contract, ctx);
+    expect(sel?.leaf).toEqual(script.escapeLeaf());
+  });
+
+  it("selectPath ignores a walletDescriptor it cannot parse", () => {
+    const script = new EscrowVtxoScript(options);
+    const contract = makeContract();
+    const ctx: PathContext = {
+      collaborative: false,
+      currentTime: 0,
+      walletDescriptor: "tr([deadbeef/86'/0'/0']xpub6CUGRU.../0/*)",
+      vtxo: fakeVtxo(100),
+      blockHeight: 100 + 4320,
+    };
+
+    expect(EscrowContractHandler.selectPath(script, contract, ctx)).toBeNull();
   });
 
   it("selectPath returns null for the arbiter before the CSV elapses", () => {
