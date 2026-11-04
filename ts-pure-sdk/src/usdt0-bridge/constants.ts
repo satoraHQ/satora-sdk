@@ -41,6 +41,7 @@ export const LZ_EIDS = {
   Stable: 30396,
   MegaETH: 30398,
   Tempo: 30410,
+  Tron: 30420,
 } as const;
 
 export type Usdt0ChainName = keyof typeof LZ_EIDS;
@@ -51,6 +52,7 @@ export type Usdt0ChainName = keyof typeof LZ_EIDS;
 // ============================================================================
 
 export const USDT0_ADDRESSES: Record<string, string> = {
+  Tron: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
   Ethereum: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
   Arbitrum: "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9",
   Polygon: "0xc2132D05D31c914a87C6611C10748AEb04B58e8F",

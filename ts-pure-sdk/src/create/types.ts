@@ -32,7 +32,7 @@ export type EvmChain = "polygon" | "arbitrum" | "ethereum" | string;
 export interface UsdcBridgeParams {
   /** CCTP destination chain name (e.g., "Base", "Ethereum"). */
   targetChain: string;
-  /** Native USDC contract address on the destination chain. */
+  /** Native destination token contract (USDC, USDT0, or TRC-20 USDT). */
   targetTokenAddress: string;
   /**
    * Optional ATA-existence hint for non-EVM destinations (Solana).
@@ -45,7 +45,7 @@ export interface UsdcBridgeParams {
   recipientSetup?: boolean;
   /**
    * Optional claim recipient pinned at create for non-EVM destinations
-   * (Solana): the destination USDC ATA (base58). Persisted on the stored
+   * (Solana USDC ATA or Tron Base58Check address). Persisted on the stored
    * swap so a bare `claim(swapId)` — e.g. background auto-claim — can route
    * the CCTP burn without the caller re-deriving it.
    */

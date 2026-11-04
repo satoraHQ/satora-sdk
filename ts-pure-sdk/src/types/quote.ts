@@ -52,7 +52,7 @@ export interface QuoteResponse {
    */
   net_target_amount: string;
   /**
-   * CCTP bridge forwarding fee in USDC smallest units (6 decimals).
+   * Token-denominated bridge fee (6 decimals for USDC or Tron USDT).
    * Only present when `bridge_target_chain` was specified in the quote
    * request, or for inbound CCTP swaps.
    */

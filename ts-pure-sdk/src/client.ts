@@ -199,6 +199,7 @@ import {
   isLightning,
   isNativeLockTarget,
   isSolanaToken,
+  isTronToken,
   toChainName,
 } from "./tokens.js";
 import {
@@ -226,6 +227,7 @@ import {
   type WireSwapPairsResponse,
 } from "./types/index.js";
 import { USDT0_ADDRESSES } from "./usdt0-bridge/constants.js";
+import { isValidTronAddress } from "./usdt0-bridge/tron.js";
 import {
   CLIENT_AGENT,
   DEFAULT_AA_BUNDLER_URL,
@@ -2394,6 +2396,8 @@ export class Client {
    *   - foreign EVM↔EVM (neither side BTC).
    */
   #canComposeQuote(params: GetQuoteParams): boolean {
+    if (isTronToken(params.sourceChain) || isTronToken(params.targetChain))
+      return false;
     const sourceIsBtc = params.sourceToken.toLowerCase() === "btc";
     const targetIsBtc = params.targetToken.toLowerCase() === "btc";
     if (sourceIsBtc === targetIsBtc) return false; // need exactly one BTC side
@@ -2411,6 +2415,14 @@ export class Client {
     // If the target is a bridge-only chain (e.g. USDC on Base), remap the
     // quote request to the token on Arbitrum (source chain the backend knows).
     // Pass bridge_target_chain so the backend includes the bridge fee.
+    if (isTronToken(params.sourceChain))
+      throw new Error("Tron is a payout-only destination");
+    if (
+      isTronToken(params.targetChain) &&
+      params.targetToken !== USDT0_ADDRESSES.Tron
+    ) {
+      throw new Error("Tron payouts require native USDT");
+    }
     let targetChain = params.targetChain;
     let targetToken = params.targetToken;
     let bridgeTargetChain: string | undefined;
@@ -2893,10 +2905,12 @@ export class Client {
       const bridgeTargetChain = (evmSwap as { bridge_target_chain?: string })
         .bridge_target_chain;
       const isSolanaBridge = bridgeTargetChain === "Solana";
+      const isTronBridge = bridgeTargetChain === "Tron";
 
-      const destination = isSolanaBridge
-        ? evmSwap.client_evm_address
-        : (evmSwap.target_evm_address ?? evmSwap.client_evm_address);
+      const destination =
+        isSolanaBridge || isTronBridge
+          ? evmSwap.client_evm_address
+          : (evmSwap.target_evm_address ?? evmSwap.client_evm_address);
 
       if (!destination) {
         return {
@@ -2911,7 +2925,9 @@ export class Client {
       // `claim(swapId)` (e.g. the background auto-claim worker) route the
       // CCTP burn correctly.
       const bridgeRecipient =
-        options?.bridgeRecipient ?? storedSwap.bridgeRecipient;
+        options?.bridgeRecipient ??
+        storedSwap.bridgeRecipient ??
+        (isTronBridge ? (evmSwap.target_evm_address ?? undefined) : undefined);
       const bridgeRecipientWallet =
         options?.bridgeRecipient !== undefined
           ? options?.bridgeRecipientWallet
@@ -3048,7 +3064,7 @@ export class Client {
     const bridgeTargetChain = (swap as { bridge_target_chain?: string })
       .bridge_target_chain;
     const isSolanaBridge = bridgeTargetChain === "Solana";
-    return isSolanaBridge
+    return isSolanaBridge || bridgeTargetChain === "Tron"
       ? swap.client_evm_address
       : (swap.target_evm_address ?? swap.client_evm_address);
   }
@@ -3307,6 +3323,18 @@ export class Client {
     } = {},
   ): Promise<ClaimGaslessResult> {
     const { stored, swap } = await this.#loadEvmClaimSwap(id);
+    if (
+      (swap as { bridge_target_chain?: string }).bridge_target_chain === "Tron"
+    ) {
+      bridgeRecipient ??=
+        stored.bridgeRecipient ?? swap.target_evm_address ?? undefined;
+      if (!bridgeRecipient || !isValidTronAddress(bridgeRecipient)) {
+        throw new Error(
+          "A valid Tron bridge recipient is required to claim this swap",
+        );
+      }
+    }
+
     // Where clients claim through RIF Relay the server does not relay the
     // claim, and the receiving wallet has to sign it.
     if (await this.#rifRelayForClaim(swap)) {
@@ -5659,6 +5687,21 @@ export class Client {
         ? { chain: tgt.chain, token_id: tgt.token_id }
         : { chain: tgt.chain, token_id: tgt.tokenId };
 
+    if (isTronToken(sourceAsset.chain))
+      throw new Error("Tron is a payout-only destination");
+    const isTronTarget =
+      isTronToken(targetAsset.chain) ||
+      options.bridgeParams?.targetChain === "Tron";
+    if (isTronTarget) {
+      if (
+        isTronToken(targetAsset.chain) &&
+        targetAsset.token_id !== USDT0_ADDRESSES.Tron
+      ) {
+        throw new Error("Tron payouts require native USDT");
+      }
+      if (!isValidTronAddress(options.targetAddress))
+        throw new Error("Invalid Tron payout address");
+    }
     let sourceChain = sourceAsset.chain;
     let sourceTokenId = sourceAsset.token_id;
     let targetChain = targetAsset.chain;
@@ -5704,6 +5747,10 @@ export class Client {
         recipientWallet:
           bridgeParams.recipientWallet ?? options.bridgeRecipientWallet,
       };
+    }
+
+    if (isTronTarget && bridgeParams) {
+      bridgeParams = { ...bridgeParams, recipient: options.targetAddress };
     }
 
     // Mirror of the outbound remap for CCTP-inbound sources: when the user

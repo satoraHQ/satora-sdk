@@ -77,6 +77,7 @@ export const Asset = {
   USDT_POLYGON: { chain: "137", tokenId: USDT_POLYGON } as Asset,
   USDT_ARBITRUM: { chain: "42161", tokenId: USDT_ARBITRUM } as Asset,
   USDT_ETHEREUM: { chain: "1", tokenId: USDT_ETHEREUM } as Asset,
+  USDT_TRON: { chain: "Tron", tokenId: USDT0_ADDRESSES.Tron } as Asset,
 
   // WBTC
   WBTC_POLYGON: { chain: "137", tokenId: WBTC_POLYGON } as Asset,
@@ -219,7 +220,7 @@ export function isSourceEvmChain(chain: string): boolean {
 
 /** Returns true if the chain is a bridge-only destination (no HTLC contracts). */
 export function isBridgeOnlyChain(chain: string): boolean {
-  if (isSolanaToken(chain)) return true;
+  if (isSolanaToken(chain) || isTronToken(chain)) return true;
   return isEvmToken(chain) && !isSourceEvmChain(chain);
 }
 
@@ -252,6 +253,11 @@ export function isNativeLockTarget(chain: string, token: string): boolean {
  */
 export function isEvmSwapSource(chain: string, token: string): boolean {
   return isSourceEvmChain(chain) || isNativeLockTarget(chain, token);
+}
+
+/** Native USDT on Tron is a send-only Legacy Mesh destination. */
+export function isTronToken(chain: string): boolean {
+  return chain.toLowerCase() === "tron";
 }
 
 /**
@@ -337,6 +343,7 @@ export function toChain(str: string): Chain {
   // backend's union, so we cast through. Frontends use the literal "Solana"
   // string for icons / dropdown filters.
   if (c === "solana") return "Solana" as Chain;
+  if (c === "tron") return "Tron";
   // Check new chains by name
   for (const [name, id] of Object.entries(ALL_EVM_CHAIN_IDS)) {
     if (c === name.toLowerCase() || c === id) return id as Chain;
@@ -345,6 +352,7 @@ export function toChain(str: string): Chain {
 }
 
 export function toChainName(chain: Chain): string {
+  if (isTronToken(chain)) return "Tron";
   return CHAIN_ID_TO_NAME[chain] ?? chain.toString();
 }
 
@@ -431,7 +439,8 @@ export function getUsdt0BridgeTokens(): BridgeTokenInfo[] {
     if (sourceChainNames.has(chainName)) continue;
 
     const usdt0Address = USDT0_ADDRESSES[chainName];
-    const chainId = ALL_EVM_CHAIN_IDS[chainName];
+    const chainId =
+      chainName === "Tron" ? "Tron" : ALL_EVM_CHAIN_IDS[chainName];
     if (!usdt0Address || !chainId) continue;
 
     tokens.push({

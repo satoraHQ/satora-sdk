@@ -17,6 +17,7 @@ export type Chain =
   | "Lightning"
   | "Bitcoin"
   | "Solana"
+  | "Tron"
   // EVM chain ids as strings — the wire encoding used by /quote and
   // /swap-pairs. Hub chains the backend prices natively:
   | "1" // Ethereum

@@ -364,6 +364,7 @@ export {
   isSolanaToken,
   isSonicToken,
   isSourceEvmChain,
+  isTronToken,
   type TokenInput,
   toChain,
   toChainName,
@@ -400,6 +401,10 @@ export {
   USDT0_ADDRESSES,
   type Usdt0ChainName,
 } from "./usdt0-bridge/index.js";
+export {
+  isValidTronAddress,
+  tronAddressToBytes32,
+} from "./usdt0-bridge/tron.js";
 // Version metadata, generated from package.json by scripts/sync-version.mjs.
 export {
   CLIENT_AGENT,

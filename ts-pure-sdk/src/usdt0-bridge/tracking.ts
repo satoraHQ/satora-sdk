@@ -72,6 +72,8 @@ interface ScanApiResponse {
 export interface TrackMessageOptions {
   /** Transaction hash of the OFT send on the source chain. */
   txHash: string;
+  /** Select the destination message when a transaction emits several messages. */
+  destinationEid?: number;
   /** LayerZero Scan API base URL. Defaults to mainnet. */
   apiUrl?: string;
   /** Polling interval in ms. Defaults to 5000 (5s). */
@@ -97,6 +99,7 @@ export async function trackMessage(
 ): Promise<LayerZeroMessageResult> {
   const {
     txHash,
+    destinationEid,
     apiUrl = LZ_SCAN_API,
     pollIntervalMs = 5_000,
     timeoutMs = 300_000,
@@ -134,7 +137,16 @@ export async function trackMessage(
         continue;
       }
 
-      const msg = data.data[0];
+      const msg =
+        destinationEid === undefined
+          ? data.data[0]
+          : data.data.find(
+              (message) => message.pathway.dstEid === destinationEid,
+            );
+      if (!msg) {
+        await sleep(pollIntervalMs, signal);
+        continue;
+      }
       const status = msg.status.name;
 
       if (status !== lastStatus) {
@@ -191,6 +203,7 @@ export async function trackMessage(
 export async function getMessageStatus(
   txHash: string,
   apiUrl: string = LZ_SCAN_API,
+  destinationEid?: number,
 ): Promise<LayerZeroMessageResult | null> {
   const url = `${apiUrl}/v1/messages/tx/${txHash}`;
   const response = await fetch(url);
@@ -205,7 +218,11 @@ export async function getMessageStatus(
   const data: ScanApiResponse = await response.json();
   if (data.data.length === 0) return null;
 
-  const msg = data.data[0];
+  const msg =
+    destinationEid === undefined
+      ? data.data[0]
+      : data.data.find((message) => message.pathway.dstEid === destinationEid);
+  if (!msg) return null;
   return {
     guid: msg.guid,
     status: msg.status.name,
