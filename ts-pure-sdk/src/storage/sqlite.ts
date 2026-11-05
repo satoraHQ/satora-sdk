@@ -6,8 +6,13 @@
 
 import Database, { type Database as DatabaseType } from "better-sqlite3";
 import type { GetSwapResponse } from "../api/client.js";
+import type { EvmFundingTerms } from "../evm/funding-pins.js";
 import type { SwapStorage, WalletStorage } from "./index.js";
-import type { StoredSwap } from "./types.js";
+import type {
+  EvmRehashRecord,
+  LightningPaymentHash,
+  StoredSwap,
+} from "./types.js";
 
 /**
  * SQLite-based wallet storage for Node.js.
@@ -130,7 +135,10 @@ export class SqliteSwapStorage implements SwapStorage {
         evm_fund_txid TEXT,
         evm_coordinator_address TEXT,
         cctp_burn_txid TEXT,
-        cctp_burn_last_valid_block_height INTEGER
+        cctp_burn_last_valid_block_height INTEGER,
+        evm_rehashes TEXT,
+        lightning_payment_hash TEXT,
+        evm_funding_terms TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_swaps_stored_at ON swaps(stored_at);
     `);
@@ -140,6 +148,9 @@ export class SqliteSwapStorage implements SwapStorage {
       ["evm_coordinator_address", "TEXT"],
       ["cctp_burn_txid", "TEXT"],
       ["cctp_burn_last_valid_block_height", "INTEGER"],
+      ["evm_rehashes", "TEXT"],
+      ["lightning_payment_hash", "TEXT"],
+      ["evm_funding_terms", "TEXT"],
     ]) {
       if (this.#columns().includes(column)) continue;
       try {
@@ -170,8 +181,8 @@ export class SqliteSwapStorage implements SwapStorage {
     this.#db
       .prepare(
         `INSERT OR REPLACE INTO swaps
-         (swap_id, version, key_index, response, public_key, preimage, preimage_hash, secret_key, stored_at, updated_at, evm_fund_txid, evm_coordinator_address, cctp_burn_txid, cctp_burn_last_valid_block_height)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (swap_id, version, key_index, response, public_key, preimage, preimage_hash, secret_key, stored_at, updated_at, evm_fund_txid, evm_coordinator_address, cctp_burn_txid, cctp_burn_last_valid_block_height, evm_rehashes, lightning_payment_hash, evm_funding_terms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         swap.swapId,
@@ -188,6 +199,11 @@ export class SqliteSwapStorage implements SwapStorage {
         swap.evmCoordinatorAddress ?? null,
         swap.cctpBurnTxid ?? null,
         swap.cctpBurnLastValidBlockHeight ?? null,
+        swap.evmRehashes ? JSON.stringify(swap.evmRehashes) : null,
+        swap.lightningPaymentHash
+          ? JSON.stringify(swap.lightningPaymentHash)
+          : null,
+        swap.evmFundingTerms ? JSON.stringify(swap.evmFundingTerms) : null,
       );
   }
 
@@ -238,6 +254,15 @@ export class SqliteSwapStorage implements SwapStorage {
       cctpBurnTxid: row.cctp_burn_txid ?? undefined,
       cctpBurnLastValidBlockHeight:
         row.cctp_burn_last_valid_block_height ?? undefined,
+      evmRehashes: row.evm_rehashes
+        ? (JSON.parse(row.evm_rehashes) as EvmRehashRecord[])
+        : undefined,
+      lightningPaymentHash: row.lightning_payment_hash
+        ? (JSON.parse(row.lightning_payment_hash) as LightningPaymentHash)
+        : undefined,
+      evmFundingTerms: row.evm_funding_terms
+        ? (JSON.parse(row.evm_funding_terms) as EvmFundingTerms)
+        : undefined,
     };
   }
 
@@ -264,6 +289,9 @@ interface SqliteSwapRow {
   evm_coordinator_address: string | null;
   cctp_burn_txid: string | null;
   cctp_burn_last_valid_block_height: number | null;
+  evm_rehashes: string | null;
+  lightning_payment_hash: string | null;
+  evm_funding_terms: string | null;
 }
 
 /**

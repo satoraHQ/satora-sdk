@@ -1,4 +1,9 @@
-import { decodeEventLog, encodeFunctionData, parseAbiItem } from "viem";
+import {
+  decodeEventLog,
+  encodeFunctionData,
+  parseAbi,
+  parseAbiItem,
+} from "viem";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   encodeDepositsCallData,
@@ -16,6 +21,7 @@ import type { StoredSwap } from "../src/storage/types.js";
 import {
   COORDINATOR,
   FUND_TXID,
+  fundingTerms,
   HASH_LOCK,
   HTLC,
   HTLC_REFUND_SELECTOR,
@@ -172,9 +178,21 @@ describe("calldata encoders", () => {
 });
 
 describe("refundSwap for an EVM-sourced swap", () => {
+  // The coordinator's refundTo of the fixture lock, as the server builds it.
   const calldataFromServer = {
     coordinator_address: COORDINATOR,
-    calldata: "0x29240837aa",
+    calldata: encodeFunctionData({
+      abi: parseAbi([
+        "function refundTo(bytes32,uint256,address,address,uint256)",
+      ]),
+      args: [
+        HASH_LOCK as `0x${string}`,
+        20305n,
+        WBTC as `0x${string}`,
+        SERVER as `0x${string}`,
+        BigInt(TIMELOCK),
+      ],
+    }),
   };
 
   async function clientWith(
@@ -270,7 +288,7 @@ describe("refundSwap for an EVM-sourced swap", () => {
     });
 
     expect(result.success).toBe(true);
-    expect(result.evmRefundData?.data).toBe("0x29240837aa");
+    expect(result.evmRefundData?.data).toBe(calldataFromServer.calldata);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -334,7 +352,7 @@ describe("refundSwap for an EVM-sourced swap", () => {
     const result = await client.refundSwap(SWAP_ID, { signer: legacy });
 
     expect(result.success).toBe(true);
-    expect(result.evmRefundData?.data).toBe("0x29240837aa");
+    expect(result.evmRefundData?.data).toBe(calldataFromServer.calldata);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -456,7 +474,7 @@ describe("refundSwap for an EVM-sourced swap", () => {
     const result = await client.refundSwap(SWAP_ID, { signer: flaky });
 
     expect(result.success).toBe(true);
-    expect(result.evmRefundData?.data).toBe("0x29240837aa");
+    expect(result.evmRefundData?.data).toBe(calldataFromServer.calldata);
     // one refresh for the server's txid, then the calldata
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
@@ -656,7 +674,7 @@ describe("refundSwap for an EVM-sourced swap", () => {
     const result = await client.refundSwap(SWAP_ID);
 
     expect(result.success).toBe(true);
-    expect(result.evmRefundData?.data).toBe("0x29240837aa");
+    expect(result.evmRefundData?.data).toBe(calldataFromServer.calldata);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -688,5 +706,199 @@ describe("refundSwap for an EVM-sourced swap", () => {
       evmCoordinatorAddress: COORDINATOR,
       response: { evm_fund_txid: null },
     });
+  });
+});
+
+describe("refundSwap for a swap on HTLCErc20 v7 / HTLCNative v2", () => {
+  // From v7 the coordinator locks with the depositor as sender: here the
+  // swap's per-swap key, while a different wallet submits the refund.
+  const depositor = deriveEvmAddress("01".repeat(32)).toLowerCase();
+  const refundForAbi = parseAbiItem(
+    "function refundFor(bytes32 preimageHash, uint256 amount, address token, address sender, address claimAddress, uint256 timelock)",
+  );
+  const nativeRefundForAbi = parseAbiItem(
+    "function refundFor(bytes32 preimageHash, uint256 amount, address sender, address claimAddress, uint256 timelock)",
+  );
+  const v7 = (overrides: Partial<StoredSwap> = {}) =>
+    storedSwap({
+      evmFundingTerms: fundingTerms({ htlcKind: "erc20", htlcVersion: 7 }),
+      ...overrides,
+    });
+
+  async function clientWith(
+    stored: StoredSwap,
+    storage = new InMemorySwapStorage(),
+  ) {
+    await storage.store(stored);
+    const client = await Client.builder().withSwapStorage(storage).build();
+    return { client, storage };
+  }
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("accepts the depositor's lock and refunds it with refundFor on the HTLC", async () => {
+    const fetchMock = serverGone();
+    const { client, storage } = await clientWith(v7());
+    const signer = signerWith({ logs: [logFrom(depositor)] });
+
+    const result = await client.refundSwap(SWAP_ID, { signer });
+
+    expect(result.success).toBe(true);
+    expect(result.evmRefundData?.to).toBe(HTLC);
+    expect(result.evmRefundData?.recipient).toBe(depositor);
+    expect(result.evmRefundData?.data).toBe(
+      encodeFunctionData({
+        abi: [refundForAbi],
+        args: [
+          HASH_LOCK as `0x${string}`,
+          20305n,
+          WBTC as `0x${string}`,
+          depositor as `0x${string}`,
+          SERVER as `0x${string}`,
+          BigInt(TIMELOCK),
+        ],
+      }),
+    );
+    expect(result.message).toMatch(/The HTLC pays the refund to/);
+    expect(fetchMock).not.toHaveBeenCalled();
+    // The depositor is no coordinator; recording it as one would narrow
+    // the next chain read to the wrong sender on an older deployment.
+    expect((await storage.get(SWAP_ID))?.evmCoordinatorAddress).toBe(
+      COORDINATOR,
+    );
+  });
+
+  it("does not record the depositor as the coordinator", async () => {
+    serverGone();
+    const { client, storage } = await clientWith(
+      v7({ evmCoordinatorAddress: undefined }),
+    );
+    const result = await client.refundSwap(SWAP_ID, {
+      signer: signerWith({ logs: [logFrom(depositor)] }),
+    });
+    expect(result.success).toBe(true);
+    expect((await storage.get(SWAP_ID))?.evmCoordinatorAddress).toBeUndefined();
+  });
+
+  it("builds refundFor for the signer's own lock too, as the server does", async () => {
+    serverGone();
+    const { client } = await clientWith(v7());
+    const result = await client.refundSwap(SWAP_ID, {
+      signer: signerWith({ logs: [logFrom(SIGNER_ADDRESS)] }),
+    });
+    expect(result.success).toBe(true);
+    expect(result.evmRefundData?.to).toBe(HTLC);
+    expect(result.evmRefundData?.recipient).toBe(SIGNER_ADDRESS);
+    expect(result.evmRefundData?.data.slice(0, 10)).toBe(
+      encodeFunctionData({
+        abi: [refundForAbi],
+        args: [
+          HASH_LOCK as `0x${string}`,
+          0n,
+          WBTC as `0x${string}`,
+          SIGNER_ADDRESS as `0x${string}`,
+          SERVER as `0x${string}`,
+          0n,
+        ],
+      }).slice(0, 10),
+    );
+  });
+
+  it("rejects a lock from an unrelated sender or from the coordinator", async () => {
+    serverGone();
+    const stranger = `0x${"5".repeat(40)}`;
+    for (const sender of [stranger, COORDINATOR]) {
+      const { client } = await clientWith(v7());
+      const result = await client.refundSwap(SWAP_ID, {
+        signer: signerWith({ logs: [logFrom(sender)] }),
+      });
+      expect(result.success).toBe(false);
+      expect(result.message).toMatch(/carries no SwapCreated log/);
+      expect(result.message).toContain(depositor);
+      expect(result.message).not.toContain(COORDINATOR);
+    }
+  });
+
+  it("ignores a decoy from another sender next to the depositor's lock", async () => {
+    serverGone();
+    const attacker = "0x1111111111111111111111111111111111111111";
+    const { client } = await clientWith(v7());
+    const result = await client.refundSwap(SWAP_ID, {
+      signer: signerWith({ logs: [logFrom(attacker), logFrom(depositor)] }),
+    });
+    expect(result.success).toBe(true);
+    expect(result.evmRefundData?.recipient).toBe(depositor);
+  });
+
+  it("reads the generation from the server's copy when the terms lack it", async () => {
+    serverGone();
+    const { client } = await clientWith(
+      storedSwap({
+        response: {
+          ...swapResponse(),
+          evm_htlc_kind: "erc20",
+          evm_htlc_version: 7,
+        } as unknown as StoredSwap["response"],
+      }),
+    );
+    const result = await client.refundSwap(SWAP_ID, {
+      signer: signerWith({ logs: [logFrom(depositor)] }),
+    });
+    expect(result.success).toBe(true);
+    expect(result.evmRefundData?.to).toBe(HTLC);
+    expect(result.evmRefundData?.recipient).toBe(depositor);
+  });
+
+  it("refunds a native v2 lock with the native refundFor", async () => {
+    serverGone();
+    const { client } = await clientWith(
+      storedSwap({
+        evmFundingTerms: fundingTerms({ htlcKind: "native", htlcVersion: 2 }),
+      }),
+    );
+    const nativeLog = {
+      ...logFrom(depositor),
+      data: `0x${"0".repeat(64)}${REAL_LOG.data.slice(66)}`,
+    };
+    const result = await client.refundSwap(SWAP_ID, {
+      signer: signerWith({ logs: [nativeLog] }),
+    });
+    expect(result.success).toBe(true);
+    expect(result.evmRefundData?.to).toBe(HTLC);
+    expect(result.evmRefundData?.data).toBe(
+      encodeFunctionData({
+        abi: [nativeRefundForAbi],
+        args: [
+          HASH_LOCK as `0x${string}`,
+          20305n,
+          depositor as `0x${string}`,
+          SERVER as `0x${string}`,
+          BigInt(TIMELOCK),
+        ],
+      }),
+    );
+  });
+
+  it("keeps v6 on the coordinator: its refundTo, and no depositor lock", async () => {
+    serverGone();
+    const v6 = () =>
+      storedSwap({
+        evmFundingTerms: fundingTerms({ htlcKind: "erc20", htlcVersion: 6 }),
+      });
+    const { client } = await clientWith(v6());
+    const ok = await client.refundSwap(SWAP_ID, { signer: signerWith() });
+    expect(ok.success).toBe(true);
+    expect(ok.evmRefundData?.to).toBe(COORDINATOR);
+    expect(ok.evmRefundData?.data.startsWith(REFUND_TO_SELECTOR)).toBe(true);
+    expect(ok.message).not.toMatch(/The HTLC pays/);
+
+    const { client: other } = await clientWith(v6());
+    const rejected = await other.refundSwap(SWAP_ID, {
+      signer: signerWith({ logs: [logFrom(depositor)] }),
+    });
+    expect(rejected.success).toBe(false);
+    expect(rejected.message).toMatch(
+      new RegExp(`created by ${SIGNER_ADDRESS} or ${COORDINATOR}`),
+    );
   });
 });

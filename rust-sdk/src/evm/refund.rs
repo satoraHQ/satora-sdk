@@ -7,6 +7,7 @@ use super::htlc::Htlc;
 use super::*;
 use crate::Client;
 use crate::SwapMetadata;
+use crate::client::check_status;
 use crate::logging::sdk_log;
 use crate::types::EvmHtlcKind;
 use alloy::sol_types::SolCall;
@@ -17,6 +18,8 @@ alloy::sol! {
     // `isActive` keep it as the zero address.
     interface NativeHtlc {
         function refund(bytes32 preimageHash, uint256 amount, address claimAddress, uint256 timelock) external;
+        function refundBySig(bytes32 preimageHash, uint256 amount, uint256 timelock, uint8 v, bytes32 r, bytes32 s) external returns (address claimAddress);
+        function rehash(bytes32 preimageHash, uint256 amount, uint256 timelock, bytes32 newPreimageHash, uint256 newTimelock, uint8 v, bytes32 r, bytes32 s) external returns (address claimAddress, bytes32 newKey);
     }
     interface NativeCoordinator {
         function refundTo(bytes32 preimageHash, uint256 amount, address claimAddress, uint256 timelock) external;
@@ -37,6 +40,44 @@ pub struct EvmSubmission {
     pub id: String,
     pub tx_hash: String,
     pub message: String,
+}
+
+/// `GET /api/swap/{id}/collab-refund-evm/params`: how the swap refunds early.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CollabRefundEvmParams {
+    pub htlc_address: String,
+    pub htlc_version: i64,
+    pub htlc_kind: crate::types::EvmHtlcKind,
+    pub chain_id: u64,
+    pub preimage_hash: String,
+    pub amount: String,
+    pub token: String,
+    pub claim_address: String,
+    pub timelock: u64,
+    /// `direct`: the depositor sends `refundBySig` with the server's signature;
+    /// `coordinator`: the depositor signs `CollabRefund` and the server submits;
+    /// `unavailable`: the swap waits for its timelock.
+    pub refund_path: String,
+}
+
+/// `POST /api/swap/{id}/collab-refund-evm/signature`: the server's `Refund`
+/// signature over the lock's exact terms, valid only from `sender`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CollabRefundEvmSignature {
+    pub id: String,
+    pub htlc_address: String,
+    pub htlc_version: i64,
+    pub htlc_kind: crate::types::EvmHtlcKind,
+    pub chain_id: u64,
+    pub preimage_hash: String,
+    pub amount: String,
+    pub token: String,
+    pub sender: String,
+    pub claim_address: String,
+    pub timelock: u64,
+    pub v: u8,
+    pub r: String,
+    pub s: String,
 }
 
 const SERVER_FUNDING_HEDGE: Duration = Duration::from_secs(2);
@@ -71,9 +112,24 @@ pub(super) async fn verify_funding_receipt(
     if !receipt.success {
         return Err(unavailable(invalid("funding transaction reverted")));
     }
-    let created = matching_creation(&receipt.logs, context, sender, lock_token)
+    let created = match matching_creation(&receipt.logs, context, sender, lock_token)
         .map_err(rejected)?
-        .ok_or_else(|| unavailable(invalid("funding receipt does not contain this HTLC")))?;
+    {
+        Some(created) => created,
+        None => {
+            // The server names the rehash tx as the funding tx once it has
+            // confirmed a move; without the local record of that move the
+            // lock's origin cannot be found from here.
+            if rehashed_into(receipt, context).is_some() {
+                return Err(rejected(invalid(
+                    "the funding transaction moved this lock by a rehash this client has no record of; use the store that holds the swap's rehash history",
+                )));
+            }
+            return Err(unavailable(invalid(
+                "funding receipt does not contain this HTLC",
+            )));
+        }
+    };
     let htlc = EvmHtlc {
         chain_id: context.chain_id,
         address: context.htlc,
@@ -109,6 +165,63 @@ pub(super) async fn verify_funding_receipt(
                 "coordinator depositor does not match this swap",
             )));
         }
+    }
+    Ok(htlc)
+}
+
+/// The `newKey` of a `SwapRehashed` in `receipt` that moved a lock on the
+/// swap's HTLC to its current hash.
+pub(super) fn rehashed_into(receipt: &EvmReceipt, context: &EvmContext) -> Option<B256> {
+    use alloy::sol_types::SolEvent;
+    receipt
+        .logs
+        .iter()
+        .filter(|log| log.address == context.htlc)
+        .filter_map(|log| {
+            super::htlc::SwapRehashed::decode_raw_log_validate(
+                log.topics.iter().copied(),
+                &log.data,
+            )
+            .ok()
+        })
+        .find(|event| event.newPreimageHash == context.hash)
+        .map(|event| event.newKey)
+}
+
+/// The lock a seed recovery saved, checked against its rehash's receipt
+/// again: the record must name the lock that rehash moved to.
+async fn recovered_lock(
+    wallet: &dyn EvmWallet,
+    context: &EvmContext,
+    recovered: &crate::storage::EvmRecoveredLock,
+    lock_token: Address,
+) -> Result<EvmHtlc> {
+    let htlc = EvmHtlc {
+        chain_id: context.chain_id,
+        address: context.htlc,
+        hash_lock: parse(&recovered.hash_lock)?,
+        amount: decimal(&recovered.amount)?,
+        token: parse(&recovered.token)?,
+        sender: parse(&recovered.sender)?,
+        claimer: parse(&recovered.claim_address)?,
+        timelock: recovered.timelock,
+    };
+    if htlc.token != lock_token {
+        return Err(invalid("the recovered lock holds another token"));
+    }
+    let txid = parse::<B256>(&recovered.txid)?;
+    let receipt = wallet.wait_for_receipt(txid).await?;
+    let moved = EvmContext {
+        hash: htlc.hash_lock,
+        ..context.clone()
+    };
+    if receipt.transaction_hash != txid
+        || !receipt.success
+        || rehashed_into(&receipt, &moved) != Some(htlc.key())
+    {
+        return Err(invalid(
+            "the recovered lock is not the one its rehash transaction moved to",
+        ));
     }
     Ok(htlc)
 }
@@ -207,10 +320,19 @@ impl Client {
         let stored = self
             .get_stored_swap(id)?
             .ok_or_else(|| invalid("swap record missing"))?;
-        let context = EvmContext::from_response(&stored.response)?;
-        // Coordinator refundTo pays deposits[key] whoever calls it, so any funded
-        // wallet may submit; HTLC refund pays msg.sender and stays owner-only.
-        if any_submitter && options.coordinator.is_some() {
+        let mut context = EvmContext::from_response(&stored.response)?;
+        // The funding tx created the lock under the terms before any rehash this
+        // client sent; the server's copy follows a move once it confirms it.
+        let rehashes = stored.metadata.evm_rehashes.clone().unwrap_or_default();
+        if let Some(origin) = rehashes.first() {
+            context.hash = parse(&origin.from_hash_lock)?;
+            context.timelock = origin.from_timelock;
+        }
+        let sender = context.lock_sender(options.coordinator);
+        // Reading the lock needs only the right chain. Submitting does not: the
+        // coordinator's refundTo pays deposits[key] whoever calls it, while the
+        // HTLC's refund pays msg.sender, which `refund_evm` enforces at the send.
+        if any_submitter {
             if wallet.chain_id() != context.chain_id {
                 return Err(invalid("wallet chain does not match swap"));
             }
@@ -223,12 +345,29 @@ impl Client {
         if (context.kind == EvmHtlcKind::Native) != options.lock_token.is_zero() {
             return Err(invalid("lock token does not match the swap's HTLC kind"));
         }
+        // A lock recovery verified stands on its own record, whatever the
+        // server reports now; the rehashes this store sent since follow it.
+        if let Some(recovered) = stored
+            .metadata
+            .evm_recovered_lock
+            .as_ref()
+            .filter(|_| context.depositor_is_sender())
+        {
+            return recovered_lock(wallet, &context, recovered, options.lock_token)
+                .await?
+                .after_rehashes(wallet, &rehashes)
+                .await;
+        }
         let value =
             serde_json::to_value(&stored.response).map_err(|e| Error::Decode(e.to_string()))?;
         let local = stored.metadata.evm_fund_txid.as_deref();
         // A replaced funding leaves a stale local hash while the server reports the
         // mined one. The server hash only identifies the transaction to verify.
         let server = value["evm_fund_txid"].as_str();
+        // Recovered from the seed after the server promoted a rehash: the
+        // server's funding tx is the move, and this store has no record of it.
+        let unrecorded_move = rehashes.is_empty() && context.depositor_is_sender();
+        let expected_sats = value["evm_expected_sats"].as_str();
         let context = &context;
         let verify = |hash: String| async move {
             let unavailable = |error| (true, error);
@@ -242,21 +381,39 @@ impl Client {
                     "funding receipt transaction hash mismatch",
                 )));
             }
-            let htlc = verify_funding_receipt(
+            let verified = verify_funding_receipt(
                 wallet,
                 context,
                 &receipt,
-                options.coordinator.unwrap_or(context.owner),
+                sender,
                 options.lock_token,
-                options.coordinator.filter(|_| require_depositor),
+                options
+                    .coordinator
+                    .filter(|coordinator| require_depositor && *coordinator == sender),
             )
-            .await?;
-            Ok((htlc, hash))
+            .await;
+            match (verified, rehashed_into(&receipt, context)) {
+                (Err(_), Some(new_key)) if unrecorded_move && receipt.success => {
+                    let htlc = self
+                        .unrecorded_rehash(
+                            id,
+                            wallet,
+                            context,
+                            options.lock_token,
+                            expected_sats,
+                            new_key,
+                        )
+                        .await
+                        .map_err(|error| (false, error))?;
+                    Ok((htlc, hash, true))
+                }
+                (verified, _) => Ok((verified?, hash, false)),
+            }
         };
         let reason = |(_, error): Unverified| error;
         // Receipt waits on a hash that never mined run until they time out, so
         // candidates are checked at once.
-        let (htlc, hash) = match (server, local) {
+        let (htlc, hash, recovered) = match (server, local) {
             (None, None) => {
                 return Err(invalid(
                     "funding transaction is unknown; refresh or recover this swap",
@@ -317,16 +474,100 @@ impl Client {
                 }
             }
         };
-        if local.is_none_or(|local| !local.eq_ignore_ascii_case(&hash)) {
+        // A verified recovered lock is saved, so later reads, a retry's
+        // rehash and a submitted refund need no server terms again.
+        let recovered = recovered.then(|| crate::storage::EvmRecoveredLock {
+            txid: hash.clone(),
+            hash_lock: htlc.hash_lock.to_string(),
+            timelock: htlc.timelock,
+            amount: htlc.amount.to_string(),
+            token: htlc.token.to_string(),
+            sender: htlc.sender.to_string(),
+            claim_address: htlc.claimer.to_string(),
+        });
+        if recovered.is_some() || local.is_none_or(|local| !local.eq_ignore_ascii_case(&hash)) {
             self.update_swap_metadata(
                 id,
                 SwapMetadata {
                     evm_fund_txid: Some(hash),
+                    evm_recovered_lock: recovered,
                     ..Default::default()
                 },
             )?;
         }
+        htlc.after_rehashes(wallet, &rehashes).await
+    }
+
+    /// The lock a rehash this store has no record of moved to the swap's
+    /// current hash. Its terms come from the server, so they count only if
+    /// they hash to the event's `newKey` with the depositor as sender, and
+    /// that lock is active on chain. The quoted amount is tried first; the
+    /// server's locked amount is asked for only when the quote does not match.
+    async fn unrecorded_rehash(
+        &self,
+        id: &str,
+        wallet: &dyn EvmWallet,
+        context: &EvmContext,
+        lock_token: Address,
+        expected_sats: Option<&str>,
+        new_key: B256,
+    ) -> Result<EvmHtlc> {
+        let lock = |amount| EvmHtlc {
+            chain_id: context.chain_id,
+            address: context.htlc,
+            hash_lock: context.hash,
+            amount,
+            token: lock_token,
+            sender: context.owner,
+            claimer: context.server,
+            timelock: context.timelock,
+        };
+        let matches = |amount: Option<U256>| amount.map(lock).filter(|htlc| htlc.key() == new_key);
+        let quoted = matches(expected_sats.and_then(|sats| decimal(sats).ok()));
+        let htlc = match quoted {
+            Some(htlc) => htlc,
+            // The locked amount can differ from the quote; the server knows it.
+            None => {
+                let locked = match self.collab_refund_evm_params(id).await {
+                    Ok(params) => decimal(&params.amount).ok(),
+                    Err(error) => {
+                        sdk_log!(
+                            self.log.clone().swap_id(id),
+                            Debug,
+                            "client.refundSwap.serverTermsFailed",
+                            "Server lookup of the lock terms failed",
+                            "error" => error.to_string()
+                        );
+                        None
+                    }
+                };
+                matches(locked).ok_or_else(|| {
+                    invalid(
+                        "the server's terms do not match the lock the funding transaction rehashed; use the store that holds the swap's rehash history",
+                    )
+                })?
+            }
+        };
+        if !htlc.is_active(wallet).await? {
+            return Err(invalid(
+                "the lock the funding transaction rehashed is no longer active",
+            ));
+        }
         Ok(htlc)
+    }
+
+    async fn collab_refund_evm_params(&self, id: &str) -> Result<CollabRefundEvmParams> {
+        Ok(check_status(
+            self.api_request(
+                reqwest::Method::GET,
+                self.api_swap_url(id, "collab-refund-evm/params")?,
+            )
+            .send()
+            .await?,
+        )
+        .await?
+        .json::<CollabRefundEvmParams>()
+        .await?)
     }
 
     pub(super) async fn server_funding_hash(
@@ -380,13 +621,18 @@ impl Client {
     ) -> Result<EvmReceipt> {
         tokio::time::timeout(options.timeout, async {
             let _execution = self.evm_execution.lock().await;
-            let metadata = self
+            let stored = self
                 .get_stored_swap(id)?
-                .ok_or_else(|| invalid("swap record missing"))?
-                .metadata;
+                .ok_or_else(|| invalid("swap record missing"))?;
+            let metadata = stored.metadata;
             let pending = pending_refund(&metadata);
+            // The coordinator's refundTo pays deposits[key] whoever calls it, so
+            // any funded wallet may submit it; the HTLC's refund pays msg.sender,
+            // so a lock the owner is the sender of is refunded by the owner only.
+            let context = EvmContext::from_response(&stored.response)?;
+            let any_submitter = context.lock_sender(options.coordinator) != context.owner;
             let htlc = self
-                .read_funded_evm_htlc(id, wallet, &options, pending.is_none(), true)
+                .read_funded_evm_htlc(id, wallet, &options, pending.is_none(), any_submitter)
                 .await?;
             if let Some(hash) = pending {
                 return self.verified_refund(id, wallet, &htlc, parse(hash)?).await;
@@ -407,7 +653,17 @@ impl Client {
             if wallet.block_timestamp().await? < htlc.timelock {
                 return Err(invalid("refund timelock has not expired on chain"));
             }
-            let (to, data) = match (options.coordinator, htlc.token.is_zero()) {
+            // The coordinator refunds only the locks it is the sender of; from
+            // HTLCErc20 v7 / HTLCNative v2 the owner is, and refunds on the HTLC.
+            let via_coordinator = options
+                .coordinator
+                .filter(|coordinator| *coordinator == htlc.sender);
+            if via_coordinator.is_none() && wallet.address() != htlc.sender {
+                return Err(invalid(
+                    "the lock's sender is not this wallet; the HTLC refunds only to msg.sender",
+                ));
+            }
+            let (to, data) = match (via_coordinator, htlc.token.is_zero()) {
                 (Some(coordinator), false) => (
                     coordinator,
                     Coordinator::refundToCall {
@@ -476,6 +732,172 @@ impl Client {
         .await
         .map_err(|_| {
             Error::Timeout("EVM refund timed out; inspect its stored transaction".into())
+        })?
+    }
+
+    /// Refund the swap's funded EVM HTLC before its timelock, with the server's
+    /// consent. On HTLCErc20 v7 / HTLCNative v2 the server signs `Refund` over
+    /// the lock's terms (`POST /api/swap/{id}/collab-refund-evm/signature`) and
+    /// the depositor, `wallet`, sends `refundBySig` on the HTLC: no timelock
+    /// wait, the depositor pays gas. Older deployments refund early through the
+    /// coordinator with a depositor-signed `CollabRefund`, which this SDK does
+    /// not build; they refund after the timelock with
+    /// [`Self::refund_evm_with_wallet`].
+    ///
+    /// The server signs only once it has decided not to fund the swap. Like the
+    /// timelock refund, a submission whose hash is recorded is verified on
+    /// retry, never sent twice.
+    pub async fn collab_refund_evm_with_wallet(
+        &self,
+        id: &str,
+        wallet: &dyn EvmWallet,
+        options: RefundOptions,
+    ) -> Result<EvmReceipt> {
+        self.collab_refund_evm(id, wallet, options, false).await
+    }
+
+    /// With `depositor`, the swap's own depositor pays the gas: the refund is
+    /// refused before anything is reserved when it cannot, and a refund
+    /// reserved without a recorded hash is sent again while the HTLC is active,
+    /// since a second `refundBySig` of a settled lock reverts.
+    pub(super) async fn collab_refund_evm(
+        &self,
+        id: &str,
+        wallet: &dyn EvmWallet,
+        options: RefundOptions,
+        depositor: bool,
+    ) -> Result<EvmReceipt> {
+        tokio::time::timeout(options.timeout, async {
+            // A recorded submission is verified from the chain alone, so a
+            // retry does not depend on the API being up.
+            let _execution = self.evm_execution.lock().await;
+            let metadata = self
+                .get_stored_swap(id)?
+                .ok_or_else(|| invalid("swap record missing"))?
+                .metadata;
+            let pending = pending_refund(&metadata);
+            let htlc = self
+                .read_funded_evm_htlc(id, wallet, &options, false, false)
+                .await?;
+            if let Some(hash) = pending {
+                return self.verified_refund(id, wallet, &htlc, parse(hash)?).await;
+            }
+            if metadata.evm_refund_started == Some(true) && !depositor {
+                return Err(invalid(
+                    "refund submission unresolved; attach its transaction, or release evm_refund_started once nothing was sent",
+                ));
+            }
+            let params = self.collab_refund_evm_params(id).await?;
+            let kind = format!("{:?}", params.htlc_kind).to_lowercase();
+            match params.refund_path.as_str() {
+                "direct" => {}
+                "coordinator" => {
+                    return Err(invalid(format!(
+                        "swap locks on {kind} v{}, whose early refund is a coordinator CollabRefund this SDK does not build; refund after the timelock",
+                        params.htlc_version
+                    )));
+                }
+                _ => {
+                    return Err(invalid(format!(
+                        "swap locks on {kind} v{}, which has no early refund; refund after the timelock",
+                        params.htlc_version
+                    )));
+                }
+            }
+            if htlc.sender != wallet.address() {
+                return Err(invalid(
+                    "the lock's sender is not this wallet; only the depositor can send refundBySig",
+                ));
+            }
+            if !htlc.is_active(wallet).await? {
+                return Err(invalid("HTLC is no longer active"));
+            }
+            let signature = check_status(
+                self.api_request(
+                    reqwest::Method::POST,
+                    self.api_swap_url(id, "collab-refund-evm/signature")?,
+                )
+                .json(&serde_json::json!({ "depositor_address": wallet.address() }))
+                .send()
+                .await?,
+            )
+            .await?
+            .json::<CollabRefundEvmSignature>()
+            .await?;
+            // The server signs the lock as it recorded it; anything else is not
+            // this lock and would revert.
+            let signed = EvmHtlc {
+                chain_id: signature.chain_id,
+                address: parse(&signature.htlc_address)?,
+                hash_lock: parse(&signature.preimage_hash)?,
+                amount: U256::from_str_radix(&signature.amount, 10)
+                    .map_err(|e| Error::Decode(e.to_string()))?,
+                token: if htlc.token.is_zero() {
+                    Address::ZERO
+                } else {
+                    parse(&signature.token)?
+                },
+                sender: parse(&signature.sender)?,
+                claimer: parse(&signature.claim_address)?,
+                timelock: signature.timelock,
+            };
+            if signed != htlc {
+                return Err(invalid(
+                    "the server signed a refund of other terms than this wallet's lock",
+                ));
+            }
+            let (v, r, s) = (
+                signature.v,
+                parse::<B256>(&signature.r)?,
+                parse::<B256>(&signature.s)?,
+            );
+            let data = if htlc.token.is_zero() {
+                NativeHtlc::refundBySigCall {
+                    preimageHash: htlc.hash_lock,
+                    amount: htlc.amount,
+                    timelock: U256::from(htlc.timelock),
+                    v,
+                    r,
+                    s,
+                }
+                .abi_encode()
+            } else {
+                Htlc::refundBySigCall {
+                    preimageHash: htlc.hash_lock,
+                    amount: htlc.amount,
+                    token: htlc.token,
+                    timelock: U256::from(htlc.timelock),
+                    v,
+                    r,
+                    s,
+                }
+                .abi_encode()
+            };
+            let tx = transaction(wallet, htlc.address, data);
+            wallet.call(&tx).await?;
+            if depositor {
+                super::depositor::ensure_gas(wallet, &tx).await?;
+            }
+            self.update_swap_metadata(
+                id,
+                SwapMetadata {
+                    evm_refund_started: Some(true),
+                    ..Default::default()
+                },
+            )?;
+            let hash = wallet.send_transaction(&tx).await?;
+            self.update_swap_metadata(
+                id,
+                SwapMetadata {
+                    evm_refund_txid: Some(hash.to_string()),
+                    ..Default::default()
+                },
+            )?;
+            self.verified_refund(id, wallet, &htlc, hash).await
+        })
+        .await
+        .map_err(|_| {
+            Error::Timeout("collaborative EVM refund timed out; inspect its stored transaction".into())
         })?
     }
 

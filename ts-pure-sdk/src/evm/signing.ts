@@ -72,6 +72,35 @@ export function signEvmDigest(
 }
 
 /**
+ * Signs a message the EIP-191 way (`personal_sign`): the signature is over
+ * `keccak256("\x19Ethereum Signed Message:\n" + len(message) + message)`.
+ *
+ * @param secretKey - 32-byte private key (Uint8Array or hex string)
+ * @param message - The message as text (UTF-8) or raw bytes
+ * @returns The 65-byte `r ‖ s ‖ v` signature as 0x-prefixed hex, `v` 27 or 28
+ */
+export function signEvmMessage(
+  secretKey: Uint8Array | string,
+  message: string | Uint8Array,
+): string {
+  const { v, r, s } = signEvmDigest(secretKey, eip191Digest(message));
+  return `${r}${s.slice(2)}${v.toString(16).padStart(2, "0")}`;
+}
+
+/** `keccak256("\x19Ethereum Signed Message:\n" + len(message) + message)`. */
+export function eip191Digest(message: string | Uint8Array): string {
+  const body =
+    typeof message === "string" ? new TextEncoder().encode(message) : message;
+  const prefix = new TextEncoder().encode(
+    `\x19Ethereum Signed Message:\n${body.length}`,
+  );
+  const whole = new Uint8Array(prefix.length + body.length);
+  whole.set(prefix, 0);
+  whole.set(body, prefix.length);
+  return `0x${bytesToHex(keccak_256(whole))}`;
+}
+
+/**
  * Converts an address to EIP-55 checksummed format.
  */
 function toChecksumAddress(address: string): string {

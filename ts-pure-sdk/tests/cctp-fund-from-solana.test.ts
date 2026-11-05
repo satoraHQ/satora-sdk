@@ -1,6 +1,7 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { base58 } from "@scure/base";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { fundingTerms } from "./evm-funding-fixture.js";
 
 // Everything that touches a chain is mocked: the Solana RPC, IRIS, and the
 // Arbitrum smart account + UserOp. The tests exercise the real instruction
@@ -222,6 +223,10 @@ describe("cctpFundSwapFromSolana", () => {
   const context = { apiClient: {} as never, aa: AA };
   const base = {
     swapId: SWAP_ID,
+    expected: {
+      hashLock: `0x${"11".repeat(32)}`,
+      terms: fundingTerms({ chainId: 42161 }),
+    },
     ownerSigner: evmOwner(),
     rpcUrl: RPC_URL,
     amount: 1_000_000n,

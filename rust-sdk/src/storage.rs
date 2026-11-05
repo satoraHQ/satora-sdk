@@ -23,6 +23,8 @@ mod wallet;
 pub use record::BridgeOperation;
 pub use record::CreatedAmounts;
 pub use record::EvmKeySource;
+pub use record::EvmRecoveredLock;
+pub use record::EvmRehashRecord;
 pub use record::RelayFundingJournal;
 pub use record::RelayFundingOutcome;
 pub use record::StoredSwap;

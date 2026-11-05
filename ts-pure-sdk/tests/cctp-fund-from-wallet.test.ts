@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { fundingTerms } from "./evm-funding-fixture.js";
 
 // The chain-facing primitives of the CCTP-inbound flow. Mocked so the tests
 // exercise the real `cctpFundSwap` and `Client.fundSwap` wiring: which signer
@@ -110,6 +111,10 @@ describe("cctpFundSwap", () => {
     const wallet = walletOnOptimism();
     const result = await cctpFundSwap(context, {
       swapId: SWAP_ID,
+      expected: {
+        hashLock: `0x${"11".repeat(32)}`,
+        terms: fundingTerms({ chainId: 42161 }),
+      },
       signer: wallet,
       ownerSigner: owner,
       amount: 1_000_000n,
@@ -134,6 +139,10 @@ describe("cctpFundSwap", () => {
     const wallet = walletOnOptimism();
     await cctpFundSwap(context, {
       swapId: SWAP_ID,
+      expected: {
+        hashLock: `0x${"11".repeat(32)}`,
+        terms: fundingTerms({ chainId: 42161 }),
+      },
       signer: wallet,
       amount: 1_000_000n,
       maxFee: 100n,
@@ -158,6 +167,10 @@ describe("cctpFundSwap", () => {
 
     await cctpFundSwap(context, {
       swapId: SWAP_ID,
+      expected: {
+        hashLock: `0x${"11".repeat(32)}`,
+        terms: fundingTerms({ chainId: 42161 }),
+      },
       signer: wallet,
       amount: 1_000_000n,
       maxFee: 100n,
@@ -173,6 +186,10 @@ describe("cctpFundSwap", () => {
     const onBurn = vi.fn();
     await cctpFundSwap(context, {
       swapId: SWAP_ID,
+      expected: {
+        hashLock: `0x${"11".repeat(32)}`,
+        terms: fundingTerms({ chainId: 42161 }),
+      },
       signer: walletWhoseBurnWasReplaced(TOKEN_MESSENGER),
       amount: 1_000_000n,
       maxFee: 100n,
@@ -190,6 +207,10 @@ describe("cctpFundSwap", () => {
     await expect(
       cctpFundSwap(context, {
         swapId: SWAP_ID,
+        expected: {
+          hashLock: `0x${"11".repeat(32)}`,
+          terms: fundingTerms({ chainId: 42161 }),
+        },
         signer: walletWhoseBurnWasReplaced(WALLET),
         amount: 1_000_000n,
         maxFee: 100n,
@@ -213,6 +234,10 @@ describe("cctpFundSwap", () => {
     await expect(
       cctpFundSwap(context, {
         swapId: SWAP_ID,
+        expected: {
+          hashLock: `0x${"11".repeat(32)}`,
+          terms: fundingTerms({ chainId: 42161 }),
+        },
         signer: wallet,
         amount: 1_000_000n,
         maxFee: 100n,
@@ -228,6 +253,10 @@ describe("cctpFundSwap", () => {
     const onBurn = vi.fn();
     await cctpFundSwap(context, {
       swapId: SWAP_ID,
+      expected: {
+        hashLock: `0x${"11".repeat(32)}`,
+        terms: fundingTerms({ chainId: 42161 }),
+      },
       signer: walletOnOptimism(),
       ownerSigner: owner,
       burnTxHash: BURN,

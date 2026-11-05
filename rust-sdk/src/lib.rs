@@ -58,6 +58,8 @@ pub use request::Endpoint;
 pub use request::PayloadKind;
 pub use signer::Signer;
 pub use storage::EvmKeySource;
+pub use storage::EvmRecoveredLock;
+pub use storage::EvmRehashRecord;
 pub use storage::InMemorySwapStorage;
 pub use storage::InMemoryWalletStorage;
 pub use storage::SqliteSwapStorage;

@@ -167,6 +167,10 @@ var receipt = await client.FundSwapAsync(
         gasOverrides: null));
 ```
 
+On Ethereum the server takes a relay fee from the input. Funding refuses
+it unless `maxRelayFee` (decimal string, source token's smallest unit)
+allows it: `new GaslessOpts(..., maxRelayFee: "250000")`.
+
 ### Relay funding
 
 The swap server can also submit the funding itself and pay its gas, so
@@ -258,6 +262,24 @@ a BTC-pegged token rather than the stablecoin, to the deposit address.
 Its result names that token's contract as `LockToken`, and
 `SweepEvmDepositAsync` with it as `token` sends it on. The depositor
 pays this gas too.
+
+On HTLCErc20 v7 / HTLCNative v2 the depositor need not wait for the
+locktime once the server has given the swap up:
+`CollabRefundEvmHtlcAsync(swapId, timeout)` fetches the server's
+`Refund` signature and sends `refundBySig` from the depositor. For an
+EVM to Lightning swap whose invoice the server could not pay,
+`RetrySwapWithInvoiceAsync(swapId, invoice, timeout)` moves the lock to
+a new invoice instead of refunding: the depositor authorizes the invoice
+with an EIP-191 signature, the server signs the move, and once it is
+confirmed the server pays the new invoice. The invoice must ask for at
+most the swap's payout and stay valid for the server's minimum. Both
+record their transaction like `RefundEvmHtlcAsync`, so a repeated call
+verifies instead of sending again, and a later `RefundEvmHtlcAsync`
+refunds the lock as moved. A retry whose broadcast response was lost
+leaves the swap blocked until the submission is resolved:
+`AttachEvmRehashTransactionAsync(swapId, txHash)` once the transaction
+is found (or replaced), or `ReleaseEvmRehashSubmissionAsync(swapId)`
+once it is certain nothing mined.
 
 ### EVM node
 

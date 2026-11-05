@@ -7,6 +7,7 @@
 
 import { bytesToHex } from "../signer/index.js";
 import { BTC_HTLC_SCRIPT_VERSION_STRICT } from "../strict-vhtlc.js";
+import { fundingTermsOf } from "./funding-terms.js";
 import { retryOnHashCollision } from "./retry.js";
 import type {
   CreateSwapContext,
@@ -89,10 +90,17 @@ export async function createEvmToBitcoinSwap(
     }
 
     // Store the swap if storage is configured
-    await ctx.storeSwap(data.id, swapParams, {
-      ...data,
-      direction: "evm_to_bitcoin",
-    });
+    await ctx.storeSwap(
+      data.id,
+      swapParams,
+      {
+        ...data,
+        direction: "evm_to_bitcoin",
+      },
+      undefined,
+      undefined,
+      { evmFundingTerms: fundingTermsOf(data) },
+    );
 
     return { response: data, swapParams };
   });

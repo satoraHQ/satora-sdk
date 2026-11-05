@@ -1,9 +1,11 @@
 use super::funding::SwapCreated;
+use super::funding::transaction;
 use super::htlc::Coordinator;
 use super::htlc::EvmHtlc;
 use super::htlc::Htlc;
 use super::htlc::SwapRedeemed;
 use super::htlc::SwapRefunded;
+use super::htlc::SwapRehashed;
 use super::*;
 use crate::Client;
 use crate::InMemorySwapStorage;
@@ -59,6 +61,10 @@ struct Wallet {
     fee_wei: AtomicU64,
     /// Hashes the next broadcasts return, before falling back to one fixed hash.
     next_hashes: Mutex<Vec<B256>>,
+    /// Coordinator `deposits` reads.
+    deposit_reads: AtomicU64,
+    /// Receipts served with these logs whatever was sent last.
+    fixed_receipts: Mutex<std::collections::HashMap<B256, Vec<EvmLog>>>,
 }
 fn secp256k1_order() -> U256 {
     U256::from_str_radix(
@@ -101,6 +107,12 @@ impl EvmWallet for Wallet {
             Ok(low)
         })
     }
+    fn sign_message<'a>(&'a self, message: &'a [u8]) -> WalletFuture<'a, Signature> {
+        Box::pin(async move {
+            self.signatures.fetch_add(1, Ordering::Relaxed);
+            crate::aa::signing::sign_eip191_message(&self.secret, message)
+        })
+    }
     fn call<'a>(&'a self, tx: &'a EvmTransaction) -> WalletFuture<'a, Bytes> {
         Box::pin(async move {
             if tx
@@ -130,6 +142,7 @@ impl EvmWallet for Wallet {
             } else if tx.data.starts_with(&Htlc::isActiveCall::SELECTOR) {
                 U256::from(u8::from(!self.settled.load(Ordering::Relaxed)))
             } else if tx.data.starts_with(&Coordinator::depositsCall::SELECTOR) {
+                self.deposit_reads.fetch_add(1, Ordering::Relaxed);
                 if self.settled.load(Ordering::Relaxed) {
                     U256::ZERO
                 } else {
@@ -192,6 +205,14 @@ impl EvmWallet for Wallet {
             if self.missing_receipts.lock().unwrap().contains(&hash) {
                 return Err(Error::Timeout("receipt not served".into()));
             }
+            if let Some(logs) = self.fixed_receipts.lock().unwrap().get(&hash) {
+                return Ok(EvmReceipt {
+                    transaction_hash: hash,
+                    success: true,
+                    block_number: 10,
+                    logs: logs.clone(),
+                });
+            }
             let h = &self.htlc;
             let log = if hash == self.funding_hash {
                 event_log(
@@ -216,13 +237,64 @@ impl EvmWallet for Wallet {
                     h.address,
                 )
             } else {
-                event_log(
-                    SwapRefunded {
-                        preimageHash: h.hash_lock,
-                        key: h.key(),
-                    },
-                    h.address,
-                )
+                // The settled lock is the one the last sent call names: after a
+                // rehash the refund targets the moved terms, not the funding's.
+                let last = self.sent.lock().unwrap().last().cloned();
+                let terms = |hash: B256, timelock: U256| EvmHtlc {
+                    hash_lock: hash,
+                    timelock: timelock.to::<u64>(),
+                    ..h.clone()
+                };
+                let rehash = last.as_ref().and_then(|tx| {
+                    Htlc::rehashCall::abi_decode(&tx.data)
+                        .ok()
+                        .map(|c| (c.preimageHash, c.timelock, c.newPreimageHash, c.newTimelock))
+                        .or_else(|| {
+                            super::refund::NativeHtlc::rehashCall::abi_decode(&tx.data)
+                                .ok()
+                                .map(|c| {
+                                    (c.preimageHash, c.timelock, c.newPreimageHash, c.newTimelock)
+                                })
+                        })
+                });
+                if let Some((hash, timelock, new_hash, new_timelock)) = rehash {
+                    event_log(
+                        SwapRehashed {
+                            preimageHash: hash,
+                            key: terms(hash, timelock).key(),
+                            newKey: terms(new_hash, new_timelock).key(),
+                            newPreimageHash: new_hash,
+                        },
+                        h.address,
+                    )
+                } else {
+                    let refunded = last
+                        .as_ref()
+                        .and_then(|tx| {
+                            Htlc::refundCall::abi_decode(&tx.data)
+                                .ok()
+                                .map(|c| (c.preimageHash, c.timelock))
+                                .or_else(|| {
+                                    super::refund::NativeHtlc::refundCall::abi_decode(&tx.data)
+                                        .ok()
+                                        .map(|c| (c.preimageHash, c.timelock))
+                                })
+                                .or_else(|| {
+                                    Htlc::refundBySigCall::abi_decode(&tx.data)
+                                        .ok()
+                                        .map(|c| (c.preimageHash, c.timelock))
+                                })
+                        })
+                        .map(|(hash, timelock)| terms(hash, timelock))
+                        .unwrap_or_else(|| h.clone());
+                    event_log(
+                        SwapRefunded {
+                            preimageHash: refunded.hash_lock,
+                            key: refunded.key(),
+                        },
+                        h.address,
+                    )
+                }
             };
             let mut logs = vec![log];
             if hash != self.funding_hash && self.owner != h.claimer {
@@ -273,12 +345,18 @@ impl EvmWallet for Wallet {
 
 /// A real LND hold invoice paying the hash of the preimage at key index 0.
 fn invoice_paying_key_index_0() -> String {
+    fixture_invoice("lnd_hold_index_0").0
+}
+
+/// A fixture invoice and the payment hash it commits to.
+fn fixture_invoice(name: &str) -> (String, B256) {
     let vectors: Value =
         serde_json::from_str(include_str!("../../../fixtures/lightning-invoices.json")).unwrap();
-    vectors["invoices"]["lnd_hold_index_0"]["bolt11"]
-        .as_str()
-        .unwrap()
-        .to_owned()
+    let invoice = &vectors["invoices"][name];
+    (
+        invoice["bolt11"].as_str().unwrap().to_owned(),
+        invoice["payment_hash"].as_str().unwrap().parse().unwrap(),
+    )
 }
 
 fn setup(claim: bool) -> (Client, Wallet, Arc<InMemorySwapStorage>) {
@@ -396,6 +474,8 @@ fn setup_fixture(
         native_wei: AtomicU64::new(1_000_000),
         fee_wei: AtomicU64::new(21_000),
         next_hashes: Mutex::new(vec![]),
+        deposit_reads: AtomicU64::new(0),
+        fixed_receipts: Mutex::default(),
     };
     (client, wallet, store)
 }
@@ -2563,6 +2643,250 @@ async fn gasless_funding_rejects_unpinned_aa_deployments_before_any_payload_or_n
     }
 }
 
+/// A malicious server names the Permit2 spender, the lock token and the calls the
+/// coordinator runs. Each must be bound to the stored swap before anything is signed.
+#[tokio::test]
+async fn gasless_funding_refuses_a_payload_not_bound_to_the_stored_swap() {
+    use crate::aa::abi::Call;
+    use alloy::primitives::keccak256;
+    use alloy::sol_types::SolValue;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+    let (_, wallet, fixture) = setup_fixture("evm_to_bitcoin", false, EvmHtlcKind::Erc20);
+    let response = fixture.get_swap("test").unwrap().unwrap().response;
+    let attacker = Address::repeat_byte(0x66);
+    let dex = Address::repeat_byte(0x99);
+    let token = wallet.htlc.token;
+    let pinned = FundingOptions {
+        coordinator: wallet.coordinator,
+        htlc: wallet.htlc.address,
+        lock_token: token,
+        max_source_amount: U256::from(100_000),
+        allowed_call_targets: vec![],
+        timeout: Duration::from_secs(10),
+    };
+    let transfer = |to: Address, amount: u64| Call {
+        target: token,
+        value: U256::ZERO,
+        callData: super::recovery::RecoveryToken::transferCall {
+            to,
+            amount: U256::from(amount),
+        }
+        .abi_encode()
+        .into(),
+    };
+    let dex_call = Call {
+        target: dex,
+        value: U256::ZERO,
+        callData: vec![0x12, 0x34, 0x56, 0x78].into(),
+    };
+    let payload = |calls: Vec<Call>| {
+        json!({
+            "coordinator_address": wallet.coordinator,
+            "htlc_kind": "erc20",
+            "htlc_version": 6,
+            "permit2_address": crate::aa::permit2::PERMIT2_ADDRESS,
+            "source_token_address": token,
+            "source_amount": "100000",
+            "lock_token_address": token,
+            "preimage_hash": wallet.htlc.hash_lock,
+            "claim_address": wallet.htlc.claimer,
+            "timelock": wallet.htlc.timelock,
+            "calls": calls.iter().map(|call| json!({
+                "target": call.target,
+                "value": call.value.to_string(),
+                "call_data": call.callData,
+            })).collect::<Vec<_>>(),
+            "calls_hash": keccak256(calls.abi_encode()),
+            "aa": {
+                "entry_point": crate::aa::userop::ENTRY_POINT_V07,
+                "delegation_target": crate::aa::kernel::KERNEL_DELEGATION_TARGET,
+            },
+        })
+    };
+    let mut served_attacker_coordinator = serde_json::to_value(&response).unwrap();
+    served_attacker_coordinator["evm_coordinator_address"] = json!(attacker);
+    let mut attacker_spender = payload(vec![]);
+    attacker_spender["coordinator_address"] = json!(attacker);
+    let mut unknown_lock_token = payload(vec![]);
+    unknown_lock_token["lock_token_address"] = json!(attacker);
+    let mut fee = payload(vec![transfer(wallet.htlc.claimer, 500)]);
+    fee["relay_fee"] = json!("500");
+    let mut over_input = payload(vec![]);
+    over_input["source_amount"] = json!("100001");
+    let refused = |message: &'static str| Some(message);
+    let cases: Vec<(&str, Value, Value, crate::aa::GaslessOpts, Option<&str>)> = vec![
+        (
+            "honest",
+            serde_json::to_value(&response).unwrap(),
+            payload(vec![]),
+            Default::default(),
+            None,
+        ),
+        (
+            "the server's swap names another coordinator",
+            served_attacker_coordinator.clone(),
+            attacker_spender.clone(),
+            Default::default(),
+            refused("server swap details differ"),
+        ),
+        (
+            "the spender is not the swap's coordinator",
+            serde_json::to_value(&response).unwrap(),
+            attacker_spender,
+            Default::default(),
+            refused("does not match the swap"),
+        ),
+        (
+            "unknown lock token",
+            serde_json::to_value(&response).unwrap(),
+            unknown_lock_token,
+            Default::default(),
+            refused("does not match the swap"),
+        ),
+        (
+            "more than the stored input",
+            serde_json::to_value(&response).unwrap(),
+            over_input,
+            Default::default(),
+            refused("exceeds the approved limit"),
+        ),
+        (
+            "the input sent to the attacker",
+            serde_json::to_value(&response).unwrap(),
+            payload(vec![dex_call.clone(), transfer(attacker, 100_000)]),
+            Default::default(),
+            refused("more than the fee and an approval"),
+        ),
+        (
+            "the input approved to the attacker under a pin",
+            serde_json::to_value(&response).unwrap(),
+            payload(vec![Call {
+                target: token,
+                value: U256::ZERO,
+                callData: crate::aa::abi::IERC20::approveCall {
+                    spender: attacker,
+                    amount: U256::from(100_000),
+                }
+                .abi_encode()
+                .into(),
+            }]),
+            crate::aa::GaslessOpts::default().with_funding(pinned.clone()),
+            refused("unapproved spender"),
+        ),
+        (
+            "a call target outside the pinned list",
+            serde_json::to_value(&response).unwrap(),
+            payload(vec![dex_call.clone()]),
+            crate::aa::GaslessOpts::default().with_funding(pinned.clone()),
+            refused("unapproved call target"),
+        ),
+        (
+            "a listed call target",
+            serde_json::to_value(&response).unwrap(),
+            payload(vec![dex_call.clone()]),
+            crate::aa::GaslessOpts::default().with_funding(FundingOptions {
+                allowed_call_targets: vec![dex],
+                ..pinned.clone()
+            }),
+            None,
+        ),
+        (
+            "a pinned coordinator other than the swap's",
+            serde_json::to_value(&response).unwrap(),
+            payload(vec![]),
+            crate::aa::GaslessOpts::default().with_funding(FundingOptions {
+                coordinator: attacker,
+                ..pinned.clone()
+            }),
+            refused("does not match the swap"),
+        ),
+        (
+            "a relay fee over the cap",
+            serde_json::to_value(&response).unwrap(),
+            fee.clone(),
+            Default::default(),
+            refused("relay fee exceeds the limit"),
+        ),
+        (
+            "a relay fee within the cap",
+            serde_json::to_value(&response).unwrap(),
+            fee,
+            crate::aa::GaslessOpts::default().with_max_relay_fee(U256::from(500)),
+            None,
+        ),
+    ];
+    for (name, served, funding, opts, expected) in cases {
+        let store = Arc::new(InMemorySwapStorage::new());
+        store
+            .store_swap(StoredSwap::new(0, response.clone(), SwapMetadata::default()).unwrap())
+            .unwrap();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/swap/test"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&served))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/aa/config"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "entry_point": crate::aa::userop::ENTRY_POINT_V07,
+                "delegation_target": crate::aa::kernel::KERNEL_DELEGATION_TARGET,
+                "permit2": crate::aa::permit2::PERMIT2_ADDRESS,
+                "bundler": {"url": server.uri(), "casing": "camel"},
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/swap/test/swap-and-lock-calldata-userop"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&funding))
+            .mount(&server)
+            .await;
+        let client = Client::builder()
+            .base_url(server.uri())
+            .mnemonic(MNEMONIC)
+            .storage(store.clone())
+            .build()
+            .unwrap();
+        let opts = crate::aa::GaslessOpts {
+            node_rpc_url: Some(server.uri().parse().unwrap()),
+            ..opts
+        };
+        let result = client.fund_swap_gasless("test", opts).await;
+        // The node and bundler share the mock's root: any JSON-RPC request there means
+        // the payload was accepted and the flow moved on towards signing.
+        let rpc = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|request| request.method.as_str() == "POST");
+        match expected {
+            None => assert!(rpc, "{name}: {result:?}"),
+            Some(message) => {
+                assert!(
+                    matches!(&result, Err(Error::InvalidSwap(m)) if m.contains(message)),
+                    "{name}: {result:?}"
+                );
+                assert!(!rpc, "{name}: reached the node or bundler");
+            }
+        }
+        assert_eq!(
+            store
+                .get_swap("test")
+                .unwrap()
+                .unwrap()
+                .metadata
+                .evm_fund_started,
+            None,
+            "{name}"
+        );
+    }
+}
+
 #[test]
 fn derived_hash_lock_check() {
     let (client, _, store) = setup(false);
@@ -3747,6 +4071,7 @@ impl RelayCase {
         funding
             .typed_data(
                 137,
+                self.wallet.owner,
                 U256::from_str_radix(body["permit2_nonce"].as_str().unwrap(), 10).unwrap(),
                 U256::from(body["permit2_deadline"].as_u64().unwrap()),
             )
@@ -4307,6 +4632,196 @@ async fn relay_lost_response_is_funded_from_the_server_hash() {
 }
 
 #[tokio::test]
+async fn relay_funding_is_proven_under_the_lock_sender_of_its_generation() {
+    use crate::storage::RelayFundingOutcome;
+    use wiremock::Mock;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+    // v6: the coordinator is the sender and must hold the owner's deposit.
+    // v7: the depositor is the sender and the coordinator keeps no deposit.
+    for version in [6, 7] {
+        let edit_response = |r: &mut Value| r["evm_htlc_version"] = json!(version);
+        let edit_payload = |p: &mut Value| {
+            p["htlc_kind"] = json!("erc20");
+            p["htlc_version"] = json!(version);
+        };
+        let new_case = || async {
+            let mut case = RelayCase::new(edit_response, edit_payload).await;
+            if version == 7 {
+                case.wallet.htlc.sender = case.wallet.owner;
+                case.wallet.version.store(7, Ordering::Relaxed);
+                // The HTLC's pull of the lock from the coordinator, after SwapCreated.
+                let h = case.wallet.htlc.clone();
+                case.wallet.extra_logs.push(event_log(
+                    super::recovery::Transfer {
+                        from: case.wallet.coordinator,
+                        to: h.address,
+                        value: h.amount,
+                    },
+                    h.token,
+                ));
+            }
+            case
+        };
+        let sender = |case: &RelayCase| {
+            if version == 7 {
+                case.wallet.owner
+            } else {
+                case.wallet.coordinator
+            }
+        };
+
+        // Funding answered by the relay.
+        let case = new_case().await;
+        case.mount_relay(1).await;
+        let funded = case
+            .fund(&RelayFundingOptions::new(U256::from(300)))
+            .await
+            .unwrap();
+        assert_eq!(funded.htlc.sender, sender(&case), "v{version}");
+        assert_eq!(
+            case.wallet.deposit_reads.load(Ordering::Relaxed) > 0,
+            version == 6,
+            "v{version}"
+        );
+
+        // A lost answer, reconciled from the server's funding hash.
+        let case = new_case().await;
+        case.relay.statuses.lock().unwrap().push(502);
+        case.mount_relay(1).await;
+        assert!(
+            case.fund(&RelayFundingOptions::new(U256::from(300)))
+                .await
+                .is_err()
+        );
+        let journal = case.journal();
+        assert_eq!(journal.outcome, RelayFundingOutcome::Uncertain);
+        case.wallet
+            .spent_nonces
+            .lock()
+            .unwrap()
+            .push(U256::from_str_radix(&journal.permit2_nonce, 10).unwrap());
+        let mut response =
+            serde_json::to_value(case.store.get_swap("test").unwrap().unwrap().response).unwrap();
+        response["evm_fund_txid"] = json!(B256::repeat_byte(42));
+        Mock::given(method("GET"))
+            .and(path("/swap/test"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+            .with_priority(1)
+            .mount(&case.server)
+            .await;
+        let RelayFundingState::Funded(funded) = case.reconcile().await.unwrap() else {
+            panic!("v{version}: expected the server's hash to prove the funding")
+        };
+        assert_eq!(funded.htlc.sender, sender(&case), "v{version}");
+        assert_eq!(
+            case.wallet.deposit_reads.load(Ordering::Relaxed) > 0,
+            version == 6,
+            "v{version}"
+        );
+        assert_eq!(case.journal().outcome, RelayFundingOutcome::Funded);
+    }
+}
+
+/// On v7 anyone can create a lock naming the depositor, so a receipt whose matching
+/// `SwapCreated` was not paid for by the coordinator must not be accepted as the
+/// relay's funding, even when the coordinator funded another lock in the same tx.
+#[tokio::test]
+async fn v7_relay_funding_rejects_a_decoy_lock_the_coordinator_did_not_pay_for() {
+    use crate::storage::RelayFundingOutcome;
+    use wiremock::Mock;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+    let edit_response = |r: &mut Value| r["evm_htlc_version"] = json!(7);
+    let edit_payload = |p: &mut Value| {
+        p["htlc_kind"] = json!("erc20");
+        p["htlc_version"] = json!(7);
+    };
+    // Lock-token transfers logged after the matching SwapCreated, in order.
+    // `None` as `from` stands for the coordinator.
+    type Pulls = Vec<(Option<Address>, Option<Address>, Option<U256>)>;
+    let new_case = |pulls: Pulls| async move {
+        let mut case = RelayCase::new(edit_response, edit_payload).await;
+        case.wallet.htlc.sender = case.wallet.owner;
+        case.wallet.version.store(7, Ordering::Relaxed);
+        let h = case.wallet.htlc.clone();
+        for (from, token, value) in pulls {
+            case.wallet.extra_logs.push(event_log(
+                super::recovery::Transfer {
+                    from: from.unwrap_or(case.wallet.coordinator),
+                    to: h.address,
+                    value: value.unwrap_or(h.amount),
+                },
+                token.unwrap_or(h.token),
+            ));
+        }
+        case
+    };
+    let relay = Some(Address::repeat_byte(0x77));
+    let decoys: Vec<Pulls> = vec![
+        // No pull at all.
+        vec![],
+        // Paid by the relay that created it.
+        vec![(relay, None, None)],
+        // The decoy's own pull, then the coordinator funding another swap.
+        vec![(relay, None, None), (None, None, Some(U256::from(1_000)))],
+        // A coordinator transfer of another token.
+        vec![(None, Some(Address::repeat_byte(0x78)), None)],
+        // A coordinator transfer of another amount.
+        vec![(None, None, Some(U256::from(1)))],
+    ];
+
+    // Funding answered by the relay.
+    for pulls in decoys.clone() {
+        let case = new_case(pulls.clone()).await;
+        case.mount_relay(1).await;
+        let error = case
+            .fund(&RelayFundingOptions::new(U256::from(300)))
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("coordinator paying"),
+            "{pulls:?}: {error}"
+        );
+        assert_ne!(case.journal().outcome, RelayFundingOutcome::Funded);
+    }
+
+    // A lost answer, reconciled from a decoy hash the server reports.
+    for pulls in decoys {
+        let case = new_case(pulls.clone()).await;
+        case.relay.statuses.lock().unwrap().push(502);
+        case.mount_relay(1).await;
+        assert!(
+            case.fund(&RelayFundingOptions::new(U256::from(300)))
+                .await
+                .is_err()
+        );
+        let journal = case.journal();
+        case.wallet
+            .spent_nonces
+            .lock()
+            .unwrap()
+            .push(U256::from_str_radix(&journal.permit2_nonce, 10).unwrap());
+        let mut response =
+            serde_json::to_value(case.store.get_swap("test").unwrap().unwrap().response).unwrap();
+        response["evm_fund_txid"] = json!(B256::repeat_byte(42));
+        Mock::given(method("GET"))
+            .and(path("/swap/test"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+            .with_priority(1)
+            .mount(&case.server)
+            .await;
+        assert!(
+            !matches!(case.reconcile().await, Ok(RelayFundingState::Funded(_))),
+            "{pulls:?}: a decoy receipt reconciled as the funding"
+        );
+        assert_ne!(case.journal().outcome, RelayFundingOutcome::Funded);
+    }
+}
+
+#[tokio::test]
 async fn relay_rejection_resigns_with_the_same_nonce() {
     use crate::storage::RelayFundingOutcome;
     let case = RelayCase::new(|_| {}, |_| {}).await;
@@ -4767,4 +5282,1702 @@ fn setup_direction(
     kind: EvmHtlcKind,
 ) -> (Client, Wallet, Arc<InMemorySwapStorage>) {
     setup_fixture(direction, direction.ends_with("_to_evm"), kind)
+}
+
+/// The stored swap as a HTLCErc20 v7 / HTLCNative v2 lock: the owner is the
+/// lock's sender, the coordinator only the contract the funding went through.
+fn make_depositor_sender(wallet: &mut Wallet, store: &InMemorySwapStorage) {
+    let mut stored = store.get_swap("test").unwrap().unwrap();
+    let mut value = serde_json::to_value(&stored.response).unwrap();
+    value["evm_htlc_version"] = json!(if wallet.htlc.token.is_zero() { 2 } else { 7 });
+    stored.response = serde_json::from_value(value).unwrap();
+    store.store_swap(stored).unwrap();
+    wallet.htlc.sender = wallet.owner;
+    wallet.version.store(7, Ordering::Relaxed);
+}
+
+#[tokio::test]
+async fn depositor_sender_locks_are_refunded_on_the_htlc_despite_the_coordinator() {
+    for kind in [EvmHtlcKind::Erc20, EvmHtlcKind::Native] {
+        let (client, mut wallet, store) = setup_kind(false, kind);
+        make_depositor_sender(&mut wallet, &store);
+        wallet.now.store(wallet.htlc.timelock, Ordering::Relaxed);
+        let receipt = client
+            .refund_evm_with_wallet(
+                "test",
+                &wallet,
+                RefundOptions {
+                    htlc: wallet.htlc.address,
+                    lock_token: wallet.htlc.token,
+                    coordinator: Some(wallet.coordinator),
+                    timeout: Duration::from_secs(10),
+                },
+            )
+            .await
+            .unwrap();
+        let sent = wallet.sent.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].to, wallet.htlc.address, "{kind:?}");
+        let signature = match kind {
+            EvmHtlcKind::Erc20 => "refund(bytes32,uint256,address,address,uint256)",
+            EvmHtlcKind::Native => "refund(bytes32,uint256,address,uint256)",
+        };
+        assert_eq!(sent[0].data[..4], selector(signature), "{kind:?}");
+        assert_eq!(
+            store
+                .get_swap("test")
+                .unwrap()
+                .unwrap()
+                .metadata
+                .evm_refund_txid,
+            Some(receipt.transaction_hash.to_string())
+        );
+    }
+}
+
+fn collab_params(wallet: &Wallet, path: &str) -> Value {
+    let h = &wallet.htlc;
+    json!({
+        "coordinator_address": wallet.coordinator,
+        "server_signer_address": h.claimer,
+        "preimage_hash": h.hash_lock,
+        "amount": h.amount.to_string(),
+        "token": h.token,
+        "claim_address": h.claimer,
+        "timelock": h.timelock,
+        "chain_id": h.chain_id,
+        "sweep_token": h.token,
+        "min_amount_out": "0",
+        "calls_hash": B256::ZERO,
+        "coordinator_version": 5,
+        "htlc_address": h.address,
+        "htlc_version": if h.token.is_zero() { 2 } else { 7 },
+        "htlc_kind": if h.token.is_zero() { "native" } else { "erc20" },
+        "refund_path": path,
+    })
+}
+
+fn collab_signature(wallet: &Wallet) -> Value {
+    let h = &wallet.htlc;
+    json!({
+        "id": "test",
+        "htlc_address": h.address,
+        "htlc_version": if h.token.is_zero() { 2 } else { 7 },
+        "htlc_kind": if h.token.is_zero() { "native" } else { "erc20" },
+        "chain_id": h.chain_id,
+        "preimage_hash": h.hash_lock,
+        "amount": h.amount.to_string(),
+        "token": h.token,
+        "sender": h.sender,
+        "claim_address": h.claimer,
+        "timelock": h.timelock,
+        "v": 27,
+        "r": B256::repeat_byte(0x11),
+        "s": B256::repeat_byte(0x22),
+    })
+}
+
+#[tokio::test]
+async fn collab_refund_sends_refund_by_sig_from_the_depositor() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+    for kind in [EvmHtlcKind::Erc20, EvmHtlcKind::Native] {
+        let (_, mut wallet, store) = setup_kind(false, kind);
+        make_depositor_sender(&mut wallet, &store);
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/swap/test/collab-refund-evm/params"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(collab_params(&wallet, "direct")),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/swap/test/collab-refund-evm/signature"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(collab_signature(&wallet)))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = Client::builder()
+            .base_url(server.uri())
+            .mnemonic(MNEMONIC)
+            .storage(store.clone())
+            .build()
+            .unwrap();
+        // Before the timelock: the signature, not the clock, unlocks it.
+        let receipt = client
+            .collab_refund_evm_with_wallet(
+                "test",
+                &wallet,
+                RefundOptions {
+                    htlc: wallet.htlc.address,
+                    lock_token: wallet.htlc.token,
+                    coordinator: Some(wallet.coordinator),
+                    timeout: Duration::from_secs(10),
+                },
+            )
+            .await
+            .unwrap();
+        let sent = wallet.sent.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].to, wallet.htlc.address);
+        let (signature, words) = match kind {
+            EvmHtlcKind::Erc20 => (
+                "refundBySig(bytes32,uint256,address,uint256,uint8,bytes32,bytes32)",
+                7,
+            ),
+            EvmHtlcKind::Native => (
+                "refundBySig(bytes32,uint256,uint256,uint8,bytes32,bytes32)",
+                6,
+            ),
+        };
+        assert_eq!(sent[0].data[..4], selector(signature), "{kind:?}");
+        assert_eq!(sent[0].data.len(), 4 + words * 32);
+        assert!(sent[0].data.ends_with(B256::repeat_byte(0x22).as_slice()));
+        assert_eq!(
+            store
+                .get_swap("test")
+                .unwrap()
+                .unwrap()
+                .metadata
+                .evm_refund_txid,
+            Some(receipt.transaction_hash.to_string())
+        );
+    }
+}
+
+#[tokio::test]
+async fn collab_refund_refuses_other_paths_and_other_terms() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+    let options = |wallet: &Wallet| RefundOptions {
+        htlc: wallet.htlc.address,
+        lock_token: wallet.htlc.token,
+        coordinator: Some(wallet.coordinator),
+        timeout: Duration::from_secs(10),
+    };
+    // A coordinator-sender deployment: not this SDK's flow, nothing is sent.
+    {
+        let (_, wallet, store) = setup(false);
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/swap/test/collab-refund-evm/params"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(collab_params(&wallet, "coordinator")),
+            )
+            .mount(&server)
+            .await;
+        let client = Client::builder()
+            .base_url(server.uri())
+            .mnemonic(MNEMONIC)
+            .storage(store)
+            .build()
+            .unwrap();
+        let error = client
+            .collab_refund_evm_with_wallet("test", &wallet, options(&wallet))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("coordinator"), "{error}");
+        assert!(wallet.sent.lock().unwrap().is_empty());
+    }
+    // A signature over other terms than this wallet's lock is refused unsent.
+    {
+        let (_, mut wallet, store) = setup(false);
+        make_depositor_sender(&mut wallet, &store);
+        let mut signature = collab_signature(&wallet);
+        signature["timelock"] = json!(wallet.htlc.timelock + 1);
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/swap/test/collab-refund-evm/params"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(collab_params(&wallet, "direct")),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/swap/test/collab-refund-evm/signature"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(signature))
+            .mount(&server)
+            .await;
+        let client = Client::builder()
+            .base_url(server.uri())
+            .mnemonic(MNEMONIC)
+            .storage(store.clone())
+            .build()
+            .unwrap();
+        let error = client
+            .collab_refund_evm_with_wallet("test", &wallet, options(&wallet))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("other terms"), "{error}");
+        assert!(wallet.sent.lock().unwrap().is_empty());
+        assert_eq!(
+            store
+                .get_swap("test")
+                .unwrap()
+                .unwrap()
+                .metadata
+                .evm_refund_started,
+            None
+        );
+    }
+}
+
+#[tokio::test]
+async fn depositor_sender_locks_are_readable_by_any_wallet_but_refunded_only_by_the_owner() {
+    let (client, mut wallet, store) = setup(false);
+    make_depositor_sender(&mut wallet, &store);
+    let reader = Submitter {
+        wallet: &wallet,
+        depositor: wallet.owner,
+    };
+    let options = RefundOptions {
+        htlc: wallet.htlc.address,
+        lock_token: wallet.htlc.token,
+        coordinator: Some(wallet.coordinator),
+        timeout: Duration::from_secs(10),
+    };
+    // The Arkade claim's shortfall check reads the lock through any reader.
+    let htlc = client
+        .read_funded_evm_htlc("test", &reader, &options, true, true)
+        .await
+        .unwrap();
+    assert_eq!(htlc.sender, wallet.owner);
+    // The HTLC's refund pays msg.sender, so another wallet cannot send it.
+    wallet.now.store(wallet.htlc.timelock, Ordering::Relaxed);
+    let error = client
+        .refund_evm_with_wallet("test", &reader, options)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("does not match swap"), "{error}");
+    assert!(wallet.sent.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_recorded_collab_refund_is_verified_without_the_api() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::path_regex;
+    let (_, mut wallet, store) = setup(false);
+    make_depositor_sender(&mut wallet, &store);
+    let recorded = B256::repeat_byte(77);
+    let mut stored = store.get_swap("test").unwrap().unwrap();
+    stored.metadata.evm_refund_started = Some(true);
+    stored.metadata.evm_refund_txid = Some(recorded.to_string());
+    store.store_swap(stored).unwrap();
+    let server = MockServer::start().await;
+    Mock::given(path_regex("collab-refund-evm"))
+        .respond_with(ResponseTemplate::new(503))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(store)
+        .build()
+        .unwrap();
+    let receipt = client
+        .collab_refund_evm_with_wallet(
+            "test",
+            &wallet,
+            RefundOptions {
+                htlc: wallet.htlc.address,
+                lock_token: wallet.htlc.token,
+                coordinator: Some(wallet.coordinator),
+                timeout: Duration::from_secs(10),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt.transaction_hash, recorded);
+    assert!(wallet.sent.lock().unwrap().is_empty());
+}
+
+fn rehash_params(wallet: &Wallet, new_timelock: u64) -> Value {
+    let h = &wallet.htlc;
+    json!({
+        "id": "test",
+        "htlc_address": h.address,
+        "htlc_version": if h.token.is_zero() { 2 } else { 7 },
+        "htlc_kind": if h.token.is_zero() { "native" } else { "erc20" },
+        "chain_id": h.chain_id,
+        "preimage_hash": h.hash_lock,
+        "amount": h.amount.to_string(),
+        "token": h.token,
+        "sender": h.sender,
+        "claim_address": h.claimer,
+        "timelock": h.timelock,
+        "new_timelock": new_timelock,
+        // The fixture invoices are old and pay 1000 sats.
+        "max_invoice_amount_sats": 20_000,
+        "min_invoice_validity_secs": 0,
+    })
+}
+
+fn rehash_signature(wallet: &Wallet, new_hash: B256, new_timelock: u64) -> Value {
+    let mut value = rehash_params(wallet, new_timelock);
+    value["new_preimage_hash"] = json!(new_hash);
+    value["v"] = json!(28);
+    value["r"] = json!(B256::repeat_byte(0x11));
+    value["s"] = json!(B256::repeat_byte(0x22));
+    value
+}
+
+async fn rehash_server(params: Value, signature: Value) -> wiremock::MockServer {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/swap/test/rehash-evm/params"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(params))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/swap/test/rehash-evm"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(signature))
+        .mount(&server)
+        .await;
+    server
+}
+
+#[tokio::test]
+async fn retry_with_invoice_moves_the_lock_and_the_refund_follows_it() {
+    for kind in [EvmHtlcKind::Erc20, EvmHtlcKind::Native] {
+        let (_, mut wallet, store) = setup_kind(false, kind);
+        make_depositor_sender(&mut wallet, &store);
+        let (invoice, payment_hash) = fixture_invoice("lnd_hold_22");
+        let new_timelock = wallet.htlc.timelock + 7200;
+        let server = rehash_server(
+            rehash_params(&wallet, new_timelock),
+            rehash_signature(&wallet, payment_hash, new_timelock),
+        )
+        .await;
+        let client = Client::builder()
+            .base_url(server.uri())
+            .mnemonic(MNEMONIC)
+            .storage(store.clone())
+            .build()
+            .unwrap();
+        let options = RefundOptions {
+            htlc: wallet.htlc.address,
+            lock_token: wallet.htlc.token,
+            coordinator: Some(wallet.coordinator),
+            timeout: Duration::from_secs(10),
+        };
+
+        let moved = client
+            .retry_swap_with_invoice_with_wallet("test", &invoice, &wallet, options.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(moved.new_hash_lock, payment_hash);
+        assert_eq!(moved.new_timelock, new_timelock);
+        assert_eq!(wallet.signatures.load(Ordering::Relaxed), 1);
+        {
+            let sent = wallet.sent.lock().unwrap();
+            assert_eq!(sent.len(), 1);
+            assert_eq!(sent[0].to, wallet.htlc.address);
+            let (signature, words) = match kind {
+                EvmHtlcKind::Erc20 => (
+                    "rehash(bytes32,uint256,address,uint256,bytes32,uint256,uint8,bytes32,bytes32)",
+                    9,
+                ),
+                EvmHtlcKind::Native => (
+                    "rehash(bytes32,uint256,uint256,bytes32,uint256,uint8,bytes32,bytes32)",
+                    8,
+                ),
+            };
+            assert_eq!(sent[0].data[..4], selector(signature), "{kind:?}");
+            assert_eq!(sent[0].data.len(), 4 + words * 32);
+        }
+        let history = store
+            .get_swap("test")
+            .unwrap()
+            .unwrap()
+            .metadata
+            .evm_rehashes
+            .unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].txid, moved.tx_hash.to_string());
+        assert_eq!(history[0].from_hash_lock, wallet.htlc.hash_lock.to_string());
+        assert_eq!(history[0].hash_lock, payment_hash.to_string());
+        assert_eq!(history[0].timelock, new_timelock);
+
+        // The replacement payment failed too; after the new timelock the owner
+        // refunds the lock that exists, from the receipts alone.
+        server.reset().await;
+        wallet.now.store(new_timelock, Ordering::Relaxed);
+        client
+            .refund_evm_with_wallet("test", &wallet, options)
+            .await
+            .unwrap();
+        let sent = wallet.sent.lock().unwrap();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[1].to, wallet.htlc.address);
+        assert!(
+            sent[1].data[4..36] == payment_hash.as_slice()[..],
+            "{kind:?}: the refund names the new hash"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_rehash_signature_off_the_authorized_terms_is_refused_unsent() {
+    let (_, mut wallet, store) = setup(false);
+    make_depositor_sender(&mut wallet, &store);
+    let (invoice, payment_hash) = fixture_invoice("lnd_hold_22");
+    let new_timelock = wallet.htlc.timelock + 7200;
+    let options = RefundOptions {
+        htlc: wallet.htlc.address,
+        lock_token: wallet.htlc.token,
+        coordinator: Some(wallet.coordinator),
+        timeout: Duration::from_secs(10),
+    };
+    for (signature, expected) in [
+        (
+            rehash_signature(&wallet, B256::repeat_byte(0x99), new_timelock),
+            "another hash",
+        ),
+        (
+            rehash_signature(&wallet, payment_hash, new_timelock + 7 * 24 * 3600),
+            "later than the advertised",
+        ),
+    ] {
+        let server = rehash_server(rehash_params(&wallet, new_timelock), signature).await;
+        let client = Client::builder()
+            .base_url(server.uri())
+            .mnemonic(MNEMONIC)
+            .storage(store.clone())
+            .build()
+            .unwrap();
+        let error = client
+            .retry_swap_with_invoice_with_wallet("test", &invoice, &wallet, options.clone())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(expected), "{error}");
+    }
+    assert!(wallet.sent.lock().unwrap().is_empty());
+    assert_eq!(
+        store
+            .get_swap("test")
+            .unwrap()
+            .unwrap()
+            .metadata
+            .evm_rehashes,
+        None
+    );
+}
+
+#[tokio::test]
+async fn a_reverted_rehash_leaves_no_record() {
+    let (_, mut wallet, store) = setup(false);
+    make_depositor_sender(&mut wallet, &store);
+    wallet
+        .reverted_receipts
+        .lock()
+        .unwrap()
+        .push(B256::repeat_byte(99));
+    let (invoice, payment_hash) = fixture_invoice("lnd_hold_22");
+    let new_timelock = wallet.htlc.timelock + 7200;
+    let server = rehash_server(
+        rehash_params(&wallet, new_timelock),
+        rehash_signature(&wallet, payment_hash, new_timelock),
+    )
+    .await;
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .build()
+        .unwrap();
+    let error = client
+        .retry_swap_with_invoice_with_wallet(
+            "test",
+            &invoice,
+            &wallet,
+            RefundOptions {
+                htlc: wallet.htlc.address,
+                lock_token: wallet.htlc.token,
+                coordinator: Some(wallet.coordinator),
+                timeout: Duration::from_secs(10),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("reverted"), "{error}");
+    assert_eq!(wallet.sent.lock().unwrap().len(), 1);
+    assert_eq!(
+        store
+            .get_swap("test")
+            .unwrap()
+            .unwrap()
+            .metadata
+            .evm_rehashes,
+        Some(vec![])
+    );
+}
+
+#[tokio::test]
+async fn the_servers_snapshot_is_accepted_once_it_follows_a_verified_rehash() {
+    use wiremock::Mock;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+    let (_, mut wallet, store) = setup_fixture("evm_to_lightning", false, EvmHtlcKind::Erc20);
+    make_depositor_sender(&mut wallet, &store);
+    let (new_invoice, new_hash) = fixture_invoice("lnd_hold_22");
+    let (other_invoice, other_hash) = fixture_invoice("lnd_hold_33");
+    let new_timelock = wallet.htlc.timelock + 7200;
+    let server = rehash_server(
+        rehash_params(&wallet, new_timelock),
+        rehash_signature(&wallet, new_hash, new_timelock),
+    )
+    .await;
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .build()
+        .unwrap();
+    let options = RefundOptions {
+        htlc: wallet.htlc.address,
+        lock_token: wallet.htlc.token,
+        coordinator: Some(wallet.coordinator),
+        timeout: Duration::from_secs(10),
+    };
+    client
+        .retry_swap_with_invoice_with_wallet("test", &new_invoice, &wallet, options)
+        .await
+        .unwrap();
+
+    // The server promoted the move: its copy now names the new invoice and hash.
+    let stored = store.get_swap("test").unwrap().unwrap();
+    let mut promoted = serde_json::to_value(&stored.response).unwrap();
+    promoted["client_lightning_invoice"] = json!(new_invoice);
+    promoted["hash_lock"] = json!(new_hash);
+    promoted["evm_refund_locktime"] = json!(new_timelock);
+    let mut unrelated = promoted.clone();
+    unrelated["client_lightning_invoice"] = json!(other_invoice);
+    unrelated["hash_lock"] = json!(other_hash);
+    for (snapshot, accepted) in [(promoted, true), (unrelated, false)] {
+        server.reset().await;
+        Mock::given(method("GET"))
+            .and(path("/swap/test"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(snapshot))
+            .mount(&server)
+            .await;
+        let result = client.get_swap_details("test").await;
+        assert_eq!(result.is_ok(), accepted, "{result:?}");
+    }
+}
+
+#[tokio::test]
+async fn an_invoice_off_the_advertised_limits_is_refused_before_signing() {
+    let (_, mut wallet, store) = setup(false);
+    make_depositor_sender(&mut wallet, &store);
+    let (invoice, payment_hash) = fixture_invoice("lnd_hold_22");
+    let new_timelock = wallet.htlc.timelock + 7200;
+    let options = RefundOptions {
+        htlc: wallet.htlc.address,
+        lock_token: wallet.htlc.token,
+        coordinator: Some(wallet.coordinator),
+        timeout: Duration::from_secs(10),
+    };
+    for (params, expected) in [
+        (
+            {
+                let mut p = rehash_params(&wallet, new_timelock);
+                p["max_invoice_amount_sats"] = json!(999);
+                p
+            },
+            "more than the swap pays out",
+        ),
+        (
+            {
+                let mut p = rehash_params(&wallet, new_timelock);
+                // The fixture invoice expires in 2027; ask for ten years.
+                p["min_invoice_validity_secs"] = json!(315_360_000);
+                p
+            },
+            "must stay valid",
+        ),
+    ] {
+        let server = rehash_server(
+            params,
+            rehash_signature(&wallet, payment_hash, new_timelock),
+        )
+        .await;
+        let client = Client::builder()
+            .base_url(server.uri())
+            .mnemonic(MNEMONIC)
+            .storage(store.clone())
+            .build()
+            .unwrap();
+        let error = client
+            .retry_swap_with_invoice_with_wallet("test", &invoice, &wallet, options.clone())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(expected), "{error}");
+    }
+    assert_eq!(wallet.signatures.load(Ordering::Relaxed), 0);
+    assert!(wallet.sent.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_rehash_whose_broadcast_response_was_lost_blocks_until_attached() {
+    let (_, mut wallet, store) = setup(false);
+    make_depositor_sender(&mut wallet, &store);
+    wallet.fail_send.store(true, Ordering::Relaxed);
+    let (invoice, payment_hash) = fixture_invoice("lnd_hold_22");
+    let new_timelock = wallet.htlc.timelock + 7200;
+    let server = rehash_server(
+        rehash_params(&wallet, new_timelock),
+        rehash_signature(&wallet, payment_hash, new_timelock),
+    )
+    .await;
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .build()
+        .unwrap();
+    let options = RefundOptions {
+        htlc: wallet.htlc.address,
+        lock_token: wallet.htlc.token,
+        coordinator: Some(wallet.coordinator),
+        timeout: Duration::from_secs(10),
+    };
+    let error = client
+        .retry_swap_with_invoice_with_wallet("test", &invoice, &wallet, options.clone())
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::Transport(_)), "{error}");
+    // The tx may have reached the network: the terms are journaled, hash-less.
+    let history = store
+        .get_swap("test")
+        .unwrap()
+        .unwrap()
+        .metadata
+        .evm_rehashes
+        .unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].txid, "");
+    assert_eq!(history[0].hash_lock, payment_hash.to_string());
+
+    // Nothing runs on the lock until the submission is resolved.
+    wallet.fail_send.store(false, Ordering::Relaxed);
+    wallet.now.store(new_timelock, Ordering::Relaxed);
+    let error = client
+        .refund_evm_with_wallet("test", &wallet, options.clone())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("unresolved"), "{error}");
+    assert_eq!(wallet.sent.lock().unwrap().len(), 1);
+
+    // The operator finds the mined rehash and attaches it: the mock's receipt
+    // for any hash follows the last sent call, the rehash.
+    client
+        .attach_evm_rehash_transaction("test", B256::repeat_byte(99))
+        .await
+        .unwrap();
+    client
+        .refund_evm_with_wallet("test", &wallet, options)
+        .await
+        .unwrap();
+    let sent = wallet.sent.lock().unwrap();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[1].data[4..36], payment_hash.as_slice()[..]);
+}
+
+#[tokio::test]
+async fn a_released_rehash_submission_leaves_the_lock_where_it_was() {
+    let (client, mut wallet, store) = setup(false);
+    make_depositor_sender(&mut wallet, &store);
+    let mut stored = store.get_swap("test").unwrap().unwrap();
+    stored.metadata.evm_rehashes = Some(vec![crate::EvmRehashRecord {
+        txid: String::new(),
+        from_hash_lock: wallet.htlc.hash_lock.to_string(),
+        from_timelock: wallet.htlc.timelock,
+        hash_lock: B256::repeat_byte(0x22).to_string(),
+        timelock: wallet.htlc.timelock + 7200,
+        amount: wallet.htlc.amount.to_string(),
+        token: wallet.htlc.token.to_string(),
+    }]);
+    store.store_swap(stored).unwrap();
+    assert!(
+        client
+            .attach_evm_rehash_transaction("test", B256::ZERO)
+            .await
+            .is_err()
+    );
+    client.release_evm_rehash_submission("test").await.unwrap();
+    assert_eq!(
+        store
+            .get_swap("test")
+            .unwrap()
+            .unwrap()
+            .metadata
+            .evm_rehashes,
+        Some(vec![])
+    );
+    assert!(client.release_evm_rehash_submission("test").await.is_err());
+    wallet.now.store(wallet.htlc.timelock, Ordering::Relaxed);
+    client
+        .refund_evm_with_wallet(
+            "test",
+            &wallet,
+            RefundOptions {
+                htlc: wallet.htlc.address,
+                lock_token: wallet.htlc.token,
+                coordinator: Some(wallet.coordinator),
+                timeout: Duration::from_secs(10),
+            },
+        )
+        .await
+        .unwrap();
+    let sent = wallet.sent.lock().unwrap();
+    assert_eq!(sent[0].data[4..36], wallet.htlc.hash_lock.as_slice()[..]);
+}
+
+#[tokio::test]
+async fn a_rehash_that_never_mines_names_its_remedy_and_a_replacement_can_be_attached() {
+    let (_, mut wallet, store) = setup(false);
+    make_depositor_sender(&mut wallet, &store);
+    let (invoice, payment_hash) = fixture_invoice("lnd_hold_22");
+    let new_timelock = wallet.htlc.timelock + 7200;
+    // The broadcast returns a hash the node then never serves a receipt for.
+    let dropped = B256::repeat_byte(0xd0);
+    wallet.next_hashes.lock().unwrap().push(dropped);
+    wallet.missing_receipts.lock().unwrap().push(dropped);
+    let server = rehash_server(
+        rehash_params(&wallet, new_timelock),
+        rehash_signature(&wallet, payment_hash, new_timelock),
+    )
+    .await;
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .build()
+        .unwrap();
+    let options = RefundOptions {
+        htlc: wallet.htlc.address,
+        lock_token: wallet.htlc.token,
+        coordinator: Some(wallet.coordinator),
+        timeout: Duration::from_secs(10),
+    };
+    let error = client
+        .retry_swap_with_invoice_with_wallet("test", &invoice, &wallet, options.clone())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("has not confirmed"), "{error}");
+    assert!(
+        error.to_string().contains("attach_evm_rehash_transaction"),
+        "{error}"
+    );
+    wallet.now.store(new_timelock, Ordering::Relaxed);
+    let error = client
+        .refund_evm_with_wallet("test", &wallet, options.clone())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("has not confirmed"), "{error}");
+
+    // The wallet sped it up: the replacement mined (the mock answers any hash
+    // with the last sent call's event) and is attached over the dropped hash.
+    client
+        .attach_evm_rehash_transaction("test", B256::repeat_byte(0xd1))
+        .await
+        .unwrap();
+    client
+        .refund_evm_with_wallet("test", &wallet, options)
+        .await
+        .unwrap();
+    let sent = wallet.sent.lock().unwrap();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[1].data[4..36], payment_hash.as_slice()[..]);
+}
+
+#[tokio::test]
+async fn a_repeated_retry_with_the_same_invoice_returns_the_recorded_rehash() {
+    let (_, mut wallet, store) = setup(false);
+    make_depositor_sender(&mut wallet, &store);
+    let (invoice, payment_hash) = fixture_invoice("lnd_hold_22");
+    let new_timelock = wallet.htlc.timelock + 7200;
+    let server = rehash_server(
+        rehash_params(&wallet, new_timelock),
+        rehash_signature(&wallet, payment_hash, new_timelock),
+    )
+    .await;
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .build()
+        .unwrap();
+    let options = RefundOptions {
+        htlc: wallet.htlc.address,
+        lock_token: wallet.htlc.token,
+        coordinator: Some(wallet.coordinator),
+        timeout: Duration::from_secs(10),
+    };
+    let first = client
+        .retry_swap_with_invoice_with_wallet("test", &invoice, &wallet, options.clone())
+        .await
+        .unwrap();
+
+    // The caller's first call timed out on its side and it calls again, with
+    // the server down and the lock already moved: the recorded move is
+    // verified from its receipt and returned, nothing is signed or sent.
+    server.reset().await;
+    wallet.settled.store(true, Ordering::Relaxed);
+    let again = client
+        .retry_swap_with_invoice_with_wallet("test", &invoice, &wallet, options)
+        .await
+        .unwrap();
+    assert_eq!(again, first);
+    assert_eq!(wallet.signatures.load(Ordering::Relaxed), 1);
+    assert_eq!(wallet.sent.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn the_depositors_collab_refund_resends_an_unrecorded_submission_and_checks_gas() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+    let (_, mut wallet, store) = setup(false);
+    make_depositor_sender(&mut wallet, &store);
+    let mut stored = store.get_swap("test").unwrap().unwrap();
+    stored.metadata.evm_refund_started = Some(true);
+    store.store_swap(stored).unwrap();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/swap/test/collab-refund-evm/params"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(collab_params(&wallet, "direct")))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/swap/test/collab-refund-evm/signature"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(collab_signature(&wallet)))
+        .mount(&server)
+        .await;
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .build()
+        .unwrap();
+    let options = RefundOptions {
+        htlc: wallet.htlc.address,
+        lock_token: wallet.htlc.token,
+        coordinator: Some(wallet.coordinator),
+        timeout: Duration::from_secs(10),
+    };
+    // Not the depositor path: the reservation without a hash blocks.
+    let error = client
+        .collab_refund_evm("test", &wallet, options.clone(), false)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("unresolved"), "{error}");
+    // The depositor path refuses before reserving when it cannot pay the gas…
+    wallet.native_wei.store(0, Ordering::Relaxed);
+    let error = client
+        .collab_refund_evm("test", &wallet, options.clone(), true)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::InsufficientGas(_)), "{error}");
+    assert!(wallet.sent.lock().unwrap().is_empty());
+    // …and resends while the lock is active once it can.
+    wallet.native_wei.store(1_000_000, Ordering::Relaxed);
+    let receipt = client
+        .collab_refund_evm("test", &wallet, options, true)
+        .await
+        .unwrap();
+    assert_eq!(wallet.sent.lock().unwrap().len(), 1);
+    assert_eq!(
+        store
+            .get_swap("test")
+            .unwrap()
+            .unwrap()
+            .metadata
+            .evm_refund_txid,
+        Some(receipt.transaction_hash.to_string())
+    );
+}
+
+#[tokio::test]
+async fn a_cancelled_rehash_frees_the_invoice_for_a_fresh_attempt() {
+    let (_, mut wallet, store) = setup(false);
+    make_depositor_sender(&mut wallet, &store);
+    wallet.fail_send.store(true, Ordering::Relaxed);
+    let (invoice, payment_hash) = fixture_invoice("lnd_hold_22");
+    let new_timelock = wallet.htlc.timelock + 7200;
+    let server = rehash_server(
+        rehash_params(&wallet, new_timelock),
+        rehash_signature(&wallet, payment_hash, new_timelock),
+    )
+    .await;
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .build()
+        .unwrap();
+    let options = RefundOptions {
+        htlc: wallet.htlc.address,
+        lock_token: wallet.htlc.token,
+        coordinator: Some(wallet.coordinator),
+        timeout: Duration::from_secs(10),
+    };
+    assert!(
+        client
+            .retry_swap_with_invoice_with_wallet("test", &invoice, &wallet, options.clone())
+            .await
+            .is_err()
+    );
+    // The operator cancelled the stuck rehash: the mined replacement carries
+    // no SwapRehashed (the mock derives the event from the last sent call,
+    // which is now a plain transfer).
+    wallet.fail_send.store(false, Ordering::Relaxed);
+    wallet.sent.lock().unwrap().push(EvmTransaction {
+        chain_id: wallet.chain_id(),
+        from: wallet.owner,
+        to: wallet.owner,
+        value: U256::ZERO,
+        data: Bytes::new(),
+    });
+    client
+        .attach_evm_rehash_transaction("test", B256::repeat_byte(0xca))
+        .await
+        .unwrap();
+
+    // A repeat with the same invoice forgets the record and moves the lock.
+    let moved = client
+        .retry_swap_with_invoice_with_wallet("test", &invoice, &wallet, options)
+        .await
+        .unwrap();
+    assert_eq!(moved.new_hash_lock, payment_hash);
+    let history = store
+        .get_swap("test")
+        .unwrap()
+        .unwrap()
+        .metadata
+        .evm_rehashes
+        .unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].txid, moved.tx_hash.to_string());
+}
+
+#[tokio::test]
+async fn a_superseded_rehash_is_not_reported_as_the_current_lock() {
+    let (client, mut wallet, store) = setup(false);
+    make_depositor_sender(&mut wallet, &store);
+    let first = B256::repeat_byte(0xa1);
+    let mut stored = store.get_swap("test").unwrap().unwrap();
+    stored.metadata.evm_rehashes = Some(vec![
+        crate::EvmRehashRecord {
+            txid: B256::repeat_byte(0xa0).to_string(),
+            from_hash_lock: wallet.htlc.hash_lock.to_string(),
+            from_timelock: wallet.htlc.timelock,
+            hash_lock: first.to_string(),
+            timelock: wallet.htlc.timelock + 7200,
+            amount: wallet.htlc.amount.to_string(),
+            token: wallet.htlc.token.to_string(),
+        },
+        crate::EvmRehashRecord {
+            txid: B256::repeat_byte(0xb0).to_string(),
+            from_hash_lock: first.to_string(),
+            from_timelock: wallet.htlc.timelock + 7200,
+            hash_lock: B256::repeat_byte(0xb1).to_string(),
+            timelock: wallet.htlc.timelock + 14_400,
+            amount: wallet.htlc.amount.to_string(),
+            token: wallet.htlc.token.to_string(),
+        },
+    ]);
+    store.store_swap(stored).unwrap();
+    // The first move is on record but no longer where the lock is.
+    assert!(
+        client
+            .recorded_rehash("test", &wallet, first)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(wallet.sent.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_recorded_rehash_under_other_terms_is_refused_not_trusted() {
+    let (client, mut wallet, store) = setup(false);
+    make_depositor_sender(&mut wallet, &store);
+    let (_, payment_hash) = fixture_invoice("lnd_hold_22");
+    let new_timelock = wallet.htlc.timelock + 7200;
+    // The mock's receipt for the record's tx carries the SwapRehashed of the
+    // last sent call: a rehash of this lock to the invoice under `new_timelock`.
+    wallet.sent.lock().unwrap().push(transaction(
+        &wallet,
+        wallet.htlc.address,
+        Htlc::rehashCall {
+            preimageHash: wallet.htlc.hash_lock,
+            amount: wallet.htlc.amount,
+            token: wallet.htlc.token,
+            timelock: U256::from(wallet.htlc.timelock),
+            newPreimageHash: payment_hash,
+            newTimelock: U256::from(new_timelock),
+            v: 28,
+            r: B256::repeat_byte(0x11),
+            s: B256::repeat_byte(0x22),
+        }
+        .abi_encode(),
+    ));
+    let record = |timelock: u64| crate::EvmRehashRecord {
+        txid: B256::repeat_byte(0xe0).to_string(),
+        from_hash_lock: wallet.htlc.hash_lock.to_string(),
+        from_timelock: wallet.htlc.timelock,
+        hash_lock: payment_hash.to_string(),
+        timelock,
+        amount: wallet.htlc.amount.to_string(),
+        token: wallet.htlc.token.to_string(),
+    };
+    // A record claiming another destination timelock than the event's.
+    let mut stored = store.get_swap("test").unwrap().unwrap();
+    stored.metadata.evm_rehashes = Some(vec![record(new_timelock + 1)]);
+    store.store_swap(stored).unwrap();
+    let error = client
+        .recorded_rehash("test", &wallet, payment_hash)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("other terms"), "{error}");
+    assert_eq!(
+        store
+            .get_swap("test")
+            .unwrap()
+            .unwrap()
+            .metadata
+            .evm_rehashes
+            .map(|h| h.len()),
+        Some(1),
+        "the record is kept for the operator to fix"
+    );
+    // The matching record is verified and returned.
+    let mut stored = store.get_swap("test").unwrap().unwrap();
+    stored.metadata.evm_rehashes = Some(vec![record(new_timelock)]);
+    store.store_swap(stored).unwrap();
+    let found = client
+        .recorded_rehash("test", &wallet, payment_hash)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.new_timelock, new_timelock);
+}
+
+/// How the server answers `collab-refund-evm/params` in a recovery test.
+enum Terms {
+    Amount(U256),
+    Malformed,
+    Stalled,
+    Down,
+}
+
+/// A HTLCErc20 v7 / HTLCNative v2 EVM to Lightning swap whose lock a retry
+/// moved to a new invoice, recovered from the seed into an empty store once
+/// the server promoted the move: the server names the new hash and the rehash
+/// tx as the funding, and nothing local records the move. `locked` is the
+/// amount on chain, `terms` the server's answer for it, and `edit` changes
+/// the server's snapshot. The returned wallet holds the moved lock.
+async fn recovered_after_an_unrecorded_rehash(
+    kind: EvmHtlcKind,
+    locked: U256,
+    terms: Terms,
+    edit: impl FnOnce(&mut Value),
+) -> (Client, Wallet, wiremock::MockServer) {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+    let (_, mut wallet, store) = setup_fixture("evm_to_lightning", false, kind);
+    make_depositor_sender(&mut wallet, &store);
+    wallet.htlc.amount = locked;
+    let (invoice, new_hash) = fixture_invoice("lnd_hold_22");
+    let new_timelock = wallet.htlc.timelock + 7200;
+    let rehash_tx = B256::repeat_byte(0xf0);
+    let mut snapshot =
+        serde_json::to_value(&store.get_swap("test").unwrap().unwrap().response).unwrap();
+    snapshot["client_lightning_invoice"] = json!(invoice);
+    snapshot["hash_lock"] = json!(new_hash);
+    snapshot["evm_refund_locktime"] = json!(new_timelock);
+    snapshot["evm_fund_txid"] = json!(rehash_tx);
+    snapshot["evm_expected_sats"] = json!("100000");
+    edit(&mut snapshot);
+    // The chain: the rehash tx moved the funded lock to the new terms.
+    let moved = EvmHtlc {
+        hash_lock: new_hash,
+        timelock: new_timelock,
+        ..wallet.htlc.clone()
+    };
+    wallet.fixed_receipts.lock().unwrap().insert(
+        rehash_tx,
+        vec![event_log(
+            SwapRehashed {
+                preimageHash: wallet.htlc.hash_lock,
+                key: wallet.htlc.key(),
+                newKey: moved.key(),
+                newPreimageHash: new_hash,
+            },
+            wallet.htlc.address,
+        )],
+    );
+    wallet.htlc = moved;
+    wallet.now.store(new_timelock, Ordering::Relaxed);
+    let server = MockServer::start().await;
+    let mut recovered = snapshot.clone();
+    recovered["index"] = json!(0);
+    Mock::given(method("POST"))
+        .and(path("/swap/recover"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "swaps": [recovered],
+            "highest_index": 0,
+            "next_index": 1,
+            "scanned_until": 0,
+            "complete": true,
+        })))
+        .mount(&server)
+        .await;
+    let params = |amount: String| crate::evm::CollabRefundEvmParams {
+        htlc_address: wallet.htlc.address.to_string(),
+        htlc_version: if kind == EvmHtlcKind::Native { 2 } else { 7 },
+        htlc_kind: kind,
+        chain_id: wallet.htlc.chain_id,
+        preimage_hash: snapshot["hash_lock"].as_str().unwrap().to_owned(),
+        amount,
+        token: wallet.htlc.token.to_string(),
+        claim_address: wallet.htlc.claimer.to_string(),
+        timelock: snapshot["evm_refund_locktime"].as_u64().unwrap(),
+        refund_path: "direct".into(),
+    };
+    let response = match terms {
+        Terms::Amount(amount) => {
+            Some(ResponseTemplate::new(200).set_body_json(params(amount.to_string())))
+        }
+        Terms::Malformed => Some(ResponseTemplate::new(200).set_body_json(params("lots".into()))),
+        Terms::Stalled => Some(
+            ResponseTemplate::new(200)
+                .set_body_json(params(locked.to_string()))
+                .set_delay(Duration::from_secs(600)),
+        ),
+        Terms::Down => None,
+    };
+    if let Some(response) = response {
+        Mock::given(method("GET"))
+            .and(path("/api/swap/test/collab-refund-evm/params"))
+            .respond_with(response)
+            .mount(&server)
+            .await;
+    }
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(Arc::new(InMemorySwapStorage::new()))
+        .build()
+        .unwrap();
+    client.recover_swaps(None).await.unwrap();
+    let stored = client.get_stored_swap("test").unwrap().unwrap();
+    assert!(stored.metadata.evm_rehashes.is_none());
+    assert!(stored.metadata.evm_fund_txid.is_none());
+    assert!(stored.metadata.evm_recovered_lock.is_none());
+    (client, wallet, server)
+}
+
+fn refund_options(wallet: &Wallet) -> RefundOptions {
+    RefundOptions {
+        htlc: wallet.htlc.address,
+        lock_token: wallet.htlc.token,
+        coordinator: Some(wallet.coordinator),
+        timeout: Duration::from_secs(5),
+    }
+}
+
+async fn refund_recovered(client: &Client, wallet: &Wallet) -> Result<EvmReceipt> {
+    client
+        .refund_evm_with_wallet("test", wallet, refund_options(wallet))
+        .await
+}
+
+/// The last sent tx as an HTLC refund: its hash lock, amount and timelock.
+fn sent_refund(wallet: &Wallet) -> (B256, U256, U256) {
+    let sent = wallet.sent.lock().unwrap();
+    let refund = sent.last().unwrap();
+    assert_eq!(
+        refund.to, wallet.htlc.address,
+        "refunded on the HTLC itself"
+    );
+    Htlc::refundCall::abi_decode(&refund.data)
+        .map(|call| (call.preimageHash, call.amount, call.timelock))
+        .or_else(|_| {
+            super::refund::NativeHtlc::refundCall::abi_decode(&refund.data)
+                .map(|call| (call.preimageHash, call.amount, call.timelock))
+        })
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_rehash_recovered_from_the_seed_refunds_the_moved_lock_from_empty_storage() {
+    for kind in [EvmHtlcKind::Erc20, EvmHtlcKind::Native] {
+        // The locked amount differs from the quote; only the server knows it.
+        let (client, wallet, _server) = recovered_after_an_unrecorded_rehash(
+            kind,
+            U256::from(100_123),
+            Terms::Amount(U256::from(100_123)),
+            |_| {},
+        )
+        .await;
+        refund_recovered(&client, &wallet)
+            .await
+            .unwrap_or_else(|error| panic!("{kind:?}: {error}"));
+        assert_eq!(wallet.sent.lock().unwrap().len(), 1);
+        assert_eq!(
+            sent_refund(&wallet),
+            (
+                wallet.htlc.hash_lock,
+                U256::from(100_123),
+                U256::from(wallet.htlc.timelock)
+            )
+        );
+        let metadata = client.get_stored_swap("test").unwrap().unwrap().metadata;
+        assert_eq!(
+            metadata.evm_fund_txid,
+            Some(B256::repeat_byte(0xf0).to_string())
+        );
+        let saved = metadata.evm_recovered_lock.unwrap();
+        assert_eq!(
+            (saved.hash_lock, saved.amount, saved.sender),
+            (
+                wallet.htlc.hash_lock.to_string(),
+                "100123".into(),
+                wallet.owner.to_string()
+            )
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_submitted_refund_of_a_recovered_lock_resumes_without_the_server() {
+    let (client, wallet, server) = recovered_after_an_unrecorded_rehash(
+        EvmHtlcKind::Erc20,
+        U256::from(100_123),
+        Terms::Amount(U256::from(100_123)),
+        |_| {},
+    )
+    .await;
+    // The refund is broadcast, but its receipt is not served yet.
+    wallet
+        .missing_receipts
+        .lock()
+        .unwrap()
+        .push(B256::repeat_byte(99));
+    refund_recovered(&client, &wallet).await.unwrap_err();
+    assert_eq!(wallet.sent.lock().unwrap().len(), 1);
+    // The terms endpoint goes down; the quote does not match the lock.
+    server.reset().await;
+    wallet.missing_receipts.lock().unwrap().clear();
+    refund_recovered(&client, &wallet).await.unwrap();
+    assert_eq!(wallet.sent.lock().unwrap().len(), 1, "verified, not resent");
+}
+
+#[tokio::test]
+async fn a_recovered_lock_follows_a_later_retry_to_the_refund() {
+    use wiremock::Mock;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+    for kind in [EvmHtlcKind::Erc20, EvmHtlcKind::Native] {
+        let (client, mut wallet, server) = recovered_after_an_unrecorded_rehash(
+            kind,
+            U256::from(100_123),
+            Terms::Amount(U256::from(100_123)),
+            |_| {},
+        )
+        .await;
+        // The payment to the recovered invoice fails too; the user retries
+        // with another one, and the lock moves again.
+        let (invoice, payment_hash) = fixture_invoice("lnd_hold_33");
+        let new_timelock = wallet.htlc.timelock + 7200;
+        Mock::given(method("GET"))
+            .and(path("/api/swap/test/rehash-evm/params"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(rehash_params(&wallet, new_timelock)),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/swap/test/rehash-evm"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(rehash_signature(
+                &wallet,
+                payment_hash,
+                new_timelock,
+            )))
+            .mount(&server)
+            .await;
+        wallet
+            .next_hashes
+            .lock()
+            .unwrap()
+            .push(B256::repeat_byte(0xf1));
+        wallet
+            .now
+            .store(wallet.htlc.timelock - 100, Ordering::Relaxed);
+        client
+            .retry_swap_with_invoice_with_wallet("test", &invoice, &wallet, refund_options(&wallet))
+            .await
+            .unwrap_or_else(|error| panic!("{kind:?}: {error}"));
+        // The server has not promoted the second move, and its terms are gone.
+        server.reset().await;
+        wallet.htlc.hash_lock = payment_hash;
+        wallet.htlc.timelock = new_timelock;
+        wallet.now.store(new_timelock, Ordering::Relaxed);
+        refund_recovered(&client, &wallet)
+            .await
+            .unwrap_or_else(|error| panic!("{kind:?}: {error}"));
+        assert_eq!(wallet.sent.lock().unwrap().len(), 2);
+        assert_eq!(
+            sent_refund(&wallet),
+            (payment_hash, U256::from(100_123), U256::from(new_timelock))
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_matching_quote_is_used_without_asking_the_server() {
+    // A stalled terms endpoint would outlast the refund's timeout.
+    let (client, wallet, server) = recovered_after_an_unrecorded_rehash(
+        EvmHtlcKind::Erc20,
+        U256::from(100_000),
+        Terms::Stalled,
+        |_| {},
+    )
+    .await;
+    refund_recovered(&client, &wallet).await.unwrap();
+    assert_eq!(wallet.sent.lock().unwrap().len(), 1);
+    let asked = server.received_requests().await.unwrap();
+    assert!(
+        asked
+            .iter()
+            .all(|request| !request.url.path().ends_with("collab-refund-evm/params")),
+        "the terms endpoint was asked"
+    );
+}
+
+#[tokio::test]
+async fn server_terms_that_do_not_hash_to_the_rehashed_lock_refund_nothing() {
+    // A wrong amount, from both the terms and the quote; then terms that
+    // are not an amount at all.
+    for terms in [
+        Terms::Amount(U256::from(99_999)),
+        Terms::Malformed,
+        Terms::Down,
+    ] {
+        let (client, wallet, _server) = recovered_after_an_unrecorded_rehash(
+            EvmHtlcKind::Erc20,
+            U256::from(100_123),
+            terms,
+            |_| {},
+        )
+        .await;
+        let error = refund_recovered(&client, &wallet).await.unwrap_err();
+        assert!(
+            error.to_string().contains("do not match the lock"),
+            "{error}"
+        );
+        assert!(wallet.sent.lock().unwrap().is_empty());
+        let metadata = client.get_stored_swap("test").unwrap().unwrap().metadata;
+        assert!(metadata.evm_recovered_lock.is_none());
+    }
+    // A timelock earlier than the one the rehash set, to refund early.
+    let (client, wallet, _server) = recovered_after_an_unrecorded_rehash(
+        EvmHtlcKind::Erc20,
+        U256::from(100_000),
+        Terms::Amount(U256::from(100_000)),
+        |snapshot| {
+            let timelock = snapshot["evm_refund_locktime"].as_u64().unwrap();
+            snapshot["evm_refund_locktime"] = json!(timelock - 3600);
+        },
+    )
+    .await;
+    let error = refund_recovered(&client, &wallet).await.unwrap_err();
+    assert!(
+        error.to_string().contains("do not match the lock"),
+        "{error}"
+    );
+    assert!(wallet.sent.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_rehashed_lock_that_is_no_longer_active_refunds_nothing() {
+    let (client, wallet, _server) = recovered_after_an_unrecorded_rehash(
+        EvmHtlcKind::Erc20,
+        U256::from(100_000),
+        Terms::Amount(U256::from(100_000)),
+        |_| {},
+    )
+    .await;
+    wallet.settled.store(true, Ordering::Relaxed);
+    let error = refund_recovered(&client, &wallet).await.unwrap_err();
+    assert!(
+        error.to_string().contains("rehashed is no longer active"),
+        "{error}"
+    );
+    assert!(wallet.sent.lock().unwrap().is_empty());
+    let metadata = client.get_stored_swap("test").unwrap().unwrap().metadata;
+    assert!(
+        metadata.evm_recovered_lock.is_none(),
+        "unverified terms are not saved"
+    );
+}
+
+#[test]
+fn a_saved_recovered_lock_is_never_replaced() {
+    let lock = |amount: &str| crate::storage::EvmRecoveredLock {
+        txid: B256::repeat_byte(0xf0).to_string(),
+        hash_lock: B256::repeat_byte(1).to_string(),
+        timelock: 1,
+        amount: amount.into(),
+        token: Address::ZERO.to_string(),
+        sender: Address::ZERO.to_string(),
+        claim_address: Address::ZERO.to_string(),
+    };
+    let store = InMemorySwapStorage::new();
+    let (_, _, setup_store) = setup(false);
+    store
+        .store_swap(setup_store.get_swap("test").unwrap().unwrap())
+        .unwrap();
+    for amount in ["1", "2"] {
+        store
+            .update_metadata(
+                "test",
+                SwapMetadata {
+                    evm_recovered_lock: Some(lock(amount)),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        store
+            .get_swap("test")
+            .unwrap()
+            .unwrap()
+            .metadata
+            .evm_recovered_lock,
+        Some(lock("1"))
+    );
+}
+
+#[tokio::test]
+async fn the_depositors_retry_refuses_without_gas_before_journaling_anything() {
+    let (_, mut wallet, store) = setup(false);
+    make_depositor_sender(&mut wallet, &store);
+    wallet.native_wei.store(0, Ordering::Relaxed);
+    let (invoice, payment_hash) = fixture_invoice("lnd_hold_22");
+    let new_timelock = wallet.htlc.timelock + 7200;
+    let server = rehash_server(
+        rehash_params(&wallet, new_timelock),
+        rehash_signature(&wallet, payment_hash, new_timelock),
+    )
+    .await;
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(MNEMONIC)
+        .storage(store.clone())
+        .build()
+        .unwrap();
+    let options = RefundOptions {
+        htlc: wallet.htlc.address,
+        lock_token: wallet.htlc.token,
+        coordinator: Some(wallet.coordinator),
+        timeout: Duration::from_secs(10),
+    };
+    let error = client
+        .retry_swap_with_invoice_evm("test", &invoice, &wallet, options.clone(), true)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::InsufficientGas(_)), "{error}");
+    assert!(wallet.sent.lock().unwrap().is_empty());
+    assert_eq!(
+        store
+            .get_swap("test")
+            .unwrap()
+            .unwrap()
+            .metadata
+            .evm_rehashes,
+        None
+    );
+    // With gas, the same call goes through; nothing was left to reconcile.
+    wallet.native_wei.store(1_000_000, Ordering::Relaxed);
+    client
+        .retry_swap_with_invoice_evm("test", &invoice, &wallet, options, true)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_record_without_the_locks_amount_falls_through_to_the_normal_flow() {
+    let (client, mut wallet, store) = setup(false);
+    make_depositor_sender(&mut wallet, &store);
+    let (_, payment_hash) = fixture_invoice("lnd_hold_22");
+    let mut stored = store.get_swap("test").unwrap().unwrap();
+    stored.metadata.evm_rehashes = Some(vec![crate::EvmRehashRecord {
+        txid: B256::repeat_byte(0xe0).to_string(),
+        from_hash_lock: wallet.htlc.hash_lock.to_string(),
+        from_timelock: wallet.htlc.timelock,
+        hash_lock: payment_hash.to_string(),
+        timelock: wallet.htlc.timelock + 7200,
+        amount: String::new(),
+        token: String::new(),
+    }]);
+    store.store_swap(stored).unwrap();
+    assert!(
+        client
+            .recorded_rehash("test", &wallet, payment_hash)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// A chain RPC serving `log` as the only HTLC event, mined at block 99 of
+/// 100 with the tip at `timestamp`.
+async fn chain_with_log(log: EvmLog, timestamp: u64) -> wiremock::MockServer {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).respond_with(move |request: &wiremock::Request| {
+        let body: Value = request.body_json().unwrap();
+        let result = match body["method"].as_str().unwrap() {
+            "eth_chainId" => json!("0x89"),
+            "eth_getBlockByNumber" => {
+                let number = if body["params"][0] == "latest" { "0x64" } else { body["params"][0].as_str().unwrap() };
+                json!({"hash":B256::repeat_byte(9),"parentHash":B256::ZERO,"sha3Uncles":B256::ZERO,"miner":Address::ZERO,"stateRoot":B256::ZERO,"transactionsRoot":B256::ZERO,"receiptsRoot":B256::ZERO,"logsBloom":format!("0x{}","00".repeat(256)),"difficulty":"0x0","number":number,"gasLimit":"0x1000000","gasUsed":"0x0","timestamp":format!("{timestamp:#x}"),"extraData":"0x","mixHash":B256::ZERO,"nonce":"0x0000000000000000","transactions":[],"uncles":[]})
+            }
+            "eth_getLogs" => json!([{"address":log.address,"topics":log.topics,"data":format!("0x{}",hex::encode(&log.data)),"blockNumber":"0x63","blockHash":B256::repeat_byte(9),"transactionHash":B256::repeat_byte(7),"transactionIndex":"0x0","logIndex":"0x0","removed":false}]),
+            method => panic!("unexpected {method}"),
+        };
+        ResponseTemplate::new(200).set_body_json(json!({"jsonrpc":"2.0","id":body["id"],"result":result}))
+    }).mount(&server).await;
+    server
+}
+
+#[tokio::test]
+async fn tracking_observes_the_client_lock_under_the_sender_of_its_generation() {
+    use crate::actions::ActionInput;
+    use crate::actions::ActionKind;
+    use crate::actions::ActionPolicy;
+    use crate::actions::BridgeState;
+    use crate::observation::ContractReader;
+    use crate::observation::ContractRef;
+    use crate::observation::EvmRpcReader;
+    use crate::observation::HtlcState;
+    use crate::observation::ReferenceOptions;
+    for kind in [EvmHtlcKind::Erc20, EvmHtlcKind::Native] {
+        for depositor_sender in [false, true] {
+            let (client, mut wallet, store) = setup_fixture("evm_to_lightning", false, kind);
+            if depositor_sender {
+                make_depositor_sender(&mut wallet, &store);
+            }
+            let options = ReferenceOptions {
+                evm_from_block: 1,
+                ..ReferenceOptions::default()
+            };
+            let contracts = client.contract_references("test", &options).unwrap();
+            let Some(ContractRef::Evm { htlc, .. }) = &contracts.client else {
+                panic!("expected an EVM source reference")
+            };
+            // v6 / native v1 lock under the coordinator, v7 / native v2 under
+            // the depositor.
+            let sender = if depositor_sender {
+                wallet.owner
+            } else {
+                wallet.coordinator
+            };
+            assert_eq!(htlc.sender, sender, "{kind:?} depositor={depositor_sender}");
+            assert_eq!(*htlc, wallet.htlc);
+            // An explicit sender still wins over either generation.
+            let overridden = client
+                .contract_references(
+                    "test",
+                    &ReferenceOptions {
+                        evm_source_sender: Some(Address::repeat_byte(0x77)),
+                        ..options.clone()
+                    },
+                )
+                .unwrap();
+            let Some(ContractRef::Evm { htlc: other, .. }) = overridden.client else {
+                panic!("expected an EVM source reference")
+            };
+            assert_eq!(other.sender, Address::repeat_byte(0x77));
+            // The lock as the chain records it, past its timelock.
+            let h = &wallet.htlc;
+            let chain = chain_with_log(
+                event_log(
+                    SwapCreated {
+                        preimageHash: h.hash_lock,
+                        refundAddress: h.sender,
+                        claimAddress: h.claimer,
+                        token: h.token,
+                        amount: h.amount,
+                        timelock: U256::from(h.timelock),
+                        key: h.key(),
+                    },
+                    h.address,
+                ),
+                h.timelock + 1,
+            )
+            .await;
+            let reader = EvmRpcReader::connect(chain.uri().parse().unwrap(), 137, 1000)
+                .await
+                .unwrap();
+            let observed = reader
+                .observe(contracts.client.as_ref().unwrap())
+                .await
+                .unwrap();
+            assert_eq!(observed.state, HtlcState::Confirmed);
+            let actions = crate::actions::derive_actions(
+                ActionInput {
+                    contracts: &contracts,
+                    client: Some(&observed),
+                    server: None,
+                    funding_submitted: false,
+                    claim_submitted: false,
+                    funding_uncertain: false,
+                    submission_uncertain: false,
+                    collaborative_refund_available: false,
+                    bridge: &BridgeState::None,
+                    server_status: None,
+                },
+                &ActionPolicy::default(),
+            );
+            assert!(
+                actions
+                    .actions
+                    .iter()
+                    .any(|action| action.kind == ActionKind::RefundUnilateral),
+                "{actions:?}"
+            );
+        }
+    }
 }

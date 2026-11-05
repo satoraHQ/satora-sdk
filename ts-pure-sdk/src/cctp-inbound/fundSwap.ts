@@ -22,6 +22,7 @@ import { arbitrum } from "viem/chains";
 import type { ApiClient } from "../api/client.js";
 import { fetchAttestation } from "../cctp/attestation.js";
 import { IRIS_API_MAINNET, TOKEN_MESSENGER_V2 } from "../cctp/constants.js";
+import type { ExpectedFunding } from "../evm/funding-pins.js";
 import type { EvmSigner } from "../evm/wallet.js";
 import { approveAndBurn } from "./approveAndBurn.js";
 import { cctpMetaForChainId, finalityForChainId } from "./chainMap.js";
@@ -42,6 +43,15 @@ export type CctpProgressStep =
   | { phase: "settled"; userOpHash: Hex; transactionHash?: Hex };
 
 export interface CctpFundSwapParams {
+  /**
+   * What the funding must match: the hash lock this client fixed and the
+   * terms it recorded at the swap's creation (`Client.getEvmFundingExpectation`),
+   * plus optional pins. A payload naming another spender, hash, claimer,
+   * timelock or token, taking more than the input, or with calls that
+   * could move the deposit is refused before anything is signed, and the
+   * batch is built from these terms, not from the payload.
+   */
+  expected: ExpectedFunding;
   /** Swap ID from `client.createSwap(...)`. */
   swapId: string;
   /**
@@ -231,6 +241,7 @@ export async function cctpFundSwap(
   onProgress?.({ phase: "submitting" });
   const submit = await submitCctpInboundUserOp(context, {
     swapId,
+    expected: params.expected,
     signer: ownerSigner,
     cctpMessage: message as Hex,
     cctpAttestation: attestation as Hex,

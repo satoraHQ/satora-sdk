@@ -25,6 +25,7 @@ import {
   FINALITY_FAST,
   IRIS_API_MAINNET,
 } from "../../cctp/constants.js";
+import type { ExpectedFunding } from "../../evm/funding-pins.js";
 import type { EvmSigner } from "../../evm/wallet.js";
 import type { CctpFundSwapContext } from "../fundSwap.js";
 import { createSwapSmartAccountClient } from "../smartAccount.js";
@@ -53,6 +54,15 @@ export type SolanaCctpProgressStep =
   | { phase: "settled"; userOpHash: Hex; transactionHash?: Hex };
 
 export interface CctpFundSwapFromSolanaParams {
+  /**
+   * What the funding must match: the hash lock this client fixed and the
+   * terms it recorded at the swap's creation (`Client.getEvmFundingExpectation`),
+   * plus optional pins. A payload naming another spender, hash, claimer,
+   * timelock or token, taking more than the input, or with calls that
+   * could move the deposit is refused before anything is signed, and the
+   * batch is built from these terms, not from the payload.
+   */
+  expected: ExpectedFunding;
   swapId: string;
   /** The user's Solana wallet: owns the USDC, signs and sends the burn. */
   signer: SolanaSigner;
@@ -303,6 +313,7 @@ export async function cctpFundSwapFromSolana(
   onProgress?.({ phase: "submitting" });
   const submit = await submitCctpInboundUserOp(context, {
     swapId,
+    expected: params.expected,
     signer: ownerSigner,
     cctpMessage: message as Hex,
     cctpAttestation: attestation as Hex,

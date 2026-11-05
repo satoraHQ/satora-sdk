@@ -23,7 +23,7 @@ pub(crate) const INVOICE_HASH_MISMATCH: &str =
 
 /// Parsed as the swap server parses it, so both accept the same invoices. The
 /// signature is checked too.
-pub(super) fn parse_invoice(invoice: &str) -> Result<Bolt11Invoice> {
+pub(crate) fn parse_invoice(invoice: &str) -> Result<Bolt11Invoice> {
     Bolt11Invoice::from_str(invoice)
         .map_err(|e| Error::InvalidSwap(format!("invalid BOLT11 invoice: {e}")))
 }
@@ -182,7 +182,25 @@ impl Client {
                 invoice_payment_hash(&r.client_lightning_invoice)?
             }
             GetSwapResponse::EvmToLightning(r) => {
-                invoice_payment_hash(&r.client_lightning_invoice)?
+                // A rehash this client sent and verified on chain moved the lock to
+                // another invoice's hash; the server's copy follows once it has
+                // confirmed the move, so either the stored invoice's hash or a
+                // recorded destination is this swap's.
+                let invoice_hash = invoice_payment_hash(&r.client_lightning_invoice)?;
+                let rehashed = stored
+                    .metadata
+                    .evm_rehashes
+                    .iter()
+                    .flatten()
+                    .map(|rehash| hash_lock_bytes(&rehash.hash_lock))
+                    .collect::<Result<Vec<_>>>()?;
+                return match rehashed
+                    .iter()
+                    .find(|hash| check_lightning_swap(fresh, hash).is_ok())
+                {
+                    Some(_) => Ok(()),
+                    None => check_lightning_swap(fresh, &invoice_hash),
+                };
             }
             GetSwapResponse::BitcoinToLightning(r) => {
                 invoice_payment_hash(&r.client_lightning_invoice)?

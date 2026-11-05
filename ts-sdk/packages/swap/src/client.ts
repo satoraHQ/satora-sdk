@@ -511,6 +511,41 @@ export class Client {
   }
 
   /** Delegated to the legacy client (migration checkpoint). */
+  getCollabRefundEvmSignature(
+    ...args: Parameters<LegacyClient["getCollabRefundEvmSignature"]>
+  ): ReturnType<LegacyClient["getCollabRefundEvmSignature"]> {
+    return this.#legacy.getCollabRefundEvmSignature(...args);
+  }
+
+  /** Delegated to the legacy client (migration checkpoint). */
+  getRehashEvmParams(
+    ...args: Parameters<LegacyClient["getRehashEvmParams"]>
+  ): ReturnType<LegacyClient["getRehashEvmParams"]> {
+    return this.#legacy.getRehashEvmParams(...args);
+  }
+
+  /** Delegated to the legacy client (migration checkpoint). */
+  signRehashEvm(
+    ...args: Parameters<LegacyClient["signRehashEvm"]>
+  ): ReturnType<LegacyClient["signRehashEvm"]> {
+    return this.#legacy.signRehashEvm(...args);
+  }
+
+  /** Delegated to the legacy client (migration checkpoint). */
+  retrySwapWithInvoice(
+    ...args: Parameters<LegacyClient["retrySwapWithInvoice"]>
+  ): ReturnType<LegacyClient["retrySwapWithInvoice"]> {
+    return this.#legacy.retrySwapWithInvoice(...args);
+  }
+
+  /** Delegated to the legacy client (migration checkpoint). */
+  retrySwapWithInvoiceWithSigner(
+    ...args: Parameters<LegacyClient["retrySwapWithInvoiceWithSigner"]>
+  ): ReturnType<LegacyClient["retrySwapWithInvoiceWithSigner"]> {
+    return this.#legacy.retrySwapWithInvoiceWithSigner(...args);
+  }
+
+  /** Delegated to the legacy client (migration checkpoint). */
   collabRefundEvmSwap(
     ...args: Parameters<LegacyClient["collabRefundEvmSwap"]>
   ): ReturnType<LegacyClient["collabRefundEvmSwap"]> {
@@ -683,6 +718,13 @@ export class Client {
     ...args: Parameters<LegacyClient["fundSwapGasless"]>
   ): ReturnType<LegacyClient["fundSwapGasless"]> {
     return this.#legacy.fundSwapGasless(...args);
+  }
+
+  /** Delegated to the legacy client (migration checkpoint). */
+  getEvmFundingExpectation(
+    ...args: Parameters<LegacyClient["getEvmFundingExpectation"]>
+  ): ReturnType<LegacyClient["getEvmFundingExpectation"]> {
+    return this.#legacy.getEvmFundingExpectation(...args);
   }
 
   /** Delegated to the legacy client (migration checkpoint). */

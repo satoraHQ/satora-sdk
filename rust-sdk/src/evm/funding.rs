@@ -9,6 +9,7 @@ use crate::aa::abi::TokenPermissions;
 use crate::aa::permit2::PERMIT2_ADDRESS;
 use crate::aa::permit2::PermitWitnessParams;
 use crate::aa::permit2::permit2_digest;
+use crate::types::EvmHtlcKind;
 use alloy::primitives::keccak256;
 use alloy::sol;
 use alloy::sol_types::SolCall;
@@ -78,6 +79,12 @@ pub struct FundingCall {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Permit2FundingData {
     pub coordinator_address: String,
+    /// HTLC family and VERSION the swap locks on; absent on older servers,
+    /// whose deployments lock with the coordinator as sender.
+    #[serde(default)]
+    pub htlc_kind: EvmHtlcKind,
+    #[serde(default)]
+    pub htlc_version: i64,
     pub permit2_address: String,
     pub source_token_address: String,
     pub source_amount: String,
@@ -164,7 +171,23 @@ impl Permit2FundingData {
         Ok(calls)
     }
 
-    pub fn typed_data(&self, chain_id: u64, nonce: U256, deadline: U256) -> Result<EvmTypedData> {
+    /// The refund address the witness binds: `depositor` (the Permit2 signer)
+    /// on a deployment that keys locks under it, the coordinator before.
+    pub fn witness_refund_address(&self, depositor: Address) -> Result<Address> {
+        if depositor_is_sender(self.htlc_kind, self.htlc_version) {
+            Ok(depositor)
+        } else {
+            parse(&self.coordinator_address)
+        }
+    }
+
+    pub fn typed_data(
+        &self,
+        chain_id: u64,
+        depositor: Address,
+        nonce: U256,
+        deadline: U256,
+    ) -> Result<EvmTypedData> {
         let witness = PermitWitnessParams {
             source_token: parse(&self.source_token_address)?,
             source_amount: decimal(&self.source_amount)?,
@@ -174,10 +197,11 @@ impl Permit2FundingData {
             preimage_hash: parse(&self.preimage_hash)?,
             lock_token: parse(&self.lock_token_address)?,
             claim_address: parse(&self.claim_address)?,
-            refund_address: parse(&self.coordinator_address)?,
+            refund_address: self.witness_refund_address(depositor)?,
             timelock: U256::from(self.timelock),
             calls_hash: parse(&self.calls_hash)?,
         };
+        let refund_address = witness.refund_address;
         let digest = permit2_digest(witness, chain_id);
         Ok(EvmTypedData {
             digest,
@@ -190,7 +214,7 @@ impl Permit2FundingData {
                     "ExecuteAndCreate":[{"name":"preimageHash","type":"bytes32"},{"name":"token","type":"address"},{"name":"claimAddress","type":"address"},{"name":"refundAddress","type":"address"},{"name":"timelock","type":"uint256"},{"name":"callsHash","type":"bytes32"}],
                     "PermitWitnessTransferFrom":[{"name":"permitted","type":"TokenPermissions"},{"name":"spender","type":"address"},{"name":"nonce","type":"uint256"},{"name":"deadline","type":"uint256"},{"name":"witness","type":"ExecuteAndCreate"}]
                 },
-                "message":{"permitted":{"token":self.source_token_address,"amount":self.source_amount},"spender":self.coordinator_address,"nonce":nonce.to_string(),"deadline":deadline.to_string(),"witness":{"preimageHash":self.preimage_hash,"token":self.lock_token_address,"claimAddress":self.claim_address,"refundAddress":self.coordinator_address,"timelock":self.timelock.to_string(),"callsHash":self.calls_hash}}
+                "message":{"permitted":{"token":self.source_token_address,"amount":self.source_amount},"spender":self.coordinator_address,"nonce":nonce.to_string(),"deadline":deadline.to_string(),"witness":{"preimageHash":self.preimage_hash,"token":self.lock_token_address,"claimAddress":self.claim_address,"refundAddress":refund_address,"timelock":self.timelock.to_string(),"callsHash":self.calls_hash}}
             }),
         })
     }
@@ -229,7 +253,20 @@ impl Client {
         Ok(url)
     }
 
-    pub async fn get_permit2_funding_data(&self, id: &str) -> Result<Permit2FundingData> {
+    /// Like [`Self::swap_action_url`] for the routes under `/api/swap/{id}/`.
+    pub(crate) fn api_swap_url(&self, id: &str, suffix: &str) -> Result<url::Url> {
+        let mut url = self.base_url.join("/api/swap/")?;
+        url.path_segments_mut()
+            .map_err(|_| invalid("invalid API URL"))?
+            .pop_if_empty()
+            .push(id)
+            .extend(suffix.split('/'));
+        Ok(url)
+    }
+
+    /// The server's funding payload, unchecked: crate-private so it is only used
+    /// after [`Permit2FundingData::validate`] or the relay checks bind it to the swap.
+    pub(crate) async fn get_permit2_funding_data(&self, id: &str) -> Result<Permit2FundingData> {
         let response = self
             .api_request(
                 Method::GET,
@@ -388,7 +425,7 @@ impl Client {
                 .checked_add(1800)
                 .ok_or_else(|| invalid("deadline overflow"))?,
         );
-        let typed = fresh.typed_data(context.chain_id, nonce, deadline)?;
+        let typed = fresh.typed_data(context.chain_id, context.owner, nonce, deadline)?;
         let signature = wallet.sign_typed_data(&typed).await?;
         let signature = verify_signature(signature, typed.digest, context.owner)?;
         let call = IHTLCCoordinator::executeAndCreateWithPermit2Call {
@@ -439,7 +476,7 @@ impl Client {
         let created = matching_creation(
             &receipt.logs,
             &context,
-            options.coordinator,
+            context.lock_sender(Some(options.coordinator)),
             options.lock_token,
         )?;
         if created.is_none() {
@@ -532,12 +569,15 @@ mod tests {
             source_token: Address::repeat_byte(5),
             is_source: true,
             kind: crate::types::EvmHtlcKind::Erc20,
+            htlc_version: 6,
         };
         let coordinator = Address::repeat_byte(6);
         let token = Address::repeat_byte(7);
         let calls: Vec<Call> = vec![];
         let funding = Permit2FundingData {
             coordinator_address: coordinator.to_string(),
+            htlc_kind: EvmHtlcKind::Erc20,
+            htlc_version: 6,
             permit2_address: PERMIT2_ADDRESS.to_string(),
             source_token_address: context.source_token.to_string(),
             source_amount: "1000".into(),
@@ -588,7 +628,12 @@ mod tests {
     fn typed_data_json_hash_matches_the_solidity_digest() {
         let (context, funding, _) = data();
         let typed = funding
-            .typed_data(context.chain_id, U256::from(42), U256::from(1_800_000_000))
+            .typed_data(
+                context.chain_id,
+                context.owner,
+                U256::from(42),
+                U256::from(1_800_000_000),
+            )
             .unwrap();
         let decoded: alloy_dyn_abi::TypedData = serde_json::from_value(typed.payload).unwrap();
         assert_eq!(decoded.eip712_signing_hash().unwrap(), typed.digest);

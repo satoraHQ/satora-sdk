@@ -45,6 +45,7 @@ export {
   isValidArkadeAddress,
   parseArkadeAddress,
 } from "./arkade-address.js";
+export { invoiceAmountMsat, invoicePaymentHash } from "./bolt11.js";
 // CCTP (Cross-Chain Transfer Protocol) utilities
 export {
   type AttestationResponse,
@@ -167,6 +168,10 @@ export type {
   ClaimOptions,
   ClaimResult,
   ClientConfig,
+  CollabRefundEvmParams,
+  CollabRefundEvmPath,
+  CollabRefundEvmResult,
+  CollabRefundEvmSignature,
   ContinueRefundedEvmSwapInfo,
   ContinueRefundedEvmSwapResult,
   CreateSwapOptions,
@@ -198,12 +203,20 @@ export type {
   RecoverSwapsResult,
   RefundOptions,
   RefundResult,
+  RehashEvmParams,
+  RehashEvmSignature,
+  RetrySwapWithInvoiceResult,
   SupportAgentInfo,
   UsdcBridgeParams,
 } from "./client.js";
 // Main client
-export { Client, ClientBuilder, DEFAULT_ELECTRUM_WS_URLS } from "./client.js";
-
+export {
+  Client,
+  ClientBuilder,
+  DEFAULT_ELECTRUM_WS_URLS,
+  RehashNotRecordedError,
+  rehashAuthorizationMessage,
+} from "./client.js";
 export {
   addressToScriptHash,
   type ElectrumNetwork,
@@ -223,6 +236,14 @@ export {
   signEscrowCheckpoints,
   signEscrowDelegate,
 } from "./escrow/index.js";
+export {
+  type CheckedFunding,
+  checkFundingPayload,
+  type EvmFundingTerms,
+  type ExpectedFunding,
+  type FundingPayload,
+  type FundingPins,
+} from "./evm/funding-pins.js";
 // EVM HTLC utilities
 /** The zero address: the asset word of a native lock (RBTC on Rootstock). */
 export {
@@ -239,8 +260,17 @@ export {
   encodeCreateSwapCallData,
   encodeExecuteAndCreateWithPermit2,
   encodeHtlcErc20CreateCallData,
+  encodeHtlcErc20RefundBySigCallData,
+  encodeHtlcErc20RehashCallData,
+  encodeHtlcNativeRefundBySigCallData,
+  encodeHtlcNativeRehashCallData,
   type HtlcErc20CreateCallData,
   type HtlcErc20CreateParams,
+  type HtlcErc20RefundBySigParams,
+  type HtlcErc20RehashParams,
+  type HtlcNativeRefundBySigParams,
+  type HtlcNativeRehashParams,
+  type HtlcSignature,
   isKernelDelegation,
   isUserRejection,
   KERNEL_DELEGATION_TARGET,
@@ -252,6 +282,7 @@ export {
   type ReceiptLog,
   SimulationRevertError,
   signEvmDigest,
+  signEvmMessage,
   type TxReceipt,
   type UnsignedPermit2FundingData,
   wrapKernelErc1271Signature,

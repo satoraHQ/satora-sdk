@@ -102,6 +102,14 @@ import {
   findOutputByAddress,
 } from "./esplora.js";
 import {
+  type CheckedFunding,
+  checkFundingPayload,
+  type EvmFundingTerms,
+  type ExpectedFunding,
+  type FundingPayload,
+  type FundingPins,
+} from "./evm/funding-pins.js";
+import {
   buildCollabRefundEvmDigest,
   buildCollabRefundEvmTypedData,
   buildEip2612PermitDigest,
@@ -109,16 +117,26 @@ import {
   buildPermit2TypedData,
   type CollabRefundEvmDigestParams,
   type CollabRefundEvmTypedData,
+  decodeSwapCreatedLog,
+  depositorIsSender,
   deriveEvmAddress,
   encodeApproveCallData,
   encodeDepositsCallData,
   encodeExecuteAndCreateWithPermit2,
   encodeHtlcErc20IsActiveCallData,
+  encodeHtlcErc20RefundBySigCallData,
   encodeHtlcErc20RefundCallData,
+  encodeHtlcErc20RehashCallData,
+  encodeHtlcNativeRefundBySigCallData,
   encodeHtlcNativeRefundCallData,
+  encodeHtlcNativeRehashCallData,
+  encodeHtlcSwapsCallData,
   encodeNativeRefundTo,
   encodeRefundTo,
   findSwapCreated,
+  findSwapRehashed,
+  HTLC_SWAP_STATE,
+  htlcSwapKey,
   isKernelDelegation,
   KERNEL_DELEGATION_TARGET,
   kernelErc1271Digest,
@@ -126,12 +144,16 @@ import {
   normalizeBytes32,
   PERMIT2_ADDRESS,
   type Permit2SignedFundingCallData,
+  refundForAsOwnRefund,
+  type SwapCreatedLog,
   signEvmDigest,
+  signEvmMessage,
   type UnsignedPermit2FundingData,
   wrapKernelErc1271Signature,
 } from "./evm/index.js";
 import { keyToKernelOwnerSigner } from "./evm/key-signer.js";
 import { encodeNativeCreate } from "./evm/native.js";
+import { decodeRefundCall, encodeRefundCall } from "./evm/refund-call.js";
 import {
   decodeUint256,
   type EvmSigner,
@@ -142,6 +164,7 @@ import {
   getRevertReason,
   parseSignature,
   simulateTransaction,
+  type TxReceipt,
   txTypeFor,
 } from "./evm/wallet.js";
 import {
@@ -184,6 +207,8 @@ import {
   type SwapParams,
 } from "./signer/index.js";
 import {
+  type EvmRehashRecord,
+  type LightningPaymentHash,
   type StoredSwap,
   SWAP_STORAGE_VERSION,
   type SwapStorage,
@@ -272,6 +297,7 @@ export type {
   UsdcBridgeParams,
 } from "./create/index.js";
 
+import { invoicePaymentHash } from "./bolt11.js";
 import type {
   BitcoinToEvmSwapResponse,
   LightningToEvmSwapResponse,
@@ -293,7 +319,6 @@ export {
   type ExecuteAndCreateWithPermit2Params,
   encodeExecuteAndCreateWithPermit2,
   encodeRedeemAndExecute,
-  encodeRefundAndExecute,
   encodeRefundTo,
   PERMIT2_ADDRESS,
   type Permit2FundingParams,
@@ -301,7 +326,6 @@ export {
   type RedeemAndExecuteCallData,
   type RedeemAndExecuteParams,
   type RedeemDigestParams,
-  type RefundAndExecuteParams,
   type RefundToParams,
 } from "./evm/index.js";
 // Re-export types from redeem module
@@ -461,6 +485,27 @@ export interface EvmRefundOptions {
 /** The HTLC is no longer open on-chain, so no refund can be built for it. */
 class HtlcNotActiveError extends Error {}
 
+/** Attempts to write a rehash record before giving up. */
+const REHASH_RECORD_ATTEMPTS = 3;
+const REHASH_RECORD_RETRY_MS = 100;
+
+/**
+ * A rehash went out (and may be mined) but this client could not record
+ * the terms the lock now has. A refund built without the record would
+ * target the old lock; `record` is what should have been stored.
+ */
+export class RehashNotRecordedError extends Error {
+  constructor(
+    public readonly swapId: string,
+    public readonly record: EvmRehashRecord,
+    public readonly cause: unknown,
+  ) {
+    super(
+      `Rehash ${record.txid} for swap ${swapId} moves the lock to ${record.hashLock} (timelock ${record.timelock}), but the swap storage refused to record it: ${errorMessage(cause)}. Keep these terms; a refund built without them targets a lock that no longer exists.`,
+    );
+  }
+}
+
 /** The funding tx could not be read from the chain; another txid may work. */
 class FundingTxUnavailableError extends Error {}
 
@@ -503,6 +548,200 @@ function errorMessage(error: unknown): string {
  * A contract read must answer with exactly one ABI word; anything else means
  * the node does not hold the contract, or the transport failed.
  */
+function collabRefundPath(label: string): CollabRefundEvmPath {
+  if (label === "direct" || label === "coordinator") return label;
+  return "unavailable";
+}
+
+function collabRefundUnavailable(
+  swapId: string,
+  params: CollabRefundEvmParams,
+): string {
+  return `Collaborative refund is not available for swap ${swapId}: it locks on ${params.htlcKind} HTLC v${params.htlcVersion}, which supports no early refund. Refund after the timelock (${new Date(params.timelock * 1000).toISOString()}) instead.`;
+}
+
+/**
+ * The message the depositor signs (EIP-191 / `personal_sign`) to authorize
+ * moving swap `swapId` to the invoice with `paymentHash` (0x-prefixed hex).
+ * Must match the server's `rehash_evm::authorization_message`.
+ */
+export function rehashAuthorizationMessage(
+  swapId: string,
+  paymentHash: string,
+): string {
+  const hash = `0x${paymentHash.replace(/^0x/, "").toLowerCase()}`;
+  return `Satora rehash\nswap: ${swapId}\ninvoice payment hash: ${hash}`;
+}
+
+/**
+ * How much later than the advertised `newTimelock` a signed one may be: a
+ * rehash signed for this invoice earlier keeps its timelock, and the clock
+ * moved on since the params were fetched.
+ */
+const REHASH_TIMELOCK_TOLERANCE_SECS = 3600;
+
+/**
+ * The refund address the Permit2 funding witness binds: the depositor on a
+ * deployment that keys locks under it (HTLCErc20 v7 / HTLCNative v2), the
+ * coordinator before. Permit2 rejects a witness signed for the wrong one.
+ */
+/** The lock-generation context of a checked funding, for the witness. */
+function checkedRefundContext(checked: CheckedFunding): {
+  coordinator_address: string;
+  htlc_kind?: string;
+  htlc_version?: number;
+} {
+  return {
+    coordinator_address: checked.coordinator,
+    htlc_kind: checked.htlcKind,
+    htlc_version: checked.htlcVersion,
+  };
+}
+
+function permit2RefundAddress(
+  serverData: {
+    coordinator_address: string;
+    htlc_kind?: string;
+    htlc_version?: number;
+  },
+  depositorAddress: string | undefined,
+): string {
+  if (!depositorIsSender(serverData.htlc_kind, serverData.htlc_version)) {
+    return serverData.coordinator_address;
+  }
+  if (!depositorAddress) {
+    throw new Error(
+      `This swap locks on ${serverData.htlc_kind} HTLC v${serverData.htlc_version}, whose Permit2 witness names the depositor; pass the funding wallet's address`,
+    );
+  }
+  return depositorAddress;
+}
+
+/**
+ * The depositor authorized one payment hash; the lock may move only there,
+ * and only for about as long as the server advertised. A server answer for
+ * any other hash, or a far longer lock, is refused before anything is sent.
+ */
+function ensureRehashMatchesRequest(
+  signature: RehashEvmSignature,
+  paymentHash: string,
+  params: RehashEvmParams,
+): void {
+  const signed = `0x${normalizeBytes32(signature.newPreimageHash)}`;
+  if (signed !== `0x${normalizeBytes32(paymentHash)}`) {
+    throw new Error(
+      `The server signed a rehash to ${signed}, not to the invoice's payment hash ${paymentHash}`,
+    );
+  }
+  if (
+    signature.newTimelock >
+    params.newTimelock + REHASH_TIMELOCK_TOLERANCE_SECS
+  ) {
+    throw new Error(
+      `The server signed a rehash with timelock ${signature.newTimelock}, later than the advertised ${params.newTimelock}`,
+    );
+  }
+  if (
+    signature.htlcAddress.toLowerCase() !== params.htlcAddress.toLowerCase() ||
+    `0x${normalizeBytes32(signature.preimageHash)}` !==
+      `0x${normalizeBytes32(params.preimageHash)}`
+  ) {
+    throw new Error(
+      "The server signed a rehash for another lock than the swap's",
+    );
+  }
+}
+
+/** This swap's lock as the chain shows it, after the moves this client made. */
+type OwnEvmLock = SwapCreatedLog & { htlcAddress: string; chainId: number };
+
+/**
+ * A rehash moves whichever lock its terms name. A server that named another
+ * lock of the same depositor, one it can claim, would have the user move
+ * that lock to the new invoice's hash; paying the small invoice would then
+ * hand it the preimage. Every term the server names must be this swap's.
+ */
+function ensureLockIsOwn(
+  lock: OwnEvmLock,
+  named: {
+    htlcAddress: string;
+    chainId: number;
+    preimageHash: string;
+    amount: string;
+    token: string;
+    sender?: string;
+    claimAddress: string;
+    timelock: number;
+  },
+  what: string,
+): void {
+  const native = lock.token === NATIVE_TOKEN_ADDRESS.toLowerCase();
+  const mismatches = [
+    named.htlcAddress.toLowerCase() !== lock.htlcAddress.toLowerCase() &&
+      "htlc address",
+    named.chainId !== lock.chainId && "chain",
+    `0x${normalizeBytes32(named.preimageHash)}` !== lock.preimageHash &&
+      "preimage hash",
+    BigInt(named.amount) !== lock.amount && "amount",
+    // A native lock keys a zero asset word whatever the server calls it.
+    !native && named.token.toLowerCase() !== lock.token && "token",
+    named.sender !== undefined &&
+      named.sender.toLowerCase() !== lock.refundAddress &&
+      "sender",
+    named.claimAddress.toLowerCase() !== lock.claimAddress && "claim address",
+    named.timelock !== lock.timelock && "timelock",
+  ].filter(Boolean);
+  if (mismatches.length > 0) {
+    throw new Error(
+      `${what} another lock than this swap's own (${mismatches.join(", ")} differ from the lock its funding tx created); refusing to move it`,
+    );
+  }
+}
+
+/** `rehash` on the HTLC the server signed for, ERC20 or native. */
+function rehashCallData(signature: RehashEvmSignature): {
+  to: string;
+  data: string;
+} {
+  const terms = {
+    preimageHash: signature.preimageHash,
+    amount: BigInt(signature.amount),
+    timelock: signature.timelock,
+    newPreimageHash: signature.newPreimageHash,
+    newTimelock: signature.newTimelock,
+    v: signature.v,
+    r: signature.r,
+    s: signature.s,
+  };
+  return signature.htlcKind === "native"
+    ? encodeHtlcNativeRehashCallData(signature.htlcAddress, terms)
+    : encodeHtlcErc20RehashCallData(signature.htlcAddress, {
+        ...terms,
+        token: signature.token,
+      });
+}
+
+/** `refundBySig` on the HTLC the server signed for, ERC20 or native. */
+function refundBySigCallData(signature: CollabRefundEvmSignature): {
+  to: string;
+  data: string;
+} {
+  const terms = {
+    preimageHash: signature.preimageHash,
+    amount: BigInt(signature.amount),
+    timelock: signature.timelock,
+    v: signature.v,
+    r: signature.r,
+    s: signature.s,
+  };
+  return signature.htlcKind === "native"
+    ? encodeHtlcNativeRefundBySigCallData(signature.htlcAddress, terms)
+    : encodeHtlcErc20RefundBySigCallData(signature.htlcAddress, {
+        ...terms,
+        token: signature.token,
+      });
+}
+
 function decodeCallWord(result: string, what: string): bigint {
   const clean = result.replace(/^0x/i, "");
   if (clean.length !== 64) {
@@ -517,6 +756,47 @@ function uniqueAddresses(values: (string | null | undefined)[]): string[] {
   return [
     ...new Set(values.flatMap((value) => (value ? [value.toLowerCase()] : []))),
   ];
+}
+
+/**
+ * Simulates, sends and confirms one call from `signer`, returning the hash
+ * that mined. `waitForReceipt` follows wallet replacements, and a cancel
+ * mines with status success without running the call, so a replacement
+ * counts only when it is the same call repriced.
+ */
+async function sendCall(
+  signer: EvmSigner,
+  call: { to: string; data: string },
+  label: string,
+  options: {
+    fallbackGas?: bigint;
+    /** Runs once the tx is broadcast, before waiting for its receipt. */
+    onSent?: (hash: string) => Promise<void>;
+  } = {},
+): Promise<string> {
+  await simulateTransaction(signer, call, label);
+  const sent = await signer.sendTransaction({
+    to: call.to,
+    data: call.data,
+    type: txTypeFor(signer.chainId),
+    gas: await gasLimitFor(signer, call, options.fallbackGas ?? REFUND_GAS),
+  });
+  await options.onSent?.(sent);
+  const receipt = await signer.waitForReceipt(sent);
+  if (receipt.status !== "success") {
+    const reason = await getRevertReason(signer, sent, receipt.blockNumber);
+    throw new Error(`${label} reverted: ${reason}`);
+  }
+  const mined = receipt.transactionHash || sent;
+  if (
+    mined.toLowerCase() !== sent.toLowerCase() &&
+    !(await isSameCall(signer, mined, call))
+  ) {
+    throw new Error(
+      `${label} ${sent} was replaced by ${mined}, which is not the same call; the wallet may have cancelled it`,
+    );
+  }
+  return mined;
 }
 
 async function isSameCall(
@@ -546,7 +826,32 @@ function dedupeTxids(txids: (string | null | undefined)[]): string[] {
   return unique;
 }
 
+/** The EVM lock's hash as this client fixed it, if it has it. */
+function clientHashLockOf(stored: StoredSwap): string | undefined {
+  switch (stored.response.direction) {
+    case "evm_to_lightning":
+      return stored.lightningPaymentHash?.hash;
+    case "evm_to_bitcoin":
+    case "evm_to_arkade":
+      return stored.preimageHash
+        ? `0x${normalizeBytes32(stored.preimageHash)}`
+        : undefined;
+    default:
+      return undefined;
+  }
+}
+
+/** The EVM lock's hash as a swap response names it. */
+function evmHashLockOf(swap: GetSwapResponse): string {
+  const named = swap as { evm_hash_lock?: string; hash_lock?: string };
+  const hash =
+    swap.direction === "evm_to_bitcoin" ? named.evm_hash_lock : named.hash_lock;
+  if (!hash) throw new Error(`Swap ${swap.id} names no EVM hash lock`);
+  return hash;
+}
+
 function evmSourceLeg(stored: StoredSwap) {
+  const rehashes = stored.evmRehashes?.length ? stored.evmRehashes : undefined;
   const swap = stored.response as
     | (EvmToArkadeSwapResponse & { direction: "evm_to_arkade" })
     | (EvmToBitcoinSwapResponse & { direction: "evm_to_bitcoin" })
@@ -554,19 +859,71 @@ function evmSourceLeg(stored: StoredSwap) {
   return {
     chainId: swap.evm_chain_id,
     htlcAddress: swap.evm_htlc_address,
+    // The hash the lock was created under: the one this client fixed when
+    // it has it (the server's copy is only a fallback for a swap recovered
+    // without it, and switches to the current hash once a rehash is
+    // confirmed). The funding tx's SwapCreated is under the first hash, and
+    // the rehashes are followed from there.
     hashLock:
-      swap.direction === "evm_to_bitcoin" ? swap.evm_hash_lock : swap.hash_lock,
+      rehashes?.[0]?.fromHashLock ??
+      clientHashLockOf(stored) ??
+      (swap.direction === "evm_to_bitcoin"
+        ? swap.evm_hash_lock
+        : swap.hash_lock),
     claimAddress: swap.server_evm_address,
-    timelock: swap.evm_refund_locktime,
-    // This client's own record first, then the server's copy.
+    timelock: rehashes?.at(-1)?.timelock ?? swap.evm_refund_locktime,
+    // This client's own record first, then the server's copy (which names
+    // the rehash tx once a rehash is confirmed; that one carries no
+    // SwapCreated and is skipped as unavailable).
     fundTxids: dedupeTxids([stored.evmFundTxid, swap.evm_fund_txid]),
+    rehashes,
     // The server names the coordinator on the Lightning direction only.
     coordinatorAddress:
       stored.evmCoordinatorAddress ??
       (swap.direction === "evm_to_lightning"
         ? swap.evm_coordinator_address
         : undefined),
+    // Read from the creation terms first, which a server refresh cannot
+    // rewrite; a swap recorded before they named the version falls back to
+    // the server's copy.
+    depositorIsSender:
+      stored.evmFundingTerms?.htlcVersion !== undefined
+        ? depositorIsSender(
+            stored.evmFundingTerms.htlcKind,
+            stored.evmFundingTerms.htlcVersion,
+          )
+        : depositorIsSender(swap.evm_htlc_kind, swap.evm_htlc_version),
   };
+}
+
+/**
+ * Whether the swap's creation terms name a direct native lock: an HTLCNative
+ * the wallet funds itself, with the native placeholder where a coordinator
+ * would be. Older SDKs recorded that wallet as `evmCoordinatorAddress`; on
+ * such a swap the record names the sender, not a coordinator, and must not
+ * fail the coordinator check on a retry. Read from the creation terms, which
+ * a server refresh cannot rewrite.
+ */
+function isDirectNativeLock(terms: EvmFundingTerms): boolean {
+  return (
+    terms.htlcKind === "native" &&
+    terms.coordinator.toLowerCase() === NATIVE_TOKEN_ADDRESS.toLowerCase()
+  );
+}
+
+/**
+ * Whether a receipt proves its tx created no lock under `hashLock`: its logs
+ * are there and none is a `SwapCreated` under that hash, on any contract and
+ * with any terms. A receipt without logs proves nothing.
+ */
+function provesNoLockUnder(receipt: TxReceipt, hashLock: string): boolean {
+  if (receipt.logs === undefined) return false;
+  const hash = `0x${normalizeBytes32(hashLock)}`;
+  return !receipt.logs.some(
+    (log) =>
+      log.topics.some((topic) => `0x${normalizeBytes32(topic)}` === hash) ||
+      decodeSwapCreatedLog(log)?.preimageHash === hash,
+  );
 }
 
 /** Result of a collaborative EVM refund */
@@ -608,6 +965,102 @@ export interface CollabRefundEvmParams {
    * Absent on servers predating the field — treat as 3.
    */
   coordinatorVersion?: number;
+  /** The HTLC the swap locks on. */
+  htlcAddress: string;
+  /** Its `VERSION` (HTLCErc20 v7 / HTLCNative v2 refund directly). */
+  htlcVersion: number;
+  /** `"erc20"` or `"native"`. */
+  htlcKind: string;
+  /**
+   * How this swap refunds early: `"direct"` (the depositor sends
+   * `refundBySig` with the server's signature), `"coordinator"` (the
+   * depositor signs `CollabRefund`, the server submits), or
+   * `"unavailable"` (wait for the timelock).
+   */
+  refundPath: CollabRefundEvmPath;
+}
+
+/** See {@link CollabRefundEvmParams.refundPath}. */
+export type CollabRefundEvmPath = "direct" | "coordinator" | "unavailable";
+
+/**
+ * The server's `Refund` signature for a direct collaborative refund, with
+ * the exact lock terms it covers. Only `sender` may submit it.
+ */
+export interface CollabRefundEvmSignature {
+  id: string;
+  htlcAddress: string;
+  htlcVersion: number;
+  htlcKind: string;
+  chainId: number;
+  preimageHash: string;
+  amount: string;
+  token: string;
+  /** The depositor the signature is bound to as `msg.sender`. */
+  sender: string;
+  claimAddress: string;
+  timelock: number;
+  v: number;
+  r: string;
+  s: string;
+}
+
+/**
+ * A stuck EVM → Lightning swap's lock, as the server would move it to a new
+ * invoice (`GET /rehash-evm/params`).
+ */
+export interface RehashEvmParams {
+  id: string;
+  htlcAddress: string;
+  htlcVersion: number;
+  htlcKind: string;
+  chainId: number;
+  preimageHash: string;
+  amount: string;
+  token: string;
+  /** The depositor the lock was created under, when the server recorded it. */
+  sender?: string;
+  claimAddress: string;
+  timelock: number;
+  /** The timelock a rehash signed now would continue under. */
+  newTimelock: number;
+  /** The new invoice may ask for at most this many sats. */
+  maxInvoiceAmountSats: number;
+  /** The new invoice must stay valid at least this long (seconds). */
+  minInvoiceValiditySecs: number;
+}
+
+/**
+ * The server's `Rehash` signature with the exact `rehash` arguments it is
+ * valid for; only `sender` may submit it.
+ */
+export interface RehashEvmSignature {
+  id: string;
+  htlcAddress: string;
+  htlcVersion: number;
+  htlcKind: string;
+  chainId: number;
+  preimageHash: string;
+  amount: string;
+  token: string;
+  sender: string;
+  claimAddress: string;
+  timelock: number;
+  newPreimageHash: string;
+  newTimelock: number;
+  v: number;
+  r: string;
+  s: string;
+}
+
+/** Result of retrying a stuck EVM → Lightning swap with a new invoice. */
+export interface RetrySwapWithInvoiceResult {
+  id: string;
+  /** The `rehash` transaction. */
+  txHash: string;
+  /** The payment hash of the new invoice; the lock continues under it. */
+  newPreimageHash: string;
+  newTimelock: number;
 }
 
 export interface ContinueRefundedEvmSwapInfo {
@@ -1775,7 +2228,10 @@ export class Client {
    * swaps still use the per-swap key even though client_evm_address may point at
    * the user's wallet rather than the later Permit2 depositor.
    */
-  #getCollabRefundEvmSigningKey(storedSwap: StoredSwap): string {
+  #getCollabRefundEvmSigningKey(
+    storedSwap: StoredSwap,
+    walletMethod = "collabRefundEvmWithSigner",
+  ): string {
     const swapKey = storedSwap.secretKey;
     const response = storedSwap.response as {
       client_evm_address?: string;
@@ -1802,9 +2258,9 @@ export class Client {
     }
 
     throw new Error(
-      `Cannot sign collaborative EVM refund with an SDK-controlled key: swap depositor is ${
+      `Cannot sign for this swap with an SDK-controlled key: swap depositor is ${
         response.client_evm_address ?? "unknown"
-      }, but SDK-controlled addresses are ${deterministicAddress} (current gasless key) and ${swapAddress} (legacy per-swap key). Use collabRefundEvmWithSigner with the depositor wallet instead.`,
+      }, but SDK-controlled addresses are ${deterministicAddress} (current gasless key) and ${swapAddress} (legacy per-swap key). Use ${walletMethod} with the depositor wallet instead.`,
     );
   }
 
@@ -4939,17 +5395,13 @@ export class Client {
    */
   async #buildCoordinatorRefund(
     id: string,
-    swap: GetSwapResponse,
+    leg: ReturnType<typeof evmSourceLeg>,
+    check: {
+      signer?: EvmSigner;
+      /** Who the refund may pay: this client's addresses and the depositor. */
+      expectedDepositors: readonly string[];
+    },
   ): Promise<RefundResult> {
-    const evmSwap = swap as
-      | EvmToArkadeSwapResponse
-      | EvmToBitcoinSwapResponse
-      | EvmToLightningSwapResponse;
-
-    const timelock = evmSwap.evm_refund_locktime;
-    const now = Math.floor(Date.now() / 1000);
-    const timelockExpired = now >= timelock;
-
     const response = await this.#apiClient.GET(
       "/swap/{id}/refund-and-swap-calldata",
       {
@@ -4966,21 +5418,289 @@ export class Client {
       };
     }
 
-    const { coordinator_address, calldata } = response.data;
-
+    let refund: {
+      to: string;
+      data: string;
+      timelock: number;
+      recipient?: string;
+    };
+    try {
+      refund = await this.#bindServerRefund(
+        {
+          to: response.data.coordinator_address,
+          data: response.data.calldata,
+        },
+        leg,
+        check,
+      );
+    } catch (error) {
+      return {
+        success: false,
+        message: `Refused the server's refund calldata: ${errorMessage(error)}`,
+      };
+    }
+    const timelock = refund.timelock;
+    const timelockExpired = Math.floor(Date.now() / 1000) >= timelock;
     return {
       success: true,
       message: timelockExpired
         ? "EVM refund calldata ready. Submit this transaction with your EVM wallet."
         : `Timelock has not expired yet. Refund will be available at ${new Date(timelock * 1000).toISOString()}.`,
       evmRefundData: {
-        to: coordinator_address,
-        data: calldata,
+        to: refund.to,
+        data: refund.data,
         timelockExpired,
         timelockExpiry: timelock,
-        recipient: evmSwap.client_evm_address ?? undefined,
+        recipient: refund.recipient,
       },
     };
+  }
+
+  /**
+   * The server's refund call, checked and re-encoded by this client. It must
+   * be one of the refund calls the server builds (`refundFor` on the HTLC,
+   * `refund` on a native HTLC, `refundTo` on the coordinator), on this swap's
+   * HTLC or recorded coordinator, for a lock the server claims, and it must
+   * pay one of `expectedDepositors`. With a signer the chain is asked too:
+   * the lock must be active, and a coordinator must hold its deposit for one
+   * of them. The bytes sent are this client's encoding of the checked terms,
+   * never the server's.
+   */
+  async #bindServerRefund(
+    server: { to: string; data: string },
+    leg: ReturnType<typeof evmSourceLeg>,
+    check: { signer?: EvmSigner; expectedDepositors: readonly string[] },
+  ): Promise<{
+    to: string;
+    data: string;
+    timelock: number;
+    recipient?: string;
+  }> {
+    const call = decodeRefundCall(server.data);
+    const to = server.to.toLowerCase();
+    const htlc = leg.htlcAddress.toLowerCase();
+    const coordinator = leg.coordinatorAddress?.toLowerCase();
+    const signer = check.signer;
+    let lockSender: string | undefined;
+    let recipient: string | undefined;
+    switch (call.kind) {
+      case "refundFor":
+      case "nativeRefundFor":
+        if (to !== htlc) {
+          throw new Error(
+            `The server's refund targets ${server.to}, not this swap's HTLC ${leg.htlcAddress}`,
+          );
+        }
+        lockSender = call.sender;
+        recipient = call.sender;
+        break;
+      case "nativeRefund":
+        // refund pays msg.sender's own lock back to msg.sender.
+        if (to !== htlc) {
+          throw new Error(
+            `The server's refund targets ${server.to}, not this swap's HTLC ${leg.htlcAddress}`,
+          );
+        }
+        lockSender = signer?.address.toLowerCase();
+        recipient = lockSender;
+        break;
+      case "refundTo":
+      case "nativeRefundTo":
+        // refundTo pays whoever the coordinator recorded as depositor. A
+        // coordinator this client recorded pins the target; without one the
+        // server's is taken, since refundTo moves nothing on any other
+        // contract, and with a signer its deposit is checked below.
+        if (coordinator !== undefined && to !== coordinator) {
+          throw new Error(
+            `The server's refund targets ${server.to}, not this swap's coordinator ${leg.coordinatorAddress}`,
+          );
+        }
+        if (to === htlc) {
+          throw new Error(
+            `The server's refundTo targets the HTLC ${leg.htlcAddress} itself`,
+          );
+        }
+        lockSender = to;
+        break;
+    }
+    if (call.claimAddress !== leg.claimAddress.toLowerCase()) {
+      throw new Error(
+        `The server's refund is for a lock claimed by ${call.claimAddress}, not by this swap's server ${leg.claimAddress}`,
+      );
+    }
+    if (
+      recipient !== undefined &&
+      !check.expectedDepositors.includes(recipient)
+    ) {
+      throw new Error(
+        `The server's refund would pay ${recipient}, which is none of this client's addresses (${check.expectedDepositors.join(", ")})`,
+      );
+    }
+    // The chain backs these checks up where it answers; a node that cannot
+    // read the contract leaves the call as checked above, which already
+    // pays only the lock's own sender or depositor.
+    const read = async (
+      tx: { to: string; data: string },
+      what: string,
+    ): Promise<bigint | undefined> => {
+      try {
+        return decodeCallWord(await (signer as EvmSigner).call(tx), what);
+      } catch {
+        return undefined;
+      }
+    };
+    if (signer && lockSender !== undefined) {
+      const terms = {
+        preimageHash: call.preimageHash,
+        amount: call.amount,
+        token: call.token,
+        refundAddress: lockSender,
+        claimAddress: call.claimAddress,
+        timelock: call.timelock,
+      };
+      const active = await read(
+        encodeHtlcErc20IsActiveCallData(leg.htlcAddress, terms),
+        "isActive",
+      );
+      if (active === 0n) {
+        throw new Error(
+          `The server's refund names a lock (hash lock ${call.preimageHash}) that is not active on ${leg.htlcAddress}`,
+        );
+      }
+      if (call.kind === "refundTo" || call.kind === "nativeRefundTo") {
+        const deposit = await read(
+          encodeDepositsCallData(to, htlcSwapKey(terms)),
+          "deposits",
+        );
+        if (deposit !== undefined) {
+          const depositor = `0x${deposit.toString(16).padStart(40, "0")}`;
+          if (deposit === 0n || !check.expectedDepositors.includes(depositor)) {
+            throw new Error(
+              `${server.to} would refund the lock to ${depositor}, which is none of this client's addresses (${check.expectedDepositors.join(", ")})`,
+            );
+          }
+          recipient = depositor;
+        }
+      }
+    }
+    return {
+      ...encodeRefundCall(server.to, call),
+      timelock: call.timelock,
+      recipient,
+    };
+  }
+
+  /**
+   * The hash lock an EVM-sourced swap's lock must use, as this client fixed
+   * it: its own preimage hash for EVM → Bitcoin / Arkade, the payment hash
+   * it recorded at creation for EVM → Lightning. A lock under any other
+   * hash may be one whose preimage the server already knows, which it could
+   * claim without paying. Throws when the swap has no such record here
+   * (recovered onto this device, or created by an older SDK).
+   */
+  #clientHashLock(
+    swapId: string,
+    stored: StoredSwap | null | undefined,
+  ): string {
+    if (!stored) {
+      throw new Error(
+        `Swap ${swapId} is not in local storage, so the hash its lock must use is unknown; refusing to fund or move it`,
+      );
+    }
+    const direction = stored.response.direction;
+    if (direction === "evm_to_lightning") {
+      if (!stored.lightningPaymentHash) {
+        throw new Error(
+          `Swap ${swapId} has no payment hash recorded by this client at creation (it was recovered, or created by an older SDK), so the server's hash lock cannot be checked; refusing to fund or move it. Refund it instead.`,
+        );
+      }
+      return `0x${normalizeBytes32(stored.lightningPaymentHash.hash)}`;
+    }
+    if (direction === "evm_to_bitcoin" || direction === "evm_to_arkade") {
+      return `0x${normalizeBytes32(stored.preimageHash)}`;
+    }
+    throw new Error(`Swap ${swapId} is ${direction}, not EVM-sourced`);
+  }
+
+  /**
+   * What a funding of an EVM-sourced swap must match: the hash lock this
+   * client fixed at creation (its own preimage hash, or the Lightning
+   * invoice's payment hash) and the funding terms it recorded from the
+   * creation response (coordinator, HTLC, claimer, timelock, tokens,
+   * input). Pass it as `expected` when building CCTP-inbound calldata
+   * yourself (`buildCctpInboundBatch`). Throws for a swap without them here.
+   */
+  async getEvmFundingExpectation(
+    swapId: string,
+    pins?: FundingPins,
+  ): Promise<ExpectedFunding> {
+    return {
+      ...this.#fundingExpectation(swapId, await this.getStoredSwap(swapId)),
+      pins,
+    };
+  }
+
+  #fundingExpectation(
+    swapId: string,
+    stored: StoredSwap | null | undefined,
+  ): ExpectedFunding {
+    const hashLock = this.#clientHashLock(swapId, stored);
+    const terms = stored?.evmFundingTerms;
+    if (!terms) {
+      throw new Error(
+        `Swap ${swapId} has no funding terms recorded by this client at creation (it was recovered, or created by an older SDK), so the server's funding payload cannot be checked; refusing to fund it. Refund it instead.`,
+      );
+    }
+    if (
+      stored.evmCoordinatorAddress &&
+      stored.evmCoordinatorAddress.toLowerCase() !==
+        terms.coordinator.toLowerCase() &&
+      !isDirectNativeLock(terms)
+    ) {
+      throw new Error(
+        `Swap ${swapId} was funded through coordinator ${stored.evmCoordinatorAddress}, not the ${terms.coordinator} it was created with`,
+      );
+    }
+    return { hashLock, terms };
+  }
+
+  /**
+   * A server funding payload checked against the swap's recorded terms and
+   * hash lock (see {@link checkFundingPayload}), on the swap's chain.
+   */
+  async #checkedFunding(
+    swapId: string,
+    payload: FundingPayload,
+    chainId: number,
+    pins?: FundingPins,
+  ): Promise<CheckedFunding> {
+    const { hashLock, terms } = this.#fundingExpectation(
+      swapId,
+      await this.getStoredSwap(swapId),
+    );
+    if (chainId !== terms.chainId) {
+      throw new Error(
+        `Swap ${swapId} locks on chain ${terms.chainId}, not ${chainId}`,
+      );
+    }
+    return checkFundingPayload(terms, hashLock, payload, pins);
+  }
+
+  /** Throws unless `hash` is the one {@link #clientHashLock} fixed. */
+  async #ensureClientHashLock(
+    swapId: string,
+    hash: string,
+    what: string,
+  ): Promise<void> {
+    const expected = this.#clientHashLock(
+      swapId,
+      await this.getStoredSwap(swapId),
+    );
+    if (`0x${normalizeBytes32(hash)}` !== expected) {
+      throw new Error(
+        `The server's ${what} locks under hash ${hash}, not this swap's ${expected}; refusing to sign or send it`,
+      );
+    }
   }
 
   /**
@@ -5008,6 +5728,30 @@ export class Client {
       this.#logger.warn({
         event: "client.fundSwap.recordFailed",
         message: "could not record the funding tx on the stored swap",
+        swapId,
+        error,
+      });
+    }
+  }
+
+  /**
+   * Drops the recorded funding tx `txid`, which provably did not fund the
+   * swap. Best effort: a record left behind only makes a retry check it.
+   */
+  async #forgetEvmFunding(swapId: string, txid: string): Promise<void> {
+    if (!this.#swapStorage) return;
+    try {
+      const stored = await this.#swapStorage.get(swapId);
+      if (stored?.evmFundTxid?.toLowerCase() !== txid.toLowerCase()) return;
+      await this.#swapStorage.store({
+        ...stored,
+        evmFundTxid: undefined,
+        updatedAt: Date.now(),
+      });
+    } catch (error) {
+      this.#logger.warn({
+        event: "client.fundSwap.forgetFailed",
+        message: "could not drop the failed funding tx from the stored swap",
         swapId,
         error,
       });
@@ -5122,30 +5866,33 @@ export class Client {
     };
 
     const chainFailures: string[] = [];
+    // Who a refund may pay: the wallet, the SDK's gasless keys, or the
+    // depositor the server recorded, which is all a device without the
+    // funding mnemonic knows.
+    const sdkAddresses = uniqueAddresses([
+      this.getEvmAddress(),
+      stored.secretKey ? deriveEvmAddress(stored.secretKey) : undefined,
+    ]);
+    const expectedDepositors = uniqueAddresses([
+      signer?.address,
+      ...sdkAddresses,
+      (stored.response as { client_evm_address?: string | null })
+        .client_evm_address,
+    ]);
     if (signer) {
       if (signer.chainId !== leg.chainId) {
         throw new Error(
           `Signer is on chain ${signer.chainId} but swap ${id} was funded on chain ${leg.chainId}`,
         );
       }
-      // Who refundTo may pay: the wallet, the SDK's gasless keys, or the
-      // depositor the server recorded, which is all a device without the
-      // funding mnemonic knows.
-      const sdkAddresses = uniqueAddresses([
-        this.getEvmAddress(),
-        stored.secretKey ? deriveEvmAddress(stored.secretKey) : undefined,
-      ]);
-      const expectedDepositors = uniqueAddresses([
-        signer.address,
-        ...sdkAddresses,
-        (stored.response as { client_evm_address?: string | null })
-          .client_evm_address,
-      ]);
+      // From v7 the HTLC's refundFor pays the depositor; before, the
+      // coordinator's refundTo did.
+      const payer = leg.depositorIsSender ? "The HTLC" : "The coordinator";
       const payoutNote = (recipient: string): string => {
         if (recipient === signer.address.toLowerCase()) return "";
         return sdkAddresses.includes(recipient)
-          ? ` The coordinator pays the refund to ${recipient}, this SDK's gasless key; run recoverGaslessFunds afterwards to move the tokens.`
-          : ` The coordinator pays the refund to the depositor ${recipient}, not to the submitting wallet.`;
+          ? ` ${payer} pays the refund to ${recipient}, this SDK's gasless key; run recoverGaslessFunds afterwards to move the tokens.`
+          : ` ${payer} pays the refund to the depositor ${recipient}, not to the submitting wallet.`;
       };
       const tried: string[] = [];
       // Only a receipt that could not be read leaves room for another txid.
@@ -5161,8 +5908,10 @@ export class Client {
             expectedDepositors,
           });
           // A coordinator the chain just proved is worth keeping: with it on
-          // record, only its own SwapCreated counts next time.
+          // record, only its own SwapCreated counts next time. From v7 the
+          // sender is the depositor, never the coordinator.
           const coordinatorProved =
+            !leg.depositorIsSender &&
             refund.sender !== signer.address.toLowerCase() &&
             stored.evmCoordinatorAddress === undefined;
           if (
@@ -5207,7 +5956,10 @@ export class Client {
 
     let server: RefundResult;
     try {
-      server = await this.#buildCoordinatorRefund(id, stored.response);
+      server = await this.#buildCoordinatorRefund(id, leg, {
+        signer,
+        expectedDepositors,
+      });
     } catch (error) {
       server = {
         success: false,
@@ -5250,7 +6002,11 @@ export class Client {
       hashLock: string;
       claimAddress: string;
       coordinatorAddress?: string;
+      /** HTLCErc20 v7 / HTLCNative v2: the depositor is the lock's sender. */
+      depositorIsSender: boolean;
       expectedDepositors: readonly string[];
+      /** Rehashes this client sent, oldest first; the lock continues under the last. */
+      rehashes?: readonly EvmRehashRecord[];
     },
   ): Promise<{
     to: string;
@@ -5258,6 +6014,121 @@ export class Client {
     timelock: number;
     sender: string;
     recipient: string;
+  }> {
+    const self = signer.address.toLowerCase();
+    const coordinator = leg.coordinatorAddress?.toLowerCase();
+    // Only a lock this client funded counts. From v7 the depositor is the
+    // sender, and only it (directly, or through the coordinator's
+    // non-reentrant create with its Permit2 signature) can create a lock
+    // under its own address. Before, the coordinator was the sender, and
+    // its DEX calls cannot target the HTLC, so no decoy can name it either.
+    const senders = leg.depositorIsSender
+      ? uniqueAddresses([self, ...leg.expectedDepositors])
+      : coordinator === undefined
+        ? undefined
+        : [self, coordinator];
+    const { created, terms, hashLock } = await this.#lockFromFundingTx(signer, {
+      ...leg,
+      senders,
+    });
+    const active = decodeCallWord(
+      await signer.call(
+        encodeHtlcErc20IsActiveCallData(leg.htlcAddress, terms),
+      ),
+      "isActive",
+    );
+    if (active === 0n) {
+      await this.#ensureSettled(signer, leg.htlcAddress, terms);
+    }
+    // A zero asset word is a native lock (`HTLCNative`), whose refund and
+    // coordinator `refundTo` take no token parameter.
+    const native = created.token === NATIVE_TOKEN_ADDRESS.toLowerCase();
+    if (leg.depositorIsSender) {
+      // The permissionless `refundFor` pays the lock's sender whoever submits
+      // it, so any of this client's wallets can refund the depositor's lock,
+      // rehashed or not. It is also what the server builds.
+      const { to, data } = encodeRefundCall(leg.htlcAddress, {
+        kind: native ? "nativeRefundFor" : "refundFor",
+        preimageHash: terms.preimageHash,
+        amount: terms.amount,
+        token: terms.token,
+        sender: created.refundAddress,
+        claimAddress: terms.claimAddress,
+        timelock: terms.timelock,
+      });
+      return {
+        to,
+        data,
+        timelock: terms.timelock,
+        sender: created.refundAddress,
+        recipient: created.refundAddress,
+      };
+    }
+    const ownHtlc = created.refundAddress === self;
+    let recipient = self;
+    if (!ownHtlc && leg.rehashes !== undefined) {
+      throw new Error(
+        `The HTLC for hash lock ${hashLock} was created by ${created.refundAddress} and rehashed; only that sender can refund it`,
+      );
+    }
+    if (!ownHtlc) {
+      // refundTo pays whoever the sender recorded as depositor, and anyone
+      // may call it: this checks which HTLC was picked, not who may refund.
+      const deposit = decodeCallWord(
+        await signer.call(
+          encodeDepositsCallData(created.refundAddress, created.key),
+        ),
+        "deposits",
+      );
+      if (deposit === 0n) {
+        throw new Error(
+          `${created.refundAddress} created the HTLC for hash lock ${hashLock} but holds no deposit for it, so it is not a coordinator this client can refund through`,
+        );
+      }
+      const depositor = `0x${deposit.toString(16).padStart(40, "0")}`;
+      if (!leg.expectedDepositors.includes(depositor)) {
+        throw new Error(
+          `${created.refundAddress} would refund the HTLC for hash lock ${hashLock} to ${depositor}, which is none of this client's addresses (${leg.expectedDepositors.join(", ")})`,
+        );
+      }
+      recipient = depositor;
+    }
+    const { to, data } = ownHtlc
+      ? native
+        ? encodeHtlcNativeRefundCallData(leg.htlcAddress, terms)
+        : encodeHtlcErc20RefundCallData(leg.htlcAddress, terms)
+      : native
+        ? encodeNativeRefundTo(created.refundAddress, terms)
+        : encodeRefundTo(created.refundAddress, terms);
+    return {
+      to,
+      data,
+      timelock: terms.timelock,
+      sender: created.refundAddress,
+      recipient,
+    };
+  }
+
+  /**
+   * The lock the funding tx `leg.fundTxid` created, by its `SwapCreated`
+   * log, and the terms it continues under after the recorded rehashes.
+   */
+  async #lockFromFundingTx(
+    signer: EvmSigner,
+    leg: {
+      fundTxid: string;
+      htlcAddress: string;
+      hashLock: string;
+      claimAddress: string;
+      coordinatorAddress?: string;
+      /** Who may have created the lock; anyone when omitted. */
+      senders?: readonly string[];
+      rehashes?: readonly EvmRehashRecord[];
+    },
+  ): Promise<{
+    created: SwapCreatedLog;
+    terms: SwapCreatedLog;
+    hashLock: string;
   }> {
     // A hash the node does not know would keep waitForReceipt polling until
     // its timeout, or forever on an adapter without one; a known but
@@ -5292,27 +6163,23 @@ export class Client {
     }
     if (!receipt.logs) {
       throw new Error(
-        "Refunding without the server needs the funding receipt's logs, which this signer's waitForReceipt does not return",
+        "Reading the lock from the chain needs the funding receipt's logs, which this signer's waitForReceipt does not return",
       );
     }
     const hashLock = `0x${normalizeBytes32(leg.hashLock)}`;
-    const self = signer.address.toLowerCase();
-    const coordinator = leg.coordinatorAddress?.toLowerCase();
-    // The coordinator's create is non-reentrant and its DEX calls cannot
-    // target the HTLC, so no decoy can name the coordinator as sender.
     const matches = findSwapCreated(receipt.logs, {
       htlcAddress: leg.htlcAddress,
       hashLock,
       claimAddress: leg.claimAddress,
-      senders: coordinator === undefined ? undefined : [self, coordinator],
+      senders: leg.senders,
     });
     if (matches.length === 0) {
       // This tx did not fund the swap, so another one may have.
       throw new FundingTxUnavailableError(
         `Funding tx ${leg.fundTxid} carries no SwapCreated log for hash lock ${hashLock} on ${leg.htlcAddress}${
-          coordinator === undefined
+          leg.senders === undefined
             ? ""
-            : ` created by ${signer.address} or ${leg.coordinatorAddress}`
+            : ` created by ${leg.senders.join(" or ")}`
         }`,
       );
     }
@@ -5322,58 +6189,127 @@ export class Client {
       );
     }
     const created = matches[0];
-    const active = decodeCallWord(
-      await signer.call(
-        encodeHtlcErc20IsActiveCallData(leg.htlcAddress, created),
-      ),
-      "isActive",
-    );
-    if (active === 0n) {
+    // After a rehash the lock lives under the new hash and timelock, with
+    // the amount, token and parties of the original SwapCreated.
+    const terms =
+      leg.rehashes === undefined
+        ? created
+        : await this.#rehashedTerms(
+            signer,
+            leg.htlcAddress,
+            created,
+            leg.rehashes,
+          );
+    return { created, terms, hashLock };
+  }
+
+  /**
+   * Throws for terms that are no longer active. Only a redeemed or
+   * refunded lock is settled; a rehashed one moved to terms this client has
+   * no record of (another device, or a move whose record is pending), so
+   * that error is not final and the server's view of the lock is tried.
+   */
+  async #ensureSettled(
+    signer: EvmSigner,
+    htlcAddress: string,
+    terms: SwapCreatedLog,
+  ): Promise<never> {
+    const state = await this.#swapState(signer, htlcAddress, terms.key);
+    if (
+      state === undefined ||
+      state === HTLC_SWAP_STATE.Redeemed ||
+      state === HTLC_SWAP_STATE.Refunded
+    ) {
       throw new HtlcNotActiveError(
-        `The HTLC for hash lock ${hashLock} on ${leg.htlcAddress} is no longer active; it was already redeemed or refunded`,
+        `The HTLC for hash lock ${terms.preimageHash} on ${htlcAddress} is no longer active; it was already redeemed or refunded`,
       );
     }
-    const ownHtlc = created.refundAddress === self;
-    let recipient = self;
-    if (!ownHtlc) {
-      // refundTo pays whoever the sender recorded as depositor, and anyone
-      // may call it: this checks which HTLC was picked, not who may refund.
-      const deposit = decodeCallWord(
-        await signer.call(
-          encodeDepositsCallData(created.refundAddress, created.key),
-        ),
-        "deposits",
+    throw new Error(
+      state === HTLC_SWAP_STATE.Rehashed
+        ? `The HTLC for hash lock ${terms.preimageHash} on ${htlcAddress} was rehashed to terms this client has no record of`
+        : `No HTLC is open under hash lock ${terms.preimageHash} and timelock ${terms.timelock} on ${htlcAddress}; this client's record of the lock is stale`,
+    );
+  }
+
+  /**
+   * `swaps(key)` on HTLCErc20 v7 / HTLCNative v2; undefined where the
+   * contract does not answer it (older generations, which never rehash).
+   */
+  async #swapState(
+    signer: EvmSigner,
+    htlcAddress: string,
+    key: string,
+  ): Promise<bigint | undefined> {
+    try {
+      return decodeCallWord(
+        await signer.call(encodeHtlcSwapsCallData(htlcAddress, key)),
+        "swaps",
       );
-      if (deposit === 0n) {
-        throw new Error(
-          `${created.refundAddress} created the HTLC for hash lock ${hashLock} but holds no deposit for it, so it is not a coordinator this client can refund through`,
-        );
-      }
-      const depositor = `0x${deposit.toString(16).padStart(40, "0")}`;
-      if (!leg.expectedDepositors.includes(depositor)) {
-        throw new Error(
-          `${created.refundAddress} would refund the HTLC for hash lock ${hashLock} to ${depositor}, which is none of this client's addresses (${leg.expectedDepositors.join(", ")})`,
-        );
-      }
-      recipient = depositor;
+    } catch {
+      return undefined;
     }
-    // A zero asset word is a native lock (`HTLCNative`), whose refund and
-    // coordinator `refundTo` take no token parameter.
-    const native = created.token === NATIVE_TOKEN_ADDRESS.toLowerCase();
-    const { to, data } = ownHtlc
-      ? native
-        ? encodeHtlcNativeRefundCallData(leg.htlcAddress, created)
-        : encodeHtlcErc20RefundCallData(leg.htlcAddress, created)
-      : native
-        ? encodeNativeRefundTo(created.refundAddress, created)
-        : encodeRefundTo(created.refundAddress, created);
-    return {
-      to,
-      data,
-      timelock: created.timelock,
-      sender: created.refundAddress,
-      recipient,
-    };
+  }
+
+  /**
+   * The terms the lock created as `created` continues under after the
+   * recorded rehashes: each rehash tx's receipt must carry `SwapRehashed`
+   * for the lock's key at that point, moving it to the recorded hash, and
+   * the next rehash starts from the key that one produced. Anything else
+   * means the record is stale, and the refund is left to the server's view.
+   */
+  async #rehashedTerms(
+    signer: EvmSigner,
+    htlcAddress: string,
+    created: SwapCreatedLog,
+    rehashes: readonly EvmRehashRecord[],
+  ): Promise<SwapCreatedLog> {
+    let terms = created;
+    for (const rehash of rehashes) {
+      // A move recorded without its tx is followed only through the receipt
+      // its UserOp hash leads to: that the lock left its key, or that a lock
+      // exists under the recorded terms, proves nothing (another attempt, or
+      // anyone creating a lock under those terms, explains either).
+      const txid =
+        rehash.txid === "" ? await this.#pendingRehashTx(rehash) : rehash.txid;
+      if (txid === undefined) continue;
+      let receipt: Awaited<ReturnType<EvmSigner["waitForReceipt"]>>;
+      try {
+        receipt = await withDeadline(
+          signer.waitForReceipt(txid),
+          FUNDING_RECEIPT_WAIT_MS,
+          `not mined within ${FUNDING_RECEIPT_WAIT_MS / 1000}s`,
+        );
+      } catch (error) {
+        throw new Error(`Rehash tx ${txid}: ${errorMessage(error)}`);
+      }
+      // A rehash recorded on broadcast may have reverted or been replaced
+      // by a cancel: mined, but the lock did not move. It is skipped; the
+      // lock is still under the terms before it.
+      if (receipt.status !== "success") continue;
+      if (!receipt.logs) {
+        throw new Error(
+          `Rehash tx ${txid} has no readable logs, so the lock's current terms cannot be verified from the chain`,
+        );
+      }
+      const moved = findSwapRehashed(receipt.logs, {
+        htlcAddress,
+        key: terms.key,
+      });
+      if (moved.length === 0) continue;
+      const hashLock = `0x${normalizeBytes32(rehash.hashLock)}`;
+      if (moved.length !== 1 || moved[0].newPreimageHash !== hashLock) {
+        throw new Error(
+          `Rehash tx ${txid} moved the HTLC for hash lock ${terms.preimageHash} elsewhere than the recorded ${hashLock}`,
+        );
+      }
+      terms = {
+        ...terms,
+        preimageHash: hashLock,
+        timelock: rehash.timelock,
+        key: moved[0].newKey,
+      };
+    }
+    return terms;
   }
 
   /**
@@ -5417,6 +6353,54 @@ export class Client {
       minAmountOut: d.min_amount_out,
       callsHash: d.calls_hash,
       coordinatorVersion: d.coordinator_version,
+      htlcAddress: d.htlc_address,
+      htlcVersion: d.htlc_version,
+      htlcKind: d.htlc_kind,
+      refundPath: collabRefundPath(d.refund_path),
+    };
+  }
+
+  /**
+   * Fetches the server's `Refund` signature for a direct collaborative
+   * refund (`refundPath === "direct"`), bound to `depositorAddress` as the
+   * HTLC sender. The server signs only in states where it will not fund,
+   * and only for the lock's recorded terms; it submits nothing.
+   *
+   * @param swapId - Swap ID
+   * @param depositorAddress - The address that funded the lock and will send `refundBySig`
+   */
+  async getCollabRefundEvmSignature(
+    swapId: string,
+    depositorAddress: string,
+  ): Promise<CollabRefundEvmSignature> {
+    const response = await this.#apiClient.POST(
+      "/api/swap/{id}/collab-refund-evm/signature",
+      {
+        params: { path: { id: swapId } },
+        body: { depositor_address: depositorAddress },
+      },
+    );
+    if (response.error) {
+      throw new Error(
+        `Failed to fetch the collab refund signature: ${response.error.error || "Unknown error"}`,
+      );
+    }
+    const d = response.data;
+    return {
+      id: d.id,
+      htlcAddress: d.htlc_address,
+      htlcVersion: d.htlc_version,
+      htlcKind: d.htlc_kind,
+      chainId: d.chain_id,
+      preimageHash: d.preimage_hash,
+      amount: d.amount,
+      token: d.token,
+      sender: d.sender,
+      claimAddress: d.claim_address,
+      timelock: d.timelock,
+      v: d.v,
+      r: d.r,
+      s: d.s,
     };
   }
 
@@ -5469,9 +6453,7 @@ export class Client {
    * @returns Refund result with transaction hash
    */
   async collabRefundEvmSwap(swapId: string): Promise<CollabRefundEvmResult> {
-    const { digest } = await this.buildCollabRefundEvmTypedData(swapId);
-
-    // Sign using the SDK-controlled EVM key that matches the on-chain depositor.
+    // The SDK-controlled EVM key that matches the on-chain depositor.
     const storedSwap = await this.getStoredSwap(swapId);
     if (!storedSwap?.secretKey) {
       throw new Error(
@@ -5479,6 +6461,14 @@ export class Client {
       );
     }
     const evmKey = this.#getCollabRefundEvmSigningKey(storedSwap);
+
+    const { digest, params } = await this.buildCollabRefundEvmTypedData(swapId);
+    if (params.refundPath === "direct") {
+      return this.#collabRefundEvmSponsored(swapId, params, evmKey);
+    }
+    if (params.refundPath !== "coordinator") {
+      throw new Error(collabRefundUnavailable(swapId, params));
+    }
     const sig = signEvmDigest(evmKey, digest);
 
     // Derive the on-chain depositor address from the selected EVM signing key.
@@ -5554,6 +6544,735 @@ export class Client {
   }
 
   /**
+   * Direct collaborative refund from the SDK key: `refundBySig` as a
+   * paymaster-sponsored UserOp from the key's own (EIP-7702) account, so
+   * `msg.sender` is the depositor. Arbitrum only, where the paymaster runs.
+   */
+  async #collabRefundEvmSponsored(
+    swapId: string,
+    params: CollabRefundEvmParams,
+    evmKey: string,
+  ): Promise<CollabRefundEvmResult> {
+    if (params.chainId !== 42161) {
+      throw new Error(
+        `Swap ${swapId} locks on HTLC v${params.htlcVersion} on chain ${params.chainId}, where the depositor sends the collaborative refund itself and no paymaster sponsors it. Refund after the timelock with refundSwap, or from the depositor key's wallet with collabRefundEvmWithSigner.`,
+      );
+    }
+    const owner = keyToKernelOwnerSigner(
+      hexToBytes(evmKey.replace(/^0x/, "")),
+      params.chainId,
+    );
+    const signature = await this.getCollabRefundEvmSignature(
+      swapId,
+      owner.address,
+    );
+    const call = refundBySigCallData(signature);
+    const { txHash, userOpHash } = await this.#sponsoredUserOp(owner, call);
+    this.#logger.info({
+      event: "client.collabRefundEvm.direct",
+      message: "refundBySig submitted as a sponsored UserOp",
+      swapId,
+      data: { txHash, userOpHash },
+    });
+    return {
+      id: swapId,
+      txHash,
+      message: "Collaborative refund submitted by the depositor",
+    };
+  }
+
+  /**
+   * Sends one call as a paymaster-sponsored UserOp from `owner`'s Kernel
+   * account and waits for it to land; a UserOp that is included but reverts
+   * fails rather than reporting its tx hash.
+   */
+  async #sponsoredUserOp(
+    owner: EvmSigner,
+    callOrBuilder:
+      | { to: string; data: string }
+      | ((account: string) => { to: string; data: string }),
+    hooks: {
+      /**
+       * With this hook the UserOp is prepared (gas, paymaster) and signed
+       * first, and the hook runs with its hash right before it is sent:
+       * a failure before the hook proves it was never sent, one after it
+       * does not (the bundler may have taken it and the answer been lost).
+       * The hash is undefined if it could not be computed locally.
+       */
+      onSigned?: (userOpHash: string | undefined) => Promise<void>;
+      /** Runs once the bundler took the UserOp, before waiting for it. */
+      onSubmitted?: (userOpHash: string) => Promise<void>;
+      /** Runs once it is included, whether or not its call succeeded. */
+      onIncluded?: (txHash: string, userOpHash: string) => Promise<void>;
+    } = {},
+  ): Promise<{ txHash: string; userOpHash: string }> {
+    if (!this.#config.aa) {
+      throw new Error(
+        "A sponsored UserOp requires AA config. Call `.withAa({ bundlerUrl, paymasterPolicyId })` on the ClientBuilder before `.build()`.",
+      );
+    }
+    const { client, accountAddress } =
+      await this.cctpInbound.createSmartAccountClient({
+        signer: owner,
+      });
+    const call =
+      typeof callOrBuilder === "function"
+        ? callOrBuilder(accountAddress)
+        : callOrBuilder;
+    const calls = [
+      {
+        to: call.to as `0x${string}`,
+        data: call.data as `0x${string}`,
+        value: 0n,
+      },
+    ];
+    let userOpHash: string;
+    if (hooks.onSigned) {
+      // What sendUserOperation does, split so the send itself is the only
+      // step whose failure leaves it open whether the UserOp went out.
+      const { formatUserOperationRequest, getUserOperationHash } = await import(
+        "viem/account-abstraction"
+      );
+      const raw = client as unknown as {
+        prepareUserOperation(args: {
+          calls: typeof calls;
+        }): Promise<Record<string, unknown>>;
+        account: {
+          signUserOperation(userOperation: unknown): Promise<string>;
+          entryPoint: {
+            address: `0x${string}`;
+            version: "0.6" | "0.7" | "0.8";
+          };
+        };
+        request(
+          args: { method: "eth_sendUserOperation"; params: unknown[] },
+          options?: { retryCount?: number },
+        ): Promise<string>;
+      };
+      const prepared = await raw.prepareUserOperation({ calls });
+      const signed = {
+        ...prepared,
+        signature: await raw.account.signUserOperation(prepared),
+      };
+      const entryPoint = raw.account.entryPoint;
+      let computed: string | undefined;
+      try {
+        computed = getUserOperationHash({
+          chainId: owner.chainId,
+          entryPointAddress: entryPoint.address,
+          entryPointVersion: entryPoint.version,
+          userOperation: signed as never,
+        });
+      } catch {
+        computed = undefined;
+      }
+      await hooks.onSigned(computed);
+      userOpHash = await raw.request(
+        {
+          method: "eth_sendUserOperation",
+          params: [
+            formatUserOperationRequest(signed as never),
+            entryPoint.address,
+          ],
+        },
+        { retryCount: 0 },
+      );
+    } else {
+      userOpHash = await client.sendUserOperation({ calls });
+    }
+    await hooks.onSubmitted?.(userOpHash);
+    const { receipt, success, reason } =
+      await client.waitForUserOperationReceipt({
+        hash: userOpHash as `0x${string}`,
+      });
+    await hooks.onIncluded?.(receipt.transactionHash, userOpHash);
+    if (!success) {
+      throw new Error(
+        `Sponsored UserOp ${userOpHash} reverted on-chain${
+          reason ? `: ${reason}` : ""
+        }`,
+      );
+    }
+    return { txHash: receipt.transactionHash, userOpHash };
+  }
+
+  // =========================================================================
+  // Rehash: retry a stuck EVM -> Lightning swap with a new invoice
+  // =========================================================================
+
+  /**
+   * The lock's terms and the constraints a replacement invoice must meet
+   * for a stuck EVM → Lightning swap (`GET /api/swap/{id}/rehash-evm/params`).
+   */
+  async getRehashEvmParams(swapId: string): Promise<RehashEvmParams> {
+    const response = await this.#apiClient.GET(
+      "/api/swap/{id}/rehash-evm/params",
+      { params: { path: { id: swapId } } },
+    );
+    if (response.error) {
+      throw new Error(
+        `Failed to fetch rehash params: ${response.error.error || "Unknown error"}`,
+      );
+    }
+    const d = response.data;
+    return {
+      id: d.id,
+      htlcAddress: d.htlc_address,
+      htlcVersion: d.htlc_version,
+      htlcKind: d.htlc_kind,
+      chainId: d.chain_id,
+      preimageHash: d.preimage_hash,
+      amount: d.amount,
+      token: d.token,
+      sender: d.sender ?? undefined,
+      claimAddress: d.claim_address,
+      timelock: d.timelock,
+      newTimelock: d.new_timelock,
+      maxInvoiceAmountSats: d.max_invoice_amount_sats,
+      minInvoiceValiditySecs: d.min_invoice_validity_secs,
+    };
+  }
+
+  /**
+   * Asks the server to sign the lock's move to `invoice`. The depositor
+   * proves it asked with an EIP-191 signature over
+   * {@link rehashAuthorizationMessage}; the server validates the invoice
+   * (amount, validity, routability), records it and returns the `rehash`
+   * arguments. Signing the same invoice again returns the same signature.
+   */
+  async signRehashEvm(
+    swapId: string,
+    request: {
+      invoice: string;
+      depositorAddress: string;
+      /** 65-byte EIP-191 signature by the depositor, 0x-prefixed hex. */
+      depositorSignature: string;
+    },
+  ): Promise<RehashEvmSignature> {
+    const response = await this.#apiClient.POST("/api/swap/{id}/rehash-evm", {
+      params: { path: { id: swapId } },
+      body: {
+        invoice: request.invoice,
+        depositor_address: request.depositorAddress,
+        depositor_signature: request.depositorSignature,
+      },
+    });
+    if (response.error) {
+      throw new Error(
+        `Rehash refused: ${response.error.error || "Unknown error"}`,
+      );
+    }
+    const d = response.data;
+    return {
+      id: d.id,
+      htlcAddress: d.htlc_address,
+      htlcVersion: d.htlc_version,
+      htlcKind: d.htlc_kind,
+      chainId: d.chain_id,
+      preimageHash: d.preimage_hash,
+      amount: d.amount,
+      token: d.token,
+      sender: d.sender,
+      claimAddress: d.claim_address,
+      timelock: d.timelock,
+      newPreimageHash: d.new_preimage_hash,
+      newTimelock: d.new_timelock,
+      v: d.v,
+      r: d.r,
+      s: d.s,
+    };
+  }
+
+  /**
+   * Retry a stuck EVM → Lightning swap with a new invoice from the
+   * depositor's wallet. The server failed to pay the old invoice and gave
+   * up (`ServerWontFund`); instead of refunding, the lock moves to the new
+   * invoice's payment hash and the server pays that one once the move is
+   * confirmed. The user keeps their position: no second DEX round trip.
+   *
+   * The wallet signs the authorization message (`personal_sign`, so the
+   * signer needs `signMessage`) and sends `rehash`; it pays gas.
+   *
+   * @param swapId - The UUID of the swap
+   * @param invoice - A BOLT 11 invoice for at most the swap's payout, valid
+   *   for at least `minInvoiceValiditySecs` from {@link getRehashEvmParams}
+   * @param signer - An {@link EvmSigner} wrapping the depositor's wallet
+   */
+  async retrySwapWithInvoiceWithSigner(
+    swapId: string,
+    invoice: string,
+    signer: EvmSigner,
+  ): Promise<RetrySwapWithInvoiceResult> {
+    if (!signer.signMessage) {
+      throw new Error(
+        "Retrying with a new invoice needs the signer's `signMessage` (personal_sign) to authorize the rehash",
+      );
+    }
+    const params = await this.getRehashEvmParams(swapId);
+    const paymentHash = invoicePaymentHash(invoice);
+    const lock = await this.#ownLockForRehash(swapId, signer);
+    ensureLockIsOwn(lock, params, "The server describes");
+    const message = rehashAuthorizationMessage(swapId, paymentHash);
+    const depositorSignature = await signer.signMessage({
+      raw: `0x${bytesToHex(new TextEncoder().encode(message))}`,
+    });
+    const signature = await this.signRehashEvm(swapId, {
+      invoice,
+      depositorAddress: signer.address,
+      depositorSignature,
+    });
+    ensureRehashMatchesRequest(signature, paymentHash, params);
+    ensureLockIsOwn(lock, signature, "The server signed a rehash of");
+    // Recorded as soon as it is broadcast: a receipt wait that gives up on
+    // a tx that mines anyway must not lose the terms the lock now has.
+    let sent: string | undefined;
+    const txHash = await sendCall(
+      signer,
+      rehashCallData(signature),
+      "Rehash transaction",
+      {
+        onSent: async (hash) => {
+          sent = hash;
+          await this.#recordEvmRehash(swapId, signature, hash);
+        },
+      },
+    );
+    if (sent !== undefined && txHash.toLowerCase() !== sent.toLowerCase()) {
+      const replaced = sent.toLowerCase();
+      await this.#recordEvmRehash(swapId, signature, txHash, {
+        replaces: (entry) => entry.txid.toLowerCase() === replaced,
+      });
+    }
+    return {
+      id: swapId,
+      txHash,
+      newPreimageHash: signature.newPreimageHash,
+      newTimelock: signature.newTimelock,
+    };
+  }
+
+  /**
+   * Remembers the terms a rehash moved the lock to, so a later refund is
+   * built for the lock that exists rather than the one the server still
+   * reports until its monitor confirms the move.
+   */
+  async #recordEvmRehash(
+    swapId: string,
+    signature: RehashEvmSignature,
+    txid: string,
+    options: {
+      /** The entry this record supersedes; the last match is replaced. */
+      replaces?: (entry: EvmRehashRecord) => boolean;
+      userOpHash?: string;
+    } = {},
+  ): Promise<void> {
+    if (!this.#swapStorage) return;
+    const record: EvmRehashRecord = {
+      txid,
+      fromHashLock: signature.preimageHash,
+      hashLock: signature.newPreimageHash,
+      timelock: signature.newTimelock,
+      ...(options.userOpHash === undefined
+        ? {}
+        : { userOpHash: options.userOpHash }),
+    };
+    let lastError: unknown;
+    for (let attempt = 0; attempt < REHASH_RECORD_ATTEMPTS; attempt++) {
+      try {
+        const stored = await this.#swapStorage.get(swapId);
+        if (!stored) return;
+        // The server's copy names the rehash tx as the funding tx once it
+        // has confirmed the move; the original is what the refund starts
+        // from, so it goes on record now if this client never recorded it.
+        const serverFundTxid = (
+          stored.response as { evm_fund_txid?: string | null }
+        ).evm_fund_txid;
+        const history = stored.evmRehashes ?? [];
+        let replaced = -1;
+        if (options.replaces !== undefined) {
+          for (let i = history.length - 1; i >= 0; i--) {
+            if (options.replaces(history[i])) {
+              replaced = i;
+              break;
+            }
+          }
+        }
+        await this.#swapStorage.store({
+          ...stored,
+          evmFundTxid: stored.evmFundTxid ?? serverFundTxid ?? undefined,
+          evmRehashes:
+            replaced === -1
+              ? [...history, record]
+              : history.map((entry, i) => (i === replaced ? record : entry)),
+          updatedAt: Date.now(),
+        });
+        return;
+      } catch (error) {
+        lastError = error;
+        await new Promise((resolve) =>
+          setTimeout(resolve, REHASH_RECORD_RETRY_MS),
+        );
+      }
+    }
+    // The lock moves on chain regardless; the caller must know that this
+    // client no longer knows under which terms, or a later refund would be
+    // built for the old lock.
+    this.#logger.error({
+      event: "client.retrySwapWithInvoice.notRecorded",
+      message: "could not record the rehash in swap storage",
+      swapId,
+      error: lastError,
+    });
+    throw new RehashNotRecordedError(swapId, record, lastError);
+  }
+
+  /**
+   * Fills in a recorded rehash once more of it is known. The pending entry
+   * already keeps a refund on the right lock, so failing to write this is
+   * logged rather than failing a move that went out.
+   */
+  async #updateEvmRehash(
+    swapId: string,
+    signature: RehashEvmSignature,
+    txid: string,
+    options: {
+      replaces: (entry: EvmRehashRecord) => boolean;
+      userOpHash: string;
+    },
+  ): Promise<void> {
+    try {
+      await this.#recordEvmRehash(swapId, signature, txid, options);
+    } catch (error) {
+      this.#logger.warn({
+        event: "client.retrySwapWithInvoice.recordNotUpdated",
+        message: "could not update the pending rehash record",
+        swapId,
+        data: { txid, userOpHash: options.userOpHash },
+        error,
+      });
+    }
+  }
+
+  /**
+   * The tx a pending sponsored rehash landed in, asked of the bundler by
+   * its UserOp hash; undefined when that cannot be told (no hash recorded,
+   * no AA config, not included, or the bundler cannot be reached).
+   */
+  async #pendingRehashTx(rehash: EvmRehashRecord): Promise<string | undefined> {
+    const bundlerUrl = this.#config.aa?.bundlerUrl;
+    if (!rehash.userOpHash || !bundlerUrl) return undefined;
+    try {
+      const response = await fetch(bundlerUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "eth_getUserOperationReceipt",
+          params: [rehash.userOpHash],
+        }),
+      });
+      const json = (await response.json()) as {
+        result?: { receipt?: { transactionHash?: string } } | null;
+      };
+      return json.result?.receipt?.transactionHash ?? undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Removes the last pending rehash record matching `pending`, best effort. */
+  async #dropPendingRehash(
+    swapId: string,
+    pending: (entry: EvmRehashRecord) => boolean,
+  ): Promise<void> {
+    if (!this.#swapStorage) return;
+    try {
+      const stored = await this.#swapStorage.get(swapId);
+      const history = stored?.evmRehashes;
+      if (!stored || !history) return;
+      let index = -1;
+      for (let i = history.length - 1; i >= 0; i--) {
+        if (pending(history[i])) {
+          index = i;
+          break;
+        }
+      }
+      if (index === -1) return;
+      const rest = history.filter((_, i) => i !== index);
+      await this.#swapStorage.store({
+        ...stored,
+        evmRehashes: rest.length > 0 ? rest : undefined,
+        updatedAt: Date.now(),
+      });
+    } catch (error) {
+      // A pending record that never landed is skipped on the next read: the
+      // lock's state shows no key under its terms.
+      this.#logger.warn({
+        event: "client.retrySwapWithInvoice.pendingNotDropped",
+        message: "could not drop a rehash the bundler never took",
+        swapId,
+        error,
+      });
+    }
+  }
+
+  /**
+   * This swap's lock as the chain shows it, anchored on what this client
+   * holds: the payment hash it fixed at creation. A funding receipt from any
+   * source (this device's record, the relay's answer, the server's copy)
+   * counts only for a `SwapCreated` on the swap's HTLC under that hash,
+   * created by the depositor `reader` speaks for, followed through the
+   * rehashes recorded here, and still active. Another lock of the same
+   * depositor has another hash, and a lock under the user's own hash is
+   * one only the user's invoice can unlock, so no server answer can make
+   * this a lock the server could claim. Without the recorded hash the
+   * rehash is refused.
+   */
+  async #ownLockForRehash(
+    swapId: string,
+    reader: EvmSigner,
+  ): Promise<OwnEvmLock> {
+    const stored = await this.getStoredSwap(swapId);
+    if (!stored) {
+      throw new Error(
+        `Swap ${swapId} is not in local storage, so the lock to move cannot be checked`,
+      );
+    }
+    if (stored.response.direction !== "evm_to_lightning") {
+      throw new Error(
+        `Swap ${swapId} is ${stored.response.direction}; only an EVM -> Lightning swap retries with a new invoice`,
+      );
+    }
+    const ownHash = this.#clientHashLock(swapId, stored);
+    const leg = evmSourceLeg(stored);
+    const firstFrom = leg.rehashes?.[0]?.fromHashLock;
+    if (
+      firstFrom !== undefined &&
+      `0x${normalizeBytes32(firstFrom)}` !== ownHash
+    ) {
+      throw new Error(
+        `The rehash history of swap ${swapId} starts from ${firstFrom}, not from the payment hash this client fixed (${ownHash})`,
+      );
+    }
+    if (reader.chainId !== leg.chainId) {
+      throw new Error(
+        `Swap ${swapId} locks on chain ${leg.chainId}, but the signer is connected to chain ${reader.chainId}`,
+      );
+    }
+    const failures: string[] = [];
+    const tried = new Set<string>();
+    const fromReceipt = async (
+      txid: string | undefined,
+    ): Promise<OwnEvmLock | undefined> => {
+      if (!txid || tried.has(txid.toLowerCase())) return undefined;
+      tried.add(txid.toLowerCase());
+      try {
+        const { terms } = await this.#lockFromFundingTx(reader, {
+          ...leg,
+          fundTxid: txid,
+          hashLock: ownHash,
+          // On the generations that rehash, the depositor is the sender.
+          senders: [reader.address.toLowerCase()],
+        });
+        const active = decodeCallWord(
+          await reader.call(
+            encodeHtlcErc20IsActiveCallData(leg.htlcAddress, terms),
+          ),
+          "isActive",
+        );
+        if (active === 0n) {
+          failures.push(
+            `${txid}: the lock under ${terms.preimageHash} is no longer active`,
+          );
+          return undefined;
+        }
+        return { ...terms, htlcAddress: leg.htlcAddress, chainId: leg.chainId };
+      } catch (error) {
+        failures.push(`${txid}: ${errorMessage(error)}`);
+        return undefined;
+      }
+    };
+    for (const txid of leg.fundTxids) {
+      const lock = await fromReceipt(txid);
+      if (lock) return lock;
+    }
+    // A funding this device did not see (CCTP settlement, a wallet that
+    // sent the calldata itself): the server's monitor indexed it.
+    const lock = await fromReceipt(
+      await this.#serverFundTxid(swapId).catch(() => undefined),
+    );
+    if (lock) return lock;
+    throw new Error(
+      `No funding of swap ${swapId} shows an active lock under its payment hash ${ownHash} created by ${reader.address}${
+        failures.length > 0 ? ` (${failures.join("; ")})` : ""
+      }; refusing to rehash`,
+    );
+  }
+
+  /**
+   * `owner` with chain reads over the AA RPC, for a key whose own signer
+   * does not read the chain. Arbitrum only, like the paymaster.
+   */
+  async #aaChainReader(owner: EvmSigner): Promise<EvmSigner> {
+    const rpcUrl = this.#config.aa?.rpcUrl ?? this.#config.aa?.bundlerUrl;
+    if (!rpcUrl) {
+      throw new Error(
+        "A sponsored rehash reads the lock over the AA RPC; call `.withAa({ bundlerUrl, paymasterPolicyId })` on the ClientBuilder before `.build()`.",
+      );
+    }
+    const { createPublicClient, http } = await import("viem");
+    const { arbitrum } = await import("viem/chains");
+    const publicClient = createPublicClient({
+      chain: arbitrum,
+      transport: http(rpcUrl),
+    });
+    return {
+      ...owner,
+      getTransaction: async (hash) => {
+        const tx = await publicClient.getTransaction({
+          hash: hash as `0x${string}`,
+        });
+        return { to: tx.to ?? null, input: tx.input, from: tx.from };
+      },
+      // Only mined txs are read here (the funding tx and recorded rehashes).
+      waitForReceipt: async (hash) => {
+        const receipt = await publicClient.getTransactionReceipt({
+          hash: hash as `0x${string}`,
+        });
+        return {
+          status: receipt.status,
+          blockNumber: receipt.blockNumber,
+          transactionHash: receipt.transactionHash,
+          logs: receipt.logs.map((log) => ({
+            address: log.address,
+            topics: [...log.topics],
+            data: log.data,
+          })),
+        };
+      },
+      call: async ({ to, data }) =>
+        (
+          await publicClient.call({
+            to: to as `0x${string}`,
+            data: data as `0x${string}`,
+          })
+        ).data ?? "0x",
+    };
+  }
+
+  /**
+   * Retry a stuck EVM → Lightning swap with a new invoice when the SDK's
+   * key is the depositor (gasless swaps): the key signs the authorization
+   * and `rehash` goes out as a paymaster-sponsored UserOp from the key's
+   * own account, so no wallet and no gas. Arbitrum only, where the
+   * paymaster runs. See {@link retrySwapWithInvoiceWithSigner}.
+   */
+  async retrySwapWithInvoice(
+    swapId: string,
+    invoice: string,
+  ): Promise<RetrySwapWithInvoiceResult> {
+    const storedSwap = await this.getStoredSwap(swapId);
+    if (!storedSwap?.secretKey) {
+      throw new Error(
+        "No secret key found for this swap. Cannot authorize the rehash.",
+      );
+    }
+    const evmKey = this.#getCollabRefundEvmSigningKey(
+      storedSwap,
+      "retrySwapWithInvoiceWithSigner",
+    );
+    const params = await this.getRehashEvmParams(swapId);
+    if (params.chainId !== 42161) {
+      throw new Error(
+        `Swap ${swapId} locks on chain ${params.chainId}, where no paymaster sponsors the depositor's rehash. Retry from the depositor key's wallet with retrySwapWithInvoiceWithSigner, or refund.`,
+      );
+    }
+    const owner = keyToKernelOwnerSigner(
+      hexToBytes(evmKey.replace(/^0x/, "")),
+      params.chainId,
+    );
+    const paymentHash = invoicePaymentHash(invoice);
+    const lock = await this.#ownLockForRehash(
+      swapId,
+      await this.#aaChainReader(owner),
+    );
+    ensureLockIsOwn(lock, params, "The server describes");
+    const message = rehashAuthorizationMessage(swapId, paymentHash);
+    const signature = await this.signRehashEvm(swapId, {
+      invoice,
+      depositorAddress: owner.address,
+      depositorSignature: signEvmMessage(evmKey, message),
+    });
+    ensureRehashMatchesRequest(signature, paymentHash, params);
+    ensureLockIsOwn(lock, signature, "The server signed a rehash of");
+    // Recorded before it is submitted, without its tx: a bundler answer or
+    // receipt wait that is lost must not lose the terms the lock may now
+    // have. A refund reads the lock's state to settle a pending record.
+    const newHash = `0x${normalizeBytes32(signature.newPreimageHash)}`;
+    const isThisPending = (entry: EvmRehashRecord) =>
+      entry.txid === "" &&
+      entry.userOpHash === undefined &&
+      `0x${normalizeBytes32(entry.hashLock)}` === newHash;
+    await this.#recordEvmRehash(swapId, signature, "");
+    let sending = false;
+    let signedHash: string | undefined;
+    const isThisSigned = (entry: EvmRehashRecord) =>
+      entry.txid === "" &&
+      (signedHash === undefined
+        ? isThisPending(entry)
+        : entry.userOpHash === signedHash);
+    let sponsored: { txHash: string; userOpHash: string };
+    try {
+      sponsored = await this.#sponsoredUserOp(
+        owner,
+        rehashCallData(signature),
+        {
+          onSigned: async (hash) => {
+            sending = true;
+            if (hash === undefined) return;
+            await this.#updateEvmRehash(swapId, signature, "", {
+              replaces: isThisPending,
+              userOpHash: hash,
+            });
+            signedHash = hash;
+          },
+          onSubmitted: (hash) =>
+            this.#updateEvmRehash(swapId, signature, "", {
+              replaces: isThisSigned,
+              userOpHash: hash,
+            }),
+          onIncluded: (hash, opHash) =>
+            this.#updateEvmRehash(swapId, signature, hash, {
+              replaces: (entry) => entry.userOpHash === opHash,
+              userOpHash: opHash,
+            }),
+        },
+      );
+    } catch (error) {
+      // Failed while preparing or signing: it was never sent and cannot
+      // land, so the record goes. Once sent, even a lost answer may mean the
+      // bundler took it; the record stays, and is followed only through the
+      // receipt its UserOp hash leads to.
+      if (!sending) await this.#dropPendingRehash(swapId, isThisPending);
+      throw error;
+    }
+    const { txHash, userOpHash } = sponsored;
+    this.#logger.info({
+      event: "client.retrySwapWithInvoice.sponsored",
+      message: "rehash submitted as a sponsored UserOp",
+      swapId,
+      data: { txHash, userOpHash },
+    });
+    return {
+      id: swapId,
+      txHash,
+      newPreimageHash: signature.newPreimageHash,
+      newTimelock: signature.newTimelock,
+    };
+  }
+
+  /**
    * Collaborative EVM refund — internal method called by refundSwap.
    * @internal
    */
@@ -5594,8 +7313,22 @@ export class Client {
           await this.#signerStorage.setKeyIndex(current + n);
         }
       },
-      storeSwap: (swapId, swapParams, response, targetAddress, bridge) =>
-        this.#storeSwap(swapId, swapParams, response, targetAddress, bridge),
+      storeSwap: (
+        swapId,
+        swapParams,
+        response,
+        targetAddress,
+        bridge,
+        commitments,
+      ) =>
+        this.#storeSwap(
+          swapId,
+          swapParams,
+          response,
+          targetAddress,
+          bridge,
+          commitments,
+        ),
     };
   }
 
@@ -5609,6 +7342,10 @@ export class Client {
     response: Record<string, unknown>,
     targetAddress?: string,
     bridge?: { recipient?: string; recipientWallet?: string },
+    commitments?: {
+      lightningPaymentHash?: LightningPaymentHash;
+      evmFundingTerms?: EvmFundingTerms;
+    },
   ): Promise<void> {
     if (!this.#swapStorage) return;
 
@@ -5630,7 +7367,16 @@ export class Client {
       bridgeRecipient: bridge?.recipient,
       bridgeRecipientWallet: bridge?.recipientWallet,
       evmFundTxid: existing?.evmFundTxid,
+      // Fixed at creation and never taken from a server answer: recovery
+      // rebuilding the swap keeps it, and a fresh device has none.
+      lightningPaymentHash:
+        commitments?.lightningPaymentHash ?? existing?.lightningPaymentHash,
+      evmFundingTerms:
+        commitments?.evmFundingTerms ?? existing?.evmFundingTerms,
       evmCoordinatorAddress: existing?.evmCoordinatorAddress,
+      // The rehashes this client sent are what let a refund find the lock
+      // that exists; the server's copy names only the current hash.
+      evmRehashes: existing?.evmRehashes,
       // A CCTP-inbound burn is the only way to resume or recover once the
       // USDC has left the source chain.
       cctpBurnTxid: existing?.cctpBurnTxid,
@@ -6451,6 +8197,10 @@ export class Client {
   async getCoordinatorFundingCallDataPermit2(
     swapId: string,
     chainId: number,
+    options?: {
+      /** Pins on top of the swap's recorded funding terms. */
+      funding?: FundingPins;
+    },
   ): Promise<Permit2SignedFundingCallData> {
     // 1. Look up stored swap to get the secret key for signing
     const storedSwap = await this.getStoredSwap(swapId);
@@ -6488,6 +8238,8 @@ export class Client {
 
     const serverData = (await resp.json()) as {
       coordinator_address: string;
+      htlc_kind?: string;
+      htlc_version?: number;
       permit2_address: string;
       source_token_address: string;
       source_amount: string;
@@ -6499,6 +8251,14 @@ export class Client {
       calls_hash: string;
       depositor_delegation?: string | null;
     };
+    // Spender, lock, tokens, amount and calls are bound to the swap's
+    // recorded terms before anything is signed, and signed from them.
+    const checked = await this.#checkedFunding(
+      swapId,
+      serverData,
+      chainId,
+      options?.funding,
+    );
 
     // 3. Generate random Permit2 nonce and deadline
     const nonceBytes = new Uint8Array(32);
@@ -6510,21 +8270,27 @@ export class Client {
     );
     const deadline = BigInt(Math.floor(Date.now() / 1000) + 30 * 60); // 30 minutes
 
-    const sourceAmount = BigInt(serverData.source_amount);
+    const sourceAmount = checked.sourceAmount;
 
-    // 4. Build EIP-712 digest
-    // refundAddress = coordinator address for overload 1 (depositor tracking)
+    // 4. Build the EIP-712 digest. The witness binds the lock's refund
+    // address: the depositor from HTLCErc20 v7 / HTLCNative v2, the
+    // coordinator before.
+    const evmKey = this.#getEvmSigningKey();
+    const depositorAddress = deriveEvmAddress(evmKey);
     const digest = buildPermit2FundingDigest({
       chainId,
-      coordinatorAddress: serverData.coordinator_address,
-      sourceToken: serverData.source_token_address,
+      coordinatorAddress: checked.coordinator,
+      sourceToken: checked.sourceToken,
       sourceAmount,
-      preimageHash: serverData.preimage_hash,
-      lockToken: serverData.lock_token_address,
-      claimAddress: serverData.claim_address,
-      refundAddress: serverData.coordinator_address,
-      timelock: serverData.timelock,
-      callsHash: serverData.calls_hash,
+      preimageHash: checked.preimageHash,
+      lockToken: checked.lockToken,
+      claimAddress: checked.claimAddress,
+      refundAddress: permit2RefundAddress(
+        checkedRefundContext(checked),
+        depositorAddress,
+      ),
+      timelock: checked.timelock,
+      callsHash: checked.callsHash,
       nonce,
       deadline,
     });
@@ -6532,8 +8298,6 @@ export class Client {
     // 5. Sign with the EVM key (deterministic for new swaps, per-swap for legacy).
     // Kernel-delegated depositors get the ERC-1271 envelope, plain EOAs a
     // compact r || s || v signature.
-    const evmKey = this.#getEvmSigningKey();
-    const depositorAddress = deriveEvmAddress(evmKey);
     const delegated = await this.#isKernelDelegated(
       depositorAddress,
       chainId,
@@ -6552,36 +8316,29 @@ export class Client {
     );
 
     // 6. Build calls array for the coordinator
-    const calls = serverData.calls.map((c) => ({
-      target: c.target,
-      value: BigInt(c.value),
-      data: c.call_data,
-    }));
+    const calls = checked.calls;
 
     // 7. Encode executeAndCreateWithPermit2 calldata
-    const encoded = encodeExecuteAndCreateWithPermit2(
-      serverData.coordinator_address,
-      {
-        calls,
-        preimageHash: serverData.preimage_hash,
-        token: serverData.lock_token_address,
-        claimAddress: serverData.claim_address,
-        timelock: serverData.timelock,
-        depositor: depositorAddress,
-        sourceToken: serverData.source_token_address,
-        sourceAmount,
-        nonce,
-        deadline,
-        signature: compactSignature,
-      },
-    );
+    const encoded = encodeExecuteAndCreateWithPermit2(checked.coordinator, {
+      calls,
+      preimageHash: checked.preimageHash,
+      token: checked.lockToken,
+      claimAddress: checked.claimAddress,
+      timelock: checked.timelock,
+      depositor: depositorAddress,
+      sourceToken: checked.sourceToken,
+      sourceAmount,
+      nonce,
+      deadline,
+      signature: compactSignature,
+    });
 
     // 8. Build approve: source token → Permit2 (max uint256, one-time)
     const maxUint256 = BigInt(
       "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
     );
     const approve = encodeApproveCallData(
-      serverData.source_token_address,
+      checked.sourceToken,
       PERMIT2_ADDRESS,
       maxUint256,
     );
@@ -6642,6 +8399,16 @@ export class Client {
   async getPermit2FundingParamsUnsigned(
     swapId: string,
     chainId: number,
+    /**
+     * The address that will sign the Permit2 and fund the lock. Required on
+     * HTLCErc20 v7 / HTLCNative v2, whose witness binds it as the lock's
+     * refund address; older deployments bind the coordinator and ignore it.
+     */
+    depositorAddress?: string,
+    options?: {
+      /** Pins on top of the swap's recorded funding terms. */
+      funding?: FundingPins;
+    },
   ): Promise<UnsignedPermit2FundingData> {
     const swap = await this.getSwap(swapId);
 
@@ -6671,6 +8438,8 @@ export class Client {
 
     const serverData = (await resp.json()) as {
       coordinator_address: string;
+      htlc_kind?: string;
+      htlc_version?: number;
       permit2_address: string;
       source_token_address: string;
       source_amount: string;
@@ -6681,6 +8450,14 @@ export class Client {
       calls: Array<{ target: string; value: string; call_data: string }>;
       calls_hash: string;
     };
+    // Bound to the swap's recorded terms; what is returned is built from
+    // them, so a caller signing it signs only for this swap's lock.
+    const checked = await this.#checkedFunding(
+      swapId,
+      serverData,
+      chainId,
+      options?.funding,
+    );
 
     // Generate random Permit2 nonce and deadline
     const nonceBytes = new Uint8Array(32);
@@ -6692,26 +8469,25 @@ export class Client {
     );
     const deadline = BigInt(Math.floor(Date.now() / 1000) + 30 * 60); // 30 minutes
 
-    const sourceAmount = BigInt(serverData.source_amount);
-
-    const calls = serverData.calls.map((c) => ({
-      target: c.target,
-      value: BigInt(c.value),
-      data: c.call_data,
-    }));
+    const sourceAmount = checked.sourceAmount;
+    const calls = checked.calls;
 
     // Build EIP-712 typed data for wallet signing
+    const lockSender = permit2RefundAddress(
+      checkedRefundContext(checked),
+      depositorAddress,
+    );
     const fundingParams = {
       chainId,
-      coordinatorAddress: serverData.coordinator_address,
-      sourceToken: serverData.source_token_address,
+      coordinatorAddress: checked.coordinator,
+      sourceToken: checked.sourceToken,
       sourceAmount,
-      preimageHash: serverData.preimage_hash,
-      lockToken: serverData.lock_token_address,
-      claimAddress: serverData.claim_address,
-      refundAddress: serverData.coordinator_address, // overload 1: depositor tracking
-      timelock: serverData.timelock,
-      callsHash: serverData.calls_hash,
+      preimageHash: checked.preimageHash,
+      lockToken: checked.lockToken,
+      claimAddress: checked.claimAddress,
+      refundAddress: lockSender,
+      timelock: checked.timelock,
+      callsHash: checked.callsHash,
       nonce,
       deadline,
     };
@@ -6719,16 +8495,18 @@ export class Client {
     const typedData = buildPermit2TypedData(fundingParams);
 
     return {
-      coordinatorAddress: serverData.coordinator_address,
-      htlcAddress: swap.evm_htlc_address,
-      sourceTokenAddress: serverData.source_token_address,
+      coordinatorAddress: checked.coordinator,
+      /** The lock's sender: the depositor on HTLCErc20 v7 / HTLCNative v2, the coordinator before. */
+      lockSender,
+      htlcAddress: checked.htlcAddress,
+      sourceTokenAddress: checked.sourceToken,
       sourceAmount,
-      lockTokenAddress: serverData.lock_token_address,
-      preimageHash: serverData.preimage_hash,
-      claimAddress: serverData.claim_address,
-      timelock: serverData.timelock,
+      lockTokenAddress: checked.lockToken,
+      preimageHash: checked.preimageHash,
+      claimAddress: checked.claimAddress,
+      timelock: checked.timelock,
       calls,
-      callsHash: serverData.calls_hash,
+      callsHash: checked.callsHash,
       nonce,
       deadline,
       typedData,
@@ -6797,6 +8575,11 @@ export class Client {
         sourceAmount: bigint;
         sourceTokenAddress: string;
       }) => void;
+      /**
+       * Pins on top of the swap's recorded funding terms: allowed call
+       * targets, a higher input limit, a relay fee cap (default 0).
+       */
+      funding?: FundingPins;
     },
   ): Promise<{ txHash: string; cctp?: CctpFundSwapResult }> {
     // A native lock (RBTC on Rootstock) is one payable transaction to the
@@ -6845,6 +8628,18 @@ export class Client {
         stored?.response ??
         (await this.getSwap(swapId, { updateStorage: true }));
       const source = cctpMetaForChainId(signer.chainId);
+      // Checked before anything is burned: the settlement refuses calldata
+      // locking under any other hash, and USDC burned for it would be left
+      // in the account.
+      const expected = {
+        ...this.#fundingExpectation(swapId, stored),
+        pins: options?.funding,
+      };
+      await this.#ensureClientHashLock(
+        swapId,
+        evmHashLockOf(swapResponse),
+        "swap",
+      );
 
       // CCTP-inbound swaps are stored against post-hop Arbitrum USDC
       // (`source_token` reports the Arbitrum address), so we validate
@@ -6915,6 +8710,7 @@ export class Client {
 
       const cctp = await this.cctpInbound.fundSwap({
         swapId,
+        expected,
         signer,
         ownerSigner: this.#depositorOwnerSigner(
           swapResponse,
@@ -6928,6 +8724,10 @@ export class Client {
         onProgress: options?.onProgress,
         signal: options?.signal,
       });
+      // A hint for a later refund or rehash, which check its receipt.
+      if (cctp.transactionHash) {
+        await this.#recordEvmFunding(swapId, { txid: cctp.transactionHash });
+      }
       return { txHash: cctp.transactionHash ?? cctp.userOpHash, cctp };
     }
 
@@ -6939,6 +8739,8 @@ export class Client {
     const funding = await this.getPermit2FundingParamsUnsigned(
       swapId,
       signer.chainId,
+      signer.address,
+      { funding: options?.funding },
     );
     options?.onQuote?.({
       sourceAmount: funding.sourceAmount,
@@ -6997,6 +8799,8 @@ export class Client {
     const freshFunding = await this.getPermit2FundingParamsUnsigned(
       swapId,
       signer.chainId,
+      signer.address,
+      { funding: options?.funding },
     );
     if (freshFunding.sourceAmount !== funding.sourceAmount) {
       options?.onQuote?.({
@@ -7040,6 +8844,7 @@ export class Client {
       preimageHash: freshFunding.preimageHash,
       claimAddress: freshFunding.claimAddress,
       coordinatorAddress: freshFunding.coordinatorAddress,
+      lockSender: freshFunding.lockSender,
       token: freshFunding.lockTokenAddress,
     });
     return { txHash: mined };
@@ -7076,6 +8881,11 @@ export class Client {
       priorityFeeMicroLamports?: bigint;
       onProgress?: (step: SolanaCctpProgressStep) => void;
       signal?: AbortSignal;
+      /**
+       * Pins on top of the swap's recorded funding terms: allowed call
+       * targets, a higher input limit, a relay fee cap (default 0).
+       */
+      funding?: FundingPins;
     },
   ): Promise<{ txHash: string; cctp: CctpFundSwapFromSolanaResult }> {
     const rpcUrl = options?.rpcUrl ?? this.#config.solanaRpcUrl;
@@ -7087,6 +8897,16 @@ export class Client {
     const stored = await this.#swapStorage?.get(swapId);
     const swapResponse =
       stored?.response ?? (await this.getSwap(swapId, { updateStorage: true }));
+    // Checked before anything is burned (see fundSwap's CCTP path).
+    const expected = {
+      ...this.#fundingExpectation(swapId, stored),
+      pins: options?.funding,
+    };
+    await this.#ensureClientHashLock(
+      swapId,
+      evmHashLockOf(swapResponse),
+      "swap",
+    );
     const bridge = swapResponse as {
       bridge_source_chain?: string;
       bridge_source_token_address?: string;
@@ -7146,6 +8966,7 @@ export class Client {
       { apiClient: this.#apiClient, aa },
       {
         swapId,
+        expected,
         signer,
         ownerSigner: this.#depositorOwnerSigner(
           swapResponse,
@@ -7164,6 +8985,9 @@ export class Client {
         signal: options?.signal,
       },
     );
+    if (cctp.transactionHash) {
+      await this.#recordEvmFunding(swapId, { txid: cctp.transactionHash });
+    }
     return { txHash: cctp.transactionHash ?? cctp.userOpHash, cctp };
   }
 
@@ -7222,6 +9046,22 @@ export class Client {
     // Bitcoin HTLC's; the other two carry a single hash_lock.
     const hashLock =
       "evm_hash_lock" in swap ? swap.evm_hash_lock : swap.hash_lock;
+    await this.#ensureClientHashLock(swapId, hashLock, "native lock");
+    // The coin goes straight to the HTLC named here: it must be the swap's,
+    // with the claimer and timelock it was created with.
+    const { terms } = this.#fundingExpectation(
+      swapId,
+      await this.getStoredSwap(swapId),
+    );
+    if (
+      swap.evm_htlc_address.toLowerCase() !== terms.htlcAddress ||
+      swap.server_evm_address.toLowerCase() !== terms.claimAddress ||
+      swap.evm_refund_locktime !== terms.timelock
+    ) {
+      throw new Error(
+        `The server's swap names HTLC ${swap.evm_htlc_address}, claimer ${swap.server_evm_address} and timelock ${swap.evm_refund_locktime}, not the ${terms.htlcAddress}, ${terms.claimAddress} and ${terms.timelock} it was created with; refusing to fund it`,
+      );
+    }
     onQuote?.({
       sourceAmount: amount,
       sourceTokenAddress: NATIVE_TOKEN_ADDRESS,
@@ -7258,6 +9098,23 @@ export class Client {
       }
     }
 
+    const lock = {
+      htlcAddress: swap.evm_htlc_address,
+      preimageHash: hashLock,
+      claimAddress: swap.server_evm_address,
+      lockSender: signer.address,
+      token: NATIVE_TOKEN_ADDRESS,
+    };
+    await this.#ensureNativeFundingFailed(
+      swapId,
+      signer,
+      [
+        (await this.getStoredSwap(swapId))?.evmFundTxid,
+        (swap as { evm_fund_txid?: string | null }).evm_fund_txid,
+      ],
+      hashLock,
+    );
+
     await simulateTransaction(signer, encoded, "Funding transaction");
 
     const txHash = await signer.sendTransaction({
@@ -7267,13 +9124,59 @@ export class Client {
       type: txTypeFor(signer.chainId),
       gas: await gasLimitFor(signer, encoded, NATIVE_LOCK_GAS),
     });
-    return this.#awaitFunding(swapId, signer, txHash, encoded, {
-      htlcAddress: swap.evm_htlc_address,
-      preimageHash: hashLock,
-      claimAddress: swap.server_evm_address,
-      coordinatorAddress: signer.address,
-      token: NATIVE_TOKEN_ADDRESS,
+    // The wallet sends the lock itself: there is no coordinator to record.
+    return this.#awaitFunding(swapId, signer, txHash, encoded, lock, {
+      forgetFailed: true,
     });
+  }
+
+  /**
+   * Throws unless every funding tx known for this native lock provably did
+   * not fund it: it reverted, or the wallet replaced it with a tx whose logs
+   * show no lock under the swap's hash. A tx the node does not know, one not
+   * mined in time, one that mined, or a replacement without logs may have
+   * locked the coin, and funding again could lock it twice.
+   */
+  async #ensureNativeFundingFailed(
+    swapId: string,
+    signer: EvmSigner,
+    txids: (string | null | undefined)[],
+    hashLock: string,
+  ): Promise<void> {
+    for (const txid of dedupeTxids(txids)) {
+      const refuse = (why: string): never => {
+        throw new Error(
+          `Swap ${swapId} already has funding tx ${txid}, which ${why}; refusing to fund it again. Wait for it, or refund the swap once it lands.`,
+        );
+      };
+      let known: unknown;
+      try {
+        known = await signer.getTransaction(txid);
+      } catch {
+        known = null;
+      }
+      if (!known) refuse("the node does not know and may still land");
+      let receipt: TxReceipt;
+      try {
+        receipt = await withDeadline(
+          signer.waitForReceipt(txid),
+          FUNDING_RECEIPT_WAIT_MS,
+          `not mined within ${FUNDING_RECEIPT_WAIT_MS / 1000}s`,
+        );
+      } catch {
+        return refuse("is not mined yet");
+      }
+      if (receipt.status !== "success") continue;
+      const mined = receipt.transactionHash || txid;
+      // The call this client sent mined: the HTLC exists whatever the
+      // receipt shows. Only a replacement can have done something else.
+      if (mined.toLowerCase() === txid.toLowerCase()) {
+        refuse(`mined in ${mined}`);
+      }
+      if (!provesNoLockUnder(receipt, hashLock)) {
+        refuse(`was replaced by ${mined}, which may have locked the coin`);
+      }
+    }
   }
 
   /**
@@ -7289,8 +9192,19 @@ export class Client {
       htlcAddress: string;
       preimageHash: string;
       claimAddress: string;
-      coordinatorAddress: string;
+      /** The coordinator the lock went through; none for a direct lock. */
+      coordinatorAddress?: string;
+      /** The lock's sender: the depositor on HTLCErc20 v7 / HTLCNative v2, the coordinator before. */
+      lockSender: string;
       token: string;
+    },
+    options?: {
+      /**
+       * Drop the funding record again once the tx provably did not fund the
+       * swap (it reverted, or a replacement's logs show no lock under the
+       * hash), so a retry is not refused over it.
+       */
+      forgetFailed?: boolean;
     },
   ): Promise<string> {
     // Recorded before the wait, so an RPC failure on a tx that did mine
@@ -7302,6 +9216,7 @@ export class Client {
 
     const receipt = await signer.waitForReceipt(txHash);
     if (receipt.status !== "success") {
+      if (options?.forgetFailed) await this.#forgetEvmFunding(swapId, txHash);
       const reason = await getRevertReason(signer, txHash, receipt.blockNumber);
       throw new Error(`Funding transaction failed: ${reason}`);
     }
@@ -7326,11 +9241,20 @@ export class Client {
           htlcAddress: expected.htlcAddress,
           hashLock: expected.preimageHash,
           claimAddress: expected.claimAddress,
-          senders: [expected.coordinatorAddress],
+          senders: [expected.lockSender],
           token: expected.token,
         }).length > 0;
     }
     if (!created && replaced) {
+      // Only a receipt whose logs show no lock under this hash proves the
+      // replacement funded nothing; anything less keeps the record, so a
+      // retry is refused over it.
+      if (
+        options?.forgetFailed &&
+        provesNoLockUnder(receipt, expected.preimageHash)
+      ) {
+        await this.#forgetEvmFunding(swapId, txHash);
+      }
       throw new Error(
         `Transaction ${mined} is on-chain but did not create the HTLC; the wallet may have replaced or cancelled the funding`,
       );
@@ -7437,7 +9361,14 @@ export class Client {
     swapId: string,
     signer: EvmSigner,
   ): Promise<{ txHash: string }> {
-    const { typedData } = await this.buildCollabRefundEvmTypedData(swapId);
+    const { typedData, params } =
+      await this.buildCollabRefundEvmTypedData(swapId);
+    if (params.refundPath === "direct") {
+      return this.#collabRefundEvmDirect(swapId, signer);
+    }
+    if (params.refundPath !== "coordinator") {
+      throw new Error(collabRefundUnavailable(swapId, params));
+    }
 
     const signature = await signer.signTypedData(typedData);
     const { v, r, s } = parseSignature(signature);
@@ -7450,6 +9381,32 @@ export class Client {
     });
 
     return { txHash: result.txHash };
+  }
+
+  /**
+   * Direct collaborative refund from the depositor's wallet: fetch the
+   * server's `Refund` signature bound to the signer, then send
+   * `refundBySig` from it. The user pays gas; no timelock wait.
+   */
+  async #collabRefundEvmDirect(
+    swapId: string,
+    signer: EvmSigner,
+  ): Promise<{ txHash: string }> {
+    const signature = await this.getCollabRefundEvmSignature(
+      swapId,
+      signer.address,
+    );
+    if (signer.chainId !== signature.chainId) {
+      throw new Error(
+        `Swap ${swapId} locks on chain ${signature.chainId}, but the signer is connected to chain ${signer.chainId}`,
+      );
+    }
+    const txHash = await sendCall(
+      signer,
+      refundBySigCallData(signature),
+      "Collaborative refund transaction",
+    );
+    return { txHash };
   }
 
   async #actualRefundTransfer(
@@ -7680,6 +9637,8 @@ export class Client {
       targetAddress: string;
       target?: ContinueTarget;
       signer?: EvmSigner;
+      /** Pins on top of the new swap's recorded funding terms. */
+      funding?: FundingPins;
     },
   ): Promise<ContinueRefundedEvmSwapResult> {
     // Checked before anything is created: a swap whose depositor cannot fund
@@ -7743,11 +9702,26 @@ export class Client {
     // `expectedMaxSourceAmount` caps the spend at this refund: a Lightning
     // invoice pins the payout, and one the refund cannot cover must fail
     // rather than draw on unrelated balance in the account.
+    const newSwapId = created.response.id;
     const submitted = await this.cctpInbound.submitBalanceUserOp({
-      swapId: created.response.id,
+      swapId: newSwapId,
+      // The new swap's own hash and terms, recorded when it was just
+      // created here.
+      expected: {
+        ...this.#fundingExpectation(
+          newSwapId,
+          await this.getStoredSwap(newSwapId),
+        ),
+        pins: options.funding,
+      },
       signer: options.signer ?? this.#keyOwnerSigner(),
       expectedMaxSourceAmount: sourceAmount,
     });
+    if (submitted.transactionHash) {
+      await this.#recordEvmFunding(newSwapId, {
+        txid: submitted.transactionHash,
+      });
+    }
 
     return {
       oldSwapId,
@@ -7832,31 +9806,15 @@ export class Client {
       );
     }
 
-    const { client } = await this.cctpInbound.createSmartAccountClient({
-      signer: owner,
-    });
-    const userOpHash = await client.sendUserOperation({
-      calls: [
-        {
-          to: result.evmRefundData.to as `0x${string}`,
-          data: result.evmRefundData.data as `0x${string}`,
-          value: 0n,
-        },
-      ],
-    });
-    const { receipt, success, reason } =
-      await client.waitForUserOperationReceipt({ hash: userOpHash });
+    // On HTLCErc20 v7 / HTLCNative v2 the server returns the permissionless
+    // `refundFor`, which the paymaster does not sponsor; the smart account is
+    // the lock's sender, so it refunds with its own `refund` instead.
     // An included UserOp can still revert (e.g. the server's collaborative
-    // refund won the race); the receipt then resolves with `success: false`
-    // instead of throwing. Nothing was refunded, so fail rather than report it.
-    if (!success) {
-      throw new Error(
-        `Sponsored refund UserOp ${userOpHash} reverted on-chain${
-          reason ? `: ${reason}` : ""
-        }`,
-      );
-    }
-    return { txHash: receipt.transactionHash, userOpHash };
+    // refund won the race); nothing was refunded then, so it fails.
+    const refund = result.evmRefundData;
+    return this.#sponsoredUserOp(owner, (account) =>
+      refundForAsOwnRefund(refund, account),
+    );
   }
 
   /** This client's key as the Kernel owner on Arbitrum. */
@@ -7908,7 +9866,17 @@ export class Client {
    * console.log("Funded via relay:", result.txHash);
    * ```
    */
-  async fundSwapGasless(swapId: string): Promise<{ txHash: string }> {
+  async fundSwapGasless(
+    swapId: string,
+    options?: {
+      /**
+       * Pins on top of the swap's recorded funding terms. `maxRelayFee`
+       * defaults to 0: on a chain whose relay charges a fee (Ethereum) set
+       * it, or the funding is refused.
+       */
+      funding?: FundingPins;
+    },
+  ): Promise<{ txHash: string }> {
     // 1. Look up stored swap to get the secret key
     const storedSwap = await this.getStoredSwap(swapId);
     if (!storedSwap) {
@@ -7947,6 +9915,8 @@ export class Client {
 
     const serverData = (await resp.json()) as {
       coordinator_address: string;
+      htlc_kind?: string;
+      htlc_version?: number;
       permit2_address: string;
       source_token_address: string;
       source_amount: string;
@@ -7965,6 +9935,14 @@ export class Client {
       relay_fee?: string;
       depositor_delegation?: string | null;
     };
+    // Spender, lock, tokens, amount, calls and relay fee are bound to the
+    // swap's recorded terms before anything is signed, and signed from them.
+    const checked = await this.#checkedFunding(
+      swapId,
+      serverData,
+      chainId,
+      options?.funding,
+    );
 
     // 3. Generate random Permit2 nonce and deadline
     const nonceBytes = new Uint8Array(32);
@@ -7976,28 +9954,33 @@ export class Client {
     );
     const deadline = BigInt(Math.floor(Date.now() / 1000) + 30 * 60); // 30 minutes
 
-    const sourceAmount = BigInt(serverData.source_amount);
+    const sourceAmount = checked.sourceAmount;
 
-    // 4. Build and sign Permit2 EIP-712 digest
+    // 4. Build and sign the Permit2 EIP-712 digest. The witness binds the
+    // lock's refund address: the depositor from HTLCErc20 v7 / HTLCNative v2,
+    // the coordinator before.
+    const evmKey = this.#getEvmSigningKey();
+    const depositorAddress = deriveEvmAddress(evmKey);
     const digest = buildPermit2FundingDigest({
       chainId,
-      coordinatorAddress: serverData.coordinator_address,
-      sourceToken: serverData.source_token_address,
+      coordinatorAddress: checked.coordinator,
+      sourceToken: checked.sourceToken,
       sourceAmount,
-      preimageHash: serverData.preimage_hash,
-      lockToken: serverData.lock_token_address,
-      claimAddress: serverData.claim_address,
-      refundAddress: serverData.coordinator_address,
-      timelock: serverData.timelock,
-      callsHash: serverData.calls_hash,
+      preimageHash: checked.preimageHash,
+      lockToken: checked.lockToken,
+      claimAddress: checked.claimAddress,
+      refundAddress: permit2RefundAddress(
+        checkedRefundContext(checked),
+        depositorAddress,
+      ),
+      timelock: checked.timelock,
+      callsHash: checked.callsHash,
       nonce,
       deadline,
     });
     // 4b. Use the EVM key (deterministic for new swaps, per-swap for legacy).
     // If the depositor has been delegated to Kernel by a sponsored claim,
     // Permit2 verifies via ERC-1271 and needs Kernel's envelope.
-    const evmKey = this.#getEvmSigningKey();
-    const depositorAddress = deriveEvmAddress(evmKey);
     const delegated = await this.#isKernelDelegated(
       depositorAddress,
       chainId,
@@ -8079,7 +10062,12 @@ export class Client {
         permit2_nonce: nonce.toString(),
         permit2_deadline: Number(deadline),
         permit2_signature: compactSignature,
-        calls: serverData.calls,
+        // The checked calls, which the signed calls hash covers.
+        calls: checked.calls.map((call) => ({
+          target: call.target,
+          value: call.value.toString(),
+          call_data: call.data,
+        })),
         eip2612_permit: eip2612Permit,
       }),
     });
@@ -8096,9 +10084,11 @@ export class Client {
       message: string;
     };
 
+    // The relay's txid is the server's word: a hint for a later refund or
+    // rehash, which trust a receipt only for a lock under this swap's hash.
     await this.#recordEvmFunding(swapId, {
       txid: result.tx_hash,
-      coordinatorAddress: serverData.coordinator_address,
+      coordinatorAddress: checked.coordinator,
     });
     return { txHash: result.tx_hash };
   }

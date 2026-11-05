@@ -1223,6 +1223,11 @@ pub struct GaslessOpts {
     /// Useful when the bundler's simulator mis-estimates (notably
     /// alto in dev). `None` => let the bundler estimate.
     pub gas_overrides: Option<GasOverrides>,
+    /// Largest relay fee the server may take from the input, in the source
+    /// token's smallest unit as a decimal string. Only Ethereum charges one;
+    /// `None` refuses any.
+    #[uniffi(default = None)]
+    pub max_relay_fee: Option<String>,
 }
 
 /// Explicit gas limits for the userOp. When set on [`GaslessOpts`], the
@@ -1301,6 +1306,9 @@ fn gasless_opts_into_sdk(o: GaslessOpts) -> Result<SdkGaslessOpts, SdkError> {
     }
     if let Some(g) = o.gas_overrides {
         sdk_opts = sdk_opts.with_gas_overrides(g.into());
+    }
+    if let Some(fee) = o.max_relay_fee.as_deref() {
+        sdk_opts = sdk_opts.with_max_relay_fee(decimal_units(fee, "GaslessOpts.max_relay_fee")?);
     }
     Ok(sdk_opts)
 }
@@ -1583,6 +1591,18 @@ pub struct EvmReceipt {
     pub tx_hash: String,
 }
 
+/// A verified rehash, from [`SatoraClient::retry_swap_with_invoice`]: the
+/// lock continues under the new invoice's payment hash.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct EvmRehash {
+    /// `0x…`.
+    pub tx_hash: String,
+    /// The new invoice's payment hash the lock is now under, `0x…`.
+    pub new_hash_lock: String,
+    /// The refund locktime the lock continues under, unix seconds.
+    pub new_timelock: u64,
+}
+
 /// A verified HTLC refund, from [`SatoraClient::refund_evm_htlc`].
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
 pub struct HtlcRefund {
@@ -1722,6 +1742,98 @@ impl SatoraClient {
                 tx_hash: format!("{:#x}", refund.receipt.transaction_hash),
                 lock_token: refund.lock_token.to_string(),
             })
+        })
+    }
+
+    /// Refund the swap's funded EVM HTLC before its timelock with the server's
+    /// consent, from the depositor: on HTLCErc20 v7 / HTLCNative v2 the server
+    /// signs `Refund` over the lock's terms once it has decided not to fund the
+    /// swap, and the depositor sends `refundBySig`; it pays the gas. Older
+    /// deployments refund after the timelock with `refund_evm_htlc`. Like that
+    /// call, a repeated call verifies a recorded refund instead of sending
+    /// another.
+    pub fn collab_refund_evm_htlc(
+        &self,
+        swap_id: String,
+        node_rpc_url: Option<String>,
+        timeout_secs: u64,
+    ) -> Result<HtlcRefund, SdkError> {
+        let node_rpc_url = optional_url(node_rpc_url, "node_rpc_url")?;
+        runtime().block_on(async {
+            let refund = self
+                .inner
+                .collab_refund_evm_htlc(
+                    &swap_id,
+                    node_rpc_url.as_ref(),
+                    std::time::Duration::from_secs(timeout_secs),
+                )
+                .await?;
+            Ok(HtlcRefund {
+                tx_hash: format!("{:#x}", refund.receipt.transaction_hash),
+                lock_token: refund.lock_token.to_string(),
+            })
+        })
+    }
+
+    /// Retry a stuck EVM to Lightning swap with a new invoice, from the
+    /// depositor. The server failed to pay the old invoice and gave up; instead
+    /// of refunding, the lock moves to the new invoice's payment hash
+    /// (HTLCErc20 v7 / HTLCNative v2 `rehash`) and the server pays that one
+    /// once the move is confirmed. The depositor authorizes the invoice with an
+    /// EIP-191 signature and pays the gas. The move is recorded on the swap, so
+    /// a later `refund_evm_htlc` refunds the lock that exists.
+    pub fn retry_swap_with_invoice(
+        &self,
+        swap_id: String,
+        invoice: String,
+        node_rpc_url: Option<String>,
+        timeout_secs: u64,
+    ) -> Result<EvmRehash, SdkError> {
+        let node_rpc_url = optional_url(node_rpc_url, "node_rpc_url")?;
+        runtime().block_on(async {
+            let moved = self
+                .inner
+                .retry_swap_with_invoice(
+                    &swap_id,
+                    &invoice,
+                    node_rpc_url.as_ref(),
+                    std::time::Duration::from_secs(timeout_secs),
+                )
+                .await?;
+            Ok(EvmRehash {
+                tx_hash: format!("{:#x}", moved.tx_hash),
+                new_hash_lock: format!("{:#x}", moved.new_hash_lock),
+                new_timelock: moved.new_timelock,
+            })
+        })
+    }
+
+    /// Attach the hash of the swap's latest rehash: one whose broadcast
+    /// response was lost, or one the wallet replaced under another hash. The
+    /// next refund or retry verifies its receipt.
+    pub fn attach_evm_rehash_transaction(
+        &self,
+        swap_id: String,
+        tx_hash: String,
+    ) -> Result<(), SdkError> {
+        let hash: lendaswap_sdk::evm::B256 = tx_hash
+            .parse()
+            .map_err(|e| invalid_argument(format!("tx_hash is not a 32-byte hex hash: {e}")))?;
+        runtime().block_on(async {
+            self.inner
+                .attach_evm_rehash_transaction(&swap_id, hash)
+                .await?;
+            Ok(())
+        })
+    }
+
+    /// Forget the swap's latest rehash submission once it is certain it never
+    /// mined. A rehash that did mine and is released leaves a later refund
+    /// targeting the old lock; attach its hash instead.
+    pub fn release_evm_rehash_submission(&self, swap_id: String) -> Result<(), SdkError> {
+        runtime().block_on(async {
+            self.inner.release_evm_rehash_submission(&swap_id).await?;
+            Ok(())
         })
     }
 }
@@ -2604,6 +2716,7 @@ mod tests {
             node_rpc_url: node_rpc_url.map(Into::into),
             paymaster_context_json: paymaster_context_json.map(Into::into),
             gas_overrides: None,
+            max_relay_fee: None,
         };
         assert!(matches!(
             gasless_opts_into_sdk(opts(Some("not a url"), None)),
@@ -2613,6 +2726,20 @@ mod tests {
             gasless_opts_into_sdk(opts(None, Some("{"))),
             Err(SdkError::InvalidSwap { .. })
         ));
+        let fee = |max_relay_fee: &str| {
+            gasless_opts_into_sdk(GaslessOpts {
+                max_relay_fee: Some(max_relay_fee.into()),
+                ..opts(None, None)
+            })
+        };
+        assert!(matches!(fee("1_000"), Err(SdkError::InvalidSwap { .. })));
+        assert_eq!(fee("1000").unwrap().max_relay_fee, EvmU256::from(1000));
+        assert_eq!(
+            gasless_opts_into_sdk(opts(None, None))
+                .unwrap()
+                .max_relay_fee,
+            EvmU256::ZERO
+        );
         let client = SatoraClient::new(UNREACHABLE.into(), None).unwrap();
         assert!(matches!(
             client.check_deposit_funding("swap".into(), Some("not a url".into())),

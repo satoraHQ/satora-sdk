@@ -5,6 +5,8 @@
  * ReverseAtomicSwapHTLC contract for EVM-to-BTC swaps.
  */
 
+import { keccak_256 } from "@noble/hashes/sha3.js";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { decodeUint256, type ReceiptLog } from "./wallet.js";
 
 /**
@@ -388,6 +390,245 @@ export function encodeHtlcNativeRefundCallData(
   };
 }
 
+/**
+ * Whether client locks on this deployment are keyed under the depositor
+ * rather than the coordinator: HTLCErc20 from v7, HTLCNative from v2. The
+ * Permit2 funding witness binds `refundAddress` to that sender, so a funding
+ * signed for the wrong one is rejected by Permit2 (`InvalidSigner`).
+ * Unknown kind or version means an older server, whose deployments lock
+ * with the coordinator.
+ */
+export function depositorIsSender(
+  kind: string | undefined,
+  version: number | undefined,
+): boolean {
+  if (version === undefined) return false;
+  if (kind === "native") return version >= 2;
+  if (kind === "erc20") return version >= 7;
+  return false;
+}
+
+// HTLCErc20.refundFor(bytes32,uint256,address,address,address,uint256)
+const HTLC_ERC20_REFUND_FOR_SELECTOR = "0x91fd66ab";
+// HTLCNative.refundFor(bytes32,uint256,address,address,uint256)
+const HTLC_NATIVE_REFUND_FOR_SELECTOR = "0x8dd4ea3e";
+
+/**
+ * Rewrites the server's permissionless `refundFor` of an expired lock
+ * (HTLCErc20 v7 / HTLCNative v2) as the depositor's own `refund` on the same
+ * HTLC, for a depositor that sends the refund itself, e.g. through a
+ * sponsored UserOp, whose paymaster only sponsors a depositor's own calls.
+ * Any other call is returned unchanged. Throws when the lock's sender is not
+ * `depositor`, since `refund` would then compute a different key and revert.
+ */
+export function refundForAsOwnRefund(
+  call: { to: string; data: string },
+  depositor: string,
+): { to: string; data: string } {
+  const data = call.data.toLowerCase();
+  const selector = data.slice(0, 10);
+  const native = selector === HTLC_NATIVE_REFUND_FOR_SELECTOR;
+  if (!native && selector !== HTLC_ERC20_REFUND_FOR_SELECTOR) return call;
+  const words = native ? 5 : 6;
+  if (data.length !== 10 + 64 * words) {
+    throw new Error(
+      `refundFor calldata has ${(data.length - 10) / 64} words, expected ${words}`,
+    );
+  }
+  const word = (i: number) => data.slice(10 + 64 * i, 10 + 64 * (i + 1));
+  const senderIndex = native ? 2 : 3;
+  const sender = `0x${word(senderIndex).slice(24)}`;
+  if (sender !== depositor.toLowerCase()) {
+    throw new Error(
+      `The lock was created by ${sender}, not ${depositor}; only its sender can refund it directly`,
+    );
+  }
+  const terms = Array.from({ length: words }, (_, i) => word(i)).filter(
+    (_, i) => i !== senderIndex,
+  );
+  const refundSelector = native
+    ? HTLC_NATIVE_REFUND_SELECTOR
+    : HTLC_ERC20_REFUND_SELECTOR;
+  return { to: call.to, data: [refundSelector, ...terms].join("") };
+}
+
+/** A server signature over an HTLC-level EIP-712 struct, as `(v, r, s)`. */
+export interface HtlcSignature {
+  v: number;
+  r: string;
+  s: string;
+}
+
+/**
+ * Parameters for `HTLCErc20.refundBySig`: the lock's terms plus the claim
+ * address's `Refund` signature. The depositor is `msg.sender`, so the call
+ * carries no sender or claim address; the contract recovers the latter.
+ */
+export interface HtlcErc20RefundBySigParams extends HtlcSignature {
+  preimageHash: string;
+  amount: bigint | number;
+  token: string;
+  timelock: number;
+}
+
+// HTLCErc20.refundBySig(bytes32,uint256,address,uint256,uint8,bytes32,bytes32)
+const HTLC_ERC20_REFUND_BY_SIG_SELECTOR = "0x072c420d";
+
+/**
+ * Encodes `HTLCErc20.refundBySig(...)` (v7+): the depositor returns its lock
+ * before the timelock with the claim address's `Refund` signature, which the
+ * server hands out through `/collab-refund-evm/signature`. Must be sent from
+ * the depositor address the lock was created under.
+ */
+export function encodeHtlcErc20RefundBySigCallData(
+  htlcAddress: string,
+  params: HtlcErc20RefundBySigParams,
+): HtlcErc20RefundCallData {
+  const data = [
+    HTLC_ERC20_REFUND_BY_SIG_SELECTOR,
+    normalizeBytes32(params.preimageHash),
+    encodeUint256(BigInt(params.amount)),
+    normalizeAddress(params.token),
+    encodeUint256(BigInt(params.timelock)),
+    ...encodeSignature(params),
+  ].join("");
+  return {
+    to: htlcAddress,
+    data,
+    functionSignature:
+      "refundBySig(bytes32,uint256,address,uint256,uint8,bytes32,bytes32)",
+  };
+}
+
+/** Parameters for `HTLCNative.refundBySig` (no token: the lock is the native coin). */
+export interface HtlcNativeRefundBySigParams extends HtlcSignature {
+  preimageHash: string;
+  amount: bigint | number;
+  timelock: number;
+}
+
+// HTLCNative.refundBySig(bytes32,uint256,uint256,uint8,bytes32,bytes32)
+const HTLC_NATIVE_REFUND_BY_SIG_SELECTOR = "0x3bab851e";
+
+/** `HTLCNative.refundBySig(...)` (v2+); see {@link encodeHtlcErc20RefundBySigCallData}. */
+export function encodeHtlcNativeRefundBySigCallData(
+  htlcAddress: string,
+  params: HtlcNativeRefundBySigParams,
+): HtlcErc20RefundCallData {
+  const data = [
+    HTLC_NATIVE_REFUND_BY_SIG_SELECTOR,
+    normalizeBytes32(params.preimageHash),
+    encodeUint256(BigInt(params.amount)),
+    encodeUint256(BigInt(params.timelock)),
+    ...encodeSignature(params),
+  ].join("");
+  return {
+    to: htlcAddress,
+    data,
+    functionSignature:
+      "refundBySig(bytes32,uint256,uint256,uint8,bytes32,bytes32)",
+  };
+}
+
+/**
+ * Parameters for `HTLCErc20.rehash`: the lock's current terms, the hash and
+ * timelock it continues under, and the claim address's `Rehash` signature.
+ */
+export interface HtlcErc20RehashParams extends HtlcSignature {
+  preimageHash: string;
+  amount: bigint | number;
+  token: string;
+  timelock: number;
+  newPreimageHash: string;
+  newTimelock: number;
+}
+
+// HTLCErc20.rehash(bytes32,uint256,address,uint256,bytes32,uint256,uint8,bytes32,bytes32)
+const HTLC_ERC20_REHASH_SELECTOR = "0x5a83bf7f";
+
+/**
+ * Encodes `HTLCErc20.rehash(...)` (v7+): the depositor moves its active lock
+ * to a new preimage hash and timelock with the claim address's `Rehash`
+ * signature, which the server hands out through `/rehash-evm` together with
+ * these arguments. Must be sent from the depositor address the lock was
+ * created under.
+ */
+export function encodeHtlcErc20RehashCallData(
+  htlcAddress: string,
+  params: HtlcErc20RehashParams,
+): HtlcErc20RefundCallData {
+  const data = [
+    HTLC_ERC20_REHASH_SELECTOR,
+    normalizeBytes32(params.preimageHash),
+    encodeUint256(BigInt(params.amount)),
+    normalizeAddress(params.token),
+    encodeUint256(BigInt(params.timelock)),
+    normalizeBytes32(params.newPreimageHash),
+    encodeUint256(BigInt(params.newTimelock)),
+    ...encodeSignature(params),
+  ].join("");
+  return {
+    to: htlcAddress,
+    data,
+    functionSignature:
+      "rehash(bytes32,uint256,address,uint256,bytes32,uint256,uint8,bytes32,bytes32)",
+  };
+}
+
+/** Parameters for `HTLCNative.rehash` (no token: the lock is the native coin). */
+export interface HtlcNativeRehashParams extends HtlcSignature {
+  preimageHash: string;
+  amount: bigint | number;
+  timelock: number;
+  newPreimageHash: string;
+  newTimelock: number;
+}
+
+// HTLCNative.rehash(bytes32,uint256,uint256,bytes32,uint256,uint8,bytes32,bytes32)
+const HTLC_NATIVE_REHASH_SELECTOR = "0x6eecb3d8";
+
+/** `HTLCNative.rehash(...)` (v2+); see {@link encodeHtlcErc20RehashCallData}. */
+export function encodeHtlcNativeRehashCallData(
+  htlcAddress: string,
+  params: HtlcNativeRehashParams,
+): HtlcErc20RefundCallData {
+  const data = [
+    HTLC_NATIVE_REHASH_SELECTOR,
+    normalizeBytes32(params.preimageHash),
+    encodeUint256(BigInt(params.amount)),
+    encodeUint256(BigInt(params.timelock)),
+    normalizeBytes32(params.newPreimageHash),
+    encodeUint256(BigInt(params.newTimelock)),
+    ...encodeSignature(params),
+  ].join("");
+  return {
+    to: htlcAddress,
+    data,
+    functionSignature:
+      "rehash(bytes32,uint256,uint256,bytes32,uint256,uint8,bytes32,bytes32)",
+  };
+}
+
+/**
+ * `(uint8 v, bytes32 r, bytes32 s)` as three ABI words. An `r` or `s` that
+ * is not exactly 32 bytes is refused: padded or overlong hex would shift
+ * every word after it instead of failing.
+ */
+function encodeSignature(sig: HtlcSignature): string[] {
+  if (!Number.isInteger(sig.v) || sig.v < 0 || sig.v > 255) {
+    throw new Error(`Signature v must be a uint8, got ${sig.v}`);
+  }
+  return [encodeUint256(BigInt(sig.v)), word("r", sig.r), word("s", sig.s)];
+}
+
+function word(name: string, value: string): string {
+  const clean = value.replace(/^0x/, "");
+  if (!/^[0-9a-fA-F]{64}$/.test(clean)) {
+    throw new Error(`Signature ${name} must be 32 bytes of hex, got ${value}`);
+  }
+  return clean.toLowerCase();
+}
+
 export interface HtlcErc20IsActiveParams {
   preimageHash: string;
   amount: bigint;
@@ -417,6 +658,46 @@ export function encodeHtlcErc20IsActiveCallData(
     encodeUint256(BigInt(params.timelock)),
   ].join("");
   return { to: htlcAddress, data };
+}
+
+/**
+ * The key `HTLCErc20` / `HTLCNative` store a lock under:
+ * `keccak256(abi.encode(preimageHash, amount, token, sender, claimAddress, timelock))`,
+ * with a zero token word for a native lock.
+ */
+export function htlcSwapKey(params: HtlcErc20IsActiveParams): string {
+  const encoded = [
+    normalizeBytes32(params.preimageHash),
+    encodeUint256(params.amount),
+    normalizeAddress(params.token),
+    normalizeAddress(params.refundAddress),
+    normalizeAddress(params.claimAddress),
+    encodeUint256(BigInt(params.timelock)),
+  ].join("");
+  return `0x${bytesToHex(keccak_256(hexToBytes(encoded)))}`;
+}
+
+// keccak256("swaps(bytes32)")[0:4]
+const HTLC_SWAPS_SELECTOR = "0xeb84e7f2";
+
+/** `SwapState` of HTLCErc20 v7 / HTLCNative v2. */
+export const HTLC_SWAP_STATE = {
+  None: 0n,
+  Active: 1n,
+  Redeemed: 2n,
+  Refunded: 3n,
+  Rehashed: 4n,
+} as const;
+
+/** Encodes `swaps(key)`, the lock's `SwapState` as one ABI word. */
+export function encodeHtlcSwapsCallData(
+  htlcAddress: string,
+  key: string,
+): { to: string; data: string } {
+  return {
+    to: htlcAddress,
+    data: `${HTLC_SWAPS_SELECTOR}${normalizeBytes32(key)}`,
+  };
 }
 
 /**
@@ -548,6 +829,52 @@ export function decodeSwapCreatedLog(log: {
     timelock: Number(decodeUint256(word(2))),
     key: `0x${word(3)}`,
   };
+}
+
+// keccak256("SwapRehashed(bytes32,bytes32,bytes32,bytes32)")
+export const SWAP_REHASHED_TOPIC =
+  "0x54e7aaf61f7d94f49a761b306cc6ead18e2e3ce3fd40197cbd2cad8ff2aaf04a";
+
+/** `SwapRehashed(preimageHash, key, newKey, newPreimageHash)`: a lock moved. */
+export interface SwapRehashedLog {
+  preimageHash: string;
+  key: string;
+  newKey: string;
+  newPreimageHash: string;
+}
+
+/** Decodes an HTLC `SwapRehashed` log, or returns undefined for any other log. */
+export function decodeSwapRehashedLog(log: {
+  topics: readonly string[];
+  data: string;
+}): SwapRehashedLog | undefined {
+  if (log.topics.length !== 4) return undefined;
+  if (log.topics[0].toLowerCase() !== SWAP_REHASHED_TOPIC) return undefined;
+  const data = log.data.replace(/^0x/, "");
+  if (data.length !== 64) return undefined;
+  return {
+    preimageHash: `0x${normalizeBytes32(log.topics[1])}`,
+    key: `0x${normalizeBytes32(log.topics[2])}`,
+    newKey: `0x${normalizeBytes32(log.topics[3])}`,
+    newPreimageHash: `0x${normalizeBytes32(data)}`,
+  };
+}
+
+/** The `SwapRehashed` logs `htlcAddress` emitted for the lock keyed `key`. */
+export function findSwapRehashed(
+  logs: readonly ReceiptLog[],
+  filter: { htlcAddress: string; key: string },
+): SwapRehashedLog[] {
+  const htlc = filter.htlcAddress.toLowerCase();
+  const key = `0x${normalizeBytes32(filter.key)}`;
+  const matches: SwapRehashedLog[] = [];
+  for (const log of logs) {
+    if (log.address.toLowerCase() !== htlc) continue;
+    const rehashed = decodeSwapRehashedLog(log);
+    if (rehashed === undefined || rehashed.key !== key) continue;
+    matches.push(rehashed);
+  }
+  return matches;
 }
 
 export interface SwapCreatedFilter {

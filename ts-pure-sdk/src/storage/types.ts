@@ -6,9 +6,45 @@
  */
 
 import type { GetSwapResponse } from "../api/client.js";
+import type { EvmFundingTerms } from "../evm/funding-pins.js";
 
 /** Current schema version for stored swaps */
 export const SWAP_STORAGE_VERSION = 2;
+
+/** One entry of {@link StoredSwap.evmRehashes}. */
+export interface EvmRehashRecord {
+  /**
+   * The `rehash` transaction. Empty while a sponsored move is sent but not
+   * yet seen included; it is then followed only through the receipt its
+   * {@link userOpHash} leads to, never inferred from the lock's state.
+   */
+  txid: string;
+  /** The sponsored UserOp that carries the move, hashed before it is sent. */
+  userOpHash?: string;
+  /** The hash the lock was under before this move (0x-prefixed hex). */
+  fromHashLock: string;
+  /** The payment hash of the new invoice (0x-prefixed hex). */
+  hashLock: string;
+  /** The timelock the lock continues under (unix seconds). */
+  timelock: number;
+}
+
+/**
+ * The payment hash an EVM → Lightning swap's lock must use, fixed by this
+ * client when it created the swap. See {@link StoredSwap.lightningPaymentHash}.
+ */
+export interface LightningPaymentHash {
+  /** The payment hash (0x-prefixed hex). */
+  hash: string;
+  /**
+   * `invoice`: read from the invoice the caller supplied, so the server had
+   * no say in it. `server-invoice`: the swap was created from a Lightning
+   * address or LNURL, which the server resolves; the hash was read from
+   * the invoice it returned (checked against its `hash_lock` and payout
+   * amount), so it is only as honest as that resolution.
+   */
+  source: "invoice" | "server-invoice";
+}
 
 /**
  * Extended swap data stored locally.
@@ -85,15 +121,50 @@ export interface StoredSwap {
 
   /**
    * The tx this client knows funded an EVM-sourced swap: the one it sent
-   * (corrected to the mined hash once the receipt is in) or the relay
-   * reported. Kept beside `response` because every server refresh replaces
-   * that copy, and the server only learns the txid once its monitor has
-   * indexed the funding.
+   * (corrected to the mined hash once the receipt is in), the relay
+   * reported, or one a refund found through the server's copy. Kept beside
+   * `response` because every server refresh replaces that copy, and the
+   * server only learns the txid once its monitor has indexed the funding.
+   * Since a refund may fill it from the server, it is only a hint: a rehash
+   * trusts a funding receipt for what it shows under
+   * {@link lightningPaymentHash}, whichever tx it came from.
    */
   evmFundTxid?: string;
 
+  /**
+   * For an EVM → Lightning swap, the payment hash this client fixed at
+   * creation. Every funding path refuses to lock under any other hash (the
+   * server could otherwise pick one whose preimage it knows and claim
+   * without paying), and a rehash only moves a lock created under it. Kept
+   * beside `response`, which every server refresh replaces; a swap without
+   * it (recovered, or created by an older SDK) can be refunded but neither
+   * funded nor retried. EVM → Bitcoin / Arkade swaps need no such field:
+   * their hash is {@link preimageHash}, which this client generates.
+   */
+  lightningPaymentHash?: LightningPaymentHash;
+
+  /**
+   * For an EVM-sourced swap, the funding terms read from its creation
+   * response: the coordinator (the only Permit2 spender this client signs
+   * for), HTLC, claimer, timelock, tokens and input. Every funding payload
+   * must match them and is signed from them; never updated from a later
+   * server answer. A swap without it (recovered, or created by an older
+   * SDK) can be refunded but not funded.
+   */
+  evmFundingTerms?: EvmFundingTerms;
+
   /** The HTLCCoordinator the funding went through; pins the refund target. */
   evmCoordinatorAddress?: string;
+
+  /**
+   * The rehashes this client sent for an EVM → Lightning swap, oldest
+   * first: each moves the lock from `fromHashLock` to `hashLock` /
+   * `timelock` in `txid`. Kept beside `response` because the server's copy
+   * switches hash and funding tx once its monitor confirms a move, while a
+   * refund is built from the funding tx's `SwapCreated` under the first
+   * entry's `fromHashLock`, followed through each `SwapRehashed`.
+   */
+  evmRehashes?: EvmRehashRecord[];
 
   /**
    * Source-chain CCTP burn of a CCTP-inbound swap, recorded as soon as it is

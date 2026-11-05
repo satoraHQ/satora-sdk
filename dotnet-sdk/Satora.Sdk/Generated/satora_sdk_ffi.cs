@@ -825,6 +825,14 @@ static class _UniFFILib {
     
     
     
+    
+    
+    
+    
+    
+    
+    
+    
 
     static _UniFFILib() {
         _UniFFILib.uniffiCheckContractApiVersion();
@@ -893,11 +901,19 @@ static class _UniFFILib {
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void uniffi_satora_sdk_ffi_fn_method_satoraclient_attach_evm_rehash_transaction(IntPtr @ptr,RustBuffer @swapId,RustBuffer @txHash,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_check_deposit_funding(IntPtr @ptr,RustBuffer @swapId,RustBuffer @nodeRpcUrl,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_claim(IntPtr @ptr,RustBuffer @swapId,RustBuffer @destination,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_collab_refund_evm_htlc(IntPtr @ptr,RustBuffer @swapId,RustBuffer @nodeRpcUrl,ulong @timeoutSecs,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -966,6 +982,14 @@ static class _UniFFILib {
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_refund_evm_htlc(IntPtr @ptr,RustBuffer @swapId,RustBuffer @nodeRpcUrl,ulong @timeoutSecs,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void uniffi_satora_sdk_ffi_fn_method_satoraclient_release_evm_rehash_submission(IntPtr @ptr,RustBuffer @swapId,ref UniffiRustCallStatus _uniffi_out_err
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern RustBuffer uniffi_satora_sdk_ffi_fn_method_satoraclient_retry_swap_with_invoice(IntPtr @ptr,RustBuffer @swapId,RustBuffer @invoice,RustBuffer @nodeRpcUrl,ulong @timeoutSecs,ref UniffiRustCallStatus _uniffi_out_err
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -1269,11 +1293,19 @@ static class _UniFFILib {
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_attach_evm_rehash_transaction(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_check_deposit_funding(
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_claim(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_collab_refund_evm_htlc(
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -1342,6 +1374,14 @@ static class _UniFFILib {
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
     public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_refund_evm_htlc(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_release_evm_rehash_submission(
+    );
+
+    [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
+    public static extern ushort uniffi_satora_sdk_ffi_checksum_method_satoraclient_retry_swap_with_invoice(
     );
 
     [DllImport("satora_sdk_ffi", CallingConvention = CallingConvention.Cdecl)]
@@ -1465,6 +1505,12 @@ static class _UniFFILib {
             }
         }
         {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_attach_evm_rehash_transaction();
+            if (checksum != 9941) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_attach_evm_rehash_transaction` checksum `9941`, library returned `{checksum}`");
+            }
+        }
+        {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_check_deposit_funding();
             if (checksum != 3398) {
                 throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_check_deposit_funding` checksum `3398`, library returned `{checksum}`");
@@ -1474,6 +1520,12 @@ static class _UniFFILib {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_claim();
             if (checksum != 21380) {
                 throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_claim` checksum `21380`, library returned `{checksum}`");
+            }
+        }
+        {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_collab_refund_evm_htlc();
+            if (checksum != 62996) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_collab_refund_evm_htlc` checksum `62996`, library returned `{checksum}`");
             }
         }
         {
@@ -1576,6 +1628,18 @@ static class _UniFFILib {
             var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_refund_evm_htlc();
             if (checksum != 37928) {
                 throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_refund_evm_htlc` checksum `37928`, library returned `{checksum}`");
+            }
+        }
+        {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_release_evm_rehash_submission();
+            if (checksum != 41638) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_release_evm_rehash_submission` checksum `41638`, library returned `{checksum}`");
+            }
+        }
+        {
+            var checksum = _UniFFILib.uniffi_satora_sdk_ffi_checksum_method_satoraclient_retry_swap_with_invoice();
+            if (checksum != 60689) {
+                throw new UniffiContractChecksumException($"uniffi.satora_sdk_ffi: uniffi bindings expected function `uniffi_satora_sdk_ffi_checksum_method_satoraclient_retry_swap_with_invoice` checksum `60689`, library returned `{checksum}`");
             }
         }
         {
@@ -2015,6 +2079,13 @@ public interface ISatoraClient {
     /// <exception cref="SdkException"></exception>
     string? ArkadeSettle();
     /// <summary>
+    /// Attach the hash of the swap's latest rehash: one whose broadcast
+    /// response was lost, or one the wallet replaced under another hash. The
+    /// next refund or retry verifies its receipt.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    void AttachEvmRehashTransaction(string @swapId, string @txHash);
+    /// <summary>
     /// Single-shot read of the depositor EOA's funding state — no
     /// polling, no waiting, no throw on "not funded yet". Use this
     /// for "is `fund_swap_gasless` ready?" branching.
@@ -2040,6 +2111,17 @@ public interface ISatoraClient {
     /// </summary>
     /// <exception cref="SdkException"></exception>
     ClaimReceipt Claim(string @swapId, string @destination);
+    /// <summary>
+    /// Refund the swap's funded EVM HTLC before its timelock with the server's
+    /// consent, from the depositor: on HTLCErc20 v7 / HTLCNative v2 the server
+    /// signs `Refund` over the lock's terms once it has decided not to fund the
+    /// swap, and the depositor sends `refundBySig`; it pays the gas. Older
+    /// deployments refund after the timelock with `refund_evm_htlc`. Like that
+    /// call, a repeated call verifies a recorded refund instead of sending
+    /// another.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    HtlcRefund CollabRefundEvmHtlc(string @swapId, string? @nodeRpcUrl, ulong @timeoutSecs);
     /// <summary>
     /// Create an Arkade → Lightning swap. The server returns the
     /// Arkade VHTLC address the user must fund (in `swap.funding` as
@@ -2367,6 +2449,24 @@ public interface ISatoraClient {
     /// </summary>
     /// <exception cref="SdkException"></exception>
     HtlcRefund RefundEvmHtlc(string @swapId, string? @nodeRpcUrl, ulong @timeoutSecs);
+    /// <summary>
+    /// Forget the swap's latest rehash submission once it is certain it never
+    /// mined. A rehash that did mine and is released leaves a later refund
+    /// targeting the old lock; attach its hash instead.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    void ReleaseEvmRehashSubmission(string @swapId);
+    /// <summary>
+    /// Retry a stuck EVM to Lightning swap with a new invoice, from the
+    /// depositor. The server failed to pay the old invoice and gave up; instead
+    /// of refunding, the lock moves to the new invoice's payment hash
+    /// (HTLCErc20 v7 / HTLCNative v2 `rehash`) and the server pays that one
+    /// once the move is confirmed. The depositor authorizes the invoice with an
+    /// EIP-191 signature and pays the gas. The move is recorded on the swap, so
+    /// a later `refund_evm_htlc` refunds the lock that exists.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    EvmRehash RetrySwapWithInvoice(string @swapId, string @invoice, string? @nodeRpcUrl, ulong @timeoutSecs);
     /// <summary>
     /// Accept an EVM to Arkade VHTLC up to `basis_points` hundredths of a
     /// percent below the target its swap was created with, when the swap's
@@ -2812,6 +2912,21 @@ public class SatoraClient : ISatoraClient, IDisposable {
     
     
     /// <summary>
+    /// Attach the hash of the swap's latest rehash: one whose broadcast
+    /// response was lost, or one the wallet replaced under another hash. The
+    /// next refund or retry verifies its receipt.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public void AttachEvmRehashTransaction(string @swapId, string @txHash) {
+        CallWithPointer(thisPtr =>
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_attach_evm_rehash_transaction(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterString.INSTANCE.Lower(@txHash), ref _status)
+));
+    }
+    
+    
+    
+    /// <summary>
     /// Single-shot read of the depositor EOA's funding state — no
     /// polling, no waiting, no throw on "not funded yet". Use this
     /// for "is `fund_swap_gasless` ready?" branching.
@@ -2847,6 +2962,24 @@ public class SatoraClient : ISatoraClient, IDisposable {
         return CallWithPointer(thisPtr => FfiConverterTypeClaimReceipt.INSTANCE.Lift(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
     _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_claim(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterString.INSTANCE.Lower(@destination), ref _status)
+)));
+    }
+    
+    
+    /// <summary>
+    /// Refund the swap's funded EVM HTLC before its timelock with the server's
+    /// consent, from the depositor: on HTLCErc20 v7 / HTLCNative v2 the server
+    /// signs `Refund` over the lock's terms once it has decided not to fund the
+    /// swap, and the depositor sends `refundBySig`; it pays the gas. Older
+    /// deployments refund after the timelock with `refund_evm_htlc`. Like that
+    /// call, a repeated call verifies a recorded refund instead of sending
+    /// another.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public HtlcRefund CollabRefundEvmHtlc(string @swapId, string? @nodeRpcUrl, ulong @timeoutSecs) {
+        return CallWithPointer(thisPtr => FfiConverterTypeHtlcRefund.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_collab_refund_evm_htlc(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterOptionalString.INSTANCE.Lower(@nodeRpcUrl), FfiConverterUInt64.INSTANCE.Lower(@timeoutSecs), ref _status)
 )));
     }
     
@@ -3293,6 +3426,39 @@ public class SatoraClient : ISatoraClient, IDisposable {
         return CallWithPointer(thisPtr => FfiConverterTypeHtlcRefund.INSTANCE.Lift(
     _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
     _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_refund_evm_htlc(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterOptionalString.INSTANCE.Lower(@nodeRpcUrl), FfiConverterUInt64.INSTANCE.Lower(@timeoutSecs), ref _status)
+)));
+    }
+    
+    
+    /// <summary>
+    /// Forget the swap's latest rehash submission once it is certain it never
+    /// mined. A rehash that did mine and is released leaves a later refund
+    /// targeting the old lock; attach its hash instead.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public void ReleaseEvmRehashSubmission(string @swapId) {
+        CallWithPointer(thisPtr =>
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_release_evm_rehash_submission(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), ref _status)
+));
+    }
+    
+    
+    
+    /// <summary>
+    /// Retry a stuck EVM to Lightning swap with a new invoice, from the
+    /// depositor. The server failed to pay the old invoice and gave up; instead
+    /// of refunding, the lock moves to the new invoice's payment hash
+    /// (HTLCErc20 v7 / HTLCNative v2 `rehash`) and the server pays that one
+    /// once the move is confirmed. The depositor authorizes the invoice with an
+    /// EIP-191 signature and pays the gas. The move is recorded on the swap, so
+    /// a later `refund_evm_htlc` refunds the lock that exists.
+    /// </summary>
+    /// <exception cref="SdkException"></exception>
+    public EvmRehash RetrySwapWithInvoice(string @swapId, string @invoice, string? @nodeRpcUrl, ulong @timeoutSecs) {
+        return CallWithPointer(thisPtr => FfiConverterTypeEvmRehash.INSTANCE.Lift(
+    _UniffiHelpers.RustCallWithError(FfiConverterTypeSdkError.INSTANCE, (ref UniffiRustCallStatus _status) =>
+    _UniFFILib.uniffi_satora_sdk_ffi_fn_method_satoraclient_retry_swap_with_invoice(thisPtr, FfiConverterString.INSTANCE.Lower(@swapId), FfiConverterString.INSTANCE.Lower(@invoice), FfiConverterOptionalString.INSTANCE.Lower(@nodeRpcUrl), FfiConverterUInt64.INSTANCE.Lower(@timeoutSecs), ref _status)
 )));
     }
     
@@ -3931,6 +4097,62 @@ class FfiConverterTypeEvmReceipt: FfiConverterRustBuffer<EvmReceipt> {
 
 
 /// <summary>
+/// A verified rehash, from [`SatoraClient::retry_swap_with_invoice`]: the
+/// lock continues under the new invoice's payment hash.
+/// </summary>
+/// <param name="tx_hash">
+/// `0x…`.
+/// </param>
+/// <param name="new_hash_lock">
+/// The new invoice's payment hash the lock is now under, `0x…`.
+/// </param>
+/// <param name="new_timelock">
+/// The refund locktime the lock continues under, unix seconds.
+/// </param>
+public record EvmRehash (
+    /// <summary>
+    /// `0x…`.
+    /// </summary>
+    string @txHash, 
+    /// <summary>
+    /// The new invoice's payment hash the lock is now under, `0x…`.
+    /// </summary>
+    string @newHashLock, 
+    /// <summary>
+    /// The refund locktime the lock continues under, unix seconds.
+    /// </summary>
+    ulong @newTimelock
+) {
+}
+
+class FfiConverterTypeEvmRehash: FfiConverterRustBuffer<EvmRehash> {
+    public static FfiConverterTypeEvmRehash INSTANCE = new FfiConverterTypeEvmRehash();
+
+    public override EvmRehash Read(BigEndianStream stream) {
+        return new EvmRehash(
+            @txHash: FfiConverterString.INSTANCE.Read(stream),
+            @newHashLock: FfiConverterString.INSTANCE.Read(stream),
+            @newTimelock: FfiConverterUInt64.INSTANCE.Read(stream)
+        );
+    }
+
+    public override int AllocationSize(EvmRehash value) {
+        return 0
+            + FfiConverterString.INSTANCE.AllocationSize(value.@txHash)
+            + FfiConverterString.INSTANCE.AllocationSize(value.@newHashLock)
+            + FfiConverterUInt64.INSTANCE.AllocationSize(value.@newTimelock);
+    }
+
+    public override void Write(EvmRehash value, BigEndianStream stream) {
+            FfiConverterString.INSTANCE.Write(value.@txHash, stream);
+            FfiConverterString.INSTANCE.Write(value.@newHashLock, stream);
+            FfiConverterUInt64.INSTANCE.Write(value.@newTimelock, stream);
+    }
+}
+
+
+
+/// <summary>
 /// Submitted-userOp receipt. `transaction_hash` is `None` when the
 /// SDK's bounded receipt poll ran out — callers can re-poll via
 /// the bundler directly if needed.
@@ -4030,6 +4252,11 @@ class FfiConverterTypeGasOverrides: FfiConverterRustBuffer<GasOverrides> {
 /// Useful when the bundler's simulator mis-estimates (notably
 /// alto in dev). `None` => let the bundler estimate.
 /// </param>
+/// <param name="max_relay_fee">
+/// Largest relay fee the server may take from the input, in the source
+/// token's smallest unit as a decimal string. Only Ethereum charges one;
+/// `None` refuses any.
+/// </param>
 public record GaslessOpts (
     /// <summary>
     /// EVM node RPC URL (e.g. Alchemy / Infura). `None` means
@@ -4049,7 +4276,13 @@ public record GaslessOpts (
     /// Useful when the bundler's simulator mis-estimates (notably
     /// alto in dev). `None` => let the bundler estimate.
     /// </summary>
-    GasOverrides? @gasOverrides
+    GasOverrides? @gasOverrides, 
+    /// <summary>
+    /// Largest relay fee the server may take from the input, in the source
+    /// token's smallest unit as a decimal string. Only Ethereum charges one;
+    /// `None` refuses any.
+    /// </summary>
+    string? @maxRelayFee = null
 ) {
 }
 
@@ -4060,7 +4293,8 @@ class FfiConverterTypeGaslessOpts: FfiConverterRustBuffer<GaslessOpts> {
         return new GaslessOpts(
             @nodeRpcUrl: FfiConverterOptionalString.INSTANCE.Read(stream),
             @paymasterContextJson: FfiConverterOptionalString.INSTANCE.Read(stream),
-            @gasOverrides: FfiConverterOptionalTypeGasOverrides.INSTANCE.Read(stream)
+            @gasOverrides: FfiConverterOptionalTypeGasOverrides.INSTANCE.Read(stream),
+            @maxRelayFee: FfiConverterOptionalString.INSTANCE.Read(stream)
         );
     }
 
@@ -4068,13 +4302,15 @@ class FfiConverterTypeGaslessOpts: FfiConverterRustBuffer<GaslessOpts> {
         return 0
             + FfiConverterOptionalString.INSTANCE.AllocationSize(value.@nodeRpcUrl)
             + FfiConverterOptionalString.INSTANCE.AllocationSize(value.@paymasterContextJson)
-            + FfiConverterOptionalTypeGasOverrides.INSTANCE.AllocationSize(value.@gasOverrides);
+            + FfiConverterOptionalTypeGasOverrides.INSTANCE.AllocationSize(value.@gasOverrides)
+            + FfiConverterOptionalString.INSTANCE.AllocationSize(value.@maxRelayFee);
     }
 
     public override void Write(GaslessOpts value, BigEndianStream stream) {
             FfiConverterOptionalString.INSTANCE.Write(value.@nodeRpcUrl, stream);
             FfiConverterOptionalString.INSTANCE.Write(value.@paymasterContextJson, stream);
             FfiConverterOptionalTypeGasOverrides.INSTANCE.Write(value.@gasOverrides, stream);
+            FfiConverterOptionalString.INSTANCE.Write(value.@maxRelayFee, stream);
     }
 }
 

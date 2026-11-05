@@ -8,7 +8,11 @@
 import type { GetSwapResponse } from "../api/client.js";
 import type { StoredSwap } from "./types.js";
 
-export type { StoredSwap } from "./types.js";
+export type {
+  EvmRehashRecord,
+  LightningPaymentHash,
+  StoredSwap,
+} from "./types.js";
 export { SWAP_STORAGE_VERSION } from "./types.js";
 
 /**

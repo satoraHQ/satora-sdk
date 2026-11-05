@@ -107,26 +107,6 @@ export interface ExecuteAndCreateCallData {
   functionSignature: string;
 }
 
-/** Parameters for encoding refundAndExecute call data */
-export interface RefundAndExecuteParams {
-  /** SHA256 hash of the preimage (32-byte hex with 0x prefix) */
-  preimageHash: string;
-  /** WBTC amount locked in the HTLC */
-  amount: bigint;
-  /** WBTC token address */
-  token: string;
-  /** Claim address (server's EVM address) */
-  claimAddress: string;
-  /** HTLC timelock (unix timestamp) */
-  timelock: number;
-  /** Array of calls to execute (approve + reverse DEX swap) */
-  calls: CoordinatorCall[];
-  /** Token to sweep after calls (source token) */
-  sweepToken: string;
-  /** Minimum amount of sweepToken to receive (slippage protection) */
-  minAmountOut: bigint;
-}
-
 /** Parameters for encoding refundTo call data */
 export interface RefundToParams {
   /** SHA256 hash of the preimage (32-byte hex with 0x prefix) */
@@ -462,66 +442,11 @@ export function encodeRedeemAndExecute(
   };
 }
 
-// ── refundAndExecute selector ────────────────────────────────────────────────
-// keccak256("refundAndExecute(bytes32,uint256,address,address,uint256,(address,uint256,bytes)[],address,uint256)")
-const REFUND_AND_EXECUTE_SELECTOR = keccak256(
-  stringToUtf8Bytes(
-    "refundAndExecute(bytes32,uint256,address,address,uint256,(address,uint256,bytes)[],address,uint256)",
-  ),
-).slice(0, 10);
-
 // ── refundTo selector ────────────────────────────────────────────────────────
 // keccak256("refundTo(bytes32,uint256,address,address,uint256)")
 const REFUND_TO_SELECTOR = keccak256(
   stringToUtf8Bytes("refundTo(bytes32,uint256,address,address,uint256)"),
 ).slice(0, 10);
-
-/**
- * Encodes the call data for `coordinator.refundAndExecute(...)`.
- *
- * Signature: refundAndExecute(bytes32 preimageHash, uint256 amount, address token, address claimAddress, uint256 timelock, Call[] calls, address sweepToken, uint256 minAmountOut)
- *
- * @param coordinatorAddress - The HTLCCoordinator contract address
- * @param params - All parameters for the call
- * @returns The encoded call data
- */
-export function encodeRefundAndExecute(
-  coordinatorAddress: string,
-  params: RefundAndExecuteParams,
-): ExecuteAndCreateCallData {
-  // Head: preimageHash, amount, token, claimAddress, timelock, calls_offset, sweepToken, minAmountOut (8 slots)
-  const preimageHash = normalizeBytes32(params.preimageHash);
-  const amount = encodeUint256(params.amount);
-  const token = normalizeAddress(params.token);
-  const claimAddress = normalizeAddress(params.claimAddress);
-  const timelock = encodeUint256(BigInt(params.timelock));
-  const callsOffset = encodeUint256(8n * 32n);
-  const sweepToken = normalizeAddress(params.sweepToken);
-  const minAmountOut = encodeUint256(params.minAmountOut);
-
-  // Encode the calls array (tail)
-  const callsEncoded = encodeCalls(params.calls);
-
-  const data = [
-    REFUND_AND_EXECUTE_SELECTOR,
-    preimageHash,
-    amount,
-    token,
-    claimAddress,
-    timelock,
-    callsOffset,
-    sweepToken,
-    minAmountOut,
-    callsEncoded,
-  ].join("");
-
-  return {
-    to: coordinatorAddress,
-    data,
-    functionSignature:
-      "refundAndExecute(bytes32,uint256,address,address,uint256,(address,uint256,bytes)[],address,uint256)",
-  };
-}
 
 // ── HTLCNativeCoordinator ────────────────────────────────────────────────────
 // The native coordinator locks the chain's own coin, so its functions carry
@@ -969,6 +894,8 @@ export interface Permit2TypedData {
 export interface UnsignedPermit2FundingData {
   /** Coordinator contract address */
   coordinatorAddress: string;
+  /** The lock's sender: the depositor on HTLCErc20 v7 / HTLCNative v2, the coordinator before. */
+  lockSender: string;
   /** The HTLC the coordinator creates the swap on. */
   htlcAddress: string;
   /** Source token address */
@@ -1194,7 +1121,7 @@ export interface ExecuteAndCreateWithPermit2Params {
  * Encodes the call data for `coordinator.executeAndCreateWithPermit2(...)` (overload 1).
  *
  * Overload 1 uses depositor tracking: the coordinator becomes the HTLC sender,
- * enabling server-side refundTo/refundAndExecute for expired swaps.
+ * enabling server-side refundTo for expired swaps.
  *
  * Signature: executeAndCreateWithPermit2(
  *   Call[] calls,

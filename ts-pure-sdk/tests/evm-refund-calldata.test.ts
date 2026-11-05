@@ -1,3 +1,4 @@
+import { encodeFunctionData, parseAbi } from "viem";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   Client,
@@ -10,7 +11,11 @@ const COORDINATOR = "0x4444444444444444444444444444444444444444";
 const HTLC = "0x5555555555555555555555555555555555555555";
 const SERVER = "0x3333333333333333333333333333333333333333";
 const WBTC_POLYGON = "0x1bfd67037b42cf73acf2047067bd4f2c47d9bfd6";
-const CALLDATA = "0xdeadbeef";
+// The coordinator's refundTo of the lock, as the server builds it.
+const CALLDATA = encodeFunctionData({
+  abi: parseAbi(["function refundTo(bytes32,uint256,address,address,uint256)"]),
+  args: [`0x${"33".repeat(32)}`, 100250n, WBTC_POLYGON, SERVER, 1_800_000_000n],
+});
 
 /**
  * A stored EVM-sourced swap whose source token is the BTC-pegged lock token

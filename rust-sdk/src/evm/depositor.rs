@@ -254,6 +254,59 @@ impl Client {
         })?
     }
 
+    /// Refund the swap's funded EVM HTLC before its timelock with the server's
+    /// consent, from the depositor itself: the HTLCErc20 v7 / HTLCNative v2
+    /// `refundBySig` flow of [`Self::collab_refund_evm_with_wallet`], with the
+    /// depositor wallet and lock token resolved like [`Self::refund_evm_htlc`].
+    /// The depositor pays the gas.
+    pub async fn collab_refund_evm_htlc(
+        &self,
+        id: &str,
+        node_rpc_url: Option<&Url>,
+        timeout: Duration,
+    ) -> Result<DepositorRefund> {
+        tokio::time::timeout(timeout, async {
+            let wallet = self.depositor_wallet(id, node_rpc_url).await?;
+            let (stored, _) = self.stored_source(id)?;
+            let options = stored_refund_options(&stored, timeout)?;
+            let lock_token = options.lock_token;
+            Ok(DepositorRefund {
+                receipt: self.collab_refund_evm(id, &wallet, options, true).await?,
+                lock_token,
+            })
+        })
+        .await
+        .map_err(|_| {
+            Error::Timeout(
+                "collaborative HTLC refund timed out; call it again to verify or resume it".into(),
+            )
+        })?
+    }
+
+    /// Retry a stuck EVM to Lightning swap with a new invoice from the depositor
+    /// itself: [`Self::retry_swap_with_invoice_with_wallet`] with the depositor
+    /// wallet and lock token resolved like [`Self::refund_evm_htlc`]. The
+    /// depositor pays the gas.
+    pub async fn retry_swap_with_invoice(
+        &self,
+        id: &str,
+        invoice: &str,
+        node_rpc_url: Option<&Url>,
+        timeout: Duration,
+    ) -> Result<super::rehash::EvmRehash> {
+        tokio::time::timeout(timeout, async {
+            let wallet = self.depositor_wallet(id, node_rpc_url).await?;
+            let (stored, _) = self.stored_source(id)?;
+            let options = stored_refund_options(&stored, timeout)?;
+            self.retry_swap_with_invoice_evm(id, invoice, &wallet, options, true)
+                .await
+        })
+        .await
+        .map_err(|_| {
+            Error::Timeout("EVM rehash timed out; inspect the swap's rehash record".into())
+        })?
+    }
+
     pub(super) async fn refund_htlc_with_wallet(
         &self,
         id: &str,

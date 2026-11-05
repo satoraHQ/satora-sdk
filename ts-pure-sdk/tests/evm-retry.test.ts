@@ -2,7 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { deriveEvmAddress } from "../src/evm/signing.js";
 import type { EvmSigner } from "../src/evm/wallet.js";
 import { Client, InMemorySwapStorage } from "../src/index.js";
-import { SWAP_ID, storedSwap, swapResponse } from "./evm-funding-fixture.js";
+import {
+  HASH_LOCK,
+  SWAP_ID,
+  storedSwap,
+  swapResponse,
+} from "./evm-funding-fixture.js";
 
 const WALLET = "0x90f79bf6eb2c4f870365e785982e1f101e93b906";
 const ARBITRUM_TBTC = "0x6c84a8f1c29108F47a79964b5Fe888D4f4D0dE40";
@@ -38,7 +43,7 @@ async function clientWith(
     status: "clientrefunded",
   } as ReturnType<typeof swapResponse>;
   await storage.store(storedSwap({ response }));
-  return { client, response };
+  return { client, response, storage };
 }
 
 afterEach(() => {
@@ -99,6 +104,39 @@ describe("Client.refundEvmSponsored", () => {
     });
   });
 
+  it("sends a v7 lock's refund as the account's own refund, not refundFor", async () => {
+    // The server's permissionless refundFor is not sponsored by the
+    // paymaster; the smart account is the lock's sender and calls refund.
+    const { client } = await clientWith();
+    const { sendUserOperation } = refundable(client);
+    const account = client.getEvmAddress().toLowerCase().replace(/^0x/, "");
+    const word = (hex: string) => hex.padStart(64, "0");
+    const head = `${"11".repeat(32)}${word("2710")}${word("22".repeat(20))}`;
+    const tail = `${word("33".repeat(20))}${word("6b49d200")}`;
+    vi.mocked(client.refundSwap).mockResolvedValue({
+      success: true,
+      message: "",
+      evmRefundData: {
+        to: "0x3a4cbee89a62c45d57c774527f931f0b67212c28",
+        data: `0x91fd66ab${head}${word(account)}${tail}`,
+        timelockExpired: true,
+        timelockExpiry: 1_800_000_000,
+      },
+    } as never);
+
+    await client.refundEvmSponsored(SWAP_ID);
+
+    expect(sendUserOperation).toHaveBeenCalledWith({
+      calls: [
+        {
+          to: "0x3a4cbee89a62c45d57c774527f931f0b67212c28",
+          data: `0x36504721${head}${tail}`,
+          value: 0n,
+        },
+      ],
+    });
+  });
+
   it("fails when the refund UserOp was included but reverted", async () => {
     const { client } = await clientWith();
     refundable(client, true, false);
@@ -152,7 +190,11 @@ describe("Client.refundEvmSponsored", () => {
 });
 
 describe("Client.continueRefundedEvmSwap", () => {
-  function continuable(client: Client, oldSwap: unknown) {
+  function continuable(
+    client: Client,
+    oldSwap: unknown,
+    storage: InMemorySwapStorage,
+  ) {
     vi.spyOn(client, "getRefundedEvmSwapContinuation").mockResolvedValue({
       eligible: true,
       smartAccountAddress: client.getEvmAddress(),
@@ -165,17 +207,31 @@ describe("Client.continueRefundedEvmSwap", () => {
       amount: "200000000000000",
       oldSwap: oldSwap as never,
     });
-    const created = { response: { id: NEW_SWAP_ID } } as never;
+    // Creating the new swap stores it, with the hash its lock must use.
+    const createdAs =
+      (direction: "evm_to_bitcoin" | "evm_to_arkade" | "evm_to_lightning") =>
+      async () => {
+        await storage.store(
+          storedSwap({
+            swapId: NEW_SWAP_ID,
+            response: {
+              ...swapResponse({ direction }),
+              id: NEW_SWAP_ID,
+            } as ReturnType<typeof swapResponse>,
+          }),
+        );
+        return { response: { id: NEW_SWAP_ID } } as never;
+      };
     const spies = {
       toBitcoin: vi
         .spyOn(client, "createEvmToBitcoinSwap")
-        .mockResolvedValue(created),
+        .mockImplementation(createdAs("evm_to_bitcoin")),
       toArkade: vi
         .spyOn(client, "createEvmToArkadeSwapGeneric")
-        .mockResolvedValue(created),
+        .mockImplementation(createdAs("evm_to_arkade")),
       toLightning: vi
         .spyOn(client, "createEvmToLightningSwap")
-        .mockResolvedValue(created),
+        .mockImplementation(createdAs("evm_to_lightning")),
       submit: vi
         .spyOn(client.cctpInbound, "submitBalanceUserOp")
         .mockResolvedValue({
@@ -188,8 +244,8 @@ describe("Client.continueRefundedEvmSwap", () => {
   }
 
   it("swaps again to the old swap's payout type, funded by the SDK key", async () => {
-    const { client, response } = await clientWith();
-    const spies = continuable(client, response);
+    const { client, response, storage } = await clientWith();
+    const spies = continuable(client, response, storage);
 
     const result = await client.continueRefundedEvmSwap(SWAP_ID, {
       targetAddress: "bc1qexample",
@@ -206,6 +262,8 @@ describe("Client.continueRefundedEvmSwap", () => {
     );
     const submitted = spies.submit.mock.calls[0][0];
     expect(submitted.swapId).toBe(NEW_SWAP_ID);
+    // The new swap's own hash: the settlement refuses calldata under any other.
+    expect(submitted.expected.hashLock).toBe(HASH_LOCK);
     expect(submitted.expectedMaxSourceAmount).toBe(200000000000000n);
     expect(submitted.signer.address.toLowerCase()).toBe(
       client.getEvmAddress().toLowerCase(),
@@ -214,8 +272,8 @@ describe("Client.continueRefundedEvmSwap", () => {
   });
 
   it("retries a Bitcoin swap to a Lightning invoice", async () => {
-    const { client, response } = await clientWith();
-    const spies = continuable(client, response);
+    const { client, response, storage } = await clientWith();
+    const spies = continuable(client, response, storage);
 
     await client.continueRefundedEvmSwap(SWAP_ID, {
       targetAddress: `lightning:${INVOICE}`,
@@ -230,10 +288,10 @@ describe("Client.continueRefundedEvmSwap", () => {
   });
 
   it("pays a Lightning address the whole refund", async () => {
-    const { client, response } = await clientWith({
+    const { client, response, storage } = await clientWith({
       direction: "evm_to_lightning",
     });
-    const spies = continuable(client, response);
+    const spies = continuable(client, response, storage);
 
     await client.continueRefundedEvmSwap(SWAP_ID, {
       targetAddress: "satoshi@example.com",
@@ -248,8 +306,8 @@ describe("Client.continueRefundedEvmSwap", () => {
   });
 
   it("funds with a given signer for this client's key", async () => {
-    const { client, response } = await clientWith();
-    const spies = continuable(client, response);
+    const { client, response, storage } = await clientWith();
+    const spies = continuable(client, response, storage);
     const keySigner = { address: client.getEvmAddress() } as EvmSigner;
 
     await client.continueRefundedEvmSwap(SWAP_ID, {
@@ -261,8 +319,8 @@ describe("Client.continueRefundedEvmSwap", () => {
   });
 
   it("rejects another owner before creating a swap it could not fund", async () => {
-    const { client, response } = await clientWith();
-    const spies = continuable(client, response);
+    const { client, response, storage } = await clientWith();
+    const spies = continuable(client, response, storage);
 
     await expect(
       client.continueRefundedEvmSwap(SWAP_ID, {
@@ -277,8 +335,8 @@ describe("Client.continueRefundedEvmSwap", () => {
   });
 
   it("rejects a Lightning target that is not a Lightning payee", async () => {
-    const { client, response } = await clientWith();
-    const spies = continuable(client, response);
+    const { client, response, storage } = await clientWith();
+    const spies = continuable(client, response, storage);
 
     await expect(
       client.continueRefundedEvmSwap(SWAP_ID, {

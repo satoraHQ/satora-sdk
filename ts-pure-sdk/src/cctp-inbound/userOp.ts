@@ -23,6 +23,11 @@ import {
   parseErc6492Signature,
 } from "viem";
 import { buildPermit2TypedData } from "../evm/coordinator.js";
+import {
+  checkFundingPayload,
+  type ExpectedFunding,
+} from "../evm/funding-pins.js";
+import { depositorIsSender } from "../evm/htlc.js";
 
 /** MessageTransmitter v2 — same on every CCTPv2 EVM chain. */
 const MESSAGE_TRANSMITTER_V2 =
@@ -53,6 +58,9 @@ const HTLC_COORDINATOR_ABI = parseAbi([
  */
 export interface UseropCalldataResponse {
   coordinator_address: string;
+  /** HTLC family and VERSION; from HTLCErc20 v7 / HTLCNative v2 the witness names the depositor. */
+  htlc_kind?: string;
+  htlc_version?: number;
   permit2_address: string;
   source_token_address: string;
   source_amount: string;
@@ -83,6 +91,15 @@ export type SignTypedDataFn = (args: any) => Promise<Hex>;
 export interface BuildCctpInboundBatchParams {
   /** Calldata payload from the backend. */
   server: UseropCalldataResponse;
+  /**
+   * What the funding must match: the hash lock this client fixed and the
+   * terms it recorded at the swap's creation (`Client.getEvmFundingExpectation`),
+   * plus optional pins. A payload naming another spender, hash, claimer,
+   * timelock or token, taking more than the input, or with calls that
+   * could move the deposit is refused before anything is signed, and the
+   * batch is built from these terms, not from the payload.
+   */
+  expected: ExpectedFunding;
   /** Deterministic smart-account address that owns the HTLC deposit. */
   smartAccountAddress: Address;
   /** Produces an ERC-1271-compatible Permit2 signature via the smart account. */
@@ -130,6 +147,19 @@ export async function buildCctpInboundBatch(
     chainId,
     skipReceiveMessage,
   } = params;
+  if (chainId !== params.expected.terms.chainId) {
+    throw new Error(
+      `The swap locks on chain ${params.expected.terms.chainId}, not the settlement chain ${chainId}`,
+    );
+  }
+  // Bound to the swap before anything is signed; everything below is built
+  // from the checked terms, not from the payload.
+  const checked = checkFundingPayload(
+    params.expected.terms,
+    params.expected.hashLock,
+    server,
+    params.expected.pins,
+  );
 
   const calls: BatchCall[] = [];
 
@@ -154,7 +184,7 @@ export async function buildCctpInboundBatch(
     args: [PERMIT2_ADDRESS as Address, maxUint256],
   });
   calls.push({
-    to: server.source_token_address as Address,
+    to: checked.sourceToken as Address,
     data: approveData,
     value: 0n,
   });
@@ -171,19 +201,23 @@ export async function buildCctpInboundBatch(
       .join("")}`,
   );
   const permit2Deadline = BigInt(Math.floor(Date.now() / 1000) + 30 * 60);
-  const sourceAmount = BigInt(server.source_amount);
+  const sourceAmount = checked.sourceAmount;
 
   const typedData = buildPermit2TypedData({
     chainId,
-    coordinatorAddress: server.coordinator_address,
-    sourceToken: server.source_token_address,
+    coordinatorAddress: checked.coordinator,
+    sourceToken: checked.sourceToken,
     sourceAmount,
-    preimageHash: server.preimage_hash,
-    lockToken: server.lock_token_address,
-    claimAddress: server.claim_address,
-    refundAddress: server.coordinator_address,
-    timelock: server.timelock,
-    callsHash: server.calls_hash,
+    preimageHash: checked.preimageHash,
+    lockToken: checked.lockToken,
+    claimAddress: checked.claimAddress,
+    // The smart account is the depositor; on HTLCErc20 v7 the lock is keyed
+    // under it and the witness must say so. The generation is the swap's.
+    refundAddress: depositorIsSender(checked.htlcKind, checked.htlcVersion)
+      ? smartAccountAddress
+      : checked.coordinator,
+    timelock: checked.timelock,
+    callsHash: checked.callsHash,
     nonce: permit2Nonce,
     deadline: permit2Deadline,
   });
@@ -206,10 +240,10 @@ export async function buildCctpInboundBatch(
     : rawSignature;
 
   // 4. executeAndCreateWithPermit2
-  const dexCalls = server.calls.map((c) => ({
+  const dexCalls = checked.calls.map((c) => ({
     target: c.target as Address,
-    value: BigInt(c.value),
-    callData: c.call_data as Hex,
+    value: c.value,
+    callData: c.data as Hex,
   }));
 
   const executeData = encodeFunctionData({
@@ -217,14 +251,14 @@ export async function buildCctpInboundBatch(
     functionName: "executeAndCreateWithPermit2",
     args: [
       dexCalls,
-      server.preimage_hash as Hex,
-      server.lock_token_address as Address,
-      server.claim_address as Address,
-      BigInt(server.timelock),
+      checked.preimageHash as Hex,
+      checked.lockToken as Address,
+      checked.claimAddress as Address,
+      BigInt(checked.timelock),
       smartAccountAddress,
       {
         permitted: {
-          token: server.source_token_address as Address,
+          token: checked.sourceToken as Address,
           amount: sourceAmount,
         },
         nonce: permit2Nonce,
@@ -234,7 +268,7 @@ export async function buildCctpInboundBatch(
     ],
   });
   calls.push({
-    to: server.coordinator_address as Address,
+    to: checked.coordinator as Address,
     data: executeData,
     value: 0n,
   });

@@ -23,11 +23,18 @@ pub mod htlc;
 pub mod permit;
 pub mod recovery;
 pub mod refund;
+pub mod rehash;
 pub mod relay;
 pub use recovery::DepositRecovery;
 pub use recovery::RefundedEvmBalance;
+pub use refund::CollabRefundEvmParams;
+pub use refund::CollabRefundEvmSignature;
 pub use refund::EvmSubmission;
 pub use refund::RefundOptions;
+pub use rehash::EvmRehash;
+pub use rehash::RehashEvmParams;
+pub use rehash::RehashEvmSignature;
+pub use rehash::rehash_authorization_message;
 pub use relay::RelayFunding;
 pub use relay::RelayFundingOptions;
 pub use relay::RelayFundingState;
@@ -111,6 +118,12 @@ pub trait EvmWallet: Send + Sync {
     fn address(&self) -> Address;
     fn chain_id(&self) -> u64;
     fn sign_typed_data<'a>(&'a self, data: &'a EvmTypedData) -> WalletFuture<'a, Signature>;
+    /// EIP-191 `personal_sign` over `message`. Required to retry a stuck EVM to
+    /// Lightning swap with a new invoice; adapters used for nothing else may
+    /// omit it.
+    fn sign_message<'a>(&'a self, _message: &'a [u8]) -> WalletFuture<'a, Signature> {
+        Box::pin(async { Err(invalid("wallet adapter does not sign messages")) })
+    }
     fn call<'a>(&'a self, transaction: &'a EvmTransaction) -> WalletFuture<'a, Bytes>;
     fn send_transaction<'a>(&'a self, transaction: &'a EvmTransaction) -> WalletFuture<'a, B256>;
     fn wait_for_receipt(&self, hash: B256) -> WalletFuture<'_, EvmReceipt>;
@@ -228,8 +241,43 @@ pub(crate) struct EvmContext {
     pub source_token: Address,
     pub is_source: bool,
     pub kind: crate::types::EvmHtlcKind,
+    /// VERSION of the HTLC deployment; 0 when the record predates the field.
+    pub htlc_version: i64,
 }
+
+/// First HTLCErc20 VERSION whose coordinator locks with the depositor as sender.
+pub const HTLC_ERC20_FIRST_DEPOSITOR_SENDER_VERSION: i64 = 7;
+/// First HTLCNative VERSION whose coordinator locks with the depositor as sender.
+pub const HTLC_NATIVE_FIRST_DEPOSITOR_SENDER_VERSION: i64 = 2;
+
+/// Whether client locks on this deployment are keyed under the depositor
+/// rather than the coordinator. Up to HTLCErc20 v6 / HTLCNative v1 the
+/// coordinator created the lock as its sender and refunded it through
+/// `refundTo`; from HTLCErc20 v7 / HTLCNative v2 the depositor is the
+/// sender and refunds, consents and rehashes on the HTLC itself, and the
+/// Permit2 funding witness binds `refundAddress` to it.
+pub fn depositor_is_sender(kind: crate::types::EvmHtlcKind, version: i64) -> bool {
+    match kind {
+        crate::types::EvmHtlcKind::Erc20 => version >= HTLC_ERC20_FIRST_DEPOSITOR_SENDER_VERSION,
+        crate::types::EvmHtlcKind::Native => version >= HTLC_NATIVE_FIRST_DEPOSITOR_SENDER_VERSION,
+    }
+}
+
 impl EvmContext {
+    /// See [`depositor_is_sender`].
+    pub fn depositor_is_sender(&self) -> bool {
+        depositor_is_sender(self.kind, self.htlc_version)
+    }
+
+    /// The address the swap's lock is keyed under: the coordinator it was
+    /// funded through on older deployments, the owner otherwise.
+    pub fn lock_sender(&self, coordinator: Option<Address>) -> Address {
+        match coordinator {
+            Some(coordinator) if !self.depositor_is_sender() => coordinator,
+            _ => self.owner,
+        }
+    }
+
     pub fn from_response(response: &crate::types::GetSwapResponse) -> Result<Self> {
         use crate::types::GetSwapResponse::*;
         let is_source = matches!(
@@ -290,6 +338,7 @@ impl EvmContext {
             source_token,
             is_source,
             kind,
+            htlc_version: value["evm_htlc_version"].as_i64().unwrap_or(0),
         })
     }
     pub fn validate_wallet(&self, wallet: &dyn EvmWallet) -> Result<()> {

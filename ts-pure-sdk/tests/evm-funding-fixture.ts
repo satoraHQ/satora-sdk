@@ -1,4 +1,5 @@
 import { vi } from "vitest";
+import type { EvmFundingTerms } from "../src/evm/funding-pins.js";
 import { SWAP_CREATED_TOPIC } from "../src/evm/htlc.js";
 import type { EvmSigner, ReceiptLog } from "../src/evm/wallet.js";
 import { addressToBytes32 } from "../src/index.js";
@@ -104,6 +105,23 @@ export function swapResponse(
   } as unknown as StoredSwap["response"];
 }
 
+/** The funding terms this SDK records from the fixture swap's creation. */
+export function fundingTerms(
+  overrides: Partial<EvmFundingTerms> = {},
+): EvmFundingTerms {
+  return {
+    chainId: 137,
+    coordinator: COORDINATOR,
+    htlcAddress: HTLC,
+    claimAddress: SERVER,
+    timelock: TIMELOCK,
+    sourceToken: USDC,
+    sourceAmount: "15658166",
+    lockToken: WBTC,
+    ...overrides,
+  };
+}
+
 /**
  * A stored swap as this SDK leaves it after funding through the coordinator:
  * the funding tx and the coordinator recorded beside the server's copy.
@@ -127,6 +145,8 @@ export function storedSwap(
     storedAt: 0,
     updatedAt: 0,
     evmFundTxid: FUND_TXID,
+    lightningPaymentHash: { hash: HASH_LOCK, source: "invoice" },
+    evmFundingTerms: fundingTerms(),
     evmCoordinatorAddress: COORDINATOR,
     response: swapResponse({
       direction,
@@ -211,14 +231,20 @@ export function serverGone(): ReturnType<typeof vi.fn> {
 
 /**
  * A server answering `GET /swap/{id}` with `swap`, the Permit2 funding
- * params with `permit2`, the gasless relay with `gasless`, and the refund
- * calldata endpoint with `calldata`. Anything not given is a failure.
+ * params with `permit2`, the gasless relay with `gasless`, the refund
+ * calldata endpoint with `calldata`, and the collab refund params and
+ * signature endpoints with `collabParams` / `collabSignature`. Anything not
+ * given is a failure.
  */
 export function serverAnswering(routes: {
   swap?: unknown;
   permit2?: unknown;
   gasless?: unknown;
   calldata?: unknown;
+  collabParams?: unknown;
+  collabSignature?: unknown;
+  rehashParams?: unknown;
+  rehashSignature?: unknown;
 }): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = input instanceof Request ? input.url : String(input);
@@ -226,6 +252,21 @@ export function serverAnswering(routes: {
       if (body === undefined) throw new Error(`${what} must not be used`);
       return Response.json(body, { status: 200 });
     };
+    if (url.includes("rehash-evm/params")) {
+      return answer(routes.rehashParams, "the rehash params endpoint");
+    }
+    if (url.includes("rehash-evm")) {
+      return answer(routes.rehashSignature, "the rehash endpoint");
+    }
+    if (url.includes("collab-refund-evm/params")) {
+      return answer(routes.collabParams, "the collab refund params endpoint");
+    }
+    if (url.includes("collab-refund-evm/signature")) {
+      return answer(
+        routes.collabSignature,
+        "the collab refund signature endpoint",
+      );
+    }
     if (url.includes("refund-and-swap-calldata")) {
       return answer(routes.calldata, "the refund calldata endpoint");
     }

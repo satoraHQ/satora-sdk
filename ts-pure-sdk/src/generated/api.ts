@@ -144,6 +144,87 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/swap/{id}/collab-refund-evm/signature": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Get the server's signature for refunding an EVM HTLC before its timelock.
+         * @description For swaps on HTLCErc20 v7+ / HTLCNative v2+, where the depositor is the
+         *     lock's sender. The server signs the HTLC-level `Refund` struct as
+         *     `claimAddress`; the depositor submits `refundBySig(preimageHash, amount,
+         *     [token,] timelock, v, r, s)` on the HTLC from `sender` and receives the
+         *     locked amount. No coordinator, no sweep, no server transaction.
+         *
+         *     Signed only in states where the server has decided not to fund its side;
+         *     the swap's state follows the on-chain `SwapRefunded` event.
+         */
+        post: operations["collab_refund_evm_signature"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/swap/{id}/rehash-evm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Get the server's signature for continuing this swap's lock under a new
+         *     invoice.
+         * @description Only once the Lightning payment has failed for good (`ServerWontFund`),
+         *     on HTLCErc20 v7+ / HTLCNative v2+. The invoice must carry at most the
+         *     swap's payout (a smaller one is paid as is), stay valid for at least 30
+         *     minutes and be routable. The server signs the
+         *     HTLC-level `Rehash` struct as `claimAddress` for `depositor_address` as sender; the
+         *     depositor submits `rehash(preimageHash, amount, [token,] timelock,
+         *     newPreimageHash, newTimelock, v, r, s)` on the HTLC from that address.
+         *     The swap continues under the new invoice once the rehash is final.
+         *
+         *     The request carries the depositor's EIP-191 signature over
+         *     `Satora rehash\nswap: {id}\ninvoice payment hash: {hash}` (see
+         *     `RehashEvmRequest::depositor_signature`); without it nobody but the
+         *     depositor can sign the swap up to alternatives.
+         *
+         *     Signing the same invoice again returns the same terms and signature.
+         *     Earlier signed alternatives stay valid until one lands; at most a few
+         *     may be outstanding.
+         */
+        post: operations["rehash_evm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/swap/{id}/rehash-evm/params": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get the terms a rehash of this swap's lock would be signed under. */
+        get: operations["rehash_evm_params"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/chain-config": {
         parameters: {
             query?: never;
@@ -963,8 +1044,10 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Returns calldata to refund an expired EVM-sourced HTLC via its coordinator.
-         * @description Calls `refundTo` — refunds the lock asset (tBTC/WBTC, or the native coin on
+         * Returns calldata to refund an expired EVM-sourced HTLC, built from the
+         *     swap's current hash and timelock (after a rehash, the new ones).
+         * @description Calls `refundTo` on the coordinator, or `refundFor` on the HTLC where the
+         *     depositor is the lock's sender — refunds the lock asset (tBTC/WBTC, or the native coin on
          *     a native-lock chain) to the depositor. Permissionless after the timelock
          *     expires.
          */
@@ -1993,7 +2076,10 @@ export interface components {
         CollabRefundEvmParams: {
             /** @description WBTC amount locked in the HTLC (decimal string) */
             amount: string;
-            /** @description keccak256(abi.encode(calls)) for the exact calls array the depositor signs over. */
+            /**
+             * @description keccak256(abi.encode(calls)) for the exact calls array the depositor signs over.
+             *     Coordinator path only; the zero hash otherwise.
+             */
             calls_hash: string;
             /**
              * Format: int64
@@ -2008,8 +2094,18 @@ export interface components {
              * Format: int32
              * @description EIP-712 domain version of the coordinator at `coordinator_address` —
              *     the CollabRefund signature must use it or recovery fails on-chain.
+             *     Coordinator path only; 0 otherwise.
              */
             coordinator_version: number;
+            /** @description The HTLC contract the swap's lock lives on. */
+            htlc_address: string;
+            /** @description `erc20` or `native`. */
+            htlc_kind: string;
+            /**
+             * Format: int64
+             * @description VERSION of that HTLC deployment (its EIP-712 domain version).
+             */
+            htlc_version: number;
             /**
              * @description Minimum output amount for the sweep (always 0).
              *     This is the `minAmountOut` field in the EIP-712 struct.
@@ -2017,6 +2113,14 @@ export interface components {
             min_amount_out: string;
             /** @description Preimage hash (0x-prefixed, 32-byte hex) */
             preimage_hash: string;
+            /**
+             * @description Which collab refund flow this swap uses: `direct` (HTLCErc20 v7+ /
+             *     HTLCNative v2+; fetch the server's signature from `POST /signature` and
+             *     submit `refundBySig` on the HTLC yourself) or `coordinator` (sign the
+             *     `CollabRefund` struct above and `POST /`). `unavailable` when neither
+             *     applies and the swap must wait for its timelock.
+             */
+            refund_path: string;
             /** @description Server's signer EOA address (the `caller` field in the EIP-712 struct) */
             server_signer_address: string;
             /**
@@ -2058,6 +2162,64 @@ export interface components {
             message: string;
             /** @description Transaction hash of the on-chain refund */
             tx_hash: string;
+        };
+        /**
+         * @description The server's consent to an early refund, plus the exact `refundBySig`
+         *     arguments it is valid for.
+         */
+        CollabRefundEvmSignature: {
+            /** @description Locked amount (decimal string) */
+            amount: string;
+            /**
+             * Format: int64
+             * @description EVM chain ID
+             */
+            chain_id: number;
+            /** @description The server's address, which signed. */
+            claim_address: string;
+            /** @description The HTLC contract to call `refundBySig` on. */
+            htlc_address: string;
+            /** @description `erc20` or `native`. */
+            htlc_kind: string;
+            /**
+             * Format: int64
+             * @description VERSION of that deployment (the signature's EIP-712 domain version).
+             */
+            htlc_version: number;
+            /** @description Swap ID */
+            id: string;
+            /** @description Preimage hash (0x-prefixed, 32-byte hex) */
+            preimage_hash: string;
+            /** @description Signature r (0x-prefixed, 32-byte hex) */
+            r: string;
+            /** @description Signature s (0x-prefixed, 32-byte hex) */
+            s: string;
+            /** @description The HTLC sender the signature is bound to; must be `msg.sender` of `refundBySig`. */
+            sender: string;
+            /**
+             * Format: int64
+             * @description HTLC timelock (unix timestamp)
+             */
+            timelock: number;
+            /**
+             * @description Lock token; the zero address for a native lock (not a `refundBySig`
+             *     argument there).
+             */
+            token: string;
+            /**
+             * Format: int32
+             * @description Signature v (27 or 28)
+             */
+            v: number;
+        };
+        /** @description Request for the server's `Refund` signature on a direct-refund HTLC. */
+        CollabRefundEvmSignatureRequest: {
+            /**
+             * @description The HTLC sender: the address that funded the swap through the
+             *     coordinator (in the Permit2 flow a derived key, not the user's wallet).
+             *     It is the only address `refundBySig` accepts the returned signature from.
+             */
+            depositor_address: string;
         };
         /** @description Request for collaborative refund of spendable VTXOs (offchain send flow). */
         CollabRefundRequest: {
@@ -3565,10 +3727,142 @@ export interface components {
         };
         /** @description Response containing refund calldata for an EVM-to-Arkade swap. */
         RefundCalldataResponse: {
-            /** @description ABI-encoded calldata for the refund call on the coordinator */
+            /** @description ABI-encoded calldata for the refund call on that contract */
             calldata: string;
-            /** @description The HTLCCoordinator contract address */
+            /**
+             * @description The contract the calldata is sent to: the coordinator (`refundTo`) up to
+             *     HTLCErc20 v6 / HTLCNative v1, the HTLC itself (`refundFor`) from
+             *     HTLCErc20 v7 / HTLCNative v2 on. Named for the former.
+             */
             coordinator_address: string;
+        };
+        /** @description The lock a rehash would move, and the terms it would move to. */
+        RehashEvmParams: {
+            /** @description Locked amount (decimal string) */
+            amount: string;
+            /**
+             * Format: int64
+             * @description EVM chain ID
+             */
+            chain_id: number;
+            /** @description The server's address, which signs. */
+            claim_address: string;
+            /** @description The HTLC contract to call `rehash` on. */
+            htlc_address: string;
+            /** @description `erc20` or `native`. */
+            htlc_kind: string;
+            /**
+             * Format: int64
+             * @description VERSION of that deployment (the signature's EIP-712 domain version).
+             */
+            htlc_version: number;
+            /** @description Swap ID */
+            id: string;
+            /**
+             * Format: int64
+             * @description The most the new invoice may carry, in sats: the swap's payout. A
+             *     smaller invoice is paid as is.
+             */
+            max_invoice_amount_sats: number;
+            /**
+             * Format: int64
+             * @description How long the new invoice must stay valid from signing, in seconds:
+             *     the rehash has to reach finality before it is paid.
+             */
+            min_invoice_validity_secs: number;
+            /**
+             * Format: int64
+             * @description The timelock the lock would continue under, if signed now.
+             */
+            new_timelock: number;
+            /** @description Current preimage hash (0x-prefixed, 32-byte hex): the failed invoice's. */
+            preimage_hash: string;
+            /**
+             * @description The lock's sender as the funding was observed, if recorded; `rehash`
+             *     must be submitted from it.
+             */
+            sender?: string | null;
+            /**
+             * Format: int64
+             * @description Current HTLC timelock (unix timestamp)
+             */
+            timelock: number;
+            /** @description Lock token; the zero address for a native lock. */
+            token: string;
+        };
+        /** @description Request for the server's `Rehash` signature. */
+        RehashEvmRequest: {
+            /**
+             * @description The HTLC sender: the address that funded the swap. It is the only
+             *     address `rehash` accepts the returned signature from.
+             */
+            depositor_address: string;
+            /**
+             * @description `depositor_address`'s EIP-191 personal signature (`personal_sign`,
+             *     65 bytes, 0x-prefixed hex) over the authorization message
+             *     `Satora rehash\nswap: {id}\ninvoice payment hash: {hash}`, where
+             *     `{id}` is the swap ID and `{hash}` the invoice's payment hash as
+             *     0x-prefixed lowercase hex.
+             */
+            depositor_signature: string;
+            /** @description The new BOLT11 invoice, for exactly the swap's payout amount. */
+            invoice: string;
+        };
+        /**
+         * @description The server's consent to the lock continuing under the new invoice, plus
+         *     the exact `rehash` arguments it is valid for.
+         */
+        RehashEvmSignature: {
+            /** @description Locked amount (decimal string) */
+            amount: string;
+            /**
+             * Format: int64
+             * @description EVM chain ID
+             */
+            chain_id: number;
+            /** @description The server's address, which signed. */
+            claim_address: string;
+            /** @description The HTLC contract to call `rehash` on. */
+            htlc_address: string;
+            /** @description `erc20` or `native`. */
+            htlc_kind: string;
+            /**
+             * Format: int64
+             * @description VERSION of that deployment (the signature's EIP-712 domain version).
+             */
+            htlc_version: number;
+            /** @description Swap ID */
+            id: string;
+            /** @description The new invoice's payment hash (0x-prefixed, 32-byte hex) */
+            new_preimage_hash: string;
+            /**
+             * Format: int64
+             * @description The timelock the lock continues under (unix timestamp)
+             */
+            new_timelock: number;
+            /** @description Current preimage hash (0x-prefixed, 32-byte hex) */
+            preimage_hash: string;
+            /** @description Signature r (0x-prefixed, 32-byte hex) */
+            r: string;
+            /** @description Signature s (0x-prefixed, 32-byte hex) */
+            s: string;
+            /** @description The HTLC sender the signature is bound to; must be `msg.sender` of `rehash`. */
+            sender: string;
+            /**
+             * Format: int64
+             * @description Current HTLC timelock (unix timestamp)
+             */
+            timelock: number;
+            /**
+             * @description Lock token; the zero address for a native lock (not a `rehash`
+             *     argument there).
+             */
+            token: string;
+            /**
+             * Format: int32
+             * @description Signature v (27 or 28)
+             */
+            v: number;
         };
         /**
          * @description A RIF Relay deployment. The recipient's smart wallet (the factory's
@@ -4146,6 +4440,200 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CollabRefundEvmParams"];
+                };
+            };
+            /** @description Swap not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    collab_refund_evm_signature: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Swap ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CollabRefundEvmSignatureRequest"];
+            };
+        };
+        responses: {
+            /** @description Server's Refund signature */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CollabRefundEvmSignature"];
+                };
+            };
+            /** @description Bad request, or the swap's HTLC refunds through the coordinator */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Refund not allowed in current swap state */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Swap not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    rehash_evm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Swap ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RehashEvmRequest"];
+            };
+        };
+        responses: {
+            /** @description Server's Rehash signature */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RehashEvmSignature"];
+                };
+            };
+            /** @description Bad invoice or depositor, or the swap cannot rehash */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Rehash not allowed in current swap state */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Swap not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The invoice's payment hash belongs to another swap */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Too many requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    rehash_evm_params: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Swap ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rehash terms */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RehashEvmParams"];
+                };
+            };
+            /** @description Not an EVM→Lightning swap, or its deployment cannot rehash */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
             /** @description Swap not found */

@@ -7,7 +7,6 @@
 //! method lands on [`Client`] as if it were declared in `client.rs`.
 
 use crate::Client;
-use crate::aa::abi::Call;
 use crate::aa::abi::IERC20;
 use crate::aa::bundler::BundlerCasing;
 use crate::aa::bundler::BundlerClient;
@@ -101,6 +100,15 @@ pub struct GaslessOpts {
     /// Skip `eth_estimateUserOperationGas` with these limits — see
     /// [`GasOverrides`] for when this matters.
     pub gas_overrides: Option<GasOverrides>,
+    /// Contracts, call targets and input limit to require on top of the stored
+    /// swap, as [`crate::evm::RelayFundingOptions::funding`] describes. Without
+    /// them the payload must still name the stored coordinator and lock token,
+    /// and calls on the source token may only pay the relay fee and approve at
+    /// most the input.
+    pub funding: Option<crate::evm::FundingOptions>,
+    /// Largest relay fee the server may take from the input, in the source
+    /// token's smallest unit. Only Ethereum charges one; zero refuses any.
+    pub max_relay_fee: U256,
 }
 
 impl GaslessOpts {
@@ -127,6 +135,16 @@ impl GaslessOpts {
 
     pub fn with_gas_overrides(mut self, overrides: GasOverrides) -> Self {
         self.gas_overrides = Some(overrides);
+        self
+    }
+
+    pub fn with_funding(mut self, funding: crate::evm::FundingOptions) -> Self {
+        self.funding = Some(funding);
+        self
+    }
+
+    pub fn with_max_relay_fee(mut self, max_relay_fee: U256) -> Self {
+        self.max_relay_fee = max_relay_fee;
         self
     }
 }
@@ -207,8 +225,12 @@ impl Client {
     /// - [`Error::InvalidSwap`] if `swap_id` isn't in storage (no `key_index`), if a funding was
     ///   already submitted, if the swap's `deposit_token` doesn't map to a known EVM chain, if it
     ///   locks native currency or a hash lock not derived from the seed, if the backend names an
-    ///   unpinned EntryPoint, delegation target or Permit2, or if its coordinator differs from the
-    ///   one persisted for the swap.
+    ///   unpinned EntryPoint, delegation target or Permit2, if the server's copy of the swap
+    ///   differs from the stored one, or if the funding payload names another coordinator, lock
+    ///   token, HTLC, hash lock, claim address or timelock than the stored swap (and any pinned
+    ///   [`GaslessOpts::funding`]), exceeds the stored input, or carries calls
+    ///   [`GaslessOpts::funding`] and [`GaslessOpts::max_relay_fee`] do not allow. All of this is
+    ///   checked before anything is signed.
     /// - [`Error::UnresolvedFunding`] if an earlier funding may have been submitted without a
     ///   recorded hash, or a relay funding signature may still be used.
     /// - [`Error::Timeout`] if the whole flow outlives its deadline; inspect the persisted
@@ -245,6 +267,8 @@ impl Client {
             node_rpc_url,
             paymaster_context,
             gas_overrides,
+            funding: pinned,
+            max_relay_fee,
         } = opts;
         let stored = self
             .get_stored_swap(swap_id)?
@@ -273,7 +297,14 @@ impl Client {
             ));
         }
         crate::evm::verify_derived_hash_lock(self, &stored, &context)?;
-        let (_, _, quoted_amount) = evm_deposit_fields(response)?;
+        // The server names the coordinator, the Permit2 spender: it has to be the
+        // stored swap's, as do the lock token and HTLC.
+        let swap = crate::evm::relay::RelaySwap::pinned(
+            &stored,
+            &crate::evm::relay::RelaySwap::from_response(&response)?,
+            pinned.as_ref(),
+        )?;
+        let context = swap.context.clone();
         let chain = crate::types::KnownChain::from_wire_str(&context.chain_id.to_string());
         let remote = self
             .fetch_aa_config(crate::types::Chain::from_wire_str(
@@ -337,8 +368,23 @@ impl Client {
         let evm_key = signer.evm_key_for_address(key_index, &context.owner.to_string())?;
         let eoa_address = parse_address(&evm_key.address, "eoa")?;
 
-        // 2. Backend payload fetch.
+        // 2. Backend payload fetch, bound to the stored swap before anything is signed.
         let backend = self.fetch_userop_calldata(swap_id).await?;
+        if parse_address(&backend.aa.entry_point, "entry_point")? != expected_entry_point
+            || parse_address(&backend.aa.delegation_target, "delegation_target")?
+                != expected_delegation_target
+        {
+            return Err(Error::InvalidSwap(
+                "gasless funding payload does not match swap/configuration".into(),
+            ));
+        }
+        let payload = backend.permit2_funding_data();
+        let checked = swap.check_payload(
+            &payload,
+            backend.relay_fee.as_deref(),
+            max_relay_fee,
+            pinned.as_ref(),
+        )?;
 
         // 3. RPC clients. Capture `gas_overrides` first because the field-by-field moves of
         //    `aa_config` below would consume the value (Option<GasOverrides> is Copy via its inner
@@ -361,44 +407,26 @@ impl Client {
                 "RPC chain ID does not match swap".into(),
             ));
         }
-        if parse_address(&backend.permit2_address, "permit2")?
-            != crate::aa::permit2::PERMIT2_ADDRESS
-            || parse_address(&backend.aa.entry_point, "entry_point")? != expected_entry_point
-            || parse_address(&backend.aa.delegation_target, "delegation_target")?
-                != expected_delegation_target
-            || parse_b256(&backend.preimage_hash, "preimage_hash")? != context.hash
-            || parse_address(&backend.source_token_address, "source_token")? != context.source_token
-            || parse_address(&backend.claim_address, "claim_address")? != context.server
-            || backend.timelock != context.timelock
-            // Both amounts come from the server, so this catches an inconsistent
-            // payload, not a hostile one. A bridged deposit is shrunk by the bridge
-            // fee, hence an upper bound rather than equality.
-            || parse_u256_dec(&backend.source_amount, "source_amount")?
-                > parse_u256_dec(&quoted_amount, "quoted source_amount")?
-        {
-            return Err(Error::InvalidSwap(
-                "gasless funding payload does not match swap/configuration".into(),
-            ));
-        }
-        let coordinator = backend.coordinator_address.clone();
-        if stored
-            .metadata
-            .evm_coordinator_address
-            .as_ref()
-            .is_some_and(|pinned| !pinned.eq_ignore_ascii_case(&coordinator))
-        {
-            return Err(Error::InvalidSwap(
-                "coordinator differs from the one persisted for this swap".into(),
-            ));
-        }
+        let coordinator = swap.coordinator.to_string();
         // 4. Map backend wire types onto the orchestration input.
-        let inputs = build_fund_swap_inputs(
-            backend,
-            evm_key.secret_key,
+        let inputs = FundSwapInputs {
+            coordinator_address: swap.coordinator,
+            refund_address: context.lock_sender(Some(swap.coordinator)),
+            source_token_address: context.source_token,
+            source_amount: checked.amount,
+            lock_token_address: checked.lock_token,
+            preimage_hash: context.hash,
+            claim_address: context.server,
+            timelock: context.timelock,
+            calls: checked.calls,
+            calls_hash: parse_b256(&backend.calls_hash, "calls_hash")?,
+            entry_point: expected_entry_point,
+            delegation_target: expected_delegation_target,
+            secret_key: evm_key.secret_key,
             eoa_address,
             chain_id,
             gas_overrides,
-        )?;
+        };
 
         // 5. Drive the orchestration. The PaymasterRef borrows both the client and the
         //    user-supplied context — bundled so the orchestrate layer can't see one without the
@@ -644,7 +672,11 @@ impl Client {
 #[derive(Debug, Clone, Deserialize)]
 struct UseropFundingCalldataResponse {
     coordinator_address: String,
-    #[allow(dead_code)] // surfaced for callers but not consumed by orchestrate.
+    /// HTLC family and VERSION; absent on older servers (coordinator-sender locks).
+    #[serde(default)]
+    htlc_kind: crate::types::EvmHtlcKind,
+    #[serde(default)]
+    htlc_version: i64,
     permit2_address: String,
     source_token_address: String,
     /// Decimal string — the backend serialises u64 amounts via
@@ -657,7 +689,6 @@ struct UseropFundingCalldataResponse {
     timelock: u64,
     calls: Vec<BackendCallJson>,
     calls_hash: String,
-    #[allow(dead_code)]
     relay_fee: Option<String>,
     aa: BackendAaConfig,
 }
@@ -675,48 +706,32 @@ struct BackendAaConfig {
     delegation_target: String,
 }
 
-fn build_fund_swap_inputs(
-    backend: UseropFundingCalldataResponse,
-    secret_key: [u8; 32],
-    eoa_address: Address,
-    chain_id: u64,
-    gas_overrides: Option<GasOverrides>,
-) -> Result<FundSwapInputs> {
-    let calls = backend
-        .calls
-        .iter()
-        .enumerate()
-        .map(|(i, c)| {
-            Ok(Call {
-                target: parse_address(&c.target, &format!("calls[{i}].target"))?,
-                value: parse_u256_dec(&c.value, &format!("calls[{i}].value"))?,
-                callData: parse_bytes(&c.call_data, &format!("calls[{i}].call_data"))?,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    if alloy::primitives::keccak256(alloy::sol_types::SolValue::abi_encode(&calls))
-        != parse_b256(&backend.calls_hash, "calls_hash")?
-    {
-        return Err(Error::InvalidSwap("funding calls hash mismatch".into()));
+impl UseropFundingCalldataResponse {
+    /// The same funding payload the Permit2 endpoint returns, for the shared checks.
+    fn permit2_funding_data(&self) -> crate::evm::Permit2FundingData {
+        crate::evm::Permit2FundingData {
+            coordinator_address: self.coordinator_address.clone(),
+            htlc_kind: self.htlc_kind,
+            htlc_version: self.htlc_version,
+            permit2_address: self.permit2_address.clone(),
+            source_token_address: self.source_token_address.clone(),
+            source_amount: self.source_amount.clone(),
+            lock_token_address: self.lock_token_address.clone(),
+            preimage_hash: self.preimage_hash.clone(),
+            claim_address: self.claim_address.clone(),
+            timelock: self.timelock,
+            calls: self
+                .calls
+                .iter()
+                .map(|call| crate::evm::funding::FundingCall {
+                    target: call.target.clone(),
+                    value: call.value.clone(),
+                    call_data: call.call_data.clone(),
+                })
+                .collect(),
+            calls_hash: self.calls_hash.clone(),
+        }
     }
-    Ok(FundSwapInputs {
-        coordinator_address: parse_address(&backend.coordinator_address, "coordinator_address")?,
-        source_token_address: parse_address(&backend.source_token_address, "source_token_address")?,
-        source_amount: parse_u256_dec(&backend.source_amount, "source_amount")?,
-        lock_token_address: parse_address(&backend.lock_token_address, "lock_token_address")?,
-        preimage_hash: parse_b256(&backend.preimage_hash, "preimage_hash")?,
-        claim_address: parse_address(&backend.claim_address, "claim_address")?,
-        timelock: backend.timelock,
-        calls,
-        calls_hash: parse_b256(&backend.calls_hash, "calls_hash")?,
-        entry_point: parse_address(&backend.aa.entry_point, "aa.entry_point")?,
-        delegation_target: parse_address(&backend.aa.delegation_target, "aa.delegation_target")?,
-        secret_key,
-        eoa_address,
-        chain_id,
-        gas_overrides,
-    })
 }
 
 // ── small parse helpers — each wraps a primitive's parse error in our
@@ -732,10 +747,6 @@ fn parse_b256(s: &str, field: &str) -> Result<B256> {
 
 fn parse_u256_dec(s: &str, field: &str) -> Result<U256> {
     U256::from_str_radix(s, 10).map_err(|e| Error::Decode(format!("{field} ({s}): {e}")))
-}
-
-fn parse_bytes(s: &str, field: &str) -> Result<alloy::primitives::Bytes> {
-    alloy::primitives::Bytes::from_str(s).map_err(|e| Error::Decode(format!("{field} ({s}): {e}")))
 }
 
 fn evm_deposit_fields(

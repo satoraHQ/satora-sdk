@@ -23,7 +23,9 @@ pub struct ReferenceOptions {
     pub server_confirmations: u32,
     #[cfg(feature = "gasless")]
     pub evm_from_block: u64,
-    /// Required when the source response has no coordinator/sender identity.
+    /// Overrides the client lock's sender. Without it the sender follows the
+    /// HTLC generation: the depositor from HTLCErc20 v7 / HTLCNative v2, the
+    /// coordinator before, which is then required when the swap names none.
     #[cfg(feature = "gasless")]
     pub evm_source_sender: Option<crate::evm::Address>,
     /// Required when an EVM→Arkade response omits the locked BTC token address.
@@ -125,24 +127,26 @@ impl Client {
                         invalid("configure the locked EVM token; the swap response omits it")
                     })?,
             };
+            // HTLCErc20 v7 / HTLCNative v2 lock under the depositor; older
+            // generations under the coordinator the funding went through.
             let sender = if client {
-                options
-                    .evm_source_sender
-                    .or_else(|| {
-                        stored
-                            .metadata
-                            .evm_coordinator_address
-                            .as_deref()
-                            .and_then(|s| s.parse().ok())
-                    })
-                    .or_else(|| {
-                        value["evm_coordinator_address"]
-                            .as_str()
-                            .and_then(|s| s.parse().ok())
-                    })
-                    .ok_or_else(|| {
-                        invalid("configure the EVM source sender/coordinator before tracking")
-                    })?
+                match options.evm_source_sender {
+                    Some(sender) => sender,
+                    None if context.depositor_is_sender() => context.owner,
+                    None => stored
+                        .metadata
+                        .evm_coordinator_address
+                        .as_deref()
+                        .and_then(|s| s.parse().ok())
+                        .or_else(|| {
+                            value["evm_coordinator_address"]
+                                .as_str()
+                                .and_then(|s| s.parse().ok())
+                        })
+                        .ok_or_else(|| {
+                            invalid("configure the EVM source sender/coordinator before tracking")
+                        })?,
+                }
             } else {
                 context.server
             };

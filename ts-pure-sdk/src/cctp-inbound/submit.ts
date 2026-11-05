@@ -19,6 +19,7 @@ import { createPublicClient, http } from "viem";
 import { arbitrum } from "viem/chains";
 import type { ApiClient } from "../api/client.js";
 import { MESSAGE_TRANSMITTER_V2 } from "../cctp/constants.js";
+import type { ExpectedFunding } from "../evm/funding-pins.js";
 import type { EvmSigner } from "../evm/wallet.js";
 import type { Logger, LogLevel } from "../logging.js";
 import { simulateBatchCalls } from "./preflight.js";
@@ -61,6 +62,15 @@ const USED_NONCES_ABI = [
 export interface SubmitUserOpParams {
   /** Swap ID assigned by the backend at create time. */
   swapId: string;
+  /**
+   * What the funding must match: the hash lock this client fixed and the
+   * terms it recorded at the swap's creation (`Client.getEvmFundingExpectation`),
+   * plus optional pins. A payload naming another spender, hash, claimer,
+   * timelock or token, taking more than the input, or with calls that
+   * could move the deposit is refused before anything is signed, and the
+   * batch is built from these terms, not from the payload.
+   */
+  expected: ExpectedFunding;
   /**
    * Kernel smart-account owner as the SDK's `EvmSigner`. Requires
    * `signer.signMessage` (optional on `EvmSigner`) — Kernel's validator
@@ -108,6 +118,15 @@ export interface SubmitUserOpResult {
 export interface SubmitBalanceUserOpParams {
   /** Swap ID assigned by the backend at create time. */
   swapId: string;
+  /**
+   * What the funding must match: the hash lock this client fixed and the
+   * terms it recorded at the swap's creation (`Client.getEvmFundingExpectation`),
+   * plus optional pins. A payload naming another spender, hash, claimer,
+   * timelock or token, taking more than the input, or with calls that
+   * could move the deposit is refused before anything is signed, and the
+   * batch is built from these terms, not from the payload.
+   */
+  expected: ExpectedFunding;
   /** Kernel smart-account owner as the SDK's `EvmSigner`. */
   signer: EvmSigner;
   /** Settlement chain. Defaults to Arbitrum mainnet. */
@@ -191,6 +210,7 @@ async function sendBalanceUserOp(
 
   const { calls } = await buildCctpInboundBatch({
     server,
+    expected: params.expected,
     smartAccountAddress: accountAddress,
     signTypedData: (args) => smartAccount.signTypedData(args),
     cctpMessage: "0x" as Hex,
@@ -296,6 +316,7 @@ export async function submitCctpInboundUserOp(
   // 4. Compose the 3-call batch (receiveMessage + approve + HTLC create).
   const { calls } = await buildCctpInboundBatch({
     server,
+    expected: params.expected,
     smartAccountAddress: accountAddress,
     signTypedData: (args) => smartAccount.signTypedData(args),
     cctpMessage,

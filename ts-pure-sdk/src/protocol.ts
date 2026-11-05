@@ -35,6 +35,14 @@ export const ProtocolEpoch = {
    * `x-satora-server-version` header are treated as this epoch.
    */
   V1: 1,
+  /**
+   * EVM components only (`evm-erc20-htlc`, `evm-native-htlc`): HTLCErc20 v7
+   * behind HTLCCoordinator v5, HTLCNative v2. The depositor is the lock's
+   * `sender` and the Permit2 funding witness binds `refundAddress =
+   * depositor`; collaborative refund and rehash. Servers keep creating swaps
+   * for epoch 1 clients on the v6 deployment.
+   */
+  V2: 2,
 } as const;
 
 export type ProtocolEpoch = (typeof ProtocolEpoch)[keyof typeof ProtocolEpoch];
@@ -44,8 +52,8 @@ export const PROTOCOL_VERSIONS: Record<ProtocolComponent, ProtocolEpoch> = {
   [ProtocolComponent.BitcoinHtlc]: ProtocolEpoch.V1,
   [ProtocolComponent.ArkadeVhtlc]: ProtocolEpoch.V1,
   [ProtocolComponent.Lightning]: ProtocolEpoch.V1,
-  [ProtocolComponent.EvmErc20Htlc]: ProtocolEpoch.V1,
-  [ProtocolComponent.EvmNativeHtlc]: ProtocolEpoch.V1,
+  [ProtocolComponent.EvmErc20Htlc]: ProtocolEpoch.V2,
+  [ProtocolComponent.EvmNativeHtlc]: ProtocolEpoch.V2,
 };
 
 export function protocolHeaderName(component: ProtocolComponent): string {

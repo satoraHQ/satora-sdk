@@ -114,6 +114,37 @@ describe("SqliteSwapStorage schema migration", () => {
     reopened.close();
   });
 
+  it("persists the rehash history, added to a database created before it", async () => {
+    const path = oldDatabase([
+      "evm_fund_txid",
+      "evm_coordinator_address",
+      "cctp_burn_txid",
+      "cctp_burn_last_valid_block_height",
+    ]);
+    paths.push(path);
+    const rehashes = [
+      {
+        txid: `0x${"c0".repeat(32)}`,
+        fromHashLock: `0x${"c2".repeat(32)}`,
+        hashLock: `0x${"c1".repeat(32)}`,
+        timelock: 1_800_007_200,
+      },
+    ];
+
+    const storage = new SqliteSwapStorage(path);
+    expect((await storage.get(SWAP_ID))?.evmRehashes).toBeUndefined();
+    await storage.store(storedSwap({ evmRehashes: rehashes }));
+    const stored = await storage.get(SWAP_ID);
+    if (!stored) throw new Error("swap not stored");
+    await storage.update(SWAP_ID, stored.response);
+    expect((await storage.get(SWAP_ID))?.evmRehashes).toEqual(rehashes);
+    storage.close();
+
+    const reopened = new SqliteSwapStorage(path);
+    expect((await reopened.get(SWAP_ID))?.evmRehashes).toEqual(rehashes);
+    reopened.close();
+  });
+
   it("persists a Solana burn's expiry height, added to a database created before it", async () => {
     // Created with the burn column but before its expiry height.
     const path = oldDatabase([

@@ -33,8 +33,8 @@ async fn version_returns_decoded_response() {
         .and(header("x-satora-bitcoin-htlc-version", "1"))
         .and(header("x-satora-arkade-vhtlc-version", "1"))
         .and(header("x-satora-lightning-version", "1"))
-        .and(header("x-satora-evm-erc20-htlc-version", "1"))
-        .and(header("x-satora-evm-native-htlc-version", "1"))
+        .and(header("x-satora-evm-erc20-htlc-version", "2"))
+        .and(header("x-satora-evm-native-htlc-version", "2"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "tag": "v0.2.30",
             "commit_hash": "abc123",

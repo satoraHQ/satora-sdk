@@ -509,8 +509,8 @@ async fn get_swap_sends_compatibility_headers_for_every_direction() {
             .and(header("x-satora-bitcoin-htlc-version", "1"))
             .and(header("x-satora-arkade-vhtlc-version", "1"))
             .and(header("x-satora-lightning-version", "1"))
-            .and(header("x-satora-evm-erc20-htlc-version", "1"))
-            .and(header("x-satora-evm-native-htlc-version", "1"))
+            .and(header("x-satora-evm-erc20-htlc-version", "2"))
+            .and(header("x-satora-evm-native-htlc-version", "2"))
             .and(header(
                 "X-Lendaswap-Client",
                 concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION")),

@@ -7,6 +7,7 @@
 import { parseArkadeAddress } from "../arkade-address.js";
 import { bytesToHex } from "../signer/index.js";
 import { ARKADE_HTLC_SCRIPT_VERSION_STRICT } from "../strict-vhtlc.js";
+import { fundingTermsOf } from "./funding-terms.js";
 import { retryOnHashCollision } from "./retry.js";
 import type {
   CreateSwapContext,
@@ -90,10 +91,17 @@ export async function createEvmToArkadeSwapGeneric(
     }
 
     // Store the swap if storage is configured
-    await ctx.storeSwap(data.id, swapParams, {
-      ...data,
-      direction: "evm_to_arkade",
-    });
+    await ctx.storeSwap(
+      data.id,
+      swapParams,
+      {
+        ...data,
+        direction: "evm_to_arkade",
+      },
+      undefined,
+      undefined,
+      { evmFundingTerms: fundingTermsOf(data) },
+    );
 
     return { response: data, swapParams };
   });

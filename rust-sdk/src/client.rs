@@ -45,7 +45,7 @@ use url::Url;
 
 mod api;
 mod creation;
-mod lightning;
+pub(crate) mod lightning;
 mod quotes;
 mod storage;
 
@@ -88,12 +88,18 @@ pub(crate) const CLIENT_AGENT: &str =
     concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 /// Protocol epoch this SDK speaks for each protocol component, sent on every
 /// request. Mirrors the server's `protocol_compat::Component`.
+///
+/// EVM epoch 2: HTLCErc20 v7 behind HTLCCoordinator v5, HTLCNative v2 (the
+/// depositor is the lock's sender; collaborative refund and rehash). The
+/// server creates this SDK's swaps there; released SDKs on epoch 1 keep
+/// getting the v6 deployment. Swaps already on v6 still settle: everything
+/// per swap follows the swap's own `evm_htlc_version`.
 pub(crate) const PROTOCOL_HEADERS: [(&str, &str); 5] = [
     ("x-satora-bitcoin-htlc-version", "1"),
     ("x-satora-arkade-vhtlc-version", "1"),
     ("x-satora-lightning-version", "1"),
-    ("x-satora-evm-erc20-htlc-version", "1"),
-    ("x-satora-evm-native-htlc-version", "1"),
+    ("x-satora-evm-erc20-htlc-version", "2"),
+    ("x-satora-evm-native-htlc-version", "2"),
 ];
 
 /// Attach every component's protocol epoch to a request.
@@ -545,9 +551,8 @@ impl Client {
     /// [`Error::InvalidSwap`], as [`Client::create_swap_request`] describes.
     ///
     /// `gasless = false` requires a wallet transaction. With the `gasless`
-    /// feature enabled, use `get_permit2_funding_data` to inspect the typed
-    /// request or `fund_swap_with_wallet` to validate, sign and submit it under
-    /// explicit `FundingOptions` limits. Creation itself never broadcasts.
+    /// feature enabled, use `fund_swap_with_wallet` to validate, sign and submit
+    /// it under explicit `FundingOptions` limits. Creation itself never broadcasts.
     ///
     /// **Referral code**: attached to every swap from this client; set
     /// once on the builder via [`ClientBuilder::referral_code`].

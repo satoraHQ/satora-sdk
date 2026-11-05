@@ -36,18 +36,18 @@ strings on the wire, while Bitcoin amounts must be positive and fit in `i64`.
 
 ## Current coverage
 
-| Operation                 | Rust support                                                                                                                                     |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Discovery and quotes      | Health, tokens, pairs, chain/AA configuration, fees, MTP, referral/support data, typed DEX calls, exact local quote composition                  |
-| Creation and recovery     | All nine creatable directions, paginated recovery that also reads Bitcoin→Lightning, SQLite snapshots and execution journals                     |
-| EVM execution (`gasless`) | External and local wallets, Permit2 and EIP-2612, ERC-4337 and server funding/claims, timeout refunds, deposit recovery and refund continuation  |
-| Bitcoin execution         | Strict version 1 Taproot claims/refunds, multiple outputs, Esplora and optional Electrum                                                         |
-| Arkade execution          | All supported directions, offchain claims/refunds, cooperative refunds, delegated settlement, interrupted-batch recovery                         |
-| Arkade wallet             | Balance, boarding, sends and settlement, journaled VHTLC funding, collaborative offboard with a send-all mode                                    |
-| Bridges (`gasless`)       | CCTP v2 and USDT0 fees/messages, wallet/sponsored transfers, atomic inbound funding, outbound claims, delivery tracking and recovery             |
-| Status feed (`websocket`) | Reconnect/resubscribe, bounded queues, HTTP reconciliation, cancellation                                                                         |
-| Observations              | Bitcoin/Arkade/EVM HTLC readers, confirmation policy, verified preimages, reorg-aware bounded managers                                           |
-| Actions and automation    | Chain-derived actions, persisted tracking, bounded workers, a stock auto-claimer, opt-in CCTP recovery, retries only of provably unsent attempts |
+| Operation                 | Rust support                                                                                                                                                                                |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Discovery and quotes      | Health, tokens, pairs, chain/AA configuration, fees, MTP, referral/support data, typed DEX calls, exact local quote composition                                                             |
+| Creation and recovery     | All nine creatable directions, paginated recovery that also reads Bitcoin→Lightning, SQLite snapshots and execution journals                                                                |
+| EVM execution (`gasless`) | External and local wallets, Permit2 and EIP-2612, ERC-4337 and server funding/claims, timeout and collaborative refunds, retry with a new invoice, deposit recovery and refund continuation |
+| Bitcoin execution         | Strict version 1 Taproot claims/refunds, multiple outputs, Esplora and optional Electrum                                                                                                    |
+| Arkade execution          | All supported directions, offchain claims/refunds, cooperative refunds, delegated settlement, interrupted-batch recovery                                                                    |
+| Arkade wallet             | Balance, boarding, sends and settlement, journaled VHTLC funding, collaborative offboard with a send-all mode                                                                               |
+| Bridges (`gasless`)       | CCTP v2 and USDT0 fees/messages, wallet/sponsored transfers, atomic inbound funding, outbound claims, delivery tracking and recovery                                                        |
+| Status feed (`websocket`) | Reconnect/resubscribe, bounded queues, HTTP reconciliation, cancellation                                                                                                                    |
+| Observations              | Bitcoin/Arkade/EVM HTLC readers, confirmation policy, verified preimages, reorg-aware bounded managers                                                                                      |
+| Actions and automation    | Chain-derived actions, persisted tracking, bounded workers, a stock auto-claimer, opt-in CCTP recovery, retries only of provably unsent attempts                                            |
 
 The reference implementations are `../ts-sdk/packages/swap` and
 `../ts-pure-sdk`. The completed implementation checkpoints and scope decisions
@@ -238,6 +238,13 @@ swap claims, runs one at a time, and different kinds can overlap. Separate `Clie
 instances over the same storage are not coordinated, so keep one `Client` per wallet
 per process and clone it. Separate processes must coordinate exclusive ownership of
 a swap before executing it.
+
+`fund_swap_gasless` (ERC-4337 and EIP-7702 from the swap's deposit address) binds
+the server's UserOperation payload to the stored swap the same way the relay
+below does: coordinator (the Permit2 spender), lock token, HTLC, hash lock,
+claim address, timelock, input limit and calls, all before anything is signed.
+`GaslessOpts::funding` pins contracts and call targets on top, and
+`GaslessOpts::max_relay_fee` caps the relay fee; it defaults to zero.
 
 `fund_swap_gasless_relay` funds a swap created with `gasless` through the server,
 as the TypeScript `fundSwapGasless` does. The swap's EVM key signs a Permit2

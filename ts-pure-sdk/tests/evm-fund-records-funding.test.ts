@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { computeCoordinatorCallsHash } from "../src/evm/coordinator.js";
 import { Client, InMemorySwapStorage } from "../src/index.js";
 import {
   COORDINATOR,
   FUND_TXID,
+  fundingTerms,
   HASH_LOCK,
   logFrom,
   REAL_LOG,
@@ -29,7 +31,7 @@ const permit2Params = {
   claim_address: SERVER,
   timelock: TIMELOCK,
   calls: [],
-  calls_hash: `0x${"00".repeat(32)}`,
+  calls_hash: computeCoordinatorCallsHash([]),
 };
 
 // The hash the wallet returned from sendTransaction, and the one that mined
@@ -44,11 +46,18 @@ describe("fundSwap records the funding on the stored swap", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   async function unfundedClient(
-    options: { warn?: (record: unknown) => void } = {},
+    options: {
+      warn?: (record: unknown) => void;
+      terms?: Parameters<typeof fundingTerms>[0];
+    } = {},
   ) {
     const storage = new InMemorySwapStorage();
     await storage.store(
-      storedSwap({ evmFundTxid: undefined, evmCoordinatorAddress: undefined }),
+      storedSwap({
+        evmFundTxid: undefined,
+        evmCoordinatorAddress: undefined,
+        evmFundingTerms: fundingTerms(options.terms),
+      }),
     );
     let builder = Client.builder().withSwapStorage(storage);
     if (options.warn) {
@@ -135,6 +144,36 @@ describe("fundSwap records the funding on the stored swap", () => {
         /did not create the HTLC/,
       );
       expect(await storage.get(SWAP_ID)).toMatchObject({ evmFundTxid: SENT });
+    }
+  });
+
+  it("matches a replacement's SwapCreated by the depositor on HTLCErc20 v7", async () => {
+    // Coordinator v5 creates the lock with the depositor as sender, so a
+    // repriced v7 funding is recognised by the signer's address and a log
+    // naming the coordinator as sender is the decoy.
+    const v7 = { ...permit2Params, htlc_kind: "erc20", htlc_version: 7 };
+    for (const [log, ok] of [
+      [logFrom(SIGNER_ADDRESS), true],
+      [REAL_LOG, false],
+    ] as const) {
+      serverAnswering({ swap: swapResponse(), permit2: v7 });
+      // The generation is the swap's, recorded at creation.
+      const { client, storage } = await unfundedClient({
+        terms: { htlcKind: "erc20", htlcVersion: 7 },
+      });
+      const signer = fundingSigner({ transactionHash: MINED, logs: [log] });
+      if (ok) {
+        await expect(client.fundSwap(SWAP_ID, signer)).resolves.toEqual({
+          txHash: MINED,
+        });
+        expect(await storage.get(SWAP_ID)).toMatchObject({
+          evmFundTxid: MINED,
+        });
+      } else {
+        await expect(client.fundSwap(SWAP_ID, signer)).rejects.toThrow(
+          /did not create the HTLC/,
+        );
+      }
     }
   });
 
@@ -230,7 +269,10 @@ describe("fundSwapGasless records the funding on the stored swap", () => {
     });
     const storage = new InMemorySwapStorage();
     await storage.store(
-      storedSwap({ evmFundTxid: undefined, evmCoordinatorAddress: undefined }),
+      storedSwap({
+        evmFundTxid: undefined,
+        evmCoordinatorAddress: undefined,
+      }),
     );
     const client = await Client.builder()
       .withSwapStorage(storage)
@@ -284,7 +326,10 @@ describe("the server's delegation hint is bound to the address it describes", ()
     });
     const storage = new InMemorySwapStorage();
     await storage.store(
-      storedSwap({ evmFundTxid: undefined, evmCoordinatorAddress: undefined }),
+      storedSwap({
+        evmFundTxid: undefined,
+        evmCoordinatorAddress: undefined,
+      }),
     );
     const client = await Client.builder()
       .withSwapStorage(storage)
@@ -314,7 +359,10 @@ describe("the server's delegation hint is bound to the address it describes", ()
     });
     const storage = new InMemorySwapStorage();
     await storage.store(
-      storedSwap({ evmFundTxid: undefined, evmCoordinatorAddress: undefined }),
+      storedSwap({
+        evmFundTxid: undefined,
+        evmCoordinatorAddress: undefined,
+      }),
     );
     const client = await Client.builder()
       .withSwapStorage(storage)

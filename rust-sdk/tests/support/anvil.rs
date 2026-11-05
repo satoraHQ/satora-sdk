@@ -29,6 +29,11 @@ pub const MNEMONIC: &str =
 pub const CHAIN: u64 = 137;
 pub const AMOUNT: u64 = 100_000;
 pub const ID: &str = "00000000-0000-0000-0000-000000000001";
+/// VERSION of the HTLCErc20 / HTLCNative built from this repository. The SDK signs
+/// claims under this domain version and, from these versions on, the depositor is the
+/// lock's sender and the Permit2 witness binds it as `refundAddress`.
+pub const HTLC_ERC20_VERSION: i64 = 7;
+pub const HTLC_NATIVE_VERSION: i64 = 2;
 pub type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 sol! {
     interface Token {
@@ -292,7 +297,7 @@ impl Fixture {
             ("evm_coordinator_address", json!(self.coordinator)),
             ("hash_lock", json!(self.hash)),
             ("evm_refund_locktime", json!(self.timelock)),
-            ("evm_htlc_version", json!(6)),
+            ("evm_htlc_version", json!(HTLC_ERC20_VERSION)),
             ("wbtc_address", json!(self.token)),
             ("evm_expected_sats", json!(AMOUNT.to_string())),
         ] {

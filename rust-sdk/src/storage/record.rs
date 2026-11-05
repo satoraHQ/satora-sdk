@@ -62,6 +62,14 @@ pub struct SwapMetadata {
     /// Server-relayed Permit2 funding, persisted before the request is sent.
     pub evm_fund_relay: Option<RelayFundingJournal>,
     pub evm_coordinator_address: Option<String>,
+    /// The rehashes this client sent for an EVM to Lightning swap, oldest first.
+    /// The server's copy switches hash, timelock and funding tx once it confirms
+    /// a move; a refund is built from the funding tx's `SwapCreated` under the
+    /// first entry's origin and followed through each `SwapRehashed`.
+    pub evm_rehashes: Option<Vec<EvmRehashRecord>>,
+    /// The lock a seed recovery found its funding tx had moved to; see
+    /// [`EvmRecoveredLock`]. Written once, never replaced.
+    pub evm_recovered_lock: Option<EvmRecoveredLock>,
     pub evm_key_source: Option<EvmKeySource>,
     /// Written once, when the swap is first stored, normally from its creation
     /// response. A refresh replaces the response but never this, so a claim floor
@@ -72,6 +80,45 @@ pub struct SwapMetadata {
     /// Fields written by a newer SDK, preserved across this build's rewrites.
     #[serde(flatten)]
     pub extra: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+/// One rehash this client sent: the lock moved from `from_hash_lock` /
+/// `from_timelock` to `hash_lock` / `timelock` in `txid`. Hashes are
+/// `0x`-prefixed hex, timelocks unix seconds. An empty `txid` is a submission
+/// whose broadcast response was lost: resolve it with
+/// `attach_evm_rehash_transaction` or `release_evm_rehash_submission`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EvmRehashRecord {
+    pub txid: String,
+    pub from_hash_lock: String,
+    pub from_timelock: u64,
+    pub hash_lock: String,
+    pub timelock: u64,
+    /// The locked amount in token units, as a decimal string, and the lock
+    /// token (`0x…`, zero for a native lock): with the hashes and timelocks
+    /// they identify the lock's key before and after the move.
+    #[serde(default)]
+    pub amount: String,
+    #[serde(default)]
+    pub token: String,
+}
+
+/// The lock an EVM to Lightning swap recovered from the seed stands on when
+/// the server reports a rehash this store never recorded as its funding tx:
+/// the terms that rehash, `txid`, moved it to. Saved only after they hashed
+/// to the rehash's `newKey` and the lock was active on chain; every later
+/// read checks `txid`'s receipt again, starts here and follows
+/// `evm_rehashes`. Hashes and addresses are `0x`-prefixed hex, `amount` a
+/// decimal string in token units, `token` zero for a native lock.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EvmRecoveredLock {
+    pub txid: String,
+    pub hash_lock: String,
+    pub timelock: u64,
+    pub amount: String,
+    pub token: String,
+    pub sender: String,
+    pub claim_address: String,
 }
 
 /// An EVM to Arkade swap's amounts as first stored, as decimal strings.
@@ -147,8 +194,14 @@ impl SwapMetadata {
             evm_fund_userop_hash,
             evm_fund_relay,
             evm_coordinator_address,
+            evm_rehashes,
             evm_key_source
         );
+        // Verified on chain when written; nothing may replace it later.
+        if self.evm_recovered_lock.is_none() {
+            self.evm_recovered_lock = update.evm_recovered_lock;
+        }
+        self.extra.remove("evm_recovered_lock");
         if self.created_amounts.is_none() {
             self.created_amounts = update.created_amounts;
         }

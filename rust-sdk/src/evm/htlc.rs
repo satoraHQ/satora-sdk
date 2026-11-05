@@ -10,10 +10,13 @@ use serde_json::json;
 sol! {
     event SwapRedeemed(bytes32 indexed preimageHash, bytes32 indexed key, bytes32 preimage);
     event SwapRefunded(bytes32 indexed preimageHash, bytes32 indexed key);
+    event SwapRehashed(bytes32 indexed preimageHash, bytes32 indexed key, bytes32 indexed newKey, bytes32 newPreimageHash);
     interface Htlc {
         function VERSION() external view returns (uint8);
         function isActive(bytes32 preimageHash, uint256 amount, address token, address sender, address claimAddress, uint256 timelock) external view returns (bool);
         function refund(bytes32 preimageHash, uint256 amount, address token, address claimAddress, uint256 timelock) external;
+        function refundBySig(bytes32 preimageHash, uint256 amount, address token, uint256 timelock, uint8 v, bytes32 r, bytes32 s) external returns (address claimAddress);
+        function rehash(bytes32 preimageHash, uint256 amount, address token, uint256 timelock, bytes32 newPreimageHash, uint256 newTimelock, uint8 v, bytes32 r, bytes32 s) external returns (address claimAddress, bytes32 newKey);
         function swapState(bytes32 key) external view returns (uint8 state, bytes32 preimage);
     }
     interface Coordinator {
@@ -87,6 +90,60 @@ impl EvmHtlc {
             return Err(invalid("receipt has no matching successful HTLC refund"));
         }
         Ok(())
+    }
+
+    /// The lock as it stands after the recorded rehashes: each rehash tx's
+    /// receipt must carry `SwapRehashed` for the lock's key at that point,
+    /// moving it to the recorded hash. A recorded tx that reverted, or mined
+    /// without moving this lock (a cancel), is skipped; the lock is still under
+    /// the terms before it.
+    pub(crate) async fn after_rehashes(
+        mut self,
+        wallet: &dyn EvmWallet,
+        rehashes: &[crate::storage::EvmRehashRecord],
+    ) -> Result<Self> {
+        use alloy::sol_types::SolEvent;
+        for rehash in rehashes {
+            if rehash.txid.is_empty() {
+                return Err(invalid(
+                    "rehash submission unresolved; attach its transaction with attach_evm_rehash_transaction, or release it with release_evm_rehash_submission once nothing was sent",
+                ));
+            }
+            let txid: B256 = parse(&rehash.txid)?;
+            let receipt = wallet.wait_for_receipt(txid).await.map_err(|error| {
+                invalid(format!(
+                    "rehash {txid} has not confirmed ({error}); once it is replaced, attach the replacement with attach_evm_rehash_transaction, or once it is certain it will never mine, release it with release_evm_rehash_submission"
+                ))
+            })?;
+            if !receipt.success {
+                continue;
+            }
+            let key = self.key();
+            let moved = receipt
+                .logs
+                .iter()
+                .filter(|log| log.address == self.address)
+                .filter_map(|log| {
+                    SwapRehashed::decode_raw_log_validate(log.topics.iter().copied(), &log.data)
+                        .ok()
+                })
+                .find(|event| event.key == key);
+            let Some(moved) = moved else {
+                continue;
+            };
+            let next = Self {
+                hash_lock: parse(&rehash.hash_lock)?,
+                timelock: rehash.timelock,
+                ..self.clone()
+            };
+            if moved.newPreimageHash != next.hash_lock || moved.newKey != next.key() {
+                return Err(invalid(format!(
+                    "rehash {txid} moved the HTLC elsewhere than its record says"
+                )));
+            }
+            self = next;
+        }
+        Ok(self)
     }
 
     pub async fn is_active(&self, wallet: &dyn EvmWallet) -> Result<bool> {

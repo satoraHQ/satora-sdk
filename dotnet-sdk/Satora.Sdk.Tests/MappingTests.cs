@@ -142,6 +142,15 @@ public class MappingTests
     }
 
     [Fact]
+    public void EvmRehashKeepsTheHashAndTheNewTerms()
+    {
+        var moved = EvmRehash.FromFfi(new Ffi.EvmRehash(
+            @txHash: "0xcd", @newHashLock: "0x22", @newTimelock: 1_800_007_200));
+
+        Assert.Equal(new EvmRehash(TxHash: "0xcd", NewHashLock: "0x22", NewTimelock: 1_800_007_200), moved);
+    }
+
+    [Fact]
     public void RecoveryResultKeepsTheSwapIdsAndTheCursor()
     {
         var result = RecoveryResult.FromFfi(new Ffi.RecoveryResult(

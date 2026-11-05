@@ -83,7 +83,7 @@ impl Client {
                     let mut calls=Vec::new();
                     if used.is_zero() {calls.push(Call {target:destination.transmitter,value:U256::ZERO,callData:receive});}
                     calls.extend(funding_calls(&FundSwapInputs {
-                        coordinator_address:limits.coordinator,source_token_address:destination.usdc,source_amount:amount,
+                        coordinator_address:limits.coordinator,refund_address:context.lock_sender(Some(limits.coordinator)),source_token_address:destination.usdc,source_amount:amount,
                         lock_token_address:limits.lock_token,preimage_hash:context.hash,claim_address:context.server,timelock:context.timelock,
                         calls:dex,calls_hash:crate::evm::parse(&funding.calls_hash)?,entry_point:account.entry_point,delegation_target:account.delegation_target,
                         secret_key:key.secret_key,eoa_address:context.owner,chain_id:context.chain_id,gas_overrides:account.aa.gas_overrides,
@@ -94,9 +94,10 @@ impl Client {
             // Persist the funding identity even if event validation fails, preventing
             // another execution path from submitting a duplicate funding operation.
             self.update_swap_metadata(id,SwapMetadata {evm_fund_txid:Some(receipt.transaction_hash.to_string()),evm_coordinator_address:Some(limits.coordinator.to_string()),..Default::default()})?;
-            let created=matching_creation(&receipt.logs,&context,limits.coordinator,limits.lock_token)?
+            let sender=context.lock_sender(Some(limits.coordinator));
+            let created=matching_creation(&receipt.logs,&context,sender,limits.lock_token)?
                 .ok_or_else(||invalid("atomic CCTP funding has no matching HTLC event"))?;
-            let htlc=EvmHtlc {chain_id:context.chain_id,address:context.htlc,hash_lock:context.hash,amount:created.amount,token:limits.lock_token,sender:limits.coordinator,claimer:context.server,timelock:context.timelock};
+            let htlc=EvmHtlc {chain_id:context.chain_id,address:context.htlc,hash_lock:context.hash,amount:created.amount,token:limits.lock_token,sender,claimer:context.server,timelock:context.timelock};
             if created.amount.is_zero() || created.key!=htlc.key() {return Err(invalid("invalid funded HTLC identity"));}
             self.complete_bridge(journal)?;
             Ok(receipt)

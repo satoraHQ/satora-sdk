@@ -111,13 +111,17 @@ const PERMIT2_DEADLINE_HORIZON: Duration = Duration::from_secs(30 * 60);
 const RECEIPT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const RECEIPT_POLL_ATTEMPTS: u32 = 30;
 
-/// Everything `fund_swap` needs from the backend's
+/// Everything `fund_swap_observed` needs from the backend's
 /// `/swap/{id}/swap-and-lock-calldata-userop` response, plus the
 /// depositor key. Decoupled from the wire response struct so a future
 /// SDK endpoint type can map onto it without changing this layer.
 #[derive(Clone)]
-pub struct FundSwapInputs {
+pub(crate) struct FundSwapInputs {
     // From the backend response
+    /// The refund address the Permit2 witness binds: the depositor (the
+    /// smart account) from HTLCErc20 v7 / HTLCNative v2, the coordinator
+    /// before. Permit2 rejects a witness signed for the wrong one.
+    pub refund_address: Address,
     pub coordinator_address: Address,
     pub source_token_address: Address,
     pub source_amount: U256,
@@ -204,17 +208,9 @@ pub struct FundSwapReceipt {
     pub transaction_hash: Option<B256>,
 }
 
-/// Drive the full gasless funding flow. See the module docstring for
-/// the step-by-step.
-pub async fn fund_swap(
-    inputs: FundSwapInputs,
-    clients: FundSwapClients<'_>,
-) -> Result<FundSwapReceipt> {
-    fund_swap_observed(inputs, clients, &|| Ok(()), &|_| Ok(())).await
-}
-
-/// Persist the reservation right before submission and the operation hash
-/// immediately after it, before receipt polling.
+/// Drive the full gasless funding flow (see the module docstring), persisting the
+/// reservation right before submission and the operation hash immediately after
+/// it, before receipt polling. `inputs` must already be bound to the stored swap.
 pub(crate) async fn fund_swap_observed(
     inputs: FundSwapInputs,
     clients: FundSwapClients<'_>,
@@ -250,9 +246,9 @@ pub(crate) async fn fund_swap_observed(
 }
 
 /// Build the Permit2 allowance reset, the bounded approval and the signed funding
-/// call for an atomic batch. Callers must validate the backend payload against their
-/// swap and limits.
-pub fn funding_calls(inputs: &FundSwapInputs) -> Result<Vec<Call>> {
+/// call for an atomic batch. Signs whatever `inputs` name, so it stays crate-private:
+/// callers bind the backend payload to their stored swap and limits first.
+pub(crate) fn funding_calls(inputs: &FundSwapInputs) -> Result<Vec<Call>> {
     // 1. Permit2 witness signature.
     let (permit2_nonce, permit2_deadline) = generate_permit2_nonce_and_deadline();
     let permit2_witness_digest = permit2_digest(
@@ -265,9 +261,7 @@ pub fn funding_calls(inputs: &FundSwapInputs) -> Result<Vec<Call>> {
             preimage_hash: inputs.preimage_hash,
             lock_token: inputs.lock_token_address,
             claim_address: inputs.claim_address,
-            // Refund routes back through the coordinator itself — the
-            // backend's `swap_and_lock_common.rs` documents this.
-            refund_address: inputs.coordinator_address,
+            refund_address: inputs.refund_address,
             timelock: U256::from(inputs.timelock),
             calls_hash: inputs.calls_hash,
         },

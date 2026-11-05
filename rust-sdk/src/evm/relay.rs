@@ -155,17 +155,17 @@ struct RelayRequest<'a> {
     eip2612_permit: Option<Value>,
 }
 
-pub(super) struct RelaySwap {
-    pub(super) context: EvmContext,
-    pub(super) coordinator: Address,
+pub(crate) struct RelaySwap {
+    pub(crate) context: EvmContext,
+    pub(crate) coordinator: Address,
     /// EVM to Arkade responses omit it.
-    pub(super) lock_token: Option<Address>,
+    pub(crate) lock_token: Option<Address>,
     source_amount: U256,
     gasless: bool,
 }
 
 impl RelaySwap {
-    pub(super) fn from_response(response: &GetSwapResponse) -> Result<Self> {
+    pub(crate) fn from_response(response: &GetSwapResponse) -> Result<Self> {
         let (coordinator, lock_token, amount, gasless) = match response {
             GetSwapResponse::EvmToArkade(r) => (
                 &r.evm_coordinator_address,
@@ -193,6 +193,99 @@ impl RelaySwap {
             lock_token: lock_token.map(|token| parse(token)).transpose()?,
             source_amount: decimal(amount)?,
             gasless,
+        })
+    }
+}
+
+/// A funding payload checked against the stored swap.
+pub(crate) struct CheckedFunding {
+    pub(crate) lock_token: Address,
+    pub(crate) amount: U256,
+    pub(crate) calls: Vec<Call>,
+}
+
+impl RelaySwap {
+    /// The stored swap, once the server's current copy, the coordinator persisted
+    /// for it and any caller pins agree with it. The coordinator is the Permit2
+    /// spender, so it comes from the swap stored at creation, never from a later
+    /// funding payload.
+    pub(crate) fn pinned(
+        stored: &crate::StoredSwap,
+        current: &RelaySwap,
+        pinned: Option<&FundingOptions>,
+    ) -> Result<Self> {
+        let swap = Self::from_response(&stored.response)?;
+        if current.context != swap.context
+            || current.coordinator != swap.coordinator
+            || current.lock_token != swap.lock_token
+        {
+            return Err(invalid("server swap details differ from the stored swap"));
+        }
+        if stored
+            .metadata
+            .evm_coordinator_address
+            .as_ref()
+            .is_some_and(|persisted| !persisted.eq_ignore_ascii_case(&swap.coordinator.to_string()))
+        {
+            return Err(invalid(
+                "coordinator differs from the one persisted for this swap",
+            ));
+        }
+        if let Some(pinned) = pinned
+            && (pinned.coordinator != swap.coordinator
+                || pinned.htlc != swap.context.htlc
+                || swap
+                    .lock_token
+                    .is_some_and(|stored| stored != pinned.lock_token))
+        {
+            return Err(invalid(
+                "funding payload does not match the swap and configured contracts",
+            ));
+        }
+        Ok(swap)
+    }
+
+    /// Binds a server funding payload to this swap: contracts, hash lock, claim
+    /// address, timelock, amount, calls hash and the calls themselves.
+    pub(crate) fn check_payload(
+        &self,
+        payload: &Permit2FundingData,
+        relay_fee: Option<&str>,
+        max_relay_fee: U256,
+        pinned: Option<&FundingOptions>,
+    ) -> Result<CheckedFunding> {
+        let lock_token = match (pinned, self.lock_token) {
+            (Some(pinned), _) => pinned.lock_token,
+            (None, Some(stored)) => stored,
+            // Without a stored or pinned token the signed one is used: the coordinator
+            // can only lock the token in the witness, and nothing else is at risk.
+            (None, None) => parse(&payload.lock_token_address)?,
+        };
+        payload.validate_identity(&self.context, self.coordinator, lock_token)?;
+        let amount = decimal(&payload.source_amount)?;
+        // A bridged deposit arrives net of the bridge fee, hence a bound, not equality.
+        let limit = pinned.map_or(self.source_amount, |pinned| {
+            pinned.max_source_amount.min(self.source_amount)
+        });
+        if amount.is_zero() || amount > limit {
+            return Err(invalid("funding amount exceeds the approved limit"));
+        }
+        let calls = payload.decoded_calls()?;
+        if keccak256(calls.abi_encode()) != parse::<B256>(&payload.calls_hash)? {
+            return Err(invalid("funding calls hash mismatch"));
+        }
+        check_relay_calls(
+            &calls,
+            &self.context,
+            amount,
+            relay_fee.map(decimal).transpose()?,
+            max_relay_fee,
+            pinned.map(|pinned| pinned.allowed_call_targets.as_slice()),
+        )?;
+        Ok(CheckedFunding {
+            lock_token,
+            amount,
+            calls,
         })
     }
 }
@@ -280,8 +373,50 @@ async fn nonce_spent(reader: &dyn EvmWallet, owner: Address, nonce: U256) -> Res
     Ok(word(&bitmap)?.bit(usize::from(nonce.byte(0))))
 }
 
+/// Whether the coordinator paid for this lock in this receipt: the first
+/// lock-token `Transfer` after its `SwapCreated` is the HTLC's pull of exactly the
+/// locked amount, and it must come from the coordinator.
+///
+/// `HTLC._create` emits `SwapCreated` and then pulls the tokens from its caller.
+/// The coordinator only creates locks in `executeAndCreateWithPermit2`, under the
+/// depositor's Permit2 witness, which binds this swap's hash, token, claimer,
+/// refund address and timelock. A lock anyone else created naming the depositor
+/// is paid by its creator and fails this check, even when the same transaction
+/// also funds another swap of the same depositor through the coordinator.
+fn locked_by_coordinator(receipt: &EvmReceipt, htlc: &EvmHtlc, coordinator: Address) -> bool {
+    use alloy::sol_types::SolEvent;
+    let key = htlc.key();
+    let Some(created) = receipt.logs.iter().position(|log| {
+        log.address == htlc.address
+            && super::funding::SwapCreated::decode_raw_log_validate(
+                log.topics.iter().copied(),
+                &log.data,
+            )
+            .is_ok_and(|created| created.key == key)
+    }) else {
+        return false;
+    };
+    receipt.logs[created + 1..]
+        .iter()
+        .filter(|log| log.address == htlc.token)
+        .find_map(|log| {
+            super::recovery::Transfer::decode_raw_log_validate(
+                log.topics.iter().copied(),
+                &log.data,
+            )
+            .ok()
+        })
+        .is_some_and(|pull| {
+            pull.from == coordinator && pull.to == htlc.address && pull.value == htlc.amount
+        })
+}
+
 /// Proves the receipt funded this swap through the journal's coordinator and spent
 /// its Permit2 nonce.
+///
+/// Up to HTLCErc20 v6 the coordinator's deposit ties the lock to this funding. From
+/// v7 anyone can create a lock naming the depositor, so the same receipt must also
+/// show the coordinator paying for the lock (see [`locked_by_coordinator`]).
 async fn prove_relay(
     reader: &dyn EvmWallet,
     context: &EvmContext,
@@ -289,16 +424,24 @@ async fn prove_relay(
     receipt: &EvmReceipt,
 ) -> Result<EvmHtlc> {
     let coordinator = parse(&journal.coordinator)?;
+    // Up to HTLCErc20 v6 / HTLCNative v1 the coordinator is the lock's sender and
+    // holds the deposit; from v7 / v2 the depositor is, and the coordinator keeps none.
+    let sender = context.lock_sender(Some(coordinator));
     let htlc = verify_funding_receipt(
         reader,
         context,
         receipt,
-        coordinator,
+        sender,
         parse(&journal.lock_token)?,
-        Some(coordinator),
+        Some(coordinator).filter(|coordinator| *coordinator == sender),
     )
     .await
     .map_err(|(_, error)| error)?;
+    if sender != coordinator && !locked_by_coordinator(receipt, &htlc, coordinator) {
+        return Err(invalid(
+            "relay funding receipt does not show the coordinator paying for this HTLC",
+        ));
+    }
     if !nonce_spent(reader, context.owner, decimal(&journal.permit2_nonce)?).await? {
         return Err(invalid(
             "relay funding did not spend this swap's Permit2 nonce",
@@ -458,40 +601,14 @@ impl Client {
             }
             _ => {}
         }
-        let swap = RelaySwap::from_response(&stored.response)?;
         let current = RelaySwap::from_response(&self.get_swap_details(id).await?)?;
-        if current.context != swap.context
-            || current.coordinator != swap.coordinator
-            || current.lock_token != swap.lock_token
-        {
-            return Err(invalid("server swap details differ from the stored swap"));
-        }
+        let swap = RelaySwap::pinned(&stored, &current, options.funding.as_ref())?;
         if !current.gasless {
             return Err(invalid("relay funding requires a swap created as gasless"));
         }
         let context = &swap.context;
         if context.kind == crate::types::EvmHtlcKind::Native {
             return Err(invalid("the relay cannot fund a native lock"));
-        }
-        if metadata
-            .evm_coordinator_address
-            .as_ref()
-            .is_some_and(|pinned| !pinned.eq_ignore_ascii_case(&swap.coordinator.to_string()))
-        {
-            return Err(invalid(
-                "coordinator differs from the one persisted for this swap",
-            ));
-        }
-        if let Some(pinned) = &options.funding
-            && (pinned.coordinator != swap.coordinator
-                || pinned.htlc != context.htlc
-                || swap
-                    .lock_token
-                    .is_some_and(|stored| stored != pinned.lock_token))
-        {
-            return Err(invalid(
-                "funding payload does not match the swap and configured contracts",
-            ));
         }
         super::verify_derived_hash_lock(self, &stored, context)?;
         let key = self.depositor_key(&stored, context)?;
@@ -515,39 +632,13 @@ impl Client {
             .await?;
         let calldata: RelayCalldata = crate::client::check_status(response).await?.json().await?;
         let payload = &calldata.funding;
-        let lock_token = match (&options.funding, swap.lock_token) {
-            (Some(pinned), _) => pinned.lock_token,
-            (None, Some(stored)) => stored,
-            // Without a stored or pinned token the signed one is used: the coordinator
-            // can only lock the token in the witness, and nothing else is at risk.
-            (None, None) => parse(&payload.lock_token_address)?,
-        };
-        payload.validate_identity(context, swap.coordinator, lock_token)?;
-        let amount = decimal(&payload.source_amount)?;
-        // A bridged deposit arrives net of the bridge fee, hence a bound, not equality.
-        let limit = options
-            .funding
-            .as_ref()
-            .map_or(swap.source_amount, |pinned| {
-                pinned.max_source_amount.min(swap.source_amount)
-            });
-        if amount.is_zero() || amount > limit {
-            return Err(invalid("funding amount exceeds the approved limit"));
-        }
-        let calls = payload.decoded_calls()?;
-        if keccak256(calls.abi_encode()) != parse::<B256>(&payload.calls_hash)? {
-            return Err(invalid("funding calls hash mismatch"));
-        }
-        check_relay_calls(
-            &calls,
-            context,
-            amount,
-            calldata.relay_fee.as_deref().map(decimal).transpose()?,
+        let CheckedFunding {
+            lock_token, amount, ..
+        } = swap.check_payload(
+            payload,
+            calldata.relay_fee.as_deref(),
             options.max_relay_fee,
-            options
-                .funding
-                .as_ref()
-                .map(|pinned| pinned.allowed_call_targets.as_slice()),
+            options.funding.as_ref(),
         )?;
         let permit_deadline = now()?
             .checked_add(options.permit_deadline.as_secs())
@@ -657,7 +748,7 @@ impl Client {
             }
         };
         let digest = payload
-            .typed_data(context.chain_id, nonce, U256::from(permit_deadline))?
+            .typed_data(context.chain_id, owner, nonce, U256::from(permit_deadline))?
             .digest;
         let permit2_signature = envelope(sign(digest)?);
         let eip2612_permit = match permit {

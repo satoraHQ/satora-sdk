@@ -101,6 +101,13 @@ impl EvmWallet for RpcWallet {
                 .map_err(|e| Error::InvalidSigner(e.to_string()))
         })
     }
+    fn sign_message<'a>(&'a self, message: &'a [u8]) -> WalletFuture<'a, Signature> {
+        Box::pin(async move {
+            self.signer
+                .sign_message_sync(message)
+                .map_err(|e| Error::InvalidSigner(e.to_string()))
+        })
+    }
     fn call<'a>(&'a self, tx: &'a EvmTransaction) -> WalletFuture<'a, Bytes> {
         Box::pin(async move {
             self.provider

@@ -413,6 +413,18 @@ public sealed record HtlcRefund(string TxHash, string LockToken)
 }
 
 /// <summary>
+/// A verified rehash, from <see cref="Client.RetrySwapWithInvoiceAsync"/>:
+/// the lock continues under the new invoice's payment hash.
+/// </summary>
+/// <param name="TxHash">Rehash transaction hash, <c>0x…</c>.</param>
+/// <param name="NewHashLock">The new invoice's payment hash, <c>0x…</c>.</param>
+/// <param name="NewTimelock">The refund locktime the lock continues under, unix seconds.</param>
+public sealed record EvmRehash(string TxHash, string NewHashLock, ulong NewTimelock)
+{
+    internal static EvmRehash FromFfi(Ffi.EvmRehash r) => new(r.@txHash, r.@newHashLock, r.@newTimelock);
+}
+
+/// <summary>
 /// Single-shot snapshot of the depositor EOA's funding state for a
 /// swap. Use this to decide whether
 /// <see cref="Client.FundSwapAsync(string, CancellationToken)"/> is
@@ -1633,6 +1645,98 @@ public sealed class Client : IDisposable
         return Task.Run(
             () => TryOrThrow(() => HtlcRefund.FromFfi(
                 ffi.RefundEvmHtlc(swapId, nodeRpcUrl, seconds))),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Refund the swap's funded EVM HTLC before its timelock with the server's
+    /// consent, from the depositor. On HTLCErc20 v7 / HTLCNative v2 the server
+    /// signs <c>Refund</c> over the lock's terms once it has decided not to fund
+    /// the swap, and the depositor sends <c>refundBySig</c>; it pays the gas.
+    /// Older deployments refund after the timelock with
+    /// <see cref="RefundEvmHtlcAsync"/>.
+    /// </summary>
+    /// <remarks>
+    /// Like <see cref="RefundEvmHtlcAsync"/>, a repeated call verifies a
+    /// recorded refund instead of sending another; a
+    /// <see cref="SdkErrorKind.Transport"/>, <see cref="SdkErrorKind.Timeout"/>
+    /// or <see cref="SdkErrorKind.Storage"/> error leaves the outcome unknown,
+    /// so call again.
+    /// </remarks>
+    public Task<HtlcRefund> CollabRefundEvmHtlcAsync(
+        string swapId,
+        TimeSpan timeout,
+        string? nodeRpcUrl = null,
+        CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        var seconds = Seconds(timeout, nameof(timeout), roundUp: true);
+        return Task.Run(
+            () => TryOrThrow(() => HtlcRefund.FromFfi(
+                ffi.CollabRefundEvmHtlc(swapId, nodeRpcUrl, seconds))),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Retry a stuck EVM to Lightning swap with a new invoice, from the
+    /// depositor. The server failed to pay the old invoice and gave up; instead
+    /// of refunding, the lock moves to the new invoice's payment hash
+    /// (HTLCErc20 v7 / HTLCNative v2 <c>rehash</c>) and the server pays that
+    /// one once the move is confirmed. The depositor authorizes the invoice
+    /// with an EIP-191 signature and pays the gas.
+    /// </summary>
+    /// <remarks>
+    /// The invoice must ask for at most the swap's payout and stay valid for
+    /// the server's minimum; the server refuses it otherwise with
+    /// <see cref="SdkErrorKind.InvalidSwap"/>. The move is recorded on the
+    /// swap, so a later <see cref="RefundEvmHtlcAsync"/> refunds the lock that
+    /// exists.
+    /// </remarks>
+    public Task<EvmRehash> RetrySwapWithInvoiceAsync(
+        string swapId,
+        string invoice,
+        TimeSpan timeout,
+        string? nodeRpcUrl = null,
+        CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        var seconds = Seconds(timeout, nameof(timeout), roundUp: true);
+        return Task.Run(
+            () => TryOrThrow(() => EvmRehash.FromFfi(
+                ffi.RetrySwapWithInvoice(swapId, invoice, nodeRpcUrl, seconds))),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Attach the hash of the swap's latest rehash: one whose broadcast
+    /// response was lost (a <see cref="SdkErrorKind.Transport"/> or
+    /// <see cref="SdkErrorKind.Timeout"/> from
+    /// <see cref="RetrySwapWithInvoiceAsync"/>), or one the wallet replaced
+    /// under another hash. The next refund or retry verifies its receipt.
+    /// </summary>
+    public Task AttachEvmRehashTransactionAsync(
+        string swapId,
+        string txHash,
+        CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        return Task.Run(
+            () => TryOrThrow(() => { ffi.AttachEvmRehashTransaction(swapId, txHash); return true; }),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Forget the swap's latest rehash submission once it is certain it never
+    /// mined. A rehash that did mine and is released leaves a later refund
+    /// targeting the old lock; attach its hash instead.
+    /// </summary>
+    public Task ReleaseEvmRehashSubmissionAsync(
+        string swapId,
+        CancellationToken cancellationToken = default)
+    {
+        var ffi = _ffi;
+        return Task.Run(
+            () => TryOrThrow(() => { ffi.ReleaseEvmRehashSubmission(swapId); return true; }),
             cancellationToken);
     }
 

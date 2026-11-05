@@ -255,14 +255,27 @@ const result = await client.refundSwap(swapId, {
 // EVM swaps — manual refund (after timelock expires, user pays gas)
 const {txHash} = await client.refundEvmWithSigner(swapId, signer);
 
-// EVM swaps — collaborative refund (instant, gasless, server cosigns)
+// EVM swaps — collaborative refund (instant, no timelock wait). On HTLCErc20 v7 /
+// HTLCNative v2 the wallet sends `refundBySig` with the server's signature (it
+// pays gas); on older coordinators the server submits a cosigned refund.
 const {txHash} = await client.collabRefundEvmWithSigner(swapId, signer);
 
-// EVM swaps — collaborative refund for gasless swaps (SDK signs internally)
+// EVM swaps — collaborative refund for gasless swaps (SDK key is the depositor;
+// on v7 a paymaster-sponsored UserOp, Arbitrum only)
 const {txHash} = await client.collabRefundEvmSwap(swapId);
 ```
 
 EVM refunds always return the HTLC lock token (WBTC/tBTC) to the depositor.
+
+```typescript
+// EVM → Lightning swap the server could not pay: retry with a new invoice
+// instead of refunding. The lock moves to the new invoice's payment hash
+// (HTLCErc20 v7 / HTLCNative v2); the server pays it once the move confirms.
+const {maxInvoiceAmountSats, minInvoiceValiditySecs} = await client.getRehashEvmParams(swapId);
+const {txHash} = await client.retrySwapWithInvoiceWithSigner(swapId, newInvoice, signer);
+// Gasless swaps (SDK key is the depositor), Arbitrum only:
+const {txHash} = await client.retrySwapWithInvoice(swapId, newInvoice);
+```
 
 ### Storage
 

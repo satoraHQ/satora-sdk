@@ -18,8 +18,10 @@ import type {
   TokenId,
   TokenInfo,
 } from "../api/client.js";
+import type { EvmFundingTerms } from "../evm/funding-pins.js";
 import type { Logger, LogLevel } from "../logging.js";
 import type { SwapParams } from "../signer/index.js";
+import type { LightningPaymentHash } from "../storage/types.js";
 import type { Asset } from "../tokens.js";
 
 // Placeholder types until OpenAPI spec is regenerated
@@ -596,5 +598,9 @@ export interface CreateSwapContext {
     response: Record<string, unknown>,
     targetAddress?: string,
     bridge?: { recipient?: string; recipientWallet?: string },
+    commitments?: {
+      lightningPaymentHash?: LightningPaymentHash;
+      evmFundingTerms?: EvmFundingTerms;
+    },
   ) => Promise<void>;
 }

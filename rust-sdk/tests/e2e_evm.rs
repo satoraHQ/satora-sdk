@@ -50,7 +50,8 @@ fn reference(f: &Fixture, source: bool) -> ContractRef {
             hash_lock: f.hash,
             amount: U256::from(AMOUNT),
             token: f.token,
-            sender: if source { f.coordinator } else { f.deployer },
+            // A coordinator-funded lock names the depositor as its sender.
+            sender: if source { f.owner } else { f.deployer },
             claimer: if source { f.deployer } else { f.owner },
             timelock: f.timelock,
         },
@@ -144,6 +145,8 @@ async fn fund_source(f: &Fixture, api: &MockServer) -> TestResult<lendaswap_sdk:
     let calls: Vec<Call> = vec![];
     let quote = json!({
         "coordinator_address": f.coordinator,
+        "htlc_kind": "erc20",
+        "htlc_version": HTLC_ERC20_VERSION,
         "permit2_address": lendaswap_sdk::aa::permit2::PERMIT2_ADDRESS,
         "source_token_address": f.token,
         "source_amount": AMOUNT.to_string(),
@@ -373,7 +376,7 @@ async fn native_htlc_claim_verifies_on_chain_and_pays_the_coin() -> TestResult {
         ("evm_coordinator_address", json!(coordinator)),
         ("hash_lock", json!(f.hash)),
         ("evm_refund_locktime", json!(f.timelock)),
-        ("evm_htlc_version", json!(1)),
+        ("evm_htlc_version", json!(HTLC_NATIVE_VERSION)),
         ("evm_htlc_kind", json!("native")),
         ("wbtc_address", json!(Address::ZERO)),
         ("evm_expected_sats", json!(AMOUNT.to_string())),
@@ -442,7 +445,7 @@ async fn native_htlc_claim_verifies_on_chain_and_pays_the_coin() -> TestResult {
 
 #[tokio::test]
 #[ignore = "requires Anvil and freshly compiled repository contracts; run scripts/e2e/test-rust-sdk-local.sh"]
-async fn native_htlc_refund_through_the_coordinator_returns_the_coin() -> TestResult {
+async fn native_htlc_funded_through_the_coordinator_refunds_on_the_htlc() -> TestResult {
     let f = Fixture::new().await?;
     let htlc = f
         .deploy("HTLCNative.sol/HTLCNative.json", (f.deployer,).abi_encode())
@@ -481,7 +484,7 @@ async fn native_htlc_refund_through_the_coordinator_returns_the_coin() -> TestRe
         ("evm_htlc_address", json!(htlc)),
         ("hash_lock", json!(f.hash)),
         ("evm_refund_locktime", json!(f.timelock)),
-        ("evm_htlc_version", json!(1)),
+        ("evm_htlc_version", json!(HTLC_NATIVE_VERSION)),
         ("evm_htlc_kind", json!("native")),
         ("evm_expected_sats", json!(AMOUNT.to_string())),
     ] {
@@ -504,7 +507,8 @@ async fn native_htlc_refund_through_the_coordinator_returns_the_coin() -> TestRe
             hash_lock: f.hash,
             amount: U256::from(AMOUNT),
             token: Address::ZERO,
-            sender: coordinator,
+            // The coordinator locks with the depositor as sender, who refunds on the HTLC.
+            sender: f.owner,
             claimer: f.deployer,
             timelock: f.timelock,
         },
@@ -687,6 +691,8 @@ async fn relay_swap(
     let calls: Vec<Call> = vec![];
     let payload = json!({
         "coordinator_address": f.coordinator,
+        "htlc_kind": "erc20",
+        "htlc_version": HTLC_ERC20_VERSION,
         "permit2_address": lendaswap_sdk::aa::permit2::PERMIT2_ADDRESS,
         "source_token_address": usdc,
         "source_amount": AMOUNT.to_string(),
