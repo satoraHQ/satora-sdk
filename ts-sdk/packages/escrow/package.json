@@ -1,6 +1,6 @@
 {
   "name": "@satora/escrow",
-  "version": "0.0.6",
+  "version": "0.1.0",
   "description": "Escrow primitives for Arkade",
   "type": "module",
   "main": "dist/index.js",

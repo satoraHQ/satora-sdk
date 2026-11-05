@@ -1,5 +1,29 @@
 # @satora/escrow-client
 
+## 12.0.0
+
+### Major Changes
+
+- f61deb6: Bump `@arkade-os/sdk` to `^0.5.1` (pulls in the Arkade claim fix from `@lendasat/lendaswap-sdk-pure`). The `@arkade-os/sdk` peer range moves from `^0.4.66` to `^0.5.1`, which is breaking for consumers still on 0.4.
+
+  `@satora/escrow` / `@satora/escrow-client`: `escrowArkConfigFromInfo` now takes the 0.5 `ArkadeInfo`, `dispose()` returns a `Promise<void>`, and wallet roles resolve from `PathContext.walletDescriptor` (bare x-only hex or `tr(<key>)`).
+
+### Patch Changes
+
+- Updated dependencies [f61deb6]
+- Updated dependencies [e869e8a]
+- Updated dependencies [34c7de3]
+- Updated dependencies [34c7de3]
+- Updated dependencies [34c7de3]
+- Updated dependencies [34c7de3]
+- Updated dependencies [34c7de3]
+- Updated dependencies [7dcbf9a]
+- Updated dependencies [8fc379b]
+- Updated dependencies [34c7de3]
+- Updated dependencies [cf2c740]
+  - @satora/swap@1.8.0
+  - @satora/escrow@0.1.0
+
 ## 11.0.2
 
 ### Patch Changes

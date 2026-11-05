@@ -1,5 +1,41 @@
 # @satora/swap
 
+## 1.8.0
+
+### Minor Changes
+
+- 34c7de3: `getCollabRefundEvmSignature` wrapper; collaborative refunds on HTLCErc20 v7 / HTLCNative v2 go through the depositor (see `@lendasat/lendaswap-sdk-pure`).
+- 34c7de3: Declare EVM HTLC protocol epoch 2, so new swaps are created on HTLCErc20 v7 / HTLCCoordinator v5 / HTLCNative v2 (see `@lendasat/lendaswap-sdk-pure`).
+- 34c7de3: `getRehashEvmParams`, `signRehashEvm`, `retrySwapWithInvoice` and `retrySwapWithInvoiceWithSigner` wrappers: retry a stuck EVM → Lightning swap with a new invoice (see `@lendasat/lendaswap-sdk-pure`).
+- 8fc379b: Use direct HTLC funding and claims for Rootstock. Require the payout wallet to claim, using RIF Relay when configured and wallet-paid gas otherwise. Preserve existing gasless behavior on Ethereum, Arbitrum, and Polygon.
+- cf2c740: Expose native USDT payouts to Tron through the wrapped SDK, including address validation and destination-specific delivery tracking.
+
+### Patch Changes
+
+- f61deb6: Bump `@arkade-os/sdk` to `^0.5.1` (pulls in the Arkade claim fix from `@lendasat/lendaswap-sdk-pure`). The `@arkade-os/sdk` peer range moves from `^0.4.66` to `^0.5.1`, which is breaking for consumers still on 0.4.
+
+  `@satora/escrow` / `@satora/escrow-client`: `escrowArkConfigFromInfo` now takes the 0.5 `ArkadeInfo`, `dispose()` returns a `Promise<void>`, and wallet roles resolve from `PathContext.walletDescriptor` (bare x-only hex or `tr(<key>)`).
+
+- e869e8a: Target backend 0.3.23 in the x-satora-server-version header.
+- 34c7de3: Delegates `getEvmFundingExpectation(swapId, pins?)`: the hash lock and funding terms the client fixed for an EVM-sourced swap, to pass as `expected` when building CCTP-inbound calldata yourself (`buildCctpInboundBatch` now requires it).
+- 34c7de3: Permit2 funding on HTLCErc20 v7 / HTLCNative v2 signs the witness with the depositor as refund address (see `@lendasat/lendaswap-sdk-pure`).
+- 7dcbf9a: A funded EVM swap advances as soon as `fundSwap` resolves.
+
+  With chain-verified tracking, `fundSwap` now re-verifies the swap against the
+  chain once the funding transaction has mined, so the derived action moves off
+  `fund` without waiting for the server's status push. On Rootstock that push
+  follows a 30 s poll plus the configured confirmations, during which the
+  deposit step looked stuck. Hints-only tracking is unchanged: it has no chain
+  to read.
+
+  A swap tracked after start is put on the hint feed when it is tracked, not
+  only once it emits its first action; a swap the tracker already saw finish is
+  not re-subscribed. On a chain whose public RPC serves no
+  `eth_getLogs` an unfunded lock cannot be classified, so such a swap emitted
+  nothing and never received the server's `clientfunded` hint.
+
+- 34c7de3: `refundEvmSponsored` refunds an HTLCErc20 v7 lock with the smart account's own `refund`, which the paymaster sponsors, instead of `refundFor` (see `@lendasat/lendaswap-sdk-pure`).
+
 ## 1.7.2
 
 ### Patch Changes
