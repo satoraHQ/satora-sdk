@@ -423,6 +423,38 @@ fn lightning_source_waits_on_the_payment_or_the_server_and_never_funds() {
     }
 }
 
+/// The server reports its lock as soon as its own node has the block, so a read
+/// through a trailing RPC can still miss it. The swap stays on the at-risk cadence
+/// until the chain shows the lock, and the report alone never claims.
+#[test]
+fn lightning_source_keeps_a_lock_the_server_reports_but_the_chain_lacks_at_risk() {
+    use SwapStatus::*;
+    let contracts = SwapContracts {
+        client: None,
+        server: Some(reference(100)),
+    };
+    let unused = observation(HtlcState::Absent, 0);
+    let server = observation(HtlcState::Absent, 50);
+    for status in [
+        ServerFunded,
+        ClientRedeeming,
+        ClientRedeemed,
+        ServerRedeemed,
+    ] {
+        let mut data = input(&contracts, &unused, &server);
+        data.server_status = Some(&status);
+        let actions = derive_actions(data, &ActionPolicy::default());
+        assert!(actions.at_risk, "{status:?}");
+        assert!(
+            !actions
+                .actions
+                .iter()
+                .any(|a| matches!(a.kind, ActionKind::Claim)),
+            "{status:?}"
+        );
+    }
+}
+
 #[test]
 fn lightning_source_failure_statuses_end_the_swap() {
     use HtlcState::*;
@@ -557,6 +589,21 @@ fn server_status_never_authorizes_or_overrides_chain() {
                                     };
                                 }
                             }
+                        }
+                        // A reported lock the chain lacks only shortens the read
+                        // cadence; the actions stay the chain's.
+                        let reported = matches!(
+                            status,
+                            Some(
+                                SwapStatus::ServerFunded
+                                    | SwapStatus::ClientRedeeming
+                                    | SwapStatus::ClientRedeemed
+                                    | SwapStatus::ServerRedeemed
+                            )
+                        );
+                        if reported && state == Absent {
+                            assert!(actions.at_risk && !chain_only.at_risk, "{case}");
+                            chain_only.at_risk = true;
                         }
                         assert_eq!(actions, chain_only, "{case}");
                     }

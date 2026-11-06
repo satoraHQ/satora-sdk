@@ -128,8 +128,9 @@ pub struct ActionInput<'a> {
     /// Application-verified Arkade capability; ignored for other client rails.
     pub collaborative_refund_available: bool,
     pub bridge: &'a BridgeState,
-    /// Last server-reported status. Consulted only for a swap with no client leg,
-    /// to end it when the chain shows no claimable server leg.
+    /// Last server-reported status. Consulted only for a swap with no client leg:
+    /// to end it when the chain shows no claimable server leg, and to keep an
+    /// absent server leg the server reports funded at risk.
     pub server_status: Option<&'a SwapStatus>,
 }
 
@@ -219,6 +220,16 @@ fn past_grace(lock: Timelock, point: &ChainPoint, policy: &ActionPolicy) -> bool
         }
     }
 }
+/// The server reports its leg funded. It does so as soon as its own node has the
+/// block, and the public RPCs a client reads through trail that node by a few
+/// blocks, so an absent leg stays at risk until the client's read catches up.
+fn server_reports_its_lock(status: Option<&SwapStatus>) -> bool {
+    use SwapStatus::*;
+    matches!(
+        status,
+        Some(ServerFunded | ClientRedeeming | ClientRedeemed | ServerRedeemed)
+    )
+}
 /// The server sets these on a swap paid over Lightning before funding its leg,
 /// or after reclaiming it, and never funds afterwards.
 fn lightning_source_failure(status: Option<&SwapStatus>) -> Option<Outcome> {
@@ -288,7 +299,9 @@ pub fn derive_actions(input: ActionInput<'_>, policy: &ActionPolicy) -> SwapActi
             state,
             HtlcState::Confirmed | HtlcState::Unknown | HtlcState::SpentUnknown
         )
-    });
+    }) || client.is_none()
+        && server == Some(HtlcState::Absent)
+        && server_reports_its_lock(input.server_status);
     let bridge_pending = !matches!(input.bridge, BridgeState::None | BridgeState::Delivered);
     let actions = (|| {
         use SwapStatus::*;
