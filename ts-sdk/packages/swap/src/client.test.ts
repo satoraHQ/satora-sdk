@@ -107,6 +107,22 @@ const arkadeEvmSwap = {
   },
 } as unknown as StoredSwap;
 
+const lightningEvmSwap = {
+  response: {
+    direction: "lightning_to_evm",
+    id: "swap-3",
+    hash_lock:
+      "abababababababababababababababababababababababababababababababab",
+    evm_refund_locktime: 900_000,
+    evm_chain_id: 42161,
+    evm_htlc_address: "0xhtlc",
+    evm_expected_sats: "1000",
+    client_evm_address: "0xclient",
+    server_evm_address: "0xserver",
+    wbtc_address: "0xwbtc",
+  },
+} as unknown as StoredSwap;
+
 const unsupportedSwap = {
   response: { direction: "future_direction", id: "swap-2" },
 } as unknown as StoredSwap;
@@ -334,6 +350,28 @@ describe("Client tracking", () => {
       expect(m.arkade.registered.size).toBe(1);
       expect(m.evm.registered.size).toBe(1);
     });
+  });
+
+  it("tracks a Lightning to EVM swap created after startTracking", async () => {
+    const m = managers();
+    const swaps: StoredSwap[] = [];
+    const legacy = Object.create(LegacyClient.prototype) as LegacyClient;
+    Object.assign(legacy, {
+      listAllSwaps: async () => swaps,
+      createLightningToEvmSwap: async () => {
+        swaps.push(lightningEvmSwap);
+        return { response: { id: "swap-3" } };
+      },
+    });
+    const client = new Client(legacy, withManagers(m.map));
+    await client.startTracking();
+
+    await client.createLightningToEvmSwap(
+      {} as Parameters<Client["createLightningToEvmSwap"]>[0],
+    );
+
+    // The client pays over Lightning, so only the server's EVM leg is on chain.
+    await vi.waitFor(() => expect(m.evm.registered.size).toBe(1));
   });
 
   it("re-verifies a swap against the chain once fundSwap resolves", async () => {

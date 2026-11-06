@@ -372,13 +372,6 @@ export class Client {
   }
 
   /** Delegated to the legacy client (migration checkpoint). */
-  createLightningToEvmSwap(
-    ...args: Parameters<LegacyClient["createLightningToEvmSwap"]>
-  ): ReturnType<LegacyClient["createLightningToEvmSwap"]> {
-    return this.#legacy.createLightningToEvmSwap(...args);
-  }
-
-  /** Delegated to the legacy client (migration checkpoint). */
   getLightningSendQuote(
     ...args: Parameters<LegacyClient["getLightningSendQuote"]>
   ): ReturnType<LegacyClient["getLightningSendQuote"]> {
@@ -606,6 +599,15 @@ export class Client {
   ): ReturnType<LegacyClient["createArkadeToLightningSwap"]> {
     return this.#trackAfterCreate(
       this.#legacy.createArkadeToLightningSwap(...args),
+    );
+  }
+
+  /** Delegated to the legacy client (migration checkpoint). */
+  createLightningToEvmSwap(
+    ...args: Parameters<LegacyClient["createLightningToEvmSwap"]>
+  ): ReturnType<LegacyClient["createLightningToEvmSwap"]> {
+    return this.#trackAfterCreate(
+      this.#legacy.createLightningToEvmSwap(...args),
     );
   }
 
