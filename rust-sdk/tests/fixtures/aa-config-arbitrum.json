@@ -1,0 +1,13 @@
+{
+  "entry_point": "0x0000000071727De22E5E9d8BAf0edAc6f37da032",
+  "delegation_target": "0xd6CEDDe84be40893d153Be9d467CD6aD37875b28",
+  "permit2": "0x000000000022D473030F116dDEE9F6B43aC78BA3",
+  "bundler": {
+    "url": "https://arb-mainnet.g.alchemy.com/v2/API_KEY",
+    "casing": "camel"
+  },
+  "paymaster": {
+    "url": "https://arb-mainnet.g.alchemy.com/v2/API_KEY",
+    "policy_id": "878b1c90-5b53-4c9c-8892-6d7659dd2e72"
+  }
+}
