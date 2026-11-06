@@ -642,4 +642,76 @@ describe("SwapTracker", () => {
       });
     });
   });
+
+  describe("a funding hint ahead of the chain (fake time)", () => {
+    const payOnLightning: TrackedSwap = {
+      swapId: "ln1",
+      serverHtlc,
+      clientRefundLocktime: 20_000,
+      serverRefundLocktime: 10_000,
+    };
+
+    /** An EVM manager whose node shows the server's lock only from the `seenFrom`th read. */
+    async function trackBehindNode(seenFrom: number) {
+      vi.useFakeTimers();
+      const evm = new FakeManager("evm", 1_000);
+      evm.reconcile = async (ref) => {
+        evm.reconciled.push(ref);
+        evm.emit(
+          ref,
+          evm.reconciled.length >= seenFrom ? "confirmed" : "absent",
+        );
+      };
+      const tracker = new SwapTracker(
+        new Map<Ledger, ContractManager>([["evm", evm]]),
+        { refreshIntervalMs: 1_000, atRiskReconcileIntervalMs: 60_000 },
+      );
+      const recommended: Array<string | undefined> = [];
+      tracker.subscribeToActions((_, actions) =>
+        recommended.push(actions.recommended),
+      );
+      await tracker.startTracking([payOnLightning]);
+      evm.emit(serverHtlc, "absent");
+      return { evm, tracker, recommended };
+    }
+
+    it("claims within seconds when the node catches up after the hint", async () => {
+      const { tracker, recommended } = await trackBehindNode(2);
+      try {
+        await tracker.applyHint("ln1", { status: "serverfunded" });
+        expect(recommended.at(-1)).toBe("wait");
+
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(recommended.at(-1)).toBe("claim");
+      } finally {
+        tracker.stop();
+        vi.useRealTimers();
+      }
+    });
+
+    it("stops re-reading after the last follow-up and leaves it to the at-risk cadence", async () => {
+      const { evm, tracker } = await trackBehindNode(Number.POSITIVE_INFINITY);
+      try {
+        await tracker.applyHint("ln1", { status: "serverfunded" });
+        await vi.advanceTimersByTimeAsync(30_000);
+        // The hint's own read plus four follow-ups.
+        expect(evm.reconciled).toHaveLength(5);
+      } finally {
+        tracker.stop();
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not re-read on a hint that says nothing about the server's lock", async () => {
+      const { evm, tracker } = await trackBehindNode(Number.POSITIVE_INFINITY);
+      try {
+        await tracker.applyHint("ln1", { status: "clientfunded" });
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(evm.reconciled).toHaveLength(1);
+      } finally {
+        tracker.stop();
+        vi.useRealTimers();
+      }
+    });
+  });
 });

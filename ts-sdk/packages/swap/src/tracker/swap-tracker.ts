@@ -65,6 +65,22 @@ export type SwapTrackerOptions = {
   atRiskReconcileIntervalMs?: number | (() => number);
 };
 
+/** Server statuses that mean the server's HTLC is funded on chain. */
+const SERVER_LEG_FUNDED: ReadonlySet<SwapStatus> = new Set<SwapStatus>([
+  "serverfunded",
+  "clientredeeming",
+  "clientredeemed",
+  "serverredeemed",
+]);
+
+/**
+ * Follow-up reads after a hint the chain does not show yet. The server pushes
+ * as soon as its own node has the block, and the public RPCs we read through
+ * trail it by a few blocks, so the first read often misses; without these the
+ * claim waits for the at-risk cadence.
+ */
+const HINT_REREAD_DELAYS_MS = [1_000, 2_000, 4_000, 8_000];
+
 export const DEFAULT_AT_RISK_RECONCILE_INTERVAL_MS = 60_000;
 const RETRY_UNREGISTERED_INTERVAL_MS = 60_000;
 
@@ -88,6 +104,8 @@ export class SwapTracker {
   #lastRetryAt = 0;
   #eventUnsubs: Array<() => void> = [];
   #timer: ReturnType<typeof setInterval> | undefined;
+  /** Pending follow-up read per swap, see {@link HINT_REREAD_DELAYS_MS}. */
+  readonly #hintRereads = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(
     managers: Map<Ledger, ContractManager>,
@@ -338,7 +356,9 @@ export class SwapTracker {
    * status hint drives. Reconciles just that swap's legs (targeted, on the
    * managers), then recomputes its action. The hint is only a *trigger*: the
    * chain stays the source of truth, so a premature hint that the chain doesn't
-   * yet reflect changes nothing. A no-op for an untracked swap.
+   * yet reflect changes nothing, except that a hint saying the server's HTLC is
+   * funded is followed by a few more reads of that leg until the chain shows it.
+   * A no-op for an untracked swap.
    */
   async applyHint(
     swapId: string,
@@ -367,6 +387,45 @@ export class SwapTracker {
     // failed auto-execution uses to re-verify against chain and get retried, since
     // an unchanged action would otherwise be deduped and never re-trigger.
     this.#recompute(swap, opts?.force ?? false);
+    this.#cancelHintReread(swapId);
+    this.#rereadUntilServerLegSeen(swap, 0);
+  }
+
+  #rereadUntilServerLegSeen(swap: TrackedSwap, attempt: number): void {
+    const leg = swap.serverHtlc;
+    const hint = this.#hintStatuses.get(swap.swapId);
+    if (!leg || hint === undefined || !SERVER_LEG_FUNDED.has(hint)) return;
+    if (this.#swaps.get(swap.swapId) !== swap) return;
+    const seen = this.#managerFor(leg).getState(leg);
+    if (seen !== undefined && seen !== "absent") return;
+    const delay = HINT_REREAD_DELAYS_MS[attempt];
+    if (delay === undefined) return;
+
+    const timer = setTimeout(() => {
+      this.#hintRereads.delete(swap.swapId);
+      if (this.#swaps.get(swap.swapId) !== swap) return;
+      void this.#managerFor(leg)
+        .reconcile(leg)
+        .catch((error) => {
+          console.warn(
+            `SwapTracker: re-read after hint failed for ${swap.swapId}:`,
+            error,
+          );
+        })
+        .then(() => {
+          this.#recompute(swap);
+          // A hint that arrived during the read started its own schedule.
+          if (!this.#hintRereads.has(swap.swapId))
+            this.#rereadUntilServerLegSeen(swap, attempt + 1);
+        });
+    }, delay);
+    this.#hintRereads.set(swap.swapId, timer);
+  }
+
+  #cancelHintReread(swapId: string): void {
+    const timer = this.#hintRereads.get(swapId);
+    if (timer !== undefined) clearTimeout(timer);
+    this.#hintRereads.delete(swapId);
   }
 
   /** Notify `cb` of the current action for each tracked swap, then on every change. */
@@ -387,6 +446,8 @@ export class SwapTracker {
   stop(): void {
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = undefined;
+    for (const swapId of [...this.#hintRereads.keys()])
+      this.#cancelHintReread(swapId);
     for (const unsub of this.#eventUnsubs) unsub();
     this.#eventUnsubs = [];
     for (const swap of this.#swaps.values())
@@ -497,6 +558,7 @@ export class SwapTracker {
   }
 
   #untrack(swap: TrackedSwap): void {
+    this.#cancelHintReread(swap.swapId);
     this.#swaps.delete(swap.swapId);
     for (const leg of legsOf(swap)) void this.#managerFor(leg).unregister(leg);
   }
