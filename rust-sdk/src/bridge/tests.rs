@@ -155,6 +155,68 @@ async fn attestation_selection_timeout_and_cancellation() {
         Err(Error::Cancelled)
     ));
 }
+/// Circle's answers for a real mainnet Arbitrum to Base payout: the message
+/// pending, in the documented shape (`attestation` null, `message` "0x"),
+/// then complete and forwarded, as captured on 2026-11-06.
+#[tokio::test]
+async fn waits_through_a_pending_attestation_to_a_real_forwarded_mint() {
+    let captured: serde_json::Value = serde_json::from_str(include_str!(
+        "../../tests/fixtures/iris-v2-messages-arbitrum-to-base.json"
+    ))
+    .unwrap();
+    let entry = &captured["messages"][0];
+    let bytes: alloy::primitives::Bytes = entry["message"].as_str().unwrap().parse().unwrap();
+    let real = CctpMessage::decode(&bytes).unwrap();
+    let burn = CctpBurn {
+        source_chain_id: 42161,
+        source_domain: real.source_domain,
+        destination_domain: real.destination_domain,
+        source_messenger: TOKEN_MESSENGER,
+        destination_messenger: TOKEN_MESSENGER.into_word(),
+        source_transmitter: MESSAGE_TRANSMITTER,
+        burn_token: CctpChain::for_chain(42161).unwrap().usdc,
+        sender: Address::from_word(real.message_sender),
+        mint_recipient: real.mint_recipient,
+        destination_caller: real.destination_caller,
+        amount: real.amount,
+        max_fee: real.max_fee,
+        min_finality: real.min_finality,
+        hook: forwarding_hook(None),
+    };
+    let txid: B256 = captured["sourceTxHash"].as_str().unwrap().parse().unwrap();
+
+    let server = MockServer::start().await;
+    let api = BridgeApi::new(&server.uri(), &server.uri()).unwrap();
+    Mock::given(path("/v2/messages/3"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "messages": [{
+                "message": "0x",
+                "eventNonce": entry["eventNonce"],
+                "attestation": null,
+                "decodedMessage": null,
+                "cctpVersion": 2,
+                "status": "pending_confirmations",
+                "delayReason": null,
+            }],
+            "sourceTxHash": captured["sourceTxHash"],
+        })))
+        .up_to_n_times(2)
+        .mount(&server)
+        .await;
+    Mock::given(path("/v2/messages/3"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&captured))
+        .mount(&server)
+        .await;
+    let options = PollOptions {
+        timeout: Duration::from_secs(5),
+        interval: Duration::from_millis(1),
+        ..Default::default()
+    };
+
+    let minted = api.wait_cctp_forward(txid, &burn, &options).await.unwrap();
+    assert_eq!(minted, entry["forwardTxHash"].as_str().unwrap());
+}
+
 fn lz_entry(
     guid: B256,
     source: impl serde::Serialize,
