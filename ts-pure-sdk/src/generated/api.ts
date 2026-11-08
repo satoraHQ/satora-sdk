@@ -977,11 +977,7 @@ export interface paths {
          *     request that arrives while the relay is being broadcast answers `200` with
          *     `client_redeeming` and no hash yet. Nothing is relayed twice.
          *
-         *     On a native-coin target (Rootstock) the response is sent as soon as the
-         *     node has accepted the claim transaction: the swap is `client_redeeming`
-         *     with the hash recorded, and the server keeps following the transaction
-         *     until it is mined. A relay that reverts or is dropped by the node returns
-         *     the swap to `server_funded`, so a later request claims again.
+         *     Rootstock claims are wallet-paid and are not relayed by this endpoint.
          */
         post: operations["claim_via_gasless"];
         delete?: never;
@@ -1005,6 +1001,58 @@ export interface paths {
          *     depositor's behalf, pulling tokens via the depositor's Permit2 signature.
          *     If an EIP-2612 permit is provided, the server first submits that to approve
          *     the Permit2 contract.
+         *
+         *     # Permit2 signature
+         *
+         *     `permit2_signature` is an EIP-712 signature over Permit2's
+         *     `PermitWitnessTransferFrom` with an `ExecuteAndCreate` witness. Every value
+         *     but the nonce and deadline comes from
+         *     `GET /swap/{id}/swap-and-lock-calldata-permit2`. The coordinator rebuilds
+         *     the witness on-chain from the transaction's arguments, so Permit2 rejects a
+         *     signature over anything else.
+         *
+         *     Domain (Permit2's own; it has no `version` field):
+         *
+         *     - `name`: `Permit2`
+         *     - `chainId`: the swap's source chain
+         *     - `verifyingContract`: `permit2_address` (`0x000000000022D473030F116dDEE9F6B43aC78BA3` on every
+         *       chain)
+         *
+         *     Types, with `primaryType` = `PermitWitnessTransferFrom`:
+         *
+         *     ```text
+         *     PermitWitnessTransferFrom(TokenPermissions permitted,address spender,uint256 nonce,uint256 deadline,ExecuteAndCreate witness)
+         *     ExecuteAndCreate(bytes32 preimageHash,address token,address claimAddress,address refundAddress,uint256 timelock,bytes32 callsHash)
+         *     TokenPermissions(address token,uint256 amount)
+         *     ```
+         *
+         *     Message:
+         *
+         *     - `permitted.token`: `source_token_address`
+         *     - `permitted.amount`: `source_amount`
+         *     - `spender`: `coordinator_address`
+         *     - `nonce`: `permit2_nonce`, a random single-use `uint256` (Permit2 unordered nonce)
+         *     - `deadline`: `permit2_deadline`
+         *     - `witness.preimageHash`: `preimage_hash`
+         *     - `witness.token`: `lock_token_address`
+         *     - `witness.claimAddress`: `claim_address`
+         *     - `witness.refundAddress`: the depositor on HTLCErc20 v7+ / HTLCNative v2+,
+         *       `coordinator_address` on older deployments. `htlc_kind` and `htlc_version` in the GET response
+         *       say which applies.
+         *     - `witness.timelock`: `timelock`
+         *     - `witness.callsHash`: `calls_hash`, which is `keccak256(abi.encode(calls))` with `calls` typed
+         *       `(address target,uint256 value,bytes callData)[]`
+         *
+         *     The depositor is the swap's EVM address given at creation. `calls` in this
+         *     request must be the array the hash was computed over.
+         *
+         *     `permit2_signature` is the compact 65-byte `r || s || v`, hex. A depositor
+         *     whose address is EIP-7702-delegated to Kernel signs in Kernel's ERC-1271
+         *     envelope instead.
+         *
+         *     `@satora/swap` builds this typed data in `buildPermit2TypedData` and the
+         *     digest in `buildPermit2FundingDigest`; `HTLCCoordinator.sol` defines the
+         *     witness on-chain.
          */
         post: operations["fund_gasless"];
         delete?: never;
@@ -1075,6 +1123,9 @@ export interface paths {
          *
          *     The calls array contains only [approve(dexRouter, amount), dexSwap(...)].
          *     No `transferFrom` — Permit2 handles the token pull.
+         *
+         *     The Permit2 witness the client signs over these fields is specified on
+         *     `POST /swap/{id}/fund-gasless`.
          */
         get: operations["get_coordinator_funding_calldata_permit2"];
         put?: never;
@@ -2014,8 +2065,8 @@ export interface components {
          */
         ClaimGaslessRequest: {
             /**
-             * @description Optional non-EVM bridge recipient (e.g. a Solana base58 SPL pubkey).
-             *     Used as CCTP `mintRecipient` when `bridge_target_chain` is non-EVM;
+             * @description Optional non-EVM bridge recipient (Solana USDC ATA or Tron Base58Check address).
+             *     Used as CCTP `mintRecipient` on Solana or Legacy Mesh recipient on Tron;
              *     must match the value passed to `redeem-and-swap-calldata` so the
              *     rebuilt `calls_hash` matches the EIP-712 signature.
              *
@@ -2521,6 +2572,20 @@ export interface components {
              *     Informational only.
              */
             router: string;
+        };
+        /** @description EIP-2612 permit data for gasless token->Permit2 approval. */
+        Eip2612Data: {
+            /** @description Whether the depositor already has sufficient Permit2 allowance */
+            already_approved: boolean;
+            /** @description Token's EIP-712 domain separator (from token.DOMAIN_SEPARATOR()) */
+            domain_separator: string;
+            /**
+             * Format: int64
+             * @description Token nonce for the depositor (from token.nonces(depositor))
+             */
+            nonce: number;
+            /** @description Whether the token supports EIP-2612 permit */
+            supported: boolean;
         };
         /**
          * @description EIP-2612 permit signature for gasless token->Permit2 approval.
@@ -3548,6 +3613,70 @@ export interface components {
         NetworkFeesResponse: {
             pairs: components["schemas"]["NetworkFeePairEntry"][];
         };
+        /**
+         * @description Response containing structured data for Permit2-based coordinator funding.
+         *
+         *     The SDK uses this to construct the EIP-712 Permit2 signature and
+         *     `executeAndCreateWithPermit2` calldata client-side. The signature's typed
+         *     data, and which field here fills which slot of it, is documented on
+         *     `POST /swap/{id}/fund-gasless`.
+         */
+        Permit2FundingCalldataResponse: {
+            /** @description The Call[] structs (approve DEX + DEX swap) — SDK encodes these */
+            calls: components["schemas"]["CallJson"][];
+            /** @description keccak256(abi.encode(calls)) — needed for the Permit2 witness */
+            calls_hash: string;
+            /** @description Server's claim address */
+            claim_address: string;
+            /** @description HTLCCoordinator contract address */
+            coordinator_address: string;
+            /**
+             * @description EIP-7702 delegation target of the depositor on the source chain, if
+             *     its code is a delegation designator (`0xef0100 || address`); `null`
+             *     when the depositor is a plain EOA. A sponsored claim delegates the
+             *     SDK's address to Kernel V3.3, after which Permit2 and EIP-2612
+             *     verify signatures via ERC-1271 and the SDK must sign in Kernel's
+             *     envelope. A delegation is per chain, so only the source chain's
+             *     state is authoritative here.
+             *
+             *     Tri-state: the key is OMITTED when the code lookup failed (the SDK
+             *     then falls back to its own probe), `null` is an authoritative
+             *     "plain EOA", a string is the delegation target. Serde renders
+             *     `Some(None)` as `null` and `None` as absent.
+             */
+            depositor_delegation?: string | null;
+            eip2612?: null | components["schemas"]["Eip2612Data"];
+            /**
+             * @description The HTLC family (`erc20` / `native`) and VERSION the swap locks on. From
+             *     HTLCErc20 v7 / HTLCNative v2 the Permit2 witness binds
+             *     `refundAddress = depositor` (the Permit2 signer); before that, the
+             *     coordinator.
+             */
+            htlc_kind: string;
+            /** Format: int64 */
+            htlc_version: number;
+            /** @description Lock token address (WBTC — output of the DEX swap) */
+            lock_token_address: string;
+            /** @description Canonical Permit2 contract address */
+            permit2_address: string;
+            /** @description SHA-256 preimage hash (0x-prefixed) */
+            preimage_hash: string;
+            /** @description Relay fee in source token units (only present when gasless=true) */
+            relay_fee?: string | null;
+            /**
+             * @description Source amount in smallest units (decimal string). For a payout-pinned
+             *     EVM → Lightning swap this is quoted afresh on every request and is
+             *     the amount the Permit2 must cover.
+             */
+            source_amount: string;
+            /** @description Source token address (what the user holds, e.g. USDC) */
+            source_token_address: string;
+            /**
+             * Format: int64
+             * @description HTLC timelock (unix timestamp)
+             */
+            timelock: number;
+        };
         QuoteResponse: {
             /**
              * Format: int64
@@ -3760,8 +3889,9 @@ export interface components {
             id: string;
             /**
              * Format: int64
-             * @description The most the new invoice may carry, in sats: the swap's payout. A
-             *     smaller invoice is paid as is.
+             * @description The most the new invoice may carry, in sats: the payout quoted at
+             *     create, even after a rehash to a smaller invoice. A smaller invoice
+             *     is paid as is.
              */
             max_invoice_amount_sats: number;
             /**
@@ -4141,6 +4271,15 @@ export interface components {
             calls_hash: string;
             claim_address: string;
             coordinator_address: string;
+            /**
+             * @description The HTLC family (`erc20` / `native`) and VERSION the swap locks on. From
+             *     HTLCErc20 v7 / HTLCNative v2 the Permit2 witness binds
+             *     `refundAddress = depositor` (the smart account); before that, the
+             *     coordinator.
+             */
+            htlc_kind: string;
+            /** Format: int64 */
+            htlc_version: number;
             lock_token_address: string;
             permit2_address: string;
             preimage_hash: string;
@@ -6170,7 +6309,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "text/plain": string;
+                    "application/json": components["schemas"]["Permit2FundingCalldataResponse"];
                 };
             };
             /** @description Bad request */

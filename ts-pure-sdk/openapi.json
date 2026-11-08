@@ -2234,7 +2234,7 @@
       "post": {
         "tags": ["swap-btc-evm"],
         "summary": "Claims an EVM-targeted swap gaslessly via the HTLCCoordinator contract.",
-        "description": "Supports Arkade-to-EVM, Lightning and Bitcoin-to-EVM swaps. The server submits\n`coordinator.redeemAndExecute` on the client's behalf, using the client's\nEIP-712 signature and secret.\n\n# Prerequisites — what the client must do before calling this endpoint\n\n1. **Create a swap** via one of the swap endpoints (e.g. `POST /swap/arkade/evm`). Wait for the\n   swap status to reach `ServerFunded`.\n\n2. **Fetch calldata** via [`GET\n   /swap/{id}/redeem-and-swap-calldata`](#/redeem-and-swap-calldata/get_dex_calldata). This\n   returns:\n   - `dex_calldata` — DEX swap calldata (only for non-WBTC targets)\n   - `gasless_fee_sats` — the fee deducted from the HTLC amount\n   - `calls_hash` — `keccak256(abi.encode(calls))`, must be included in the signature\n\n3. **Construct the EIP-712 signature** over the `Redeem` struct:\n\n   **Domain:**\n   ```text\n   EIP712Domain(string name, string version, uint256 chainId, address verifyingContract)\n   name            = \"HTLCErc20\"\n   version         = \"4\"\n   chainId         = <target EVM chain ID>\n   verifyingContract = <HTLCErc20 contract address (swap.evm_htlc_address)>\n   ```\n\n   **Struct:**\n   ```text\n   Redeem(\n       bytes32 preimage,       // the swap secret\n       uint256 amount,         // WBTC amount in the HTLC (in sats)\n       address token,          // WBTC token address\n       address sender,         // server's EVM address\n       uint256 timelock,       // HTLC refund locktime\n       address caller,         // HTLCCoordinator contract address\n       address destination,    // where output tokens go\n       address sweepToken,     // target token (or WBTC if direct)\n       uint256 minAmountOut,   // slippage protection from step 2\n       bytes32 callsHash       // from step 2\n   )\n   ```\n\n   The final digest is: `keccak256(\\x19\\x01 || domainSeparator || structHash)`\n\n   Sign this digest with the client's EVM private key (secp256k1) to obtain\n   `v`, `r`, `s`.\n\n   **JavaScript example (using ethers v6):**\n\n   ```javascript\n   import { ethers } from \"ethers\";\n\n   // 1. Fetch calldata (returns calls_hash + optional dex_calldata)\n   const { calls_hash, dex_calldata, gasless_fee_sats, min_amount_out } = await fetch(\n     `${baseUrl}/swap/${swapId}/redeem-and-swap-calldata?destination=${destination}`\n   ).then(r => r.json());\n\n   // 2. Determine sweepToken\n   const needsDexSwap = targetTokenAddress.toLowerCase() !== wbtcAddress.toLowerCase();\n   const sweepToken = needsDexSwap ? targetTokenAddress : wbtcAddress;\n\n   // 3. Build EIP-712 typed data and sign\n   const wallet = new ethers.Wallet(privateKey);\n\n   const domain = {\n     name: \"HTLCErc20\",\n     version: \"4\",\n     chainId: swap.evm_chain_id,               // e.g. 42161 for Arbitrum\n     verifyingContract: swap.evm_htlc_address,  // HTLCErc20 contract\n   };\n\n   const types = {\n     Redeem: [\n       { name: \"preimage\",     type: \"bytes32\" },\n       { name: \"amount\",       type: \"uint256\" },\n       { name: \"token\",        type: \"address\" },\n       { name: \"sender\",       type: \"address\" },\n       { name: \"timelock\",     type: \"uint256\" },\n       { name: \"caller\",       type: \"address\" },\n       { name: \"destination\",  type: \"address\" },\n       { name: \"sweepToken\",   type: \"address\" },\n       { name: \"minAmountOut\", type: \"uint256\" },\n       { name: \"callsHash\",   type: \"bytes32\" },\n     ],\n   };\n\n   const message = {\n     preimage:     secret,                        // 0x-prefixed 32-byte hex\n     amount:       swap.evm_expected_sats,        // WBTC sats locked in HTLC\n     token:        wbtcAddress,                   // WBTC on the target chain\n     sender:       swap.server_evm_address,       // server (HTLC creator)\n     timelock:     swap.evm_refund_locktime,      // HTLC expiry timestamp\n     caller:       swap.evm_coordinator_address,  // HTLCCoordinator contract\n     destination:  destination,                   // where output tokens go\n     sweepToken:   sweepToken,\n     minAmountOut: min_amount_out,                // from step 1\n     callsHash:    calls_hash,                    // from step 1\n   };\n\n   const sig = await wallet.signTypedData(domain, types, message);\n   const { v, r, s } = ethers.Signature.from(sig);\n\n   // 4. POST to claim-gasless\n   await fetch(`${baseUrl}/swap/${swapId}/claim-gasless`, {\n     method: \"POST\",\n     headers: { \"Content-Type\": \"application/json\" },\n     body: JSON.stringify({\n       secret, destination, v, r, s,\n       dex_calldata: needsDexSwap ? dex_calldata : undefined,\n     }),\n   });\n   ```\n\n4. **POST** the request to this endpoint with the secret, destination, signature, and optionally\n   the `dex_calldata` from step 2.\n\n# Idempotency\n\nRepeating the request is safe. A swap whose claim has already been relayed\nor observed (`client_redeeming`, `client_redeemed`, `server_redeemed`)\nanswers `200` with that status and the claim transaction hash, and a\nrequest that arrives while the relay is being broadcast answers `200` with\n`client_redeeming` and no hash yet. Nothing is relayed twice.\n\nOn a native-coin target (Rootstock) the response is sent as soon as the\nnode has accepted the claim transaction: the swap is `client_redeeming`\nwith the hash recorded, and the server keeps following the transaction\nuntil it is mined. A relay that reverts or is dropped by the node returns\nthe swap to `server_funded`, so a later request claims again.",
+        "description": "Supports Arkade-to-EVM, Lightning and Bitcoin-to-EVM swaps. The server submits\n`coordinator.redeemAndExecute` on the client's behalf, using the client's\nEIP-712 signature and secret.\n\n# Prerequisites — what the client must do before calling this endpoint\n\n1. **Create a swap** via one of the swap endpoints (e.g. `POST /swap/arkade/evm`). Wait for the\n   swap status to reach `ServerFunded`.\n\n2. **Fetch calldata** via [`GET\n   /swap/{id}/redeem-and-swap-calldata`](#/redeem-and-swap-calldata/get_dex_calldata). This\n   returns:\n   - `dex_calldata` — DEX swap calldata (only for non-WBTC targets)\n   - `gasless_fee_sats` — the fee deducted from the HTLC amount\n   - `calls_hash` — `keccak256(abi.encode(calls))`, must be included in the signature\n\n3. **Construct the EIP-712 signature** over the `Redeem` struct:\n\n   **Domain:**\n   ```text\n   EIP712Domain(string name, string version, uint256 chainId, address verifyingContract)\n   name            = \"HTLCErc20\"\n   version         = \"4\"\n   chainId         = <target EVM chain ID>\n   verifyingContract = <HTLCErc20 contract address (swap.evm_htlc_address)>\n   ```\n\n   **Struct:**\n   ```text\n   Redeem(\n       bytes32 preimage,       // the swap secret\n       uint256 amount,         // WBTC amount in the HTLC (in sats)\n       address token,          // WBTC token address\n       address sender,         // server's EVM address\n       uint256 timelock,       // HTLC refund locktime\n       address caller,         // HTLCCoordinator contract address\n       address destination,    // where output tokens go\n       address sweepToken,     // target token (or WBTC if direct)\n       uint256 minAmountOut,   // slippage protection from step 2\n       bytes32 callsHash       // from step 2\n   )\n   ```\n\n   The final digest is: `keccak256(\\x19\\x01 || domainSeparator || structHash)`\n\n   Sign this digest with the client's EVM private key (secp256k1) to obtain\n   `v`, `r`, `s`.\n\n   **JavaScript example (using ethers v6):**\n\n   ```javascript\n   import { ethers } from \"ethers\";\n\n   // 1. Fetch calldata (returns calls_hash + optional dex_calldata)\n   const { calls_hash, dex_calldata, gasless_fee_sats, min_amount_out } = await fetch(\n     `${baseUrl}/swap/${swapId}/redeem-and-swap-calldata?destination=${destination}`\n   ).then(r => r.json());\n\n   // 2. Determine sweepToken\n   const needsDexSwap = targetTokenAddress.toLowerCase() !== wbtcAddress.toLowerCase();\n   const sweepToken = needsDexSwap ? targetTokenAddress : wbtcAddress;\n\n   // 3. Build EIP-712 typed data and sign\n   const wallet = new ethers.Wallet(privateKey);\n\n   const domain = {\n     name: \"HTLCErc20\",\n     version: \"4\",\n     chainId: swap.evm_chain_id,               // e.g. 42161 for Arbitrum\n     verifyingContract: swap.evm_htlc_address,  // HTLCErc20 contract\n   };\n\n   const types = {\n     Redeem: [\n       { name: \"preimage\",     type: \"bytes32\" },\n       { name: \"amount\",       type: \"uint256\" },\n       { name: \"token\",        type: \"address\" },\n       { name: \"sender\",       type: \"address\" },\n       { name: \"timelock\",     type: \"uint256\" },\n       { name: \"caller\",       type: \"address\" },\n       { name: \"destination\",  type: \"address\" },\n       { name: \"sweepToken\",   type: \"address\" },\n       { name: \"minAmountOut\", type: \"uint256\" },\n       { name: \"callsHash\",   type: \"bytes32\" },\n     ],\n   };\n\n   const message = {\n     preimage:     secret,                        // 0x-prefixed 32-byte hex\n     amount:       swap.evm_expected_sats,        // WBTC sats locked in HTLC\n     token:        wbtcAddress,                   // WBTC on the target chain\n     sender:       swap.server_evm_address,       // server (HTLC creator)\n     timelock:     swap.evm_refund_locktime,      // HTLC expiry timestamp\n     caller:       swap.evm_coordinator_address,  // HTLCCoordinator contract\n     destination:  destination,                   // where output tokens go\n     sweepToken:   sweepToken,\n     minAmountOut: min_amount_out,                // from step 1\n     callsHash:    calls_hash,                    // from step 1\n   };\n\n   const sig = await wallet.signTypedData(domain, types, message);\n   const { v, r, s } = ethers.Signature.from(sig);\n\n   // 4. POST to claim-gasless\n   await fetch(`${baseUrl}/swap/${swapId}/claim-gasless`, {\n     method: \"POST\",\n     headers: { \"Content-Type\": \"application/json\" },\n     body: JSON.stringify({\n       secret, destination, v, r, s,\n       dex_calldata: needsDexSwap ? dex_calldata : undefined,\n     }),\n   });\n   ```\n\n4. **POST** the request to this endpoint with the secret, destination, signature, and optionally\n   the `dex_calldata` from step 2.\n\n# Idempotency\n\nRepeating the request is safe. A swap whose claim has already been relayed\nor observed (`client_redeeming`, `client_redeemed`, `server_redeemed`)\nanswers `200` with that status and the claim transaction hash, and a\nrequest that arrives while the relay is being broadcast answers `200` with\n`client_redeeming` and no hash yet. Nothing is relayed twice.\n\nRootstock claims are wallet-paid and are not relayed by this endpoint.",
         "operationId": "claim_via_gasless",
         "parameters": [
           {
@@ -2296,7 +2296,7 @@
       "post": {
         "tags": ["swap-evm-btc"],
         "summary": "Fund an EVM-sourced swap gaslessly via Permit2.",
-        "description": "The server submits the `executeAndCreateWithPermit2` transaction on the\ndepositor's behalf, pulling tokens via the depositor's Permit2 signature.\nIf an EIP-2612 permit is provided, the server first submits that to approve\nthe Permit2 contract.",
+        "description": "The server submits the `executeAndCreateWithPermit2` transaction on the\ndepositor's behalf, pulling tokens via the depositor's Permit2 signature.\nIf an EIP-2612 permit is provided, the server first submits that to approve\nthe Permit2 contract.\n\n# Permit2 signature\n\n`permit2_signature` is an EIP-712 signature over Permit2's\n`PermitWitnessTransferFrom` with an `ExecuteAndCreate` witness. Every value\nbut the nonce and deadline comes from\n`GET /swap/{id}/swap-and-lock-calldata-permit2`. The coordinator rebuilds\nthe witness on-chain from the transaction's arguments, so Permit2 rejects a\nsignature over anything else.\n\nDomain (Permit2's own; it has no `version` field):\n\n- `name`: `Permit2`\n- `chainId`: the swap's source chain\n- `verifyingContract`: `permit2_address` (`0x000000000022D473030F116dDEE9F6B43aC78BA3` on every\n  chain)\n\nTypes, with `primaryType` = `PermitWitnessTransferFrom`:\n\n```text\nPermitWitnessTransferFrom(TokenPermissions permitted,address spender,uint256 nonce,uint256 deadline,ExecuteAndCreate witness)\nExecuteAndCreate(bytes32 preimageHash,address token,address claimAddress,address refundAddress,uint256 timelock,bytes32 callsHash)\nTokenPermissions(address token,uint256 amount)\n```\n\nMessage:\n\n- `permitted.token`: `source_token_address`\n- `permitted.amount`: `source_amount`\n- `spender`: `coordinator_address`\n- `nonce`: `permit2_nonce`, a random single-use `uint256` (Permit2 unordered nonce)\n- `deadline`: `permit2_deadline`\n- `witness.preimageHash`: `preimage_hash`\n- `witness.token`: `lock_token_address`\n- `witness.claimAddress`: `claim_address`\n- `witness.refundAddress`: the depositor on HTLCErc20 v7+ / HTLCNative v2+,\n  `coordinator_address` on older deployments. `htlc_kind` and `htlc_version` in the GET response\n  say which applies.\n- `witness.timelock`: `timelock`\n- `witness.callsHash`: `calls_hash`, which is `keccak256(abi.encode(calls))` with `calls` typed\n  `(address target,uint256 value,bytes callData)[]`\n\nThe depositor is the swap's EVM address given at creation. `calls` in this\nrequest must be the array the hash was computed over.\n\n`permit2_signature` is the compact 65-byte `r || s || v`, hex. A depositor\nwhose address is EIP-7702-delegated to Kernel signs in Kernel's ERC-1271\nenvelope instead.\n\n`@satora/swap` builds this typed data in `buildPermit2TypedData` and the\ndigest in `buildPermit2FundingDigest`; `HTLCCoordinator.sol` defines the\nwitness on-chain.",
         "operationId": "fund_gasless",
         "parameters": [
           {
@@ -2471,7 +2471,7 @@
       "get": {
         "tags": ["swap-and-lock-calldata-permit2"],
         "summary": "Returns structured data for funding an EVM-to-BTC swap via Permit2.",
-        "description": "Instead of pre-encoded calldata, this returns the individual components\nso the SDK can construct the Permit2 EIP-712 signature and\n`executeAndCreateWithPermit2` calldata client-side.\n\nThe calls array contains only [approve(dexRouter, amount), dexSwap(...)].\nNo `transferFrom` — Permit2 handles the token pull.",
+        "description": "Instead of pre-encoded calldata, this returns the individual components\nso the SDK can construct the Permit2 EIP-712 signature and\n`executeAndCreateWithPermit2` calldata client-side.\n\nThe calls array contains only [approve(dexRouter, amount), dexSwap(...)].\nNo `transferFrom` — Permit2 handles the token pull.\n\nThe Permit2 witness the client signs over these fields is specified on\n`POST /swap/{id}/fund-gasless`.",
         "operationId": "get_coordinator_funding_calldata_permit2",
         "parameters": [
           {
@@ -2489,9 +2489,9 @@
           "200": {
             "description": "Permit2 funding data",
             "content": {
-              "text/plain": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/Permit2FundingCalldataResponse"
                 }
               }
             }
@@ -3912,7 +3912,7 @@
               },
               {
                 "$ref": "#/components/schemas/RifRelayInfo",
-                "description": "Where the client claims a native lock on this chain (RIF Relay,\nrelayer paid out of the claimed coin). Absent = the server relays the\nclaim through `/swap/{id}/claim-gasless`."
+                "description": "Where the client claims a native lock on this chain (RIF Relay,\nrelayer paid out of the claimed coin). Absent on Rootstock = the payout\nwallet submits the claim and pays gas."
               }
             ]
           }
@@ -3937,7 +3937,7 @@
         "properties": {
           "bridge_recipient": {
             "type": ["string", "null"],
-            "description": "Optional non-EVM bridge recipient (e.g. a Solana base58 SPL pubkey).\nUsed as CCTP `mintRecipient` when `bridge_target_chain` is non-EVM;\nmust match the value passed to `redeem-and-swap-calldata` so the\nrebuilt `calls_hash` matches the EIP-712 signature.\n\nFor Solana: this is the recipient's USDC ATA, not their wallet."
+            "description": "Optional non-EVM bridge recipient (Solana USDC ATA or Tron Base58Check address).\nUsed as CCTP `mintRecipient` on Solana or Legacy Mesh recipient on Tron;\nmust match the value passed to `redeem-and-swap-calldata` so the\nrebuilt `calls_hash` matches the EIP-712 signature.\n\nFor Solana: this is the recipient's USDC ATA, not their wallet."
           },
           "bridge_recipient_wallet": {
             "type": ["string", "null"],
@@ -4620,6 +4620,36 @@
           "router": {
             "type": "string",
             "description": "Router that priced the DEX leg (`\"uniswap_v3\"`, `\"lifi\"`, …).\nInformational only."
+          }
+        }
+      },
+      "Eip2612Data": {
+        "type": "object",
+        "description": "EIP-2612 permit data for gasless token->Permit2 approval.",
+        "required": [
+          "supported",
+          "already_approved",
+          "nonce",
+          "domain_separator"
+        ],
+        "properties": {
+          "already_approved": {
+            "type": "boolean",
+            "description": "Whether the depositor already has sufficient Permit2 allowance"
+          },
+          "domain_separator": {
+            "type": "string",
+            "description": "Token's EIP-712 domain separator (from token.DOMAIN_SEPARATOR())"
+          },
+          "nonce": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Token nonce for the depositor (from token.nonces(depositor))",
+            "minimum": 0
+          },
+          "supported": {
+            "type": "boolean",
+            "description": "Whether the token supports EIP-2612 permit"
           }
         }
       },
@@ -6461,6 +6491,99 @@
           }
         }
       },
+      "Permit2FundingCalldataResponse": {
+        "type": "object",
+        "description": "Response containing structured data for Permit2-based coordinator funding.\n\nThe SDK uses this to construct the EIP-712 Permit2 signature and\n`executeAndCreateWithPermit2` calldata client-side. The signature's typed\ndata, and which field here fills which slot of it, is documented on\n`POST /swap/{id}/fund-gasless`.",
+        "required": [
+          "coordinator_address",
+          "htlc_kind",
+          "htlc_version",
+          "permit2_address",
+          "source_token_address",
+          "source_amount",
+          "lock_token_address",
+          "preimage_hash",
+          "claim_address",
+          "timelock",
+          "calls",
+          "calls_hash"
+        ],
+        "properties": {
+          "calls": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CallJson"
+            },
+            "description": "The Call[] structs (approve DEX + DEX swap) — SDK encodes these"
+          },
+          "calls_hash": {
+            "type": "string",
+            "description": "keccak256(abi.encode(calls)) — needed for the Permit2 witness"
+          },
+          "claim_address": {
+            "type": "string",
+            "description": "Server's claim address"
+          },
+          "coordinator_address": {
+            "type": "string",
+            "description": "HTLCCoordinator contract address"
+          },
+          "depositor_delegation": {
+            "type": ["string", "null"],
+            "description": "EIP-7702 delegation target of the depositor on the source chain, if\nits code is a delegation designator (`0xef0100 || address`); `null`\nwhen the depositor is a plain EOA. A sponsored claim delegates the\nSDK's address to Kernel V3.3, after which Permit2 and EIP-2612\nverify signatures via ERC-1271 and the SDK must sign in Kernel's\nenvelope. A delegation is per chain, so only the source chain's\nstate is authoritative here.\n\nTri-state: the key is OMITTED when the code lookup failed (the SDK\nthen falls back to its own probe), `null` is an authoritative\n\"plain EOA\", a string is the delegation target. Serde renders\n`Some(None)` as `null` and `None` as absent."
+          },
+          "eip2612": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Eip2612Data",
+                "description": "EIP-2612 data for gasless approve (only present when gasless=true)"
+              }
+            ]
+          },
+          "htlc_kind": {
+            "type": "string",
+            "description": "The HTLC family (`erc20` / `native`) and VERSION the swap locks on. From\nHTLCErc20 v7 / HTLCNative v2 the Permit2 witness binds\n`refundAddress = depositor` (the Permit2 signer); before that, the\ncoordinator."
+          },
+          "htlc_version": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "lock_token_address": {
+            "type": "string",
+            "description": "Lock token address (WBTC — output of the DEX swap)"
+          },
+          "permit2_address": {
+            "type": "string",
+            "description": "Canonical Permit2 contract address"
+          },
+          "preimage_hash": {
+            "type": "string",
+            "description": "SHA-256 preimage hash (0x-prefixed)"
+          },
+          "relay_fee": {
+            "type": ["string", "null"],
+            "description": "Relay fee in source token units (only present when gasless=true)"
+          },
+          "source_amount": {
+            "type": "string",
+            "description": "Source amount in smallest units (decimal string). For a payout-pinned\nEVM → Lightning swap this is quoted afresh on every request and is\nthe amount the Permit2 must cover."
+          },
+          "source_token_address": {
+            "type": "string",
+            "description": "Source token address (what the user holds, e.g. USDC)"
+          },
+          "timelock": {
+            "type": "integer",
+            "format": "int64",
+            "description": "HTLC timelock (unix timestamp)",
+            "minimum": 0
+          }
+        }
+      },
       "QuoteResponse": {
         "type": "object",
         "required": [
@@ -6753,7 +6876,7 @@
           "max_invoice_amount_sats": {
             "type": "integer",
             "format": "int64",
-            "description": "The most the new invoice may carry, in sats: the swap's payout. A\nsmaller invoice is paid as is.",
+            "description": "The most the new invoice may carry, in sats: the payout quoted at\ncreate, even after a rehash to a smaller invoice. A smaller invoice\nis paid as is.",
             "minimum": 0
           },
           "min_invoice_validity_secs": {
@@ -7323,6 +7446,8 @@
         "description": "Response: same HTLC + DEX payload the Permit2 endpoint returns, plus\nan `aa` object with the addresses a 4337 client needs.",
         "required": [
           "coordinator_address",
+          "htlc_kind",
+          "htlc_version",
           "permit2_address",
           "source_token_address",
           "source_amount",
@@ -7353,6 +7478,15 @@
           },
           "coordinator_address": {
             "type": "string"
+          },
+          "htlc_kind": {
+            "type": "string",
+            "description": "The HTLC family (`erc20` / `native`) and VERSION the swap locks on. From\nHTLCErc20 v7 / HTLCNative v2 the Permit2 witness binds\n`refundAddress = depositor` (the smart account); before that, the\ncoordinator."
+          },
+          "htlc_version": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           },
           "lock_token_address": {
             "type": "string"
