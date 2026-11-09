@@ -1,10 +1,9 @@
 # Lendaswap Pure TypeScript SDK
 
-> **This is the legacy SDK. It keeps working and stays supported** — no urgent
-> migration needed. For new code we recommend
-> [`@satora/swap`](https://www.npmjs.com/package/@satora/swap), a drop-in
-> replacement (same API, same imports) where new features land. To move over,
-> just change the package name in your imports; nothing else changes.
+> This directory is the private implementation bundled into `@satora/swap`.
+> Its code and types ship with that package; it is no longer published separately.
+> Existing legacy npm versions remain available. Use `@satora/swap` for new
+> releases and add changesets in `../ts-sdk/.changeset` for `@satora/swap`.
 
 A pure TypeScript SDK for interacting with the Lendaswap API. This SDK is designed to work in all JavaScript
 environments, including React Native.
@@ -12,7 +11,7 @@ environments, including React Native.
 ## Installation
 
 ```bash
-npm install @lendasat/lendaswap-sdk-pure
+npm install @satora/swap
 ```
 
 ## Supported Swaps
@@ -56,7 +55,7 @@ Protocol epochs are integers, one per component, exported as `PROTOCOL_VERSIONS`
 ### Setup
 
 ```typescript
-import { Client, IdbWalletStorage, IdbSwapStorage } from "@lendasat/lendaswap-sdk-pure";
+import { Client, IdbWalletStorage, IdbSwapStorage } from "@satora/swap";
 
 // Create a client with persistent storage (browser)
 const client = await Client.builder()
@@ -85,7 +84,7 @@ console.log(status.healthy, status.services.bitcoin.healthy);
 ### Quotes
 
 ```typescript
-import { Asset } from "@lendasat/lendaswap-sdk-pure";
+import { Asset } from "@satora/swap";
 
 const quote = await client.getQuote({
   sourceChain: Asset.BTC_ARKADE.chain,      // "Arkade"
@@ -147,7 +146,7 @@ reads the locked amount off the funding transaction's `SwapCreated` log, and `fu
 missing.
 
 ```typescript
-import type { EvmSigner } from "@lendasat/lendaswap-sdk-pure";
+import type { EvmSigner } from "@satora/swap";
 ```
 
 **wagmi / viem:**

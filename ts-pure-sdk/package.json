@@ -36,9 +36,7 @@
     "sync-version": "node scripts/sync-version.mjs",
     "prebuild": "node scripts/sync-version.mjs",
     "version": "node scripts/sync-version.mjs && git add src/version.ts",
-    "changeset": "changeset",
-    "changeset:version": "changeset version && node scripts/sync-version.mjs",
-    "changeset:release": "pnpm build && changeset publish",
+    "changeset": "pnpm --dir ../ts-sdk changeset",
     "build": "tsup && tsc -p tsconfig.build.json --emitDeclarationOnly",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest",
@@ -103,10 +101,6 @@
     "url": "git+https://github.com/satoraHQ/swap.git",
     "directory": "client-sdk/ts-pure-sdk"
   },
-  "publishConfig": {
-    "access": "public",
-    "provenance": false
-  },
   "pnpm": {
     "onlyBuiltDependencies": [
       "better-sqlite3",
@@ -114,5 +108,6 @@
       "esbuild",
       "utf-8-validate"
     ]
-  }
+  },
+  "private": true
 }

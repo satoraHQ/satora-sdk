@@ -5,7 +5,10 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
-const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+// Pure is internal to @satora/swap and reports the public package's identity.
+const pkg = JSON.parse(
+  readFileSync(join(root, "../ts-sdk/packages/swap/package.json"), "utf8"),
+);
 const openapi = JSON.parse(readFileSync(join(root, "openapi.json"), "utf8"));
 const target = join(root, "src", "version.ts");
 

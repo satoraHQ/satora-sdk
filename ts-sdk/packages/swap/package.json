@@ -52,7 +52,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && tsc -p tsconfig.build.json --emitDeclarationOnly && node scripts/package-types.mjs",
     "prepublishOnly": "pnpm build",
     "check-types": "tsc -p tsconfig.json --noEmit",
     "test": "vitest",
@@ -63,17 +63,24 @@
   },
   "dependencies": {
     "@arkade-os/sdk": "^0.5.1",
-    "@lendasat/lendaswap-sdk-pure": "workspace:^",
+    "@noble/curves": "^2.2.0",
     "@noble/hashes": "^2.2.0",
     "@scure/base": "^2.0.0",
+    "@scure/bip32": "^2.0.1",
+    "@scure/bip39": "^2.0.1",
     "@scure/btc-signer": "^2.0.1",
+    "@zerodev/sdk": "^5.5.0",
+    "dexie": "4.4.4",
+    "openapi-fetch": "^0.17.0",
     "viem": "2.52.2"
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.15",
     "tsup": "^8.5.1",
     "typescript": "^5.7.0",
-    "vitest": "^3.0.0"
+    "vitest": "^3.0.0",
+    "@lendasat/lendaswap-sdk-pure": "workspace:*",
+    "@types/better-sqlite3": "^7.6.13"
   },
   "license": "MIT",
   "publishConfig": {
@@ -84,5 +91,20 @@
     "type": "git",
     "url": "git+https://github.com/satoraHQ/swap.git",
     "directory": "client-sdk/ts-sdk/packages/swap"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^12.11.1"
+  },
+  "peerDependencies": {
+    "@circle-fin/adapter-viem-v2": "^1.8.0",
+    "@circle-fin/bridge-kit": "^1.8.0"
+  },
+  "peerDependenciesMeta": {
+    "@circle-fin/adapter-viem-v2": {
+      "optional": true
+    },
+    "@circle-fin/bridge-kit": {
+      "optional": true
+    }
   }
 }

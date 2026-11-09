@@ -26,11 +26,15 @@ The `@satora/*` packages. The one to build against is
 - A drop-in replacement for `@lendasat/lendaswap-sdk-pure` (same API), plus a
   home for Satora-native features
 
-### [`ts-pure-sdk/`](./ts-pure-sdk/) - Legacy TypeScript SDK
+### [`ts-pure-sdk/`](./ts-pure-sdk/) - Internal TypeScript implementation
 
-Published as `@lendasat/lendaswap-sdk-pure`. **Still fully supported and
-working** — `@satora/swap` wraps it — but new code should prefer `@satora/swap`,
-where new features land. Existing integrations do not need to migrate urgently.
+Private workspace package bundled into `@satora/swap`, including its types and
+Node, delegate, and CCTP entry points. It is no longer published separately.
+Existing published `@lendasat/lendaswap-sdk-pure` versions remain available;
+use `@satora/swap` for new releases.
+
+Add changesets in `ts-sdk/.changeset`, targeting `@satora/swap`, for changes to
+either source directory. The SDK identity and version come from `@satora/swap`.
 
 ## Compatibility headers
 

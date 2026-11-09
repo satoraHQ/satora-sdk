@@ -17,8 +17,9 @@
     "check-types": "pnpm build && pnpm --filter './packages/**' run check-types",
     "clean": "pnpm --filter @lendasat/lendaswap-sdk-pure --filter './packages/**' run clean && rm -rf node_modules",
     "changeset": "changeset",
-    "changeset:version": "changeset version",
-    "changeset:release": "pnpm build && changeset publish"
+    "changeset:version": "changeset version && node ../ts-pure-sdk/scripts/sync-version.mjs",
+    "changeset:release": "pnpm build && changeset publish",
+    "test:package": "node packages/swap/scripts/test-package.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.15",

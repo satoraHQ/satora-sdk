@@ -3,12 +3,11 @@
 The Satora swap client — a Lightning / on-chain BTC / Arkade ↔ EVM on/off-ramp.
 Pure TypeScript, works in every JS environment (browser, Node, React Native).
 
-This is the `@satora`-scoped swap client. `Client` and `ClientBuilder` are
-drop-in replacements that wrap the underlying
-[`@lendasat/lendaswap-sdk-pure`](https://www.npmjs.com/package/@lendasat/lendaswap-sdk-pure)
-client — same API, plus room for Satora-native features. Everything else
-(`Asset`, `EvmSigner`, storage backends, types, …) is re-exported verbatim.
-New code should import `@satora/swap`.
+The package includes the underlying swap implementation and its types.
+`Client` and `ClientBuilder` retain the legacy API, alongside Satora-native
+features. No separate `@lendasat/lendaswap-sdk-pure` installation or release is
+required. The `/node`, `/delegate`, and `/cctp-bridge` entry points are included;
+SQLite remains an optional native dependency and CCTP uses optional Circle peers.
 
 ## Install
 

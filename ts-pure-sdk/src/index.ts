@@ -188,6 +188,7 @@ export type {
   EvmToLightningSwapOptions,
   EvmToLightningSwapResult,
   GetLightningSendQuoteParams,
+  GetQuoteParams,
   LightningSendQuote,
   LightningSendSourceChain,
   LightningToBitcoinSwapOptions,
