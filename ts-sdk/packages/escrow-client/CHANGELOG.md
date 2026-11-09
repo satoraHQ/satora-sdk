@@ -1,5 +1,15 @@
 # @satora/escrow-client
 
+## 13.0.0
+
+### Patch Changes
+
+- bc12fe9: The published package.json now records the `satoraHQ/swap` repository and directory. No code change.
+- Updated dependencies [00e5463]
+- Updated dependencies [bc12fe9]
+  - @satora/swap@1.9.0
+  - @satora/escrow@0.1.1
+
 ## 12.0.1
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # @satora/escrow
 
+## 0.1.1
+
+### Patch Changes
+
+- bc12fe9: The published package.json now records the `satoraHQ/swap` repository and directory. No code change.
+
 ## 0.1.0
 
 ### Minor Changes
