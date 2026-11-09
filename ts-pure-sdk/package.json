@@ -100,11 +100,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/satoraHQ/lendaswap-sdk.git",
+    "url": "git+https://github.com/satoraHQ/swap.git",
     "directory": "client-sdk/ts-pure-sdk"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "provenance": false
   },
   "pnpm": {
     "onlyBuiltDependencies": [
