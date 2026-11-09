@@ -115,8 +115,8 @@ async fn get_server_quote_builds_expected_query_and_parses_response() {
     let req = QuoteRequest::new(
         Chain::bitcoin(),
         TokenId::Btc,
-        Chain::polygon(),
-        TokenId::UsdcPolygon,
+        Chain::arbitrum(),
+        TokenId::UsdcArbitrum,
         QuoteAmount::Source(100_000),
     );
     let quote = client
@@ -132,14 +132,109 @@ async fn get_server_quote_builds_expected_query_and_parses_response() {
     let params = query_pairs(req);
     assert_eq!(params_get(&params, "source_chain"), Some("Bitcoin"));
     assert_eq!(params_get(&params, "source_token"), Some("btc"));
-    assert_eq!(params_get(&params, "target_chain"), Some("137"));
+    assert_eq!(params_get(&params, "target_chain"), Some("42161"));
     assert_eq!(
         params_get(&params, "target_token"),
-        Some("0x3c499c542cef5e3811e1192ce70d8cc03d5c3359"),
+        Some("0xaf88d065e77c8cc2239327c5edb3a432268e5831"),
     );
     assert_eq!(params_get(&params, "source_amount"), Some("100000"));
     assert_eq!(params_get(&params, "target_amount"), None);
     assert_eq!(params_get(&params, "bridge_recipient_setup"), Some("false"));
+}
+
+/// USDC payouts on Ethereum and Polygon settle on Arbitrum and bridge over
+/// CCTP, so the quote goes out as Arbitrum USDC with the real chain in
+/// `bridge_target_chain`.
+#[tokio::test]
+async fn get_server_quote_routes_usdc_on_ethereum_and_polygon_via_arbitrum() {
+    for (chain, token, name) in [
+        (Chain::polygon(), TokenId::UsdcPolygon, "Polygon"),
+        (Chain::ethereum(), TokenId::UsdcEthereum, "Ethereum"),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/quote"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "exchange_rate": "30000.00",
+                "network_fee": 1000,
+                "gasless_network_fee": 2000,
+                "protocol_fee": 250,
+                "protocol_fee_rate": 0.0025,
+                "min_amount": 10000,
+                "max_amount": 100000000,
+                "source_amount": "100000",
+                "target_amount": "30000000",
+                "net_source_amount": "100000",
+                "net_target_amount": "29990000",
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::new(&server.uri()).expect("client builds");
+        let req = QuoteRequest::new(
+            Chain::bitcoin(),
+            TokenId::Btc,
+            chain,
+            token,
+            QuoteAmount::Source(100_000),
+        );
+        client
+            .get_server_quote(req)
+            .await
+            .expect("get_server_quote succeeds");
+
+        let received = server.received_requests().await.expect("requests recorded");
+        let params = query_pairs(received.last().expect("at least one request"));
+        assert_eq!(params_get(&params, "target_chain"), Some("42161"));
+        assert_eq!(
+            params_get(&params, "target_token"),
+            Some("0xaf88d065e77c8cc2239327c5edb3a432268e5831"),
+        );
+        assert_eq!(params_get(&params, "bridge_target_chain"), Some(name));
+    }
+}
+
+/// Only payouts are bridged: USDC on Polygon as a source still funds the
+/// swap on Polygon directly.
+#[tokio::test]
+async fn get_server_quote_keeps_usdc_polygon_source_direct() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/quote"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "exchange_rate": "30000.00",
+            "network_fee": 1000,
+            "gasless_network_fee": 2000,
+            "protocol_fee": 250,
+            "protocol_fee_rate": 0.0025,
+            "min_amount": 10000,
+            "max_amount": 100000000,
+            "source_amount": "30000000",
+            "target_amount": "100000",
+            "net_source_amount": "30000000",
+            "net_target_amount": "99000",
+        })))
+        .mount(&server)
+        .await;
+
+    let client = Client::new(&server.uri()).expect("client builds");
+    let req = QuoteRequest::new(
+        Chain::polygon(),
+        TokenId::UsdcPolygon,
+        Chain::bitcoin(),
+        TokenId::Btc,
+        QuoteAmount::Source(30_000_000),
+    );
+    client
+        .get_server_quote(req)
+        .await
+        .expect("get_server_quote succeeds");
+
+    let received = server.received_requests().await.expect("requests recorded");
+    let params = query_pairs(received.last().expect("at least one request"));
+    assert_eq!(params_get(&params, "source_chain"), Some("137"));
+    assert_eq!(params_get(&params, "bridge_source_chain"), None);
+    assert_eq!(params_get(&params, "bridge_target_chain"), None);
 }
 
 #[tokio::test]

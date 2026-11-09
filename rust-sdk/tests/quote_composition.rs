@@ -390,3 +390,53 @@ async fn partner_base_fee_rate_replaces_pair_fee() {
         partner.protocol_fee_rate
     );
 }
+
+/// USDC payouts on Polygon and Ethereum settle in tBTC on Arbitrum and bridge
+/// over CCTP; USDC on Polygon as a source still swaps on Polygon.
+#[tokio::test]
+async fn usdc_payouts_on_polygon_and_ethereum_pivot_through_arbitrum() {
+    let cases = [
+        (
+            true,
+            Chain::polygon(),
+            "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+            42161,
+            137,
+        ),
+        (
+            true,
+            Chain::ethereum(),
+            "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+            42161,
+            1,
+        ),
+        (
+            false,
+            Chain::polygon(),
+            "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+            137,
+            137,
+        ),
+    ];
+    for (btc_source, chain, usdc, from_chain, to_chain) in cases {
+        let server = MockServer::start().await;
+        Mock::given(path("/dex-quote")).respond_with(ResponseTemplate::new(200).set_body_json(json!({"expected_amount_in":{"raw":"1000000000000000","decimals":18},"estimated_amount_out":{"raw":"99000000","decimals":6},"bridge_fee":"60000","estimated_settlement_seconds":15,"router":"cctp","cache_ttl_seconds":30}))).mount(&server).await;
+        let (pairs, fees, config) = data();
+        Client::new(&server.uri())
+            .unwrap()
+            .compose_quote_with_data(
+                request(btc_source, chain, usdc, QuoteAmount::Source(100_000)),
+                100,
+                &pairs,
+                &fees,
+                &config,
+                0.0,
+            )
+            .await
+            .unwrap();
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body["from"]["chain_id"], from_chain);
+        assert_eq!(body["to"]["chain_id"], to_chain);
+    }
+}

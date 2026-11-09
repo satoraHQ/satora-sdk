@@ -214,14 +214,32 @@ fn bridge_chain_name(chain: &str) -> Option<&'static str> {
         .map(|(_, name)| *name)
 }
 
+/// Hub chains whose native USDC is paid out over CCTP from Arbitrum rather
+/// than swapped on the chain itself (`isCctpRoutedUsdcTarget` in the
+/// TypeScript SDK). Returns the CCTP chain name. Sources stay direct.
+fn cctp_routed_usdc_target(chain: &Chain, token: &TokenId) -> Option<&'static str> {
+    let (name, usdc) = match chain {
+        Chain::Known(KnownChain::Ethereum) => ("Ethereum", TokenId::UsdcEthereum),
+        Chain::Known(KnownChain::Polygon) => ("Polygon", TokenId::UsdcPolygon),
+        _ => return None,
+    };
+    token
+        .as_wire_str()
+        .eq_ignore_ascii_case(usdc.as_wire_str())
+        .then_some(name)
+}
+
 /// The daemon serves only hub chains, so a bridge-only chain is quoted on its
-/// Arbitrum counterpart with the real chain in the bridge field.
+/// Arbitrum counterpart with the real chain in the bridge field. USDC payouts
+/// on Ethereum and Polygon are remapped the same way.
 fn remap_bridge_chains(request: &mut QuoteRequest) -> Result<()> {
     let target = request.target_chain.as_wire_str();
     let bridge_target = if target.eq_ignore_ascii_case("solana") {
         Some(target.to_owned())
     } else {
-        bridge_chain_name(target).map(str::to_owned)
+        bridge_chain_name(target)
+            .or_else(|| cctp_routed_usdc_target(&request.target_chain, &request.target_token))
+            .map(str::to_owned)
     };
     // Rootstock is also a USDT0 destination, but RBTC settles on Rootstock itself.
     let native_rootstock = request.target_chain == Chain::rootstock()
@@ -570,7 +588,14 @@ impl Client {
             return Err(invalid("amount must be positive"));
         }
         let pinned = BigUint::from(pinned);
-        let direct = config.chains.iter().find(|c| &c.chain == remote_chain);
+        // USDC payouts on Ethereum and Polygon settle on Arbitrum and bridge.
+        let via_arbitrum =
+            btc_source && cctp_routed_usdc_target(remote_chain, remote_token).is_some();
+        let direct = config
+            .chains
+            .iter()
+            .find(|c| &c.chain == remote_chain)
+            .filter(|_| !via_arbitrum);
         let pivot = direct
             .or_else(|| config.chains.iter().find(|c| c.chain == Chain::arbitrum()))
             .ok_or_else(|| unsupported("settlement pivot missing from chain config"))?;
