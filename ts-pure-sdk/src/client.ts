@@ -4056,13 +4056,9 @@ export class Client {
     if (vtxoStatus === "spent") {
       // A submitted-but-not-finalized Arkade offchain tx can make the original
       // VHTLC inputs look spent. Try to resume that pending tx before declaring
-      // the claim already spent.
-      const continued = await this.continueArkadeClaimSwap(id);
-      if (continued.success) return continued;
-      return {
-        success: false,
-        message: "All VTXOs have already been spent.",
-      };
+      // the claim already spent. Return the resume result as-is so a real
+      // finalize/sign failure (e.g. checkScript) is not masked as "spent".
+      return this.continueArkadeClaimSwap(id);
     }
 
     // Route based on VTXO status:
