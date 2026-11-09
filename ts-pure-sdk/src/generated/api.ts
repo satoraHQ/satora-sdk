@@ -2726,6 +2726,23 @@ export interface components {
              */
             evm_htlc_kind: components["schemas"]["EvmHtlcKind"];
             /**
+             * @description Amount actually locked in the EVM HTLC, in base units of the lock
+             *     token (`wbtc_address`; the chain's native coin for `native` locks),
+             *     as a decimal string. Read from the lock's `SwapCreated` event, so it
+             *     can differ from `evm_expected_sats` (DEX slippage). This is the
+             *     `amount` a unilateral refund (`refund` / `refundTo`) must pass.
+             *     `null` until the lock is observed.
+             */
+            evm_htlc_locked_amount?: string | null;
+            /**
+             * @description The `sender` the EVM lock is keyed under, i.e. the address it refunds
+             *     to. From HTLCErc20 v7 / HTLCNative v2 this is the depositor, which
+             *     calls the HTLC's `refund` itself; on older versions it is the
+             *     coordinator (`evm_coordinator_address`), refunded via its `refundTo`.
+             *     `null` until the lock is observed.
+             */
+            evm_htlc_sender?: string | null;
+            /**
              * Format: int64
              * @description HTLCErc20 contract VERSION of the deployment this swap lives on —
              *     the EIP-712 domain version string for redeem/refund signatures.
@@ -2757,6 +2774,12 @@ export interface components {
             unilateral_refund_without_receiver_delay: number;
             /** Format: int64 */
             vhtlc_refund_locktime: number;
+            /**
+             * @description Token contract locked in the EVM HTLC (WBTC/tBTC; the zero address
+             *     for `native` locks). Not required in the schema: servers before
+             *     this field did not send it.
+             */
+            wbtc_address?: string;
         };
         /**
          * @description Request to create an EVM-to-Bitcoin swap.
@@ -2882,6 +2905,23 @@ export interface components {
              *     `native` (`HTLCNative` + `HTLCNativeCoordinator`).
              */
             evm_htlc_kind: components["schemas"]["EvmHtlcKind"];
+            /**
+             * @description Amount actually locked in the EVM HTLC, in base units of the lock
+             *     token (`wbtc_address`; the chain's native coin for `native` locks),
+             *     as a decimal string. Read from the lock's `SwapCreated` event, so it
+             *     can differ from `evm_expected_sats` (DEX slippage). This is the
+             *     `amount` a unilateral refund (`refund` / `refundTo`) must pass.
+             *     `null` until the lock is observed.
+             */
+            evm_htlc_locked_amount?: string | null;
+            /**
+             * @description The `sender` the EVM lock is keyed under, i.e. the address it refunds
+             *     to. From HTLCErc20 v7 / HTLCNative v2 this is the depositor, which
+             *     calls the HTLC's `refund` itself; on older versions it is the
+             *     coordinator (`evm_coordinator_address`), refunded via its `refundTo`.
+             *     `null` until the lock is observed.
+             */
+            evm_htlc_sender?: string | null;
             /**
              * Format: int64
              * @description HTLCErc20 contract VERSION of the deployment this swap lives on —
@@ -3022,6 +3062,23 @@ export interface components {
              *     client funds (Permit2 vs a payable lock) and refunds the swap.
              */
             evm_htlc_kind: components["schemas"]["EvmHtlcKind"];
+            /**
+             * @description Amount actually locked in the EVM HTLC, in base units of the lock
+             *     token (`wbtc_address`; the chain's native coin for `native` locks),
+             *     as a decimal string. Read from the lock's `SwapCreated` event, so it
+             *     can differ from `evm_expected_sats` (DEX slippage). This is the
+             *     `amount` a unilateral refund (`refund` / `refundTo`) must pass.
+             *     `null` until the lock is observed.
+             */
+            evm_htlc_locked_amount?: string | null;
+            /**
+             * @description The `sender` the EVM lock is keyed under, i.e. the address it refunds
+             *     to. From HTLCErc20 v7 / HTLCNative v2 this is the depositor, which
+             *     calls the HTLC's `refund` itself; on older versions it is the
+             *     coordinator (`evm_coordinator_address`), refunded via its `refundTo`.
+             *     `null` until the lock is observed.
+             */
+            evm_htlc_sender?: string | null;
             /**
              * Format: int64
              * @description HTLC contract VERSION of the deployment this swap lives on —

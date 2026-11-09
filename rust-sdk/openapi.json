@@ -5400,6 +5400,20 @@
             "$ref": "#/components/schemas/EvmHtlcKind",
             "description": "HTLC family of the lock: `erc20` (`HTLCErc20` + `HTLCCoordinator`) or\n`native` (`HTLCNative` + `HTLCNativeCoordinator`)."
           },
+          "evm_htlc_locked_amount": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Amount actually locked in the EVM HTLC, in base units of the lock\ntoken (`wbtc_address`; the chain's native coin for `native` locks),\nas a decimal string. Read from the lock's `SwapCreated` event, so it\ncan differ from `evm_expected_sats` (DEX slippage). This is the\n`amount` a unilateral refund (`refund` / `refundTo`) must pass.\n`null` until the lock is observed."
+          },
+          "evm_htlc_sender": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The `sender` the EVM lock is keyed under, i.e. the address it refunds\nto. From HTLCErc20 v7 / HTLCNative v2 this is the depositor, which\ncalls the HTLC's `refund` itself; on older versions it is the\ncoordinator (`evm_coordinator_address`), refunded via its `refundTo`.\n`null` until the lock is observed."
+          },
           "evm_htlc_version": {
             "type": "integer",
             "format": "int64",
@@ -5468,6 +5482,10 @@
           "vhtlc_refund_locktime": {
             "type": "integer",
             "format": "int64"
+          },
+          "wbtc_address": {
+            "type": "string",
+            "description": "Token contract locked in the EVM HTLC (WBTC/tBTC; the zero address\nfor `native` locks). Not required in the schema: servers before\nthis field did not send it."
           }
         }
       },
@@ -5721,6 +5739,20 @@
           "evm_htlc_kind": {
             "$ref": "#/components/schemas/EvmHtlcKind",
             "description": "HTLC family of the lock: `erc20` (`HTLCErc20` + `HTLCCoordinator`) or\n`native` (`HTLCNative` + `HTLCNativeCoordinator`)."
+          },
+          "evm_htlc_locked_amount": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Amount actually locked in the EVM HTLC, in base units of the lock\ntoken (`wbtc_address`; the chain's native coin for `native` locks),\nas a decimal string. Read from the lock's `SwapCreated` event, so it\ncan differ from `evm_expected_sats` (DEX slippage). This is the\n`amount` a unilateral refund (`refund` / `refundTo`) must pass.\n`null` until the lock is observed."
+          },
+          "evm_htlc_sender": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The `sender` the EVM lock is keyed under, i.e. the address it refunds\nto. From HTLCErc20 v7 / HTLCNative v2 this is the depositor, which\ncalls the HTLC's `refund` itself; on older versions it is the\ncoordinator (`evm_coordinator_address`), refunded via its `refundTo`.\n`null` until the lock is observed."
           },
           "evm_htlc_version": {
             "type": "integer",
@@ -5977,6 +6009,20 @@
           "evm_htlc_kind": {
             "$ref": "#/components/schemas/EvmHtlcKind",
             "description": "HTLC family of the lock: `erc20` (`HTLCErc20` + `HTLCCoordinator`) or\n`native` (`HTLCNative` + `HTLCNativeCoordinator`). Selects how the\nclient funds (Permit2 vs a payable lock) and refunds the swap."
+          },
+          "evm_htlc_locked_amount": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Amount actually locked in the EVM HTLC, in base units of the lock\ntoken (`wbtc_address`; the chain's native coin for `native` locks),\nas a decimal string. Read from the lock's `SwapCreated` event, so it\ncan differ from `evm_expected_sats` (DEX slippage). This is the\n`amount` a unilateral refund (`refund` / `refundTo`) must pass.\n`null` until the lock is observed."
+          },
+          "evm_htlc_sender": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The `sender` the EVM lock is keyed under, i.e. the address it refunds\nto. From HTLCErc20 v7 / HTLCNative v2 this is the depositor, which\ncalls the HTLC's `refund` itself; on older versions it is the\ncoordinator (`evm_coordinator_address`), refunded via its `refundTo`.\n`null` until the lock is observed."
           },
           "evm_htlc_version": {
             "type": "integer",
