@@ -245,6 +245,8 @@ export function serverAnswering(routes: {
   collabSignature?: unknown;
   rehashParams?: unknown;
   rehashSignature?: unknown;
+  /** Answer to the funding hint; by default the server applies it. */
+  evmFunding?: unknown;
 }): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = input instanceof Request ? input.url : String(input);
@@ -275,6 +277,17 @@ export function serverAnswering(routes: {
     }
     if (url.includes("fund-gasless")) {
       return answer(routes.gasless, "the gasless relay");
+    }
+    if (url.endsWith("/evm-funding")) {
+      return Response.json(
+        routes.evmFunding ?? {
+          id: SWAP_ID,
+          status: "client_funding_seen",
+          dispatched: true,
+          message: "applied",
+        },
+        { status: 200 },
+      );
     }
     if (url.endsWith(`/swap/${SWAP_ID}`)) {
       return answer(routes.swap, "GET /swap/{id}");

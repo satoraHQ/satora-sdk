@@ -81,6 +81,104 @@ describe("fundSwap records the funding on the stored swap", () => {
     });
   }
 
+  it("tells the server which transaction funded the swap", async () => {
+    const fetchMock = serverAnswering({
+      swap: swapResponse(),
+      permit2: permit2Params,
+    });
+    const { client } = await unfundedClient();
+    const signer = fundingSigner({ transactionHash: MINED, logs: [REAL_LOG] });
+
+    await client.fundSwap(SWAP_ID, signer);
+
+    const hint = fetchMock.mock.calls.find(([input]) =>
+      String(input instanceof Request ? input.url : input).endsWith(
+        `/swap/${SWAP_ID}/evm-funding`,
+      ),
+    );
+    expect(hint).toBeDefined();
+    const [, init] = hint as [unknown, RequestInit];
+    expect(init.method).toBe("POST");
+    // The hash that mined, not the one the wallet first returned.
+    expect(JSON.parse(String(init.body))).toEqual({ tx_hash: MINED });
+  });
+
+  it("funds even when the server refuses the hint", async () => {
+    const warn = vi.fn();
+    // An older server without the route: the hint answers 404.
+    const server = serverAnswering({
+      swap: swapResponse(),
+      permit2: permit2Params,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (url.endsWith("/evm-funding")) {
+          return Response.json({ error: "no such route" }, { status: 404 });
+        }
+        return server(input, init);
+      }),
+    );
+    const { client } = await unfundedClient({ warn });
+    const signer = fundingSigner({ transactionHash: MINED, logs: [REAL_LOG] });
+
+    await expect(client.fundSwap(SWAP_ID, signer)).resolves.toEqual({
+      txHash: MINED,
+    });
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "client.fundSwap.hintRefused" }),
+    );
+  });
+
+  it("repeats the hint while the server's node has not seen the funding", async () => {
+    const warn = vi.fn();
+    const server = serverAnswering({
+      swap: swapResponse(),
+      permit2: permit2Params,
+    });
+    // The server's node trails the client's: the first two hints find no
+    // receipt, the third does.
+    let hints = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (url.endsWith("/evm-funding")) {
+          hints += 1;
+          if (hints < 3) {
+            return Response.json(
+              {
+                error: `Transaction ${MINED} is not mined on Polygon yet; retry once it is`,
+              },
+              { status: 404 },
+            );
+          }
+          return Response.json({ status: "ClientFundingSeen" });
+        }
+        return server(input, init);
+      }),
+    );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { client } = await unfundedClient({ warn });
+      const signer = fundingSigner({
+        transactionHash: MINED,
+        logs: [REAL_LOG],
+      });
+
+      const funding = client.fundSwap(SWAP_ID, signer);
+      await vi.advanceTimersByTimeAsync(20_000);
+      await expect(funding).resolves.toEqual({ txHash: MINED });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(hints).toBe(3);
+    expect(warn).not.toHaveBeenCalledWith(
+      expect.objectContaining({ event: "client.fundSwap.hintRefused" }),
+    );
+  });
+
   it("records the mined tx and the coordinator, which survive a server refresh", async () => {
     serverAnswering({ swap: swapResponse(), permit2: permit2Params });
     const { client, storage } = await unfundedClient();

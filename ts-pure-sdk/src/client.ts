@@ -99,6 +99,7 @@ import {
   type EsploraUrls,
   fetchFeeRateEstimate,
   fetchTransactionOutputs,
+  fetchWithTimeout,
   findOutputByAddress,
 } from "./esplora.js";
 import {
@@ -513,6 +514,41 @@ class FundingTxUnavailableError extends Error {}
 // answers in one round trip, so a pending hash must not hold the refund.
 const FUNDING_RECEIPT_WAIT_MS = 30_000;
 
+/**
+ * How long `fundSwap` waits for the server to take the funding hint. The
+ * funding is done by then; the hint only shortens the server's detection.
+ */
+const FUNDING_HINT_TIMEOUT_MS = 5_000;
+/**
+ * How often the funding hint is re-sent while the server answers 404 "not
+ * mined yet": its node may trail the client's by a block or two, or still be
+ * on a competing block at the head. Three attempts, a few seconds apart.
+ */
+const FUNDING_HINT_ATTEMPTS = 3;
+const FUNDING_HINT_RETRY_DELAY_MS = 4_000;
+
+/**
+ * The first part of an error body, for a log line. `fetchWithTimeout` only
+ * bounds the headers; a body that never ends must not hang the caller, so
+ * the read gets its own deadline and the text is cut short.
+ */
+async function readBodyBounded(
+  resp: Response,
+  timeoutMs: number,
+): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<string>((resolve) => {
+    timer = setTimeout(() => resolve("<body not read in time>"), timeoutMs);
+  });
+  try {
+    const text = await Promise.race([resp.text(), deadline]);
+    return text.length > 500 ? `${text.slice(0, 500)}…` : text;
+  } catch (error) {
+    return `<body unreadable: ${error instanceof Error ? error.message : String(error)}>`;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 /**
  * Gas limit for a plain native lock (`HTLCNative.create`), with
  * headroom; the unused part is not charged.
@@ -9278,11 +9314,87 @@ export class Client {
       });
     }
 
+    // Point the server at the funding. It verifies the receipt from its own
+    // node, so a lock its monitor missed (a provider answering for an orphan
+    // block) is applied now rather than by a later reconciler pass. Best
+    // effort — the funding is done whatever the server says.
+    await this.#hintEvmFunding(swapId, mined);
+
     // The server may have re-quoted the source amount for this funding;
     // bring the stored copy up to date. Best effort — the funding is done.
     await this.getSwap(swapId, { updateStorage: true }).catch(() => undefined);
 
     return mined;
+  }
+
+  /**
+   * `POST /swap/{id}/evm-funding`: name the transaction that funded the swap.
+   * The server believes nothing in the request; it reads the receipt itself
+   * and applies the lock exactly as its monitor would. A refusal (an older
+   * server without the route, a rate limit) only costs the shortcut.
+   *
+   * A 404 saying the transaction is not mined means the server's node has
+   * no receipt for it yet (it trails the client's node, or sits on a
+   * competing block): the hint is sent again a few times before the monitor
+   * is left to find the lock. Any other 404 is a server without the route.
+   */
+  async #hintEvmFunding(swapId: string, txHash: string): Promise<void> {
+    const baseUrl = this.#config.baseUrl.replace(/\/$/, "");
+    try {
+      for (let attempt = 1; ; attempt++) {
+        // Bounded: the funding is done, and the server's handler looks the
+        // receipt up on its node before answering.
+        const resp = await fetchWithTimeout(
+          `${baseUrl}/swap/${swapId}/evm-funding`,
+          FUNDING_HINT_TIMEOUT_MS,
+          {
+            method: "POST",
+            headers: this.#apiHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({ tx_hash: txHash }),
+          },
+        );
+        if (resp.ok) {
+          return;
+        }
+        const body = await readBodyBounded(resp, FUNDING_HINT_TIMEOUT_MS);
+        if (
+          resp.status === 404 &&
+          /not mined/i.test(body) &&
+          attempt < FUNDING_HINT_ATTEMPTS
+        ) {
+          this.#logger.debug({
+            event: "client.fundSwap.hintNotMinedYet",
+            message:
+              "the server's node has not seen the funding yet; retrying the hint",
+            swapId,
+            data: { txHash, attempt, body },
+          });
+          await new Promise((resolve) =>
+            setTimeout(resolve, FUNDING_HINT_RETRY_DELAY_MS),
+          );
+          continue;
+        }
+        this.#logger.warn({
+          event: "client.fundSwap.hintRefused",
+          message:
+            "the server did not apply the funding hint; its monitor will pick the funding up",
+          swapId,
+          data: { txHash, status: resp.status, body },
+        });
+        return;
+      }
+    } catch (error) {
+      this.#logger.warn({
+        event: "client.fundSwap.hintFailed",
+        message:
+          "could not reach the server with the funding hint; its monitor will pick the funding up",
+        swapId,
+        data: {
+          txHash,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
   }
 
   /**

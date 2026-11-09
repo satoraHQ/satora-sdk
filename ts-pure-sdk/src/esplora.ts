@@ -49,7 +49,7 @@ export interface HtlcOutputResult {
  * (React Native/Hermes). If `AbortController` itself is absent, the request
  * is issued without a timeout rather than throwing before it starts.
  */
-async function fetchWithTimeout(
+export async function fetchWithTimeout(
   url: string,
   timeoutMs: number,
   init?: RequestInit,
