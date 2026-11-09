@@ -1,5 +1,14 @@
 # @satora/swap
 
+## 1.8.1
+
+### Patch Changes
+
+- 27edee2: Target backend 0.3.24 in the x-satora-server-version header.
+- 835913f: Target backend 0.3.25 in the x-satora-server-version header.
+- 71f5946: Re-read the server's HTLC 1, 2, 4 and 8 seconds after a status hint says it is funded while the chain read does not show it yet. The public RPCs trail the server's node by a few blocks, so the first read often missed the lock and the auto-claim waited for the next at-risk reconcile, up to a minute.
+- a8b09c7: Track a swap created with `createLightningToEvmSwap`, like every other create method, so a client with auto-claim claims it without a restart.
+
 ## 1.8.0
 
 ### Minor Changes

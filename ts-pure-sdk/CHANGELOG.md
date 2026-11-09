@@ -1,5 +1,14 @@
 # @lendasat/lendaswap-sdk-pure
 
+## 2.8.1
+
+### Patch Changes
+
+- 27edee2: Target backend 0.3.24 in the x-satora-server-version header.
+- 835913f: Target backend 0.3.25 in the x-satora-server-version header.
+- a60acdd: `fundSwap` tells the server which transaction funded an EVM-source swap (`POST /swap/{id}/evm-funding`) once the receipt is in. The server verifies the receipt from its own node and applies the lock as its monitor would, so a funding the monitor missed is picked up at once. Best effort: an older server without the route only loses the shortcut. While the server's node has not seen the transaction yet, the hint is sent again a few times (bounded) before the monitor is left to find the lock.
+- ab5b9d6: The generated API types now describe the Permit2 witness that `POST /swap/{id}/fund-gasless` expects, and type the `GET /swap/{id}/swap-and-lock-calldata-permit2` response as `Permit2FundingCalldataResponse` instead of a bare string.
+
 ## 2.8.0
 
 ### Minor Changes

@@ -1,6 +1,6 @@
 {
   "name": "@satora/escrow-client",
-  "version": "12.0.0",
+  "version": "12.0.1",
   "description": "High-level escrow flows (funding/withdrawing) bundling @satora/escrow with an injected swap client",
   "type": "module",
   "main": "dist/index.js",
@@ -31,7 +31,7 @@
   },
   "peerDependencies": {
     "@arkade-os/sdk": "^0.5.1",
-    "@satora/swap": "1.8.0"
+    "@satora/swap": "1.8.1"
   },
   "devDependencies": {
     "@arkade-os/sdk": "^0.5.1",
