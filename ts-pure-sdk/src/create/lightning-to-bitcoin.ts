@@ -7,6 +7,7 @@
  */
 import { bytesToHex } from "../signer/index.js";
 import { BTC_HTLC_SCRIPT_VERSION_STRICT } from "../strict-vhtlc.js";
+import { assertInvoicePays } from "../swap-verification.js";
 import { retryOnHashCollision } from "./retry.js";
 import type {
   CreateSwapContext,
@@ -83,6 +84,8 @@ export async function createLightningToBitcoinSwap(
     if (!data) {
       throw new Error("No swap data returned");
     }
+
+    assertInvoicePays(data.bolt11_invoice, hashLock);
 
     // The derived key claims the HTLC; the preimage settles the invoice.
     await ctx.storeSwap(data.id, swapParams, {

@@ -1,5 +1,5 @@
 {
-  "about": "Real BOLT11 invoices and swap responses for the SDKs' Lightning hash checks, minted on the e2e regtest stack on 2026-10-05. Each regtest invoice's payment_hash is what `lncli decodepayreq` printed for it; the spec vector's is the one BOLT 11 states. Key indices refer to swap keys derived from `mnemonic`.",
+  "about": "Real BOLT11 invoices and swap responses for the SDKs' Lightning hash checks, minted on the e2e regtest stack on 2026-10-05 (the Bitcoin to and from Lightning swaps on 2026-11-10). Each regtest invoice's payment_hash is what `lncli decodepayreq` printed for it; the spec vector's is the one BOLT 11 states. Key indices refer to swap keys derived from `mnemonic`.",
   "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
   "invoices": {
     "lnd_hold_index_0": {
@@ -122,6 +122,85 @@
         },
         "source_amount": "20062",
         "target_amount": "20000"
+      }
+    },
+    "bitcoin_to_lightning": {
+      "source": "POST /swap/bitcoin/lightning on the regtest daemon (LND provider) with refund_pk of key index 2, paying an LND invoice (lncli addinvoice --amt 20000)",
+      "invoice_payment_hash": "d91a49e9e7e7a7fda903bf2e9147b52f6316ec2fb3130e67355c50bbfb4e557b",
+      "response": {
+        "id": "d4673577-d58d-4a91-b9bf-a55e855c09ce",
+        "status": "pending",
+        "client_lightning_invoice": "lnbcrt200u1p4095r6pp5mydyn608u7nlm2grhuhfz3a49a33dmp0kvfsuee4t3gth76w24asdqhwperzv3jxqkkv6tcw36hyegcqzzsxqyz5vqsp5tnea2kckarr5yef0s7d5yw2w6vhnfdtzlpggmyd6vxq03xh2rucq9qxpqysgq2jn3ndel2unseqlrf4qh7a9twlz5npsmm0qmewlwx3cxu9tk23fswvz0erm37chpesd78vt4pfuj496xwvc6n7s3s8khss7hp66klaqqe77ulk",
+        "invoice_expires_at": 1794384378,
+        "fee_sats": 60,
+        "network_fee_sats": 154,
+        "hash_lock": "0xd91a49e9e7e7a7fda903bf2e9147b52f6316ec2fb3130e67355c50bbfb4e557b",
+        "btc_htlc_address": "bcrt1psnp5aw0pzg69l5v4s8nam3gyhvku2puuujlxa3h5pxq4ksu56qmqv2aqrm",
+        "btc_hash_lock": "5b6adb9444eeff672fca686bc053c7a0314257d5",
+        "btc_server_pk": "cb3bcdbd9af8cb3e749f51e6331565ab905a0b2a30a275d800eaec1350c5de1d",
+        "btc_refund_locktime": 1794298218,
+        "btc_htlc_script_version": 1,
+        "btc_fund_txid": null,
+        "btc_claim_txid": null,
+        "network": "regtest",
+        "created_at": "2026-11-10T08:06:18.91731Z",
+        "source_token": {
+          "token_id": "btc",
+          "symbol": "BTC",
+          "chain": "Bitcoin",
+          "name": "Bitcoin",
+          "decimals": 8
+        },
+        "target_token": {
+          "token_id": "btc",
+          "symbol": "BTC",
+          "chain": "Lightning",
+          "name": "Bitcoin (Lightning)",
+          "decimals": 8
+        },
+        "source_amount": "20214",
+        "target_amount": "20000"
+      }
+    },
+    "lightning_to_bitcoin": {
+      "source": "POST /swap/lightning/bitcoin on the regtest daemon (LND provider) with hash_lock and claim_pk of key index 3",
+      "invoice_payment_hash": "e00cb6406486334378bbbb9b04adeca34c1aa513ba411344503695aa3b9df8a6",
+      "response": {
+        "id": "7f09e2d0-74e5-4e56-9972-6f9a763ff2e0",
+        "status": "pending",
+        "bolt11_invoice": "lnbcrt200u1p4095r6pp5uqxtvsrysce5x79mhwdsft0v5dxp4fgnhfq3x3zsx6265wualznqdpy2dshgmmjvys8xampwqs8gmeqgf5hgcm0d9hqcqzycxqz8ssp59xythy633cyfxpnxkgcjtn7cq08gqc0hz4gjhpwhmg3pe9seelks9qxpqysgqkp9shhn46kywf2q3p22h9jef0sjswjrmyrprytdh95r339fl4954uc9v2an3zhczymwn53llt4e8t078t6q3w3d8d8jqxk7zrufdfgqqu8guur",
+        "invoice_expires_at": 1794298218,
+        "fee_sats": 60,
+        "network_fee_sats": 156,
+        "hash_lock": "0xe00cb6406486334378bbbb9b04adeca34c1aa513ba411344503695aa3b9df8a6",
+        "btc_hash_lock": "6ddd3b203626321026e1167e4eec71b0136d2f73",
+        "btc_htlc_address": "bcrt1ptfsjeystt8h0fl9e6t35ashxk40x9pvxjjw3j3xg7l5j4h7mgc5s8hltvy",
+        "btc_user_claim_pk": "7d10bcfe41703cf61e01bdfe8530a8514ddb6abde70308504d54f105defb49aa",
+        "btc_server_refund_pk": "ef50bf7c0121338201fba51ca2856b5af4b76bc02ea8fbe3d9d7aee37b4acef0",
+        "btc_refund_locktime": 1794298098,
+        "btc_htlc_script_version": 1,
+        "btc_fund_txid": null,
+        "btc_fund_vout": null,
+        "btc_claim_txid": null,
+        "target_btc_address": "bcrt1qt25jaaaemnl5qk0kg4rld7t27rasselcdwu68j",
+        "network": "regtest",
+        "created_at": "2026-11-10T08:06:18.936869Z",
+        "source_token": {
+          "token_id": "btc",
+          "symbol": "BTC",
+          "chain": "Lightning",
+          "name": "Bitcoin (Lightning)",
+          "decimals": 8
+        },
+        "target_token": {
+          "token_id": "btc",
+          "symbol": "BTC",
+          "chain": "Bitcoin",
+          "name": "Bitcoin",
+          "decimals": 8
+        },
+        "source_amount": "20000",
+        "target_amount": "19784"
       }
     }
   }

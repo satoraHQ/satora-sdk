@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createArkadeToLightningSwap } from "../src/create/arkade-to-lightning.js";
+import { createBitcoinToLightningSwap } from "../src/create/bitcoin-to-lightning.js";
 import { createLightningToArkadeSwap } from "../src/create/lightning-to-arkade.js";
+import { createLightningToBitcoinSwap } from "../src/create/lightning-to-bitcoin.js";
 import { createLightningToEvmSwap } from "../src/create/lightning-to-evm.js";
 import type { CreateSwapContext } from "../src/create/types.js";
 import {
@@ -17,6 +19,8 @@ const { invoices, swaps } = vectors;
 const L2A = swaps.lightning_to_arkade.response;
 const A2L = swaps.arkade_to_lightning.response;
 const A2L_INVOICE = A2L.client_lightning_invoice;
+const B2L = swaps.bitcoin_to_lightning.response;
+const L2B = swaps.lightning_to_bitcoin.response;
 const BASE_URL = "http://swap.test";
 
 async function paramsAt(index: number): Promise<SwapParams> {
@@ -144,6 +148,34 @@ describe("Lightning to X creation checks the hold invoice's payment hash", () =>
     expect(stored).toHaveLength(1);
   });
 
+  it("stores the regtest daemon's Lightning to Bitcoin hold invoice", async () => {
+    const { ctx, stored } = contextAnswering(await paramsAt(3), L2B);
+    await createLightningToBitcoinSwap(
+      { targetAddress: L2B.target_btc_address, sourceAmountSats: 20000 },
+      ctx,
+    );
+    expect(stored).toHaveLength(1);
+  });
+
+  it("refuses a Lightning to Bitcoin invoice on another hash", async () => {
+    const { ctx, post, stored } = contextAnswering(await paramsAt(3), {
+      ...L2B,
+      bolt11_invoice: invoices.lnd_hold_22.bolt11,
+    });
+    const error = await refusal(
+      createLightningToBitcoinSwap(
+        { targetAddress: L2B.target_btc_address, sourceAmountSats: 20000 },
+        ctx,
+      ),
+    );
+    expect(error.field).toBe("bolt11_invoice");
+    expect(error.expected).toBe(
+      swaps.lightning_to_bitcoin.invoice_payment_hash,
+    );
+    expect(stored).toHaveLength(0);
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
   it("refuses a Lightning to EVM invoice on another hash", async () => {
     const { ctx, post, stored } = contextAnswering(await paramsAt(7), {
       id: "11111111-2222-3333-4444-555555555555",
@@ -156,7 +188,7 @@ describe("Lightning to X creation checks the hold invoice's payment hash", () =>
   });
 });
 
-describe("Arkade to Lightning creation checks the hash lock against the invoice", () => {
+describe("X to Lightning creation checks the hash lock against the invoice", () => {
   type Destination =
     | { lightningInvoice: string }
     | { lightningAddress: string };
@@ -167,22 +199,31 @@ describe("Arkade to Lightning creation checks the hash lock against the invoice"
   const directions = [
     {
       name: "Arkade to Lightning",
-      response: A2L,
+      response: A2L as typeof A2L | typeof B2L,
       invoice: A2L_INVOICE,
+      index: 1,
       create: (destination: Destination, ctx: CreateSwapContext) =>
         createArkadeToLightningSwap(withAmount(destination), ctx),
     },
+    {
+      name: "Bitcoin to Lightning",
+      response: B2L,
+      invoice: B2L.client_lightning_invoice,
+      index: 2,
+      create: (destination: Destination, ctx: CreateSwapContext) =>
+        createBitcoinToLightningSwap(withAmount(destination), ctx),
+    },
   ];
 
-  describe.each(directions)("$name", ({ response, invoice, create }) => {
+  describe.each(directions)("$name", ({ response, invoice, index, create }) => {
     it("stores a swap locked to the supplied invoice's payment hash", async () => {
-      const { ctx, stored } = contextAnswering(await paramsAt(1), response);
+      const { ctx, stored } = contextAnswering(await paramsAt(index), response);
       await create({ lightningInvoice: invoice }, ctx);
       expect(stored).toHaveLength(1);
     });
 
     it("refuses a hash lock that is not the invoice's payment hash", async () => {
-      const { ctx, stored } = contextAnswering(await paramsAt(1), {
+      const { ctx, stored } = contextAnswering(await paramsAt(index), {
         ...response,
         hash_lock: `0x${invoices.lnd_hold_22.payment_hash}`,
       });
@@ -192,7 +233,7 @@ describe("Arkade to Lightning creation checks the hash lock against the invoice"
     });
 
     it("refuses another invoice in place of the supplied one, even with a matching lock", async () => {
-      const { ctx, stored } = contextAnswering(await paramsAt(1), {
+      const { ctx, stored } = contextAnswering(await paramsAt(index), {
         ...response,
         client_lightning_invoice: invoices.lnd_hold_33.bolt11,
         hash_lock: `0x${invoices.lnd_hold_33.payment_hash}`,
@@ -204,14 +245,14 @@ describe("Arkade to Lightning creation checks the hash lock against the invoice"
     });
 
     it("checks a server-resolved invoice for a Lightning address against the lock", async () => {
-      const honest = contextAnswering(await paramsAt(1), {
+      const honest = contextAnswering(await paramsAt(index), {
         ...response,
         hash_lock: `0x${response.hash_lock.slice(2).toUpperCase()}`,
       });
       await create({ lightningAddress: "payee@lnurl.test" }, honest.ctx);
       expect(honest.stored).toHaveLength(1);
 
-      const lying = contextAnswering(await paramsAt(1), {
+      const lying = contextAnswering(await paramsAt(index), {
         ...response,
         hash_lock: `0x${invoices.lnd_hold_22.payment_hash}`,
       });
@@ -223,7 +264,7 @@ describe("Arkade to Lightning creation checks the hash lock against the invoice"
     });
 
     it("refuses a server-resolved invoice for another amount than the payout", async () => {
-      const { ctx, stored } = contextAnswering(await paramsAt(1), {
+      const { ctx, stored } = contextAnswering(await paramsAt(index), {
         ...response,
         target_amount: "19000",
       });
@@ -237,7 +278,7 @@ describe("Arkade to Lightning creation checks the hash lock against the invoice"
 
     it("refuses a malformed invoice before any request or key derivation", async () => {
       const { ctx, post, derive } = contextAnswering(
-        await paramsAt(1),
+        await paramsAt(index),
         response,
       );
       await expect(
@@ -515,7 +556,6 @@ describe("recovery checks a swap it stores for the first time", () => {
     client_lightning_invoice: invoices.spark_regtest.bolt11,
     hash_lock: `0x${invoices.spark_regtest.payment_hash}`,
   };
-  const B2L = { ...E2L, id: "33333333-4444-5555-6666-777777777777" };
   const otherLock = `0x${invoices.lnd_hold_22.payment_hash}`;
 
   it("stores swaps whose terms bind to the keys at the server's index", async () => {
@@ -525,7 +565,8 @@ describe("recovery checks a swap it stores for the first time", () => {
         recovered(L2E, "lightning_to_evm", 7),
         recovered(A2L, "arkade_to_lightning"),
         recovered(E2L, "evm_to_lightning"),
-        recovered(B2L, "bitcoin_to_lightning"),
+        recovered(B2L, "bitcoin_to_lightning", 2),
+        recovered(L2B, "lightning_to_bitcoin", 3),
       ],
     });
 
@@ -536,6 +577,7 @@ describe("recovery checks a swap it stores for the first time", () => {
       A2L.id,
       E2L.id,
       B2L.id,
+      L2B.id,
     ]);
     expect((await storage.get(L2E.id))?.keyIndex).toBe(7);
     expect(warnings).toEqual([]);
@@ -560,6 +602,8 @@ describe("recovery checks a swap it stores for the first time", () => {
       recovered({ ...A2L, hash_lock: otherLock }, "arkade_to_lightning"),
       "hash_lock",
     ],
+    // A fresh device cannot know which Lightning address the swap paid, so
+    // the invoice must at least be for the payout the server quoted.
     [
       "an Arkade to Lightning VHTLC that refunds to another key than the one at the server's index",
       recovered(A2L, "arkade_to_lightning", 0),
@@ -583,8 +627,13 @@ describe("recovery checks a swap it stores for the first time", () => {
     ],
     [
       "a Bitcoin to Lightning hash lock that is not its invoice's payment hash",
-      recovered({ ...B2L, hash_lock: otherLock }, "bitcoin_to_lightning"),
+      recovered({ ...B2L, hash_lock: otherLock }, "bitcoin_to_lightning", 2),
       "hash_lock",
+    ],
+    [
+      "a Lightning to Bitcoin invoice that does not pay the secret at the server's index",
+      recovered(L2B, "lightning_to_bitcoin", 2),
+      "bolt11_invoice",
     ],
   ])("refuses %s and stores nothing", async (_, swap, field) => {
     const { client, storage, warnings } = await clientWith({ recover: [swap] });

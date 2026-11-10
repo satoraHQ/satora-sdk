@@ -261,6 +261,7 @@ export function unboundTerms(
     switch (fresh.direction) {
       case "lightning_to_arkade":
       case "lightning_to_evm":
+      case "lightning_to_bitcoin":
         assertInvoicePays(
           fresh.bolt11_invoice,
           bytesToHex(swapParams.preimageHash),

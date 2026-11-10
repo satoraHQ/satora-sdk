@@ -4,8 +4,10 @@
  * The user locks BTC in an on-chain Taproot HTLC; the server pays the user's
  * Lightning invoice and claims the HTLC with the revealed preimage.
  */
+import { invoicePaymentHash } from "../bolt11.js";
 import { bytesToHex } from "../signer/index.js";
 import { BTC_HTLC_SCRIPT_VERSION_STRICT } from "../strict-vhtlc.js";
+import { checkedLightningPaymentHash } from "../swap-verification.js";
 import type {
   BitcoinToLightningSwapOptions,
   BitcoinToLightningSwapResult,
@@ -69,6 +71,10 @@ export async function createBitcoinToLightningSwap(
       "Provide exactly one of sourceAmountSats or targetAmountSats",
     );
   }
+  // A malformed invoice is refused before a key is derived or the server asked.
+  if (options.lightningInvoice !== undefined) {
+    invoicePaymentHash(options.lightningInvoice);
+  }
 
   const swapParams = await ctx.deriveSwapParams();
   const refundPk = bytesToHex(swapParams.publicKey);
@@ -96,6 +102,8 @@ export async function createBitcoinToLightningSwap(
   if (!data) {
     throw new Error("No swap data returned");
   }
+
+  checkedLightningPaymentHash(options, data);
 
   // The derived key is what signs a refund of the HTLC after its locktime.
   await ctx.storeSwap(data.id, swapParams, {

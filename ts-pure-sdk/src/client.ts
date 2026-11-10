@@ -8059,6 +8059,8 @@ export class Client {
    *
    * @param options - The swap options.
    * @returns The swap response and parameters for storage.
+   * @throws {SwapVerificationError} if the server's hold invoice does not pay
+   *   the hash of this swap's own secret. Nothing is stored; do not pay it.
    * @throws Error if the swap creation fails.
    *
    * @example
@@ -8174,7 +8176,12 @@ export class Client {
    *
    * @param options - The swap options.
    * @returns The swap response and parameters for storage.
-   * @throws Error if the swap creation fails.
+   * @throws {SwapVerificationError} if the server's hash lock or invoice does
+   *   not match: a hash lock that is not the payment hash of the invoice it
+   *   pays, or an invoice other than the supplied `lightningInvoice`. Nothing
+   *   is stored; do not fund it.
+   * @throws Error if `lightningInvoice` is not a BOLT11 invoice (before any
+   *   request is made), or if the swap creation fails.
    *
    * @example
    * ```ts
