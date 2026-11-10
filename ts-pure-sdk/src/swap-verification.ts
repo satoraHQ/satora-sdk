@@ -383,6 +383,37 @@ function invoiceKey(invoice: string): string {
 }
 
 /**
+ * A fresh server copy of a stored swap that {@link swapTermsChange} refused,
+ * with the stored copy's terms in place of the server's: its status and
+ * progress are still current, and nothing that locks funds comes from the
+ * refused copy. A term the stored copy lacks is kept from the server's copy,
+ * as an accepted refresh would store it, unless it is what was refused.
+ */
+export function withStoredTerms(
+  stored: StoredSwap,
+  fresh: GetSwapResponse,
+  refused: SwapVerificationError,
+): GetSwapResponse {
+  // A hash lock refused against its invoice condemns the invoice too.
+  const condemned =
+    refused.field === "hash_lock"
+      ? ["hash_lock", "client_lightning_invoice"]
+      : [refused.field];
+  const before = stored.response as unknown as Record<string, unknown>;
+  const kept: Record<string, unknown> = { ...fresh };
+  for (const field of [
+    "direction",
+    ...HASH_FIELDS,
+    ...ADDRESS_FIELDS,
+    ...INVOICE_FIELDS,
+  ]) {
+    if (field in before) kept[field] = before[field];
+    else if (condemned.includes(field)) delete kept[field];
+  }
+  return kept as unknown as GetSwapResponse;
+}
+
+/**
  * How a fresh server copy of a stored swap fails to bind to it, if it does:
  * a direction, hash lock, lock address or invoice payment hash that differs
  * from the stored one, a Lightning to X invoice that does not pay this client's

@@ -445,27 +445,64 @@ describe("a server refresh cannot replace a stored swap's terms", () => {
           swaps.lightning_to_arkade.response.arkade_vhtlc_address,
       },
     ],
-  ])("refuses a changed %s and keeps the stored copy", async (field, changes) => {
+  ])("keeps the stored terms when a refresh changes %s, and takes its status", async (field, changes) => {
     const { stored } = await storedArkadeToLightning();
-    const { client, storage } = await clientWith({
+    const { client, storage, warnings } = await clientWith({
       get: { [A2L.id]: refreshed(changes) },
     });
     await storage.store(stored);
-    const error = await refusal(
-      client.getSwap(A2L.id, { updateStorage: true }),
-    );
-    expect(error.field).toBe(field);
-    expect(error.swapId).toBe(A2L.id);
-    expect(await storage.get(A2L.id)).toEqual(stored);
+
+    const read = await client.getSwap(A2L.id, { updateStorage: true });
+    const kept = { ...stored.response, status: "clientfunded" };
+    expect(read).toEqual(kept);
+    expect((await storage.get(A2L.id))?.response).toEqual(kept);
+    expect(warnings).toMatchObject([
+      {
+        event: "client.get_swap.terms_changed",
+        swapId: A2L.id,
+        data: { field },
+      },
+    ]);
+  });
+
+  // An older SDK may have stored a response without some field; a refused
+  // refresh keeps the server's value for it, unless that is what was refused.
+  it("keeps a term the stored copy lacks from a refused refresh", async () => {
+    const { stored } = await storedArkadeToLightning();
+    const { arkade_vhtlc_address: _, ...withoutAddress } =
+      stored.response as typeof stored.response & {
+        arkade_vhtlc_address: string;
+      };
+    const older = { ...stored, response: withoutAddress } as StoredSwap;
+    const { client, storage } = await clientWith({
+      get: {
+        [A2L.id]: refreshed({
+          client_lightning_invoice: invoices.lnd_hold_22.bolt11,
+        }),
+      },
+    });
+    await storage.store(older);
+
+    const read = await client.getSwap(A2L.id, { updateStorage: true });
+    expect(read).toMatchObject({
+      arkade_vhtlc_address: A2L.arkade_vhtlc_address,
+      client_lightning_invoice: A2L_INVOICE,
+      status: "clientfunded",
+    });
   });
 
   it.each([
     ["bolt11_invoice", { bolt11_invoice: invoices.lnd_hold_22.bolt11 }],
     ["hash_lock", { hash_lock: `0x${invoices.lnd_hold_22.payment_hash}` }],
-  ])("refuses a Lightning to Arkade refresh with a changed %s", async (field, changes) => {
-    const { client, storage } = await clientWith({
+  ])("keeps a Lightning to Arkade swap's stored terms when a refresh changes %s", async (field, changes) => {
+    const { client, storage, warnings } = await clientWith({
       get: {
-        [L2A.id]: { ...L2A, direction: "lightning_to_arkade", ...changes },
+        [L2A.id]: {
+          ...L2A,
+          direction: "lightning_to_arkade",
+          status: "clientfunded",
+          ...changes,
+        },
       },
     });
     await client.setKeyIndex(1);
@@ -475,16 +512,17 @@ describe("a server refresh cannot replace a stored swap's terms", () => {
     });
     const before = await storage.get(L2A.id);
 
-    const error = await refusal(
-      client.getSwap(L2A.id, { updateStorage: true }),
-    );
-    expect(error.field).toBe(field);
-    expect(await storage.get(L2A.id)).toEqual(before);
+    const read = await client.getSwap(L2A.id, { updateStorage: true });
+    expect(read).toEqual({ ...before?.response, status: "clientfunded" });
+    expect(warnings).toMatchObject([
+      { event: "client.get_swap.terms_changed", data: { field } },
+    ]);
   });
 
   // A swap stored before creation checked anything can hold the server's
-  // terms unchecked; an unchanged copy of bad terms is still refused.
-  it("refuses unchanged terms that never bound, as an older SDK stored them", async () => {
+  // terms unchecked. Its refreshes all fail the checks, and must still bring
+  // its status, or the swap could never be followed through the SDK again.
+  it("keeps reading the status of unchanged terms that never bound, as an older SDK stored them", async () => {
     const { stored } = await storedArkadeToLightning();
     const badLock = `0x${invoices.lnd_hold_22.payment_hash}`;
     const legacyArkade = {
@@ -501,26 +539,26 @@ describe("a server refresh cannot replace a stored swap's terms", () => {
         bolt11_invoice: invoices.lnd_hold_22.bolt11,
       },
     } as StoredSwap;
-    const { client, storage } = await clientWith({
+    const { client, storage, warnings } = await clientWith({
       get: {
         [A2L.id]: refreshed({ hash_lock: badLock }),
-        [L2A.id]: legacyLightning.response,
+        [L2A.id]: { ...legacyLightning.response, status: "serverfunded" },
       },
     });
     await storage.store(legacyArkade);
     await storage.store(legacyLightning);
 
-    const arkade = await refusal(
-      client.getSwap(A2L.id, { updateStorage: true }),
+    expect((await client.getSwap(A2L.id, { updateStorage: true })).status).toBe(
+      "clientfunded",
     );
-    expect(arkade.field).toBe("hash_lock");
-    const lightning = await refusal(
-      client.getSwap(L2A.id, { updateStorage: true }),
+    expect((await client.getSwap(L2A.id, { updateStorage: true })).status).toBe(
+      "serverfunded",
     );
-    expect(lightning.field).toBe("bolt11_invoice");
-    expect(lightning.expected).toBe(
-      swaps.lightning_to_arkade.invoice_payment_hash,
-    );
+    expect((await storage.get(L2A.id))?.response.status).toBe("serverfunded");
+    expect(warnings).toMatchObject([
+      { swapId: A2L.id, data: { field: "hash_lock" } },
+      { swapId: L2A.id, data: { field: "bolt11_invoice" } },
+    ]);
   });
 
   it("keeps the stored copy when recovery returns changed terms", async () => {

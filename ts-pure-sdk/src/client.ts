@@ -221,6 +221,7 @@ import {
   SwapVerificationError,
   swapTermsChange,
   unboundTerms,
+  withStoredTerms,
 } from "./swap-verification.js";
 import {
   ALL_EVM_CHAIN_IDS,
@@ -3024,10 +3025,11 @@ export class Client {
    *   lock addresses and invoice payment hashes equal the stored ones, whose
    *   `bolt11_invoice`, if any, pays the stored preimage hash, and whose
    *   `hash_lock` is the payment hash of its `client_lightning_invoice`, if
-   *   any.
+   *   any. A copy that fails those checks is logged as
+   *   `client.get_swap.terms_changed`, and stored and returned with the
+   *   stored copy's hash locks, lock addresses and invoices in place of its
+   *   own.
    * @returns A promise that resolves to the swap details.
-   * @throws {SwapVerificationError} with `updateStorage`, if the server's copy
-   *   fails any of those checks; the stored copy is kept.
    * @throws Error if the request fails or swap is not found.
    */
   async getSwap(
@@ -3050,7 +3052,19 @@ export class Client {
       // the compared fields between this read and this write.
       const stored = await this.#swapStorage.get(id);
       const changed = stored ? swapTermsChange(stored, data) : undefined;
-      if (changed) throw changed;
+      if (stored && changed) {
+        // Throwing would lock the caller out of a swap's status for good, as
+        // a stored copy of terms that never bound fails every refresh.
+        this.#logger.warn({
+          event: "client.get_swap.terms_changed",
+          message: changed.message,
+          swapId: id,
+          data: { field: changed.field },
+        });
+        const kept = withStoredTerms(stored, data, changed);
+        await this.#swapStorage.update(id, kept);
+        return kept;
+      }
       await this.#swapStorage.update(id, data);
     }
 
@@ -8184,7 +8198,6 @@ export class Client {
    *   the HTLC.
    * @throws Error if `lightningInvoice` is not a BOLT11 invoice (before any
    *   request is made), or if the swap creation fails.
-
    *
    * @example
    * ```ts
