@@ -7,7 +7,11 @@
 import { invoicePaymentHash } from "../bolt11.js";
 import { bytesToHex } from "../signer/index.js";
 import { BTC_HTLC_SCRIPT_VERSION_STRICT } from "../strict-vhtlc.js";
-import { checkedLightningPaymentHash } from "../swap-verification.js";
+import {
+  assertBitcoinToLightningHtlc,
+  checkedLightningPaymentHash,
+  normalizeHash,
+} from "../swap-verification.js";
 import type {
   BitcoinToLightningSwapOptions,
   BitcoinToLightningSwapResult,
@@ -103,7 +107,8 @@ export async function createBitcoinToLightningSwap(
     throw new Error("No swap data returned");
   }
 
-  checkedLightningPaymentHash(options, data);
+  const { hash } = checkedLightningPaymentHash(options, data);
+  assertBitcoinToLightningHtlc(data, normalizeHash(hash), swapParams.publicKey);
 
   // The derived key is what signs a refund of the HTLC after its locktime.
   await ctx.storeSwap(data.id, swapParams, {

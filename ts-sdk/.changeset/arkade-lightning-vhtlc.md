@@ -2,6 +2,7 @@
 "@satora/swap": patch
 ---
 
-Arkade to Lightning creation, and recovery of a swap not stored before, check
-`arkade_vhtlc_address` against a VHTLC rebuilt from the invoice's payment hash
-and the swap's refund key (see the legacy SDK changeset).
+Arkade to Lightning and Bitcoin to Lightning creation, and recovery of a swap
+not stored before, check the lock address the user funds against one rebuilt
+from the invoice's payment hash and the swap's refund key (see the legacy SDK
+changeset).

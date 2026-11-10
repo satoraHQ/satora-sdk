@@ -7,15 +7,18 @@ import { ripemd160 } from "@noble/hashes/legacy.js";
 import { hex } from "@scure/base";
 import type {
   ArkadeToLightningSwapResponse,
+  BitcoinToLightningSwapResponse,
   GetSwapResponse,
 } from "./api/client.js";
 import { getNetworkHrp, getNetworkName } from "./arkade-network.js";
 import { invoiceAmountMsat, invoicePaymentHash } from "./bolt11.js";
 import { parseXOnlyPubKey } from "./refund/arkade.js";
+import { type BitcoinNetwork, verifyHtlcAddress } from "./refund/onchain.js";
 import { bytesToHex, type SwapParams } from "./signer/index.js";
 import type { LightningPaymentHash, StoredSwap } from "./storage/types.js";
 import {
   ARKADE_HTLC_SCRIPT_VERSION_STRICT,
+  BTC_HTLC_SCRIPT_VERSION_STRICT,
   StrictVhtlcScript,
 } from "./strict-vhtlc.js";
 
@@ -220,6 +223,69 @@ export function assertArkadeToLightningVhtlc(
 }
 
 /**
+ * Rebuilds the Bitcoin to Lightning HTLC the user is asked to fund, as a
+ * refund rebuilds it, from the invoice's payment hash and the swap's refund
+ * key. The refund rebuilds it from `btc_hash_lock`, so that must be the
+ * invoice's hash too, or the HTLC could be funded and never refunded. Checked
+ * before the swap is first stored, like the Arkade to Lightning VHTLC.
+ */
+export function assertBitcoinToLightningHtlc(
+  response: BitcoinToLightningSwapResponse,
+  paymentHash: string,
+  refundPublicKey: Uint8Array,
+): void {
+  const swapId = response.id;
+  if (response.btc_htlc_script_version !== BTC_HTLC_SCRIPT_VERSION_STRICT) {
+    throw new SwapVerificationError(
+      `Swap ${swapId} uses Bitcoin HTLC script version ${response.btc_htlc_script_version}, which this client cannot refund; do not fund it`,
+      {
+        field: "btc_htlc_script_version",
+        expected: String(BTC_HTLC_SCRIPT_VERSION_STRICT),
+        received: String(response.btc_htlc_script_version),
+        swapId,
+      },
+    );
+  }
+  const hash160 = hex.encode(ripemd160(hex.decode(paymentHash)));
+  const serverHash160 = normalizeHash(response.btc_hash_lock);
+  if (serverHash160 !== hash160) {
+    throw new SwapVerificationError(
+      `Swap ${swapId}'s HTLC hash ${serverHash160} is not the HASH160 ${hash160} of the invoice's payment hash; do not fund it`,
+      {
+        field: "btc_hash_lock",
+        expected: hash160,
+        received: serverHash160,
+        swapId,
+      },
+    );
+  }
+  const name = getNetworkName(response.network);
+  const network: BitcoinNetwork =
+    name === "bitcoin" ? "mainnet" : name === "mutinynet" ? "signet" : name;
+  const binds = verifyHtlcAddress(
+    response.btc_htlc_address,
+    hash160,
+    bytesToHex(parseXOnlyPubKey(response.btc_server_pk)),
+    bytesToHex(parseXOnlyPubKey(bytesToHex(refundPublicKey))),
+    response.btc_refund_locktime,
+    network,
+    response.btc_htlc_script_version,
+  );
+  if (!binds) {
+    throw new SwapVerificationError(
+      `Swap ${swapId}'s HTLC address ${response.btc_htlc_address} does not lock to the invoice's payment hash and this client's refund key; do not fund it`,
+      {
+        field: "btc_htlc_address",
+        expected:
+          "an HTLC on the invoice's payment hash and this client's refund key",
+        received: response.btc_htlc_address,
+        swapId,
+      },
+    );
+  }
+}
+
+/**
  * How the keys recovery derives at the server's `index` fail to match a
  * stored swap, if they do. The swap's locks were built on the stored keys and
  * preimage, so keys from another index must never replace them.
@@ -248,10 +314,10 @@ export function recoveredKeysChange(
 /**
  * How a server copy of a swap this client has not stored fails the checks
  * creation makes on the server's terms, if it does: a Lightning to X invoice
- * must pay the hash of the secret in `swapParams`, an Arkade or Bitcoin to
- * Lightning hash lock must be the payment hash of the invoice it pays, and an
- * Arkade to Lightning VHTLC must rebuild from that hash and the refund key in
- * `swapParams`. A field that is missing or does not decode fails too.
+ * must pay the hash of the secret in `swapParams`, and an Arkade or Bitcoin
+ * to Lightning hash lock must be the payment hash of the invoice it pays, with
+ * a lock that rebuilds from that hash and the refund key in `swapParams`. A
+ * field that is missing or does not decode fails too.
  */
 export function unboundTerms(
   fresh: GetSwapResponse,
@@ -284,12 +350,18 @@ export function unboundTerms(
         );
         break;
       case "bitcoin_to_lightning":
-        checkedLightningPaymentHash(
-          {},
-          {
-            hash_lock: fresh.hash_lock,
-            client_lightning_invoice: fresh.client_lightning_invoice,
-          },
+        assertBitcoinToLightningHtlc(
+          fresh,
+          normalizeHash(
+            checkedLightningPaymentHash(
+              {},
+              {
+                hash_lock: fresh.hash_lock,
+                client_lightning_invoice: fresh.client_lightning_invoice,
+              },
+            ).hash,
+          ),
+          swapParams.publicKey,
         );
         break;
     }

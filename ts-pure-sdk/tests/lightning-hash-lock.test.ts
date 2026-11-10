@@ -323,6 +323,54 @@ describe("Arkade to Lightning creation rebuilds the VHTLC it asks the user to fu
   });
 });
 
+describe("Bitcoin to Lightning creation rebuilds the HTLC it asks the user to fund", () => {
+  const create = (ctx: CreateSwapContext) =>
+    createBitcoinToLightningSwap(
+      { lightningInvoice: B2L.client_lightning_invoice },
+      ctx,
+    );
+
+  // The Lightning to Bitcoin capture's HTLC is a real address on another hash.
+  it("refuses an address the server built on another hash", async () => {
+    const { ctx, stored } = contextAnswering(await paramsAt(2), {
+      ...B2L,
+      btc_htlc_address: L2B.btc_htlc_address,
+    });
+    const error = await refusal(create(ctx));
+    expect(error.field).toBe("btc_htlc_address");
+    expect(stored).toHaveLength(0);
+  });
+
+  it("refuses an HTLC that refunds to another key", async () => {
+    const { ctx, stored } = contextAnswering(await paramsAt(1), B2L);
+    const error = await refusal(create(ctx));
+    expect(error.field).toBe("btc_htlc_address");
+    expect(stored).toHaveLength(0);
+  });
+
+  // The refund rebuilds the HTLC from btc_hash_lock, so a wrong one would
+  // leave the deposit unrefundable even with the right address.
+  it("refuses an HTLC hash that is not the invoice's", async () => {
+    const { ctx, stored } = contextAnswering(await paramsAt(2), {
+      ...B2L,
+      btc_hash_lock: L2B.btc_hash_lock,
+    });
+    const error = await refusal(create(ctx));
+    expect(error.field).toBe("btc_hash_lock");
+    expect(stored).toHaveLength(0);
+  });
+
+  it("refuses a script version this client cannot refund", async () => {
+    const { ctx, stored } = contextAnswering(await paramsAt(2), {
+      ...B2L,
+      btc_htlc_script_version: 2,
+    });
+    const error = await refusal(create(ctx));
+    expect(error.field).toBe("btc_htlc_script_version");
+    expect(stored).toHaveLength(0);
+  });
+});
+
 describe("a server refresh cannot replace a stored swap's terms", () => {
   async function storedArkadeToLightning(): Promise<{
     client: Client;
@@ -629,6 +677,11 @@ describe("recovery checks a swap it stores for the first time", () => {
       "a Bitcoin to Lightning hash lock that is not its invoice's payment hash",
       recovered({ ...B2L, hash_lock: otherLock }, "bitcoin_to_lightning", 2),
       "hash_lock",
+    ],
+    [
+      "a Bitcoin to Lightning HTLC that refunds to another key than the one at the server's index",
+      recovered(B2L, "bitcoin_to_lightning", 1),
+      "btc_htlc_address",
     ],
     [
       "a Lightning to Bitcoin invoice that does not pay the secret at the server's index",
