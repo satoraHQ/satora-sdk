@@ -4,6 +4,7 @@ import {
   type ArkadeToLightningSwapResponse,
   type BtcToArkadeSwapResponse,
   type BulkStatusResponse,
+  type components,
   createApiClient,
   type EvmToArkadeSwapResponse,
   type EvmToBitcoinSwapResponse,
@@ -9350,7 +9351,9 @@ export class Client {
           {
             method: "POST",
             headers: this.#apiHeaders({ "Content-Type": "application/json" }),
-            body: JSON.stringify({ tx_hash: txHash }),
+            body: JSON.stringify({
+              tx_hash: txHash,
+            } satisfies components["schemas"]["EvmFundingHintRequest"]),
           },
         );
         if (resp.ok) {

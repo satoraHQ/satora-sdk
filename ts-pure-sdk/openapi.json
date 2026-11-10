@@ -2292,6 +2292,98 @@
         }
       }
     },
+    "/swap/{id}/evm-funding": {
+      "post": {
+        "tags": ["swap-evm-btc"],
+        "summary": "Point the server at the transaction that funded an EVM-source swap.",
+        "description": "The server verifies the transaction from its own node and applies the\nfunding exactly as its monitor would; nothing in the request is believed.\nIdempotent: a swap that already left `pending` is reported as it is.",
+        "operationId": "hint_evm_funding",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Swap ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvmFundingHintRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The hint was applied, or the swap had already moved on",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvmFundingHintResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed hash, a reverted transaction, or one without a lock of this swap",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Swap not found, not an EVM-source swap, or the transaction is not mined yet",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A hint for this swap is already being applied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many hints from this client",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/swap/{id}/fund-gasless": {
       "post": {
         "tags": ["swap-evm-btc"],
@@ -4715,6 +4807,37 @@
             "items": {
               "$ref": "#/components/schemas/EvmChainInfo"
             }
+          }
+        }
+      },
+      "EvmFundingHintRequest": {
+        "type": "object",
+        "required": ["tx_hash"],
+        "properties": {
+          "tx_hash": {
+            "type": "string",
+            "description": "The hash of the transaction that locked the swap's source funds."
+          }
+        }
+      },
+      "EvmFundingHintResponse": {
+        "type": "object",
+        "required": ["id", "status", "dispatched", "message"],
+        "properties": {
+          "dispatched": {
+            "type": "boolean",
+            "description": "Whether this call found a lock of this swap in the transaction and\ndispatched it. `false` when the swap had already left `pending`."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "message": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "description": "The swap's status after the hint was applied."
           }
         }
       },

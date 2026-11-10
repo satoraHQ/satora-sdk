@@ -986,6 +986,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/swap/{id}/evm-funding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Point the server at the transaction that funded an EVM-source swap.
+         * @description The server verifies the transaction from its own node and applies the
+         *     funding exactly as its monitor would; nothing in the request is believed.
+         *     Idempotent: a swap that already left `pending` is reported as it is.
+         */
+        post: operations["hint_evm_funding"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/swap/{id}/fund-gasless": {
         parameters: {
             query?: never;
@@ -2619,6 +2641,22 @@ export interface components {
         };
         EvmChainsResponse: {
             chains: components["schemas"]["EvmChainInfo"][];
+        };
+        EvmFundingHintRequest: {
+            /** @description The hash of the transaction that locked the swap's source funds. */
+            tx_hash: string;
+        };
+        EvmFundingHintResponse: {
+            /**
+             * @description Whether this call found a lock of this swap in the transaction and
+             *     dispatched it. `false` when the swap had already left `pending`.
+             */
+            dispatched: boolean;
+            /** Format: uuid */
+            id: string;
+            message: string;
+            /** @description The swap's status after the hint was applied. */
+            status: string;
         };
         /**
          * @description HTLC family of an EVM lock, as the API reports it.
@@ -6236,6 +6274,78 @@ export interface operations {
                 };
             };
             /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    hint_evm_funding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Swap ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EvmFundingHintRequest"];
+            };
+        };
+        responses: {
+            /** @description The hint was applied, or the swap had already moved on */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvmFundingHintResponse"];
+                };
+            };
+            /** @description Malformed hash, a reverted transaction, or one without a lock of this swap */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Swap not found, not an EVM-source swap, or the transaction is not mined yet */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description A hint for this swap is already being applied */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Too many hints from this client */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal error */
             500: {
                 headers: {
                     [name: string]: unknown;
