@@ -315,9 +315,9 @@ export function recoveredKeysChange(
  * How a server copy of a swap this client has not stored fails the checks
  * creation makes on the server's terms, if it does: a Lightning to X invoice
  * must pay the hash of the secret in `swapParams`, and an Arkade or Bitcoin
- * to Lightning hash lock must be the payment hash of the invoice it pays, with
- * a lock that rebuilds from that hash and the refund key in `swapParams`. A
- * field that is missing or does not decode fails too.
+ * to Lightning hash lock must be the payment hash of an invoice for the
+ * swap's payout, with a lock that rebuilds from that hash and the refund key
+ * in `swapParams`. A field that is missing or does not decode fails too.
  */
 export function unboundTerms(
   fresh: GetSwapResponse,
@@ -337,30 +337,14 @@ export function unboundTerms(
       case "arkade_to_lightning":
         assertArkadeToLightningVhtlc(
           fresh,
-          normalizeHash(
-            checkedLightningPaymentHash(
-              {},
-              {
-                hash_lock: fresh.hash_lock,
-                client_lightning_invoice: fresh.client_lightning_invoice,
-              },
-            ).hash,
-          ),
+          normalizeHash(checkedLightningPaymentHash({}, fresh).hash),
           swapParams.publicKey,
         );
         break;
       case "bitcoin_to_lightning":
         assertBitcoinToLightningHtlc(
           fresh,
-          normalizeHash(
-            checkedLightningPaymentHash(
-              {},
-              {
-                hash_lock: fresh.hash_lock,
-                client_lightning_invoice: fresh.client_lightning_invoice,
-              },
-            ).hash,
-          ),
+          normalizeHash(checkedLightningPaymentHash({}, fresh).hash),
           swapParams.publicKey,
         );
         break;

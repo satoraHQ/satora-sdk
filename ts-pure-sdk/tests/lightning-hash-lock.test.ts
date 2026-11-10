@@ -653,6 +653,11 @@ describe("recovery checks a swap it stores for the first time", () => {
     // A fresh device cannot know which Lightning address the swap paid, so
     // the invoice must at least be for the payout the server quoted.
     [
+      "an Arkade to Lightning invoice for another amount than the payout",
+      recovered({ ...A2L, target_amount: "1000" }, "arkade_to_lightning"),
+      "client_lightning_invoice",
+    ],
+    [
       "an Arkade to Lightning VHTLC that refunds to another key than the one at the server's index",
       recovered(A2L, "arkade_to_lightning", 0),
       "arkade_vhtlc_address",
@@ -677,6 +682,11 @@ describe("recovery checks a swap it stores for the first time", () => {
       "a Bitcoin to Lightning hash lock that is not its invoice's payment hash",
       recovered({ ...B2L, hash_lock: otherLock }, "bitcoin_to_lightning", 2),
       "hash_lock",
+    ],
+    [
+      "a Bitcoin to Lightning invoice for another amount than the payout",
+      recovered({ ...B2L, target_amount: "1000" }, "bitcoin_to_lightning", 2),
+      "client_lightning_invoice",
     ],
     [
       "a Bitcoin to Lightning HTLC that refunds to another key than the one at the server's index",

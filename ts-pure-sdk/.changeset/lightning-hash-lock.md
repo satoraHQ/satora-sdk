@@ -19,8 +19,8 @@ makes: `getSwap` throws `SwapVerificationError` and recovery keeps the stored
 copy, logging a warning. EVM-sourced swaps are not compared, since their
 funding uses what creation recorded. Recovery also keeps a stored swap's keys
 and preimage when the server's index would derive other ones, and stores a
-swap it did not hold before only if it passes the same invoice and hash lock
-checks, against the secret derived at the server's index. A swap that fails is
+swap it did not hold before only if it passes the same invoice, hash lock
+and payout checks, against the secret derived at the server's index. A swap that fails is
 left out, with a warning. `invoicePaymentHash` reads an invoice the way LDK
 does: it refuses a second payment hash or a truncated field, and takes the
 first 256 bits of a payment hash whose padding bits are set.

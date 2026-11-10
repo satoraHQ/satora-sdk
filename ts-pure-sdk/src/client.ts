@@ -3151,12 +3151,12 @@ export class Client {
    * other keys than the stored ones, or if the server's copy fails the checks
    * `getSwap` makes with `updateStorage`. A swap not stored yet is stored only
    * if a Lightning to X invoice pays the hash of the secret derived at the
-   * server's index, an X to Lightning hash lock is the payment hash of the
-   * invoice it pays, and an Arkade or Bitcoin to Lightning lock, on a script
-   * version this client can refund, rebuilds to its address from that hash and
-   * the refund key derived at the server's index. Other directions' lock
-   * addresses are not rebuilt. A swap that fails is left out of storage and of
-   * the result, with a warning logged.
+   * server's index, an X to Lightning hash lock is the payment hash of an
+   * invoice for the swap's payout, and an Arkade or Bitcoin to Lightning lock,
+   * on a script version this client can refund, rebuilds to its address from
+   * that hash and the refund key derived at the server's index. Other
+   * directions' lock addresses are not rebuilt. A swap that fails is left out
+   * of storage and of the result, with a warning logged.
    *
    * @returns Recovery metadata and the recovered swaps stored locally.
    */
