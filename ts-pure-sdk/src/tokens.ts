@@ -260,6 +260,35 @@ export function isTronToken(chain: string): boolean {
   return chain.toLowerCase() === "tron";
 }
 
+/** Hub chains whose native USDC is paid out over CCTP from Arbitrum. */
+const CCTP_ROUTED_USDC_CHAINS: Record<string, string> = {
+  "1": "Ethereum",
+  "137": "Polygon",
+};
+
+/**
+ * Returns true for native USDC on Ethereum or Polygon as a swap *target*.
+ * Both chains have HTLCs, but USDC payouts to them settle on Arbitrum and
+ * bridge over CCTP, which keeps the BTC-pegged liquidity on one chain.
+ * Sources are unaffected: USDC on these chains still funds a swap directly.
+ */
+export function isCctpRoutedUsdcTarget(chain: string, token: string): boolean {
+  const name = CCTP_ROUTED_USDC_CHAINS[toChain(chain)];
+  return (
+    name != null && USDC_ADDRESSES[name]?.toLowerCase() === token.toLowerCase()
+  );
+}
+
+/**
+ * Returns true when a swap paying out `token` on `chain` settles on Arbitrum
+ * and bridges to `chain`: any token on a bridge-only chain (except a native
+ * lock target such as RBTC), plus USDC on Ethereum and Polygon.
+ */
+export function isBridgedTarget(chain: string, token: string): boolean {
+  if (isNativeLockTarget(chain, token)) return false;
+  return isBridgeOnlyChain(chain) || isCctpRoutedUsdcTarget(chain, token);
+}
+
 /**
  * Returns true if the chain is Solana. Solana is a CCTP-only destination —
  * funds reach it via Circle's Forwarding Service after an Arbitrum-side
@@ -362,10 +391,7 @@ export function toChainName(chain: Chain): string {
  * or is not an EVM token.
  */
 export function getBridgeTargetChain(token: TokenInfo): string | undefined {
-  if (
-    isBridgeOnlyChain(token.chain) &&
-    !isNativeLockTarget(token.chain, String(token.token_id))
-  ) {
+  if (isBridgedTarget(token.chain, String(token.token_id))) {
     return CHAIN_ID_TO_NAME[token.chain] ?? toChainName(token.chain as Chain);
   }
   return undefined;

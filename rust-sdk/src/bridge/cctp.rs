@@ -538,6 +538,34 @@ impl BridgeApi {
     }
 }
 
+/// `bridge_target_chain` names the server uses for EVM CCTP destinations.
+const BRIDGE_CHAIN_NAMES: &[(&str, u64)] = &[
+    ("Ethereum", 1),
+    ("Optimism", 10),
+    ("Unichain", 130),
+    ("Polygon", 137),
+    ("Sonic", 146),
+    ("World Chain", 480),
+    ("Sei", 1329),
+    ("Base", 8453),
+    ("Avalanche", 43114),
+    ("Linea", 59144),
+    ("Ink", 57073),
+    ("HyperEVM", 999),
+    ("Monad", 143),
+];
+
+impl CctpChain {
+    /// The EVM CCTP chain a `bridge_target_chain` name refers to. `None` for
+    /// non-EVM destinations (Solana), USDT0 destinations and unknown names.
+    pub fn for_bridge_name(name: &str) -> Option<Self> {
+        BRIDGE_CHAIN_NAMES
+            .iter()
+            .find(|(known, _)| known.eq_ignore_ascii_case(name))
+            .and_then(|(_, chain_id)| Self::for_chain(*chain_id).ok())
+    }
+}
+
 pub const CHAINS: &[CctpChain] = &[
     CctpChain {
         chain_id: 1,

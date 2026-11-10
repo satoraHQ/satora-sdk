@@ -219,7 +219,7 @@ import {
 import {
   ALL_EVM_CHAIN_IDS,
   isArkade,
-  isBridgeOnlyChain,
+  isBridgedTarget,
   isBtcOnchain,
   isEvmSwapSource,
   isEvmToken,
@@ -2919,10 +2919,7 @@ export class Client {
     let targetChain = params.targetChain;
     let targetToken = params.targetToken;
     let bridgeTargetChain: string | undefined;
-    if (
-      isBridgeOnlyChain(targetChain) &&
-      !isNativeLockTarget(targetChain, targetToken)
-    ) {
+    if (isBridgedTarget(targetChain, targetToken)) {
       bridgeTargetChain = toChainName(targetChain);
       // Determine if this is a USDT0 or USDC bridge token by checking
       // if the target token matches a known USDT0 address on the destination.
@@ -7495,11 +7492,7 @@ export class Client {
     // so the backend knows to bridge after. This keeps the remapping logic
     // in one place — SDK consumers just pass their desired target.
     let bridgeParams = options.bridgeParams;
-    if (
-      !bridgeParams &&
-      isBridgeOnlyChain(targetChain) &&
-      !isNativeLockTarget(targetChain, tokenAddress)
-    ) {
+    if (!bridgeParams && isBridgedTarget(targetChain, tokenAddress)) {
       const chainName = toChainName(targetChain as Chain);
       if (chainName) {
         const isUsdt0 = Object.values(USDT0_ADDRESSES).some(
@@ -7534,6 +7527,36 @@ export class Client {
 
     if (isTronTarget && bridgeParams) {
       bridgeParams = { ...bridgeParams, recipient: options.targetAddress };
+    }
+
+    // A CCTP payout pays Circle's fee out of the bridged USDC, and only the
+    // claim checks the fee against the output. On a source-pinned swap a
+    // small amount can leave nothing to deliver (Ethereum's forwarding fee is
+    // over a dollar), so the swap would be funded and never claimable. Refuse
+    // it before anything is created. Target-pinned swaps gross the fee up.
+    const cctpPayout =
+      !options.bridgeParams &&
+      bridgeParams != null &&
+      bridgeParams.targetTokenAddress?.toLowerCase() ===
+        USDC_ADDRESSES[bridgeParams.targetChain]?.toLowerCase();
+    if (cctpPayout && options.sourceAmount != null) {
+      const quote = await this.getQuote({
+        sourceChain: sourceAsset.chain as Chain,
+        sourceToken: sourceAsset.token_id,
+        targetChain: targetAsset.chain as Chain,
+        targetToken: targetAsset.token_id,
+        sourceAmount: options.sourceAmount,
+        referralCode: options.referralCode,
+        extraFees: options.extraFees,
+        bridgeRecipientSetup: options.bridgeRecipientSetup,
+      });
+      if (BigInt(quote.net_target_amount) <= 0n) {
+        throw new Error(
+          `Amount too small to bridge to ${bridgeParams?.targetChain}: the CCTP fee ` +
+            `(${quote.bridge_fee ?? "unknown"} USDC units) leaves nothing to deliver. ` +
+            "Increase the amount.",
+        );
+      }
     }
 
     // Mirror of the outbound remap for CCTP-inbound sources: when the user

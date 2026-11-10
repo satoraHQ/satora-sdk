@@ -26,6 +26,7 @@
  * `UnsupportedComposeQuotePath`.
  */
 
+import { isCctpRoutedUsdcTarget } from "./tokens.js";
 import type {
   Chain,
   ChainConfigResponse,
@@ -100,13 +101,14 @@ interface EvmRouting {
  *   The bridge protocol (CCTP vs OFT) and its fee are resolved server-side from
  *   the token, and `/dex-quote` already folds the fee into the amounts.
  *
- * Note we don't bridge a token that *is* directly swappable on a hub even when
- * that hub also happens to be a bridge chain (e.g. USDC@Polygon): Polygon is a
- * hub, so it routes direct and skips Circle's fee entirely.
+ * `viaArbitrum` forces the bridged route for a hub chain. Payouts in USDC on
+ * Ethereum or Polygon use it: they settle on Arbitrum and bridge over CCTP
+ * (see `isCctpRoutedUsdcTarget`). Sources on those chains stay direct.
  */
 function resolveEvmRouting(
   chainConfig: ChainConfigResponse,
   evmChain: Chain,
+  viaArbitrum = false,
 ): EvmRouting {
   const tokenChainId = Number.parseInt(evmChain, 10);
   if (Number.isNaN(tokenChainId)) {
@@ -114,7 +116,7 @@ function resolveEvmRouting(
       `composeQuote: EVM chain ${evmChain} is not numeric`,
     );
   }
-  const direct = pivotForChain(chainConfig, evmChain);
+  const direct = viaArbitrum ? undefined : pivotForChain(chainConfig, evmChain);
   if (direct) {
     return {
       btcPegged: direct,
@@ -175,7 +177,11 @@ function resolveTargetRouting(
       toToken: { kind: "solana", address: targetToken },
     };
   }
-  const r = resolveEvmRouting(chainConfig, targetChain);
+  const r = resolveEvmRouting(
+    chainConfig,
+    targetChain,
+    isCctpRoutedUsdcTarget(targetChain, targetToken),
+  );
   return {
     btcPegged: r.btcPegged,
     pivotChainId: r.pivotChainId,

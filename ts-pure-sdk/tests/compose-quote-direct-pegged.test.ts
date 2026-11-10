@@ -266,6 +266,8 @@ describe("composeQuote — direct BTC↔pegged pivot (no DEX)", () => {
 describe("composeQuote — bridge route-selection", () => {
   const USDC_OPTIMISM = "0x0b2c639c533813f4aa9d7837caf62653d097ff85";
   const USDC_POLYGON = "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359";
+  const USDC_ETHEREUM = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48";
+  const USDT0_POLYGON = "0xc2132d05d31c914a87c6611c10748aeb04b58e8f";
 
   /** Wire a `getDexQuote` that records the from/to chain ids it's called with
    *  and returns a fixed 100 USDC out. */
@@ -303,19 +305,53 @@ describe("composeQuote — bridge route-selection", () => {
     expect(BigInt(q.target_amount)).toBeGreaterThan(0n);
   });
 
-  it("routes a hub target (USDC@Polygon) directly — no bridge", async () => {
+  it.each([
+    ["Polygon", "137", USDC_POLYGON, 137],
+    ["Ethereum", "1", USDC_ETHEREUM, 1],
+  ])("bridges a USDC@%s target through Arbitrum over CCTP", async (_name, chain, token, chainId) => {
     const { deps: d, calls } = captureDexCall();
     await composeQuote(
       {
         sourceChain: "Bitcoin",
         sourceToken: "btc",
-        targetChain: "137", // Polygon — a hub
-        targetToken: USDC_POLYGON,
+        targetChain: asChain(chain),
+        targetToken: token,
         sourceAmount: 100_000,
       },
       d,
     );
-    // Same-chain on Polygon (WBTC -> USDC); never touches Arbitrum.
+    // Settles in tBTC on Arbitrum; the server bridges the USDC out.
+    expect(calls[0]).toEqual({ fromChain: 42161, toChain: chainId });
+  });
+
+  it("keeps a non-USDC hub target (USDT0@Polygon) direct", async () => {
+    const { deps: d, calls } = captureDexCall();
+    await composeQuote(
+      {
+        sourceChain: "Bitcoin",
+        sourceToken: "btc",
+        targetChain: "137",
+        targetToken: USDT0_POLYGON,
+        sourceAmount: 100_000,
+      },
+      d,
+    );
+    // Same-chain on Polygon (WBTC -> USDT0); never touches Arbitrum.
+    expect(calls[0]).toEqual({ fromChain: 137, toChain: 137 });
+  });
+
+  it("keeps a USDC@Polygon source direct (only payouts bridge)", async () => {
+    const { deps: d, calls } = captureDexCall();
+    await composeQuote(
+      {
+        sourceChain: "137",
+        sourceToken: USDC_POLYGON,
+        targetChain: "Bitcoin",
+        targetToken: "btc",
+        sourceAmount: 100_000_000,
+      },
+      d,
+    );
     expect(calls[0]).toEqual({ fromChain: 137, toChain: 137 });
   });
 
