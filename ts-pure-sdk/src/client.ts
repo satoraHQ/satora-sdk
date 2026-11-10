@@ -7528,6 +7528,36 @@ export class Client {
       bridgeParams = { ...bridgeParams, recipient: options.targetAddress };
     }
 
+    // A CCTP payout pays Circle's fee out of the bridged USDC, and only the
+    // claim checks the fee against the output. On a source-pinned swap a
+    // small amount can leave nothing to deliver (Ethereum's forwarding fee is
+    // over a dollar), so the swap would be funded and never claimable. Refuse
+    // it before anything is created. Target-pinned swaps gross the fee up.
+    const cctpPayout =
+      !options.bridgeParams &&
+      bridgeParams != null &&
+      bridgeParams.targetTokenAddress?.toLowerCase() ===
+        USDC_ADDRESSES[bridgeParams.targetChain]?.toLowerCase();
+    if (cctpPayout && options.sourceAmount != null) {
+      const quote = await this.getQuote({
+        sourceChain: sourceAsset.chain as Chain,
+        sourceToken: sourceAsset.token_id,
+        targetChain: targetAsset.chain as Chain,
+        targetToken: targetAsset.token_id,
+        sourceAmount: options.sourceAmount,
+        referralCode: options.referralCode,
+        extraFees: options.extraFees,
+        bridgeRecipientSetup: options.bridgeRecipientSetup,
+      });
+      if (BigInt(quote.net_target_amount) <= 0n) {
+        throw new Error(
+          `Amount too small to bridge to ${bridgeParams?.targetChain}: the CCTP fee ` +
+            `(${quote.bridge_fee ?? "unknown"} USDC units) leaves nothing to deliver. ` +
+            "Increase the amount.",
+        );
+      }
+    }
+
     // Mirror of the outbound remap for CCTP-inbound sources: when the user
     // provides USDC on a chain the backend doesn't accept as a direct swap
     // source (Optimism, Base, Linea, …), rewrite to Arbitrum USDC and

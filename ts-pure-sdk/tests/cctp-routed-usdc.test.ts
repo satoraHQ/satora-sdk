@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TokenInfo } from "../src/api/client.js";
+import { Client } from "../src/client.js";
 import { getBridgeTargetChain, isBridgedTarget } from "../src/tokens.js";
 
 const USDC_POLYGON = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359";
@@ -41,5 +42,49 @@ describe("USDC payouts on Ethereum and Polygon bridge over CCTP", () => {
       chain: "137",
     } as unknown as TokenInfo;
     expect(getBridgeTargetChain(token)).toBe("Polygon");
+  });
+});
+
+describe("createSwap refuses a CCTP payout the bridge fee would swallow", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("throws before creating a source-pinned USDC@Ethereum swap that nets zero", async () => {
+    const requests: Request[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (request: Request) => {
+        requests.push(request);
+        if (new URL(request.url).pathname === "/quote") {
+          return Response.json({
+            exchange_rate: "74000",
+            network_fee: 10,
+            gasless_network_fee: 0,
+            protocol_fee: 3,
+            protocol_fee_rate: 0.0025,
+            min_amount: 1000,
+            max_amount: 1_000_000,
+            source_amount: "1200",
+            target_amount: "880000",
+            net_source_amount: "1200",
+            net_target_amount: "0",
+            bridge_fee: 1_250_000,
+          });
+        }
+        // Everything else fails, so the quote comes from /quote.
+        return new Response("unavailable", { status: 503 });
+      }),
+    );
+    const client = await Client.builder()
+      .withBaseUrl("https://example.test")
+      .build();
+    await expect(
+      client.createSwap({
+        source: { chain: "Arkade", tokenId: "btc" },
+        target: { chain: "1", tokenId: USDC_ETHEREUM },
+        sourceAmount: 1200,
+        targetAddress: "0x000000000000000000000000000000000000dEaD",
+      }),
+    ).rejects.toThrow(/too small to bridge to Ethereum/);
+    expect(requests.some((r) => r.method === "POST")).toBe(false);
   });
 });
