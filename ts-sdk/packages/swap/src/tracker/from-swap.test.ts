@@ -376,6 +376,28 @@ describe("swapToTracked", () => {
     });
   });
 
+  it("reads the lock token from evm_htlc_token, over the deprecated wbtc_address", () => {
+    for (const direction of [
+      "evm_to_arkade",
+      "evm_to_bitcoin",
+      "evm_to_lightning",
+    ] as const) {
+      const tracked = swapToTracked(
+        stored({
+          ...arkadeEvmFields,
+          direction,
+          network: "regtest",
+          evm_hash_lock: arkadeEvmFields.hash_lock, // evm_to_bitcoin's name for it
+          evm_htlc_token: "0xlocktoken",
+          wbtc_address: "0xstale",
+        } as Partial<GetSwapResponse>),
+      );
+      expect(tracked?.clientHtlc, direction).toMatchObject({
+        expectedToken: "0xlocktoken",
+      });
+    }
+  });
+
   it("no locked-token fallback off mainnet (a dev token lives elsewhere)", () => {
     const tracked = swapToTracked(
       stored({

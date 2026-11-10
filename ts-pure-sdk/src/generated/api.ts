@@ -2727,7 +2727,7 @@ export interface components {
             evm_htlc_kind: components["schemas"]["EvmHtlcKind"];
             /**
              * @description Amount actually locked in the EVM HTLC, in base units of the lock
-             *     token (`wbtc_address`; the chain's native coin for `native` locks),
+             *     token (`evm_htlc_token`; the chain's native coin for `native` locks),
              *     as a decimal string. Read from the lock's `SwapCreated` event, so it
              *     can differ from `evm_expected_sats` (DEX slippage). This is the
              *     `amount` a unilateral refund (`refund` / `refundTo`) must pass.
@@ -2742,6 +2742,14 @@ export interface components {
              *     `null` until the lock is observed.
              */
             evm_htlc_sender?: string | null;
+            /**
+             * @description Token contract locked in the EVM HTLC: the chain's lock token (tBTC
+             *     on Ethereum and Arbitrum, WBTC on Polygon; the zero address for
+             *     `native` locks). This is the `token` a unilateral refund passes.
+             *     Not required in the schema: servers before this field did not send
+             *     it.
+             */
+            evm_htlc_token?: string;
             /**
              * Format: int64
              * @description HTLCErc20 contract VERSION of the deployment this swap lives on —
@@ -2775,9 +2783,10 @@ export interface components {
             /** Format: int64 */
             vhtlc_refund_locktime: number;
             /**
-             * @description Token contract locked in the EVM HTLC (WBTC/tBTC; the zero address
-             *     for `native` locks). Not required in the schema: servers before
-             *     this field did not send it.
+             * @deprecated
+             * @description Deprecated: use `evm_htlc_token`, which has the same value.
+             *     Not required in the schema: servers before this field did not send
+             *     it.
              */
             wbtc_address?: string;
         };
@@ -2907,7 +2916,7 @@ export interface components {
             evm_htlc_kind: components["schemas"]["EvmHtlcKind"];
             /**
              * @description Amount actually locked in the EVM HTLC, in base units of the lock
-             *     token (`wbtc_address`; the chain's native coin for `native` locks),
+             *     token (`evm_htlc_token`; the chain's native coin for `native` locks),
              *     as a decimal string. Read from the lock's `SwapCreated` event, so it
              *     can differ from `evm_expected_sats` (DEX slippage). This is the
              *     `amount` a unilateral refund (`refund` / `refundTo`) must pass.
@@ -2922,6 +2931,14 @@ export interface components {
              *     `null` until the lock is observed.
              */
             evm_htlc_sender?: string | null;
+            /**
+             * @description Token contract locked in the EVM HTLC: the chain's lock token (tBTC
+             *     on Ethereum and Arbitrum, WBTC on Polygon; the zero address for
+             *     `native` locks). This is the `token` a unilateral refund passes.
+             *     Not required in the schema: servers before this field did not send
+             *     it.
+             */
+            evm_htlc_token?: string;
             /**
              * Format: int64
              * @description HTLCErc20 contract VERSION of the deployment this swap lives on —
@@ -2950,7 +2967,10 @@ export interface components {
             /** @description User's target BTC address for receiving claimed funds */
             target_btc_address?: string | null;
             target_token: components["schemas"]["TokenInfo"];
-            /** @description WBTC token contract address on the EVM chain */
+            /**
+             * @deprecated
+             * @description Deprecated: use `evm_htlc_token`, which has the same value.
+             */
             wbtc_address: string;
         };
         /**
@@ -3064,7 +3084,7 @@ export interface components {
             evm_htlc_kind: components["schemas"]["EvmHtlcKind"];
             /**
              * @description Amount actually locked in the EVM HTLC, in base units of the lock
-             *     token (`wbtc_address`; the chain's native coin for `native` locks),
+             *     token (`evm_htlc_token`; the chain's native coin for `native` locks),
              *     as a decimal string. Read from the lock's `SwapCreated` event, so it
              *     can differ from `evm_expected_sats` (DEX slippage). This is the
              *     `amount` a unilateral refund (`refund` / `refundTo`) must pass.
@@ -3079,6 +3099,14 @@ export interface components {
              *     `null` until the lock is observed.
              */
             evm_htlc_sender?: string | null;
+            /**
+             * @description Token contract locked in the EVM HTLC: the chain's lock token (tBTC
+             *     on Ethereum and Arbitrum, WBTC on Polygon; the zero address for
+             *     `native` locks). This is the `token` a unilateral refund passes.
+             *     Not required in the schema: servers before this field did not send
+             *     it.
+             */
+            evm_htlc_token?: string;
             /**
              * Format: int64
              * @description HTLC contract VERSION of the deployment this swap lives on —
@@ -3125,8 +3153,8 @@ export interface components {
             target_amount: string;
             target_token: components["schemas"]["TokenInfo"];
             /**
-             * @description WBTC/tBTC token contract address on the EVM chain (the token locked
-             *     in the HTLC).
+             * @deprecated
+             * @description Deprecated: use `evm_htlc_token`, which has the same value.
              */
             wbtc_address: string;
         };

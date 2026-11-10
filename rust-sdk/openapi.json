@@ -5405,7 +5405,7 @@
               "string",
               "null"
             ],
-            "description": "Amount actually locked in the EVM HTLC, in base units of the lock\ntoken (`wbtc_address`; the chain's native coin for `native` locks),\nas a decimal string. Read from the lock's `SwapCreated` event, so it\ncan differ from `evm_expected_sats` (DEX slippage). This is the\n`amount` a unilateral refund (`refund` / `refundTo`) must pass.\n`null` until the lock is observed."
+            "description": "Amount actually locked in the EVM HTLC, in base units of the lock\ntoken (`evm_htlc_token`; the chain's native coin for `native` locks),\nas a decimal string. Read from the lock's `SwapCreated` event, so it\ncan differ from `evm_expected_sats` (DEX slippage). This is the\n`amount` a unilateral refund (`refund` / `refundTo`) must pass.\n`null` until the lock is observed."
           },
           "evm_htlc_sender": {
             "type": [
@@ -5413,6 +5413,10 @@
               "null"
             ],
             "description": "The `sender` the EVM lock is keyed under, i.e. the address it refunds\nto. From HTLCErc20 v7 / HTLCNative v2 this is the depositor, which\ncalls the HTLC's `refund` itself; on older versions it is the\ncoordinator (`evm_coordinator_address`), refunded via its `refundTo`.\n`null` until the lock is observed."
+          },
+          "evm_htlc_token": {
+            "type": "string",
+            "description": "Token contract locked in the EVM HTLC: the chain's lock token (tBTC\non Ethereum and Arbitrum, WBTC on Polygon; the zero address for\n`native` locks). This is the `token` a unilateral refund passes.\nNot required in the schema: servers before this field did not send\nit."
           },
           "evm_htlc_version": {
             "type": "integer",
@@ -5485,7 +5489,8 @@
           },
           "wbtc_address": {
             "type": "string",
-            "description": "Token contract locked in the EVM HTLC (WBTC/tBTC; the zero address\nfor `native` locks). Not required in the schema: servers before\nthis field did not send it."
+            "description": "Deprecated: use `evm_htlc_token`, which has the same value.\nNot required in the schema: servers before this field did not send\nit.",
+            "deprecated": true
           }
         }
       },
@@ -5745,7 +5750,7 @@
               "string",
               "null"
             ],
-            "description": "Amount actually locked in the EVM HTLC, in base units of the lock\ntoken (`wbtc_address`; the chain's native coin for `native` locks),\nas a decimal string. Read from the lock's `SwapCreated` event, so it\ncan differ from `evm_expected_sats` (DEX slippage). This is the\n`amount` a unilateral refund (`refund` / `refundTo`) must pass.\n`null` until the lock is observed."
+            "description": "Amount actually locked in the EVM HTLC, in base units of the lock\ntoken (`evm_htlc_token`; the chain's native coin for `native` locks),\nas a decimal string. Read from the lock's `SwapCreated` event, so it\ncan differ from `evm_expected_sats` (DEX slippage). This is the\n`amount` a unilateral refund (`refund` / `refundTo`) must pass.\n`null` until the lock is observed."
           },
           "evm_htlc_sender": {
             "type": [
@@ -5753,6 +5758,10 @@
               "null"
             ],
             "description": "The `sender` the EVM lock is keyed under, i.e. the address it refunds\nto. From HTLCErc20 v7 / HTLCNative v2 this is the depositor, which\ncalls the HTLC's `refund` itself; on older versions it is the\ncoordinator (`evm_coordinator_address`), refunded via its `refundTo`.\n`null` until the lock is observed."
+          },
+          "evm_htlc_token": {
+            "type": "string",
+            "description": "Token contract locked in the EVM HTLC: the chain's lock token (tBTC\non Ethereum and Arbitrum, WBTC on Polygon; the zero address for\n`native` locks). This is the `token` a unilateral refund passes.\nNot required in the schema: servers before this field did not send\nit."
           },
           "evm_htlc_version": {
             "type": "integer",
@@ -5808,7 +5817,8 @@
           },
           "wbtc_address": {
             "type": "string",
-            "description": "WBTC token contract address on the EVM chain"
+            "description": "Deprecated: use `evm_htlc_token`, which has the same value.",
+            "deprecated": true
           }
         }
       },
@@ -6015,7 +6025,7 @@
               "string",
               "null"
             ],
-            "description": "Amount actually locked in the EVM HTLC, in base units of the lock\ntoken (`wbtc_address`; the chain's native coin for `native` locks),\nas a decimal string. Read from the lock's `SwapCreated` event, so it\ncan differ from `evm_expected_sats` (DEX slippage). This is the\n`amount` a unilateral refund (`refund` / `refundTo`) must pass.\n`null` until the lock is observed."
+            "description": "Amount actually locked in the EVM HTLC, in base units of the lock\ntoken (`evm_htlc_token`; the chain's native coin for `native` locks),\nas a decimal string. Read from the lock's `SwapCreated` event, so it\ncan differ from `evm_expected_sats` (DEX slippage). This is the\n`amount` a unilateral refund (`refund` / `refundTo`) must pass.\n`null` until the lock is observed."
           },
           "evm_htlc_sender": {
             "type": [
@@ -6023,6 +6033,10 @@
               "null"
             ],
             "description": "The `sender` the EVM lock is keyed under, i.e. the address it refunds\nto. From HTLCErc20 v7 / HTLCNative v2 this is the depositor, which\ncalls the HTLC's `refund` itself; on older versions it is the\ncoordinator (`evm_coordinator_address`), refunded via its `refundTo`.\n`null` until the lock is observed."
+          },
+          "evm_htlc_token": {
+            "type": "string",
+            "description": "Token contract locked in the EVM HTLC: the chain's lock token (tBTC\non Ethereum and Arbitrum, WBTC on Polygon; the zero address for\n`native` locks). This is the `token` a unilateral refund passes.\nNot required in the schema: servers before this field did not send\nit."
           },
           "evm_htlc_version": {
             "type": "integer",
@@ -6088,7 +6102,8 @@
           },
           "wbtc_address": {
             "type": "string",
-            "description": "WBTC/tBTC token contract address on the EVM chain (the token locked\nin the HTLC)."
+            "description": "Deprecated: use `evm_htlc_token`, which has the same value.",
+            "deprecated": true
           }
         }
       },

@@ -59,9 +59,10 @@ pub struct RelayFundingOptions {
     /// Contracts, call targets and input limit to require on top of the stored swap,
     /// never instead of it. Either way the server's current copy of the swap has to
     /// match the stored one, and the payload has to name the stored coordinator,
-    /// which must also be the one persisted for the swap. For EVM to Bitcoin and EVM
-    /// to Lightning the payload has to lock the stored `wbtc_address`; EVM to Arkade
-    /// responses name no lock token, so with `None` the payload's is signed. Pinned
+    /// which must also be the one persisted for the swap. The payload has to lock the
+    /// stored lock token (`evm_htlc_token`, or `wbtc_address` from older servers); an
+    /// EVM to Arkade swap stored before servers sent it names none, so with `None`
+    /// the payload's is signed. Pinned
     /// contracts that differ from the stored swap are refused. Calls on the source
     /// token are decoded instead of listed as targets.
     pub funding: Option<FundingOptions>,
@@ -158,7 +159,7 @@ struct RelayRequest<'a> {
 pub(crate) struct RelaySwap {
     pub(crate) context: EvmContext,
     pub(crate) coordinator: Address,
-    /// EVM to Arkade responses omit it.
+    /// EVM to Arkade responses from servers before `evm_htlc_token` omit it.
     pub(crate) lock_token: Option<Address>,
     source_amount: U256,
     gasless: bool,
@@ -169,19 +170,19 @@ impl RelaySwap {
         let (coordinator, lock_token, amount, gasless) = match response {
             GetSwapResponse::EvmToArkade(r) => (
                 &r.evm_coordinator_address,
-                None,
+                r.lock_token(),
                 &r.source_amount,
                 r.gasless,
             ),
             GetSwapResponse::EvmToBitcoin(r) => (
                 &r.evm_coordinator_address,
-                Some(&r.wbtc_address),
+                Some(r.lock_token()),
                 &r.source_amount,
                 r.gasless,
             ),
             GetSwapResponse::EvmToLightning(r) => (
                 &r.evm_coordinator_address,
-                Some(&r.wbtc_address),
+                Some(r.lock_token()),
                 &r.source_amount,
                 r.gasless,
             ),
@@ -190,7 +191,7 @@ impl RelaySwap {
         Ok(Self {
             context: EvmContext::from_response(response)?,
             coordinator: parse(coordinator)?,
-            lock_token: lock_token.map(|token| parse(token)).transpose()?,
+            lock_token: lock_token.map(parse).transpose()?,
             source_amount: decimal(amount)?,
             gasless,
         })
@@ -215,9 +216,16 @@ impl RelaySwap {
         pinned: Option<&FundingOptions>,
     ) -> Result<Self> {
         let swap = Self::from_response(&stored.response)?;
+        // A swap stored before servers sent `evm_htlc_token` may name no lock
+        // token (EVM to Arkade) where the server's current copy does: only two
+        // named tokens can disagree, and the stored one stays authoritative.
+        let lock_tokens_differ = matches!(
+            (current.lock_token, swap.lock_token),
+            (Some(current), Some(stored)) if current != stored
+        );
         if current.context != swap.context
             || current.coordinator != swap.coordinator
-            || current.lock_token != swap.lock_token
+            || lock_tokens_differ
         {
             return Err(invalid("server swap details differ from the stored swap"));
         }

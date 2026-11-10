@@ -244,6 +244,7 @@ fn evm_to_arkade_swap_response_matches_spec() {
         evm_funding_confirmations: 64,
         evm_htlc_kind: EvmHtlcKind::Erc20,
         evm_coordinator_address: "0xcoordinator".into(),
+        evm_htlc_token: Some("0xtoken".to_string()),
         btc_vhtlc_address: "ark1qvhtlc".to_string(),
         target_arkade_address: "ark1qtarget".to_string(),
         sender_pk: "02sender".to_string(),

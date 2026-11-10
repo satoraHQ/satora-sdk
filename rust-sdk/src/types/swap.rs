@@ -351,6 +351,10 @@ pub struct EvmToArkadeSwapResponse {
     pub evm_htlc_kind: super::EvmHtlcKind,
     /// The coordinator this swap is pinned to (the HTLC `refundAddress`).
     pub evm_coordinator_address: String,
+    /// Token contract locked in the EVM HTLC: the chain's lock token (the
+    /// zero address for `native` locks). `None` from servers before the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evm_htlc_token: Option<String>,
     pub btc_vhtlc_address: String,
     pub target_arkade_address: String,
     pub sender_pk: String,
@@ -375,6 +379,14 @@ pub struct EvmToArkadeSwapResponse {
     pub evm_claim_txid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evm_fund_txid: Option<String>,
+}
+
+impl EvmToArkadeSwapResponse {
+    /// The token the client's lock holds; `None` from servers before
+    /// `evm_htlc_token`, which sent no lock token for this direction.
+    pub fn lock_token(&self) -> Option<&str> {
+        self.evm_htlc_token.as_deref().filter(|t| !t.is_empty())
+    }
 }
 
 /// `GET /swap/{id}` response for every direction in the pinned spec.

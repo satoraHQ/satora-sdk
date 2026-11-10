@@ -224,6 +224,10 @@ pub struct EvmToBitcoinSwapResponse {
     pub evm_htlc_address: String,
     #[serde(default)]
     pub evm_htlc_kind: EvmHtlcKind,
+    /// Token contract locked in the EVM HTLC: the chain's lock token (the
+    /// zero address for `native` locks). `None` from servers before the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evm_htlc_token: Option<String>,
     pub evm_htlc_version: i64,
     pub evm_refund_locktime: i64,
     pub fee_sats: i64,
@@ -238,6 +242,7 @@ pub struct EvmToBitcoinSwapResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_btc_address: Option<String>,
     pub target_token: TokenInfo,
+    /// Deprecated: use [`Self::lock_token`], which reads `evm_htlc_token`.
     pub wbtc_address: String,
 }
 
@@ -263,6 +268,10 @@ pub struct EvmToLightningSwapResponse {
     pub evm_htlc_address: String,
     #[serde(default)]
     pub evm_htlc_kind: EvmHtlcKind,
+    /// Token contract locked in the EVM HTLC: the chain's lock token (the
+    /// zero address for `native` locks). `None` from servers before the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evm_htlc_token: Option<String>,
     pub evm_htlc_version: i64,
     pub evm_refund_locktime: i64,
     pub fee_sats: i64,
@@ -279,6 +288,7 @@ pub struct EvmToLightningSwapResponse {
     pub status: SwapStatus,
     pub target_amount: String,
     pub target_token: TokenInfo,
+    /// Deprecated: use [`Self::lock_token`], which reads `evm_htlc_token`.
     pub wbtc_address: String,
 }
 
@@ -309,3 +319,20 @@ pub struct BitcoinToLightningSwapResponse {
     pub target_amount: String,
     pub target_token: TokenInfo,
 }
+
+macro_rules! evm_sourced_lock_token {
+    ($($response:ty),*) => {$(
+        impl $response {
+            /// The token the client's lock holds: `evm_htlc_token`, or the
+            /// deprecated `wbtc_address` from servers before it.
+            pub fn lock_token(&self) -> &str {
+                self.evm_htlc_token
+                    .as_deref()
+                    .filter(|t| !t.is_empty())
+                    .unwrap_or(&self.wbtc_address)
+            }
+        }
+    )*};
+}
+
+evm_sourced_lock_token!(EvmToBitcoinSwapResponse, EvmToLightningSwapResponse);

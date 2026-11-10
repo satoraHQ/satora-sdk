@@ -249,13 +249,15 @@ export function swapToTracked(stored: StoredSwap): TrackedSwap | undefined {
           claimAddress: r.server_evm_address, // the server claims the client's EVM HTLC
           expectedSats: r.evm_expected_sats,
           minAmount: 0n, // see SHORT_LOCK_RULE
-          // A native lock's asset word is zero; an ERC20 lock's token is not
-          // on this response yet, so fall back to the per-chain mainnet
-          // constant to complete the isActive tuple.
+          // A native lock's asset word is zero. Servers before
+          // `evm_htlc_token` sent no ERC20 lock token on this response, so
+          // fall back to the per-chain mainnet constant to complete the
+          // isActive tuple.
           token:
             r.evm_htlc_kind === "native"
               ? NATIVE_TOKEN_ADDRESS
-              : lockedTokenFallback(r.evm_chain_id, r.network),
+              : r.evm_htlc_token ||
+                lockedTokenFallback(r.evm_chain_id, r.network),
           // The coordinator created the HTLC on the client's behalf, so it
           // is the lock's sender (refund address), as on evm_to_lightning.
           sender:
@@ -305,7 +307,8 @@ export function swapToTracked(stored: StoredSwap): TrackedSwap | undefined {
           claimAddress: r.server_evm_address, // the server claims the client's EVM HTLC
           expectedSats: r.evm_expected_sats,
           minAmount: 0n, // see SHORT_LOCK_RULE
-          token: r.wbtc_address,
+          // `wbtc_address` is the deprecated alias from servers before it.
+          token: r.evm_htlc_token || r.wbtc_address,
           // The coordinator created the HTLC on the client's behalf, so it
           // is the lock's sender (refund address).
           sender:
@@ -406,7 +409,8 @@ export function swapToTracked(stored: StoredSwap): TrackedSwap | undefined {
           hashLock: r.hash_lock,
           claimAddress: r.server_evm_address, // the server claims the client's EVM HTLC
           expectedSats: r.evm_expected_sats,
-          token: r.wbtc_address,
+          // `wbtc_address` is the deprecated alias from servers before it.
+          token: r.evm_htlc_token || r.wbtc_address,
           sender:
             r.evm_htlc_kind === "native" &&
             r.evm_coordinator_address.toLowerCase() === NATIVE_TOKEN_ADDRESS

@@ -122,7 +122,11 @@ impl Client {
                 crate::types::EvmHtlcKind::Native => Address::ZERO,
                 crate::types::EvmHtlcKind::Erc20 => options
                     .evm_lock_token
-                    .or_else(|| value["wbtc_address"].as_str().and_then(|s| s.parse().ok()))
+                    .or_else(|| {
+                        ["evm_htlc_token", "wbtc_address"]
+                            .iter()
+                            .find_map(|field| value[field].as_str()?.parse().ok())
+                    })
                     .ok_or_else(|| {
                         invalid("configure the locked EVM token; the swap response omits it")
                     })?,

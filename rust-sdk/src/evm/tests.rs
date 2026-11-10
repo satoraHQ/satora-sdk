@@ -4420,6 +4420,67 @@ async fn relay_binds_the_stored_lock_token() {
     }
 }
 
+/// `evm_htlc_token` is the lock token wherever the server sends it: it wins
+/// over a stale `wbtc_address`, and it binds EVM to Arkade payloads, which
+/// had no lock token to check against before.
+#[tokio::test]
+async fn relay_binds_the_evm_htlc_token() {
+    let token = Address::repeat_byte(6); // the ERC20 fixture's lock token
+    let other = Address::repeat_byte(0x77);
+    let options = RelayFundingOptions::new(U256::from(300));
+    for direction in ["evm_to_bitcoin", "evm_to_lightning"] {
+        let stale_wbtc = move |r: &mut Value| {
+            r["evm_htlc_token"] = json!(token);
+            r["wbtc_address"] = json!(other);
+        };
+        let case = RelayCase::for_direction(direction, stale_wbtc, |_| {}).await;
+        case.mount_relay(1).await;
+        case.fund(&options).await.unwrap();
+        assert_eq!(case.journal().lock_token, token.to_string(), "{direction}");
+    }
+
+    let named = move |r: &mut Value| r["evm_htlc_token"] = json!(token);
+    let case = RelayCase::for_direction("evm_to_arkade", named, |_| {}).await;
+    case.mount_relay(1).await;
+    case.fund(&options).await.unwrap();
+    assert_eq!(case.journal().lock_token, token.to_string());
+
+    let substituted = move |p: &mut Value| p["lock_token_address"] = json!(other);
+    let case = RelayCase::for_direction("evm_to_arkade", named, substituted).await;
+    case.assert_refused(
+        &options,
+        "does not match the swap",
+        "evm_to_arkade: payload token",
+    )
+    .await;
+
+    let case = RelayCase::for_direction("evm_to_arkade", named, |_| {}).await;
+    case.serve_swap(|r| r["evm_htlc_token"] = json!(other))
+        .await;
+    case.assert_refused(
+        &options,
+        "differ from the stored swap",
+        "evm_to_arkade: served token",
+    )
+    .await;
+}
+
+/// An EVM to Arkade swap stored before servers sent `evm_htlc_token` names
+/// no lock token; the upgraded server's copy does. That is not a changed
+/// swap, so it still funds.
+#[tokio::test]
+async fn relay_funds_an_evm_to_arkade_swap_stored_before_the_lock_token() {
+    let token = Address::repeat_byte(6);
+    let case = RelayCase::for_direction("evm_to_arkade", |_| {}, |_| {}).await;
+    case.serve_swap(|r| r["evm_htlc_token"] = json!(token))
+        .await;
+    case.mount_relay(1).await;
+    case.fund(&RelayFundingOptions::new(U256::from(300)))
+        .await
+        .unwrap();
+    assert_eq!(case.journal().lock_token, token.to_string());
+}
+
 #[tokio::test]
 async fn relay_persists_intent_before_posting_and_verifies_receipt() {
     use crate::storage::RelayFundingOutcome;
