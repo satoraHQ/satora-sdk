@@ -826,9 +826,16 @@ sponsored UserOperation when the chain has `user_op`, and the server relay
 otherwise, or when that operation sent nothing. A payout through the relay, and a
 DEX payout, must reach `target_amount` less the daemon's slippage (1%, or 2% for
 Bitcoin to EVM), and a direct one through the relay must come with no server
-calls. A DEX payout on Arbitrum needs `user_op`. Bridged payouts are refused,
-because the daemon builds their calls with no minimum output; claim them with a
-reviewed plan through `claim_evm_to_bridge`. Keep `AutoClaimConfig::timeout` (90
+calls. A DEX payout on Arbitrum needs `user_op`. The daemon builds bridge calls
+with no minimum output, so the claimer builds the bridge leg itself or refuses.
+It claims a payout in Arbitrum USDC bridged over CCTP to an EVM chain (Ethereum,
+Polygon, Base, …) through `EvmAutoClaim::bridge_api`, Circle's mainnet IRIS API by
+default (`None` turns this off; test networks pass their own). It takes only the Arbitrum DEX calls from the server, pins the
+adapter, destination domain, native USDC and the recorded recipient itself, caps
+the fee from Circle's quote, and checks on chain, before the burn, that the DEX
+left at least `target_amount` less the slippage. It refuses any other bridged
+payout (Solana, Tron, USDT0); claim those with a reviewed plan through
+`claim_evm_to_bridge`. Keep `AutoClaimConfig::timeout` (90
 seconds) below `TrackerOptions::execution_timeout`; `SwapTracker::new` checks it.
 
 Other executors should call the SDK's durable execution methods with

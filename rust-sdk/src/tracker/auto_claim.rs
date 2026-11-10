@@ -79,6 +79,11 @@ pub struct EvmAutoClaim {
     /// Bitcoin to EVM, 100 otherwise.
     pub slippage_bps: Option<u16>,
     pub minimum_remaining_seconds: u64,
+    /// Circle's IRIS API, for the CCTP fee of a payout bridged from Arbitrum to
+    /// another EVM chain (USDC on Polygon, Ethereum, Base, ...). Defaults to
+    /// `BridgeApi::mainnet()`; test networks pass their own. `None` refuses such
+    /// payouts, which then need a manual, reviewed bridge claim.
+    pub bridge_api: Option<crate::bridge::BridgeApi>,
 }
 #[cfg(feature = "gasless")]
 impl Default for EvmAutoClaim {
@@ -87,6 +92,9 @@ impl Default for EvmAutoClaim {
             chains: Default::default(),
             slippage_bps: None,
             minimum_remaining_seconds: 300,
+            // Payouts in USDC on Polygon and Ethereum bridge over CCTP; without
+            // the fee API they would not be claimed automatically.
+            bridge_api: crate::bridge::BridgeApi::mainnet().ok(),
         }
     }
 }
@@ -336,12 +344,20 @@ impl AutoClaimer {
         };
         let amount =
             |text: &str| U256::from_str_radix(text, 10).map_err(|e| Error::Decode(e.to_string()));
-        // The daemon builds bridge calls with no minimum output.
-        if !value["bridge_target_chain"].is_null() {
-            return Err(invalid(
-                "bridged payouts are not claimed automatically; claim with a reviewed bridge plan",
-            ));
-        }
+        // The daemon builds bridge calls with no minimum output, so a bridged payout
+        // is claimed only when the SDK builds the bridge leg itself: CCTP from
+        // Arbitrum to an EVM chain it knows.
+        let cctp_destination = match value["bridge_target_chain"].as_str() {
+            None if value["bridge_target_chain"].is_null() => None,
+            name => Some(
+                name.and_then(crate::bridge::cctp::CctpChain::for_bridge_name)
+                    .ok_or_else(|| {
+                        invalid(
+                            "bridged payouts are not claimed automatically; claim with a reviewed bridge plan",
+                        )
+                    })?,
+            ),
+        };
         let context = crate::evm::EvmContext::from_response(&stored.response)?;
         let chain = config
             .chains
@@ -361,6 +377,23 @@ impl AutoClaimer {
                 .as_str()
                 .ok_or_else(|| invalid("missing target token"))?,
         )?;
+        if let Some(destination_chain) = cctp_destination {
+            return self
+                .claim_evm_cctp(
+                    id,
+                    stored,
+                    &value,
+                    destination,
+                    destination_chain,
+                    context,
+                    coordinator,
+                    target_token,
+                    chain,
+                    config,
+                )
+                .await
+                .map(Some);
+        }
         let direct = target_token == context.source_token;
         let slippage_bps = config.slippage_bps.unwrap_or(
             if matches!(stored.response, GetSwapResponse::BitcoinToEvm(_)) {
@@ -475,6 +508,230 @@ impl AutoClaimer {
             .await?;
         Ok((!submitted.tx_hash.is_empty()).then_some(submitted.tx_hash))
     }
+
+    /// Claims a payout bridged over CCTP from Arbitrum to another EVM chain. The
+    /// server supplies only the Arbitrum DEX calls; the SDK builds and pins the
+    /// bridge leg itself (adapter, token, domain, recipient, fee cap) and asserts
+    /// on chain, before the burn, that the DEX left at least the payout floor.
+    #[cfg(feature = "gasless")]
+    #[allow(clippy::too_many_arguments)]
+    async fn claim_evm_cctp(
+        &self,
+        id: &str,
+        stored: &StoredSwap,
+        value: &serde_json::Value,
+        destination: &str,
+        destination_chain: crate::bridge::cctp::CctpChain,
+        context: crate::evm::EvmContext,
+        coordinator: crate::evm::Address,
+        target_token: crate::evm::Address,
+        chain: &EvmAutoClaimChain,
+        config: &EvmAutoClaim,
+    ) -> Result<String> {
+        use crate::bridge::BridgeSubmission;
+        use crate::bridge::OutboundReceipt;
+        use crate::bridge::cctp::CctpChain;
+        use crate::evm::Address;
+        use crate::evm::U256;
+        use crate::types::DexAmount;
+        use crate::types::DexCallsPayload;
+        use crate::types::DexToken;
+        let refuse = |reason: &str| {
+            invalid(format!(
+                "bridged payout is not claimed automatically: {reason}; claim with a reviewed bridge plan"
+            ))
+        };
+        let arbitrum = CctpChain::for_chain(ARBITRUM)?;
+        if context.chain_id != ARBITRUM || target_token != arbitrum.usdc {
+            return Err(refuse("only Arbitrum USDC payouts are bridged by the SDK"));
+        }
+        let expected_token = value["bridge_target_token_address"]
+            .as_str()
+            .and_then(|text| text.parse::<Address>().ok());
+        if expected_token != Some(destination_chain.usdc) {
+            return Err(refuse(
+                "the bridged token is not native USDC on the destination",
+            ));
+        }
+        let api = config
+            .bridge_api
+            .as_ref()
+            .ok_or_else(|| refuse("no CCTP fee API is configured"))?;
+        let user_op = chain.user_op.as_ref().ok_or_else(|| {
+            refuse("an Arbitrum DEX payout requires a UserOperation configuration")
+        })?;
+        let recipient = destination
+            .parse::<Address>()
+            .map_err(|e| Error::Decode(e.to_string()))?;
+        let amount =
+            |text: &str| U256::from_str_radix(text, 10).map_err(|e| Error::Decode(e.to_string()));
+        let text = |name: &str| {
+            value[name]
+                .as_str()
+                .ok_or_else(|| invalid(format!("missing {name}")))
+        };
+        let slippage_bps = config.slippage_bps.unwrap_or(
+            if matches!(stored.response, GetSwapResponse::BitcoinToEvm(_)) {
+                200
+            } else {
+                100
+            },
+        );
+        // The same floor the daemon relays any other payout against.
+        let minimum = amount(text("target_amount")?)?
+            .checked_mul(U256::from(10_000 - slippage_bps))
+            .ok_or_else(|| invalid("target amount overflow"))?
+            / U256::from(10_000);
+        let response = self
+            .client
+            .get_dex_calldata_fund(crate::types::DexCalldataRequest {
+                from: DexToken::Evm {
+                    chain_id: ARBITRUM,
+                    address: context.source_token.to_string(),
+                },
+                to: DexToken::Evm {
+                    chain_id: ARBITRUM,
+                    address: arbitrum.usdc.to_string(),
+                },
+                amount: DexAmount::ExactIn(text("evm_expected_sats")?.to_owned()),
+                sender: coordinator.to_string(),
+                slippage_bps,
+                bridge_recipient: None,
+            })
+            .await?;
+        let estimated = amount(&response.estimated_amount_out)?;
+        let DexCallsPayload::Evm { calls } = response.payload;
+        let fee = api
+            .cctp_fee(arbitrum.domain, destination_chain.domain, 1000)
+            .await?;
+        let claim = cctp_payout_claim(
+            calls,
+            estimated,
+            minimum,
+            &fee,
+            destination_chain,
+            recipient,
+            coordinator,
+        )?;
+        let wallet: Arc<dyn crate::evm::EvmWallet> = match &self.evm_wallet {
+            Some(wallet) => wallet.clone(),
+            None => {
+                let key = self
+                    .client
+                    .signer
+                    .as_ref()
+                    .ok_or_else(|| Error::InvalidSigner("claims require the swap seed".into()))?
+                    .evm_key_for_address(stored.key_index, &context.owner.to_string())?;
+                Arc::new(
+                    crate::evm::RpcWallet::connect(&key, context.chain_id, chain.rpc_url.clone())
+                        .await?,
+                )
+            }
+        };
+        let options = crate::evm::EvmClaimOptions {
+            htlc: context.htlc,
+            coordinator,
+            destination: recipient,
+            sweep_token: arbitrum.usdc,
+            // The bridge consumes the whole balance; the floor is asserted in the calls.
+            min_amount_out: U256::ZERO,
+            minimum_remaining_seconds: config.minimum_remaining_seconds,
+            timeout: self.config.timeout,
+        };
+        let receipt = self
+            .client
+            .claim_evm_to_bridge(
+                id,
+                wallet.as_ref(),
+                options,
+                claim,
+                BridgeSubmission::UserOperation(user_op),
+            )
+            .await?;
+        match receipt {
+            OutboundReceipt::Cctp { source_txid, .. } => Ok(source_txid.to_string()),
+            OutboundReceipt::Usdt0(_) => Err(invalid("expected a CCTP receipt")),
+        }
+    }
+}
+
+#[cfg(feature = "gasless")]
+alloy::sol! {
+    /// An ERC-20 self-transfer by the coordinator asserts its balance.
+    interface FloorCheck {
+        function transfer(address to, uint256 amount) external returns (bool);
+    }
+}
+
+/// The SDK's own plan for a CCTP payout from Arbitrum: the server's DEX calls,
+/// then a USDC self-transfer of the floor by the coordinator, which reverts
+/// unless the DEX left at least that much, then the pinned adapter burn.
+///
+/// `estimated` is the DEX's expected output (the burn the plan expects); the
+/// burn is only bounded from below, by `minimum`, which must exceed the fee cap
+/// so the recipient always receives something.
+#[cfg(feature = "gasless")]
+pub(crate) fn cctp_payout_claim(
+    mut dex_calls: Vec<crate::types::DexCall>,
+    estimated: crate::evm::U256,
+    minimum: crate::evm::U256,
+    fee: &crate::bridge::cctp::CctpFee,
+    destination: crate::bridge::cctp::CctpChain,
+    recipient: crate::evm::Address,
+    coordinator: crate::evm::Address,
+) -> Result<crate::bridge::OutboundClaim> {
+    use crate::bridge::OutboundBridge;
+    use crate::bridge::OutboundClaim;
+    use crate::bridge::cctp;
+    use alloy::sol_types::SolCall;
+    let arbitrum = cctp::CctpChain::for_chain(ARBITRUM)?;
+    if destination.chain_id == ARBITRUM || recipient.is_zero() || coordinator.is_zero() {
+        return Err(invalid("invalid CCTP payout destination"));
+    }
+    let amount = estimated.max(minimum);
+    let max_fee = fee.max_fee(amount, true)?;
+    if minimum <= max_fee {
+        return Err(invalid(format!(
+            "payout floor ({minimum}) does not exceed the CCTP fee cap ({max_fee}); amount too small to bridge"
+        )));
+    }
+    // Reverts on a short balance, so a DEX leg that under-delivers can't be bridged.
+    dex_calls.push(crate::types::DexCall {
+        target: arbitrum.usdc.to_string(),
+        data: format!(
+            "0x{}",
+            hex::encode(
+                FloorCheck::transferCall {
+                    to: coordinator,
+                    amount: minimum,
+                }
+                .abi_encode()
+            )
+        ),
+        value: "0".into(),
+    });
+    Ok(OutboundClaim {
+        dex_calls,
+        bridge: OutboundBridge::Cctp {
+            burn: cctp::CctpBurn {
+                source_chain_id: ARBITRUM,
+                source_domain: arbitrum.domain,
+                destination_domain: destination.domain,
+                source_messenger: cctp::TOKEN_MESSENGER,
+                destination_messenger: cctp::TOKEN_MESSENGER.into_word(),
+                source_transmitter: cctp::MESSAGE_TRANSMITTER,
+                burn_token: arbitrum.usdc,
+                sender: cctp::ARBITRUM_ADAPTER,
+                mint_recipient: recipient.into_word(),
+                destination_caller: crate::evm::B256::ZERO,
+                amount,
+                max_fee,
+                min_finality: 1000,
+                hook: cctp::forwarding_hook(None),
+            },
+            minimum_amount: minimum,
+        },
+    })
 }
 
 impl ActionExecutor for AutoClaimer {
@@ -509,5 +766,162 @@ impl ActionExecutor for AutoClaimer {
     }
     fn timeout(&self) -> Option<Duration> {
         Some(self.config.timeout)
+    }
+}
+
+#[cfg(all(test, feature = "gasless"))]
+mod cctp_payout_tests {
+    use super::FloorCheck;
+    use super::cctp_payout_claim;
+    use crate::bridge::OutboundBridge;
+    use crate::bridge::cctp;
+    use crate::evm::Address;
+    use crate::evm::U256;
+    use alloy::sol_types::SolCall;
+
+    fn fee() -> cctp::CctpFee {
+        serde_json::from_value(serde_json::json!({
+            "finalityThreshold": 1000,
+            "minimumFee": 1.4,
+            "forwardFee": {"high": 1_162_129},
+        }))
+        .unwrap()
+    }
+    fn dex_call() -> crate::types::DexCall {
+        crate::types::DexCall {
+            target: Address::repeat_byte(7).to_string(),
+            data: "0x01".into(),
+            value: "0".into(),
+        }
+    }
+
+    #[test]
+    fn bridge_names_resolve_only_to_evm_cctp_chains() {
+        assert_eq!(
+            cctp::CctpChain::for_bridge_name("Polygon").unwrap().domain,
+            7
+        );
+        assert_eq!(
+            cctp::CctpChain::for_bridge_name("ethereum").unwrap().domain,
+            0
+        );
+        assert_eq!(
+            cctp::CctpChain::for_bridge_name("World Chain")
+                .unwrap()
+                .chain_id,
+            480
+        );
+        for refused in ["Solana", "Tron", "Plasma", "XDC", "Arbitrum ", ""] {
+            assert!(
+                cctp::CctpChain::for_bridge_name(refused).is_none(),
+                "{refused}"
+            );
+        }
+    }
+
+    #[test]
+    fn plan_pins_the_route_and_asserts_the_floor_before_the_burn() {
+        let destination = cctp::CctpChain::for_bridge_name("Ethereum").unwrap();
+        let recipient = Address::repeat_byte(0x11);
+        let coordinator = Address::repeat_byte(0x22);
+        let minimum = U256::from(9_000_000);
+        let estimated = U256::from(10_000_000);
+        let claim = cctp_payout_claim(
+            vec![dex_call()],
+            estimated,
+            minimum,
+            &fee(),
+            destination,
+            recipient,
+            coordinator,
+        )
+        .unwrap();
+        let arbitrum = cctp::CctpChain::for_chain(42161).unwrap();
+        let OutboundBridge::Cctp {
+            burn,
+            minimum_amount,
+        } = &claim.bridge
+        else {
+            panic!("expected a CCTP bridge")
+        };
+        burn.validate().unwrap();
+        assert_eq!(*minimum_amount, minimum);
+        assert_eq!(burn.source_chain_id, 42161);
+        assert_eq!(burn.source_domain, arbitrum.domain);
+        assert_eq!(burn.destination_domain, 0);
+        assert_eq!(burn.burn_token, arbitrum.usdc);
+        assert_eq!(burn.sender, cctp::ARBITRUM_ADAPTER);
+        assert_eq!(burn.mint_recipient, recipient.into_word());
+        assert!(burn.destination_caller.is_zero());
+        assert_eq!(burn.min_finality, 1000);
+        assert_eq!(burn.hook, cctp::forwarding_hook(None));
+        assert_eq!(burn.amount, estimated);
+        // 1.4 bps of 10 USDC with the 20% buffer, plus the forwarding fee.
+        assert_eq!(burn.max_fee, fee().max_fee(estimated, true).unwrap());
+        assert!(burn.max_fee < minimum);
+        assert_eq!(claim.dex_calls.len(), 2);
+        assert_eq!(claim.dex_calls[0], dex_call());
+        let check = &claim.dex_calls[1];
+        assert_eq!(check.target, arbitrum.usdc.to_string());
+        assert_eq!(check.value, "0");
+        let data = hex::decode(check.data.trim_start_matches("0x")).unwrap();
+        let decoded = FloorCheck::transferCall::abi_decode(&data).unwrap();
+        assert_eq!(decoded.to, coordinator);
+        assert_eq!(decoded.amount, minimum);
+    }
+
+    #[test]
+    fn plan_bounds_the_burn_by_the_floor_when_the_estimate_is_lower() {
+        let destination = cctp::CctpChain::for_bridge_name("Polygon").unwrap();
+        let claim = cctp_payout_claim(
+            vec![],
+            U256::from(5_000_000),
+            U256::from(6_000_000),
+            &fee(),
+            destination,
+            Address::repeat_byte(0x11),
+            Address::repeat_byte(0x22),
+        )
+        .unwrap();
+        let OutboundBridge::Cctp { burn, .. } = claim.bridge else {
+            panic!("expected a CCTP bridge")
+        };
+        assert_eq!(burn.amount, U256::from(6_000_000));
+        assert_eq!(burn.destination_domain, 7);
+    }
+
+    #[test]
+    fn plan_refuses_a_floor_the_fee_cap_consumes_and_bad_destinations() {
+        let ethereum = cctp::CctpChain::for_bridge_name("Ethereum").unwrap();
+        // About $1.16 of forwarding fee against a $1 floor.
+        let error = cctp_payout_claim(
+            vec![],
+            U256::from(1_000_000),
+            U256::from(1_000_000),
+            &fee(),
+            ethereum,
+            Address::repeat_byte(0x11),
+            Address::repeat_byte(0x22),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("too small to bridge"), "{error}");
+        let arbitrum = cctp::CctpChain::for_chain(42161).unwrap();
+        for (destination, recipient) in [
+            (arbitrum, Address::repeat_byte(0x11)),
+            (ethereum, Address::ZERO),
+        ] {
+            assert!(
+                cctp_payout_claim(
+                    vec![],
+                    U256::from(10_000_000),
+                    U256::from(9_000_000),
+                    &fee(),
+                    destination,
+                    recipient,
+                    Address::repeat_byte(0x22),
+                )
+                .is_err()
+            );
+        }
     }
 }

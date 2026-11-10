@@ -645,3 +645,177 @@ fn params_get<'a>(params: &'a [(String, String)], key: &str) -> Option<&'a str> 
         .find(|(k, _)| k == key)
         .map(|(_, v)| v.as_str())
 }
+
+const ARKADE_ADDRESS: &str = "tark1qqellv77udfmr20tun8dvju5vgudpf9vxe8jwhthrkn26fz96pawqfdy8nk05rsmrf8h94j26905e7n6sng8y059z8ykn2j5xcuw4xt846qj6x";
+const ARB_USDC: &str = "0xaf88d065e77c8cc2239327c5edb3a432268e5831";
+const EVM_RECIPIENT: &str = "0x1111111111111111111111111111111111111111";
+
+fn bridged_quote(net_target: &str) -> serde_json::Value {
+    json!({
+        "exchange_rate": "70000.00",
+        "network_fee": 254,
+        "gasless_network_fee": 0,
+        "protocol_fee": 25,
+        "protocol_fee_rate": 0.0025,
+        "min_amount": 1000,
+        "max_amount": 1000000,
+        "source_amount": "10000",
+        "target_amount": "7000000",
+        "net_source_amount": "10000",
+        "net_target_amount": net_target,
+        "bridge_fee": 1250000,
+    })
+}
+
+fn last_create_body(requests: &[Request]) -> Option<serde_json::Value> {
+    requests
+        .iter()
+        .rev()
+        .find(|r| r.method.as_str() == "POST" && r.url.path().starts_with("/swap/"))
+        .map(|r| serde_json::from_slice(&r.body).expect("create body is JSON"))
+}
+
+/// The quote and the created swap describe the same route: a USDC payout on
+/// Polygon or Ethereum settles on Arbitrum and bridges over CCTP.
+#[tokio::test]
+async fn create_swap_routes_usdc_on_polygon_and_ethereum_like_its_quote() {
+    for (chain, token, name, usdc) in [
+        (
+            Chain::polygon(),
+            TokenId::UsdcPolygon,
+            "Polygon",
+            "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+        ),
+        (
+            Chain::ethereum(),
+            TokenId::UsdcEthereum,
+            "Ethereum",
+            "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+        ),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/quote"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(bridged_quote("5750000")))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/swap/arkade/evm"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("not under test"))
+            .mount(&server)
+            .await;
+        let client = Client::builder()
+            .base_url(server.uri())
+            .mnemonic(TEST_MNEMONIC)
+            .build()
+            .expect("client builds");
+
+        client
+            .get_server_quote(QuoteRequest::new(
+                Chain::arkade(),
+                TokenId::Btc,
+                chain,
+                token.clone(),
+                QuoteAmount::Source(10_000),
+            ))
+            .await
+            .expect("quote succeeds");
+        let requests = server.received_requests().await.unwrap();
+        let quote = query_pairs(&requests[0]);
+        assert_eq!(params_get(&quote, "target_chain"), Some("42161"));
+        assert_eq!(params_get(&quote, "bridge_target_chain"), Some(name));
+
+        for amount in [QuoteAmount::Source(10_000), QuoteAmount::Target(5_000_000)] {
+            let _ = client
+                .create_swap(
+                    KnownChain::Arkade,
+                    TokenId::Btc,
+                    token.clone(),
+                    amount,
+                    Some(Address::Evm(EVM_RECIPIENT.into())),
+                    None,
+                )
+                .await;
+            let requests = server.received_requests().await.unwrap();
+            let body = last_create_body(&requests).expect("swap creation was sent");
+            assert_eq!(body["evm_chain_id"], json!(42161), "{name}: {body}");
+            assert_eq!(body["token_address"], json!(ARB_USDC), "{name}: {body}");
+            assert_eq!(body["bridge_target_chain"], json!(name), "{name}: {body}");
+            assert_eq!(
+                body["bridge_target_token_address"],
+                json!(usdc),
+                "{name}: {body}"
+            );
+            assert_eq!(
+                body["target_address"],
+                json!(EVM_RECIPIENT),
+                "{name}: {body}"
+            );
+        }
+    }
+}
+
+/// A source-pinned CCTP payout whose bridge fee eats the whole output is
+/// refused before anything is created: the claim could never succeed.
+#[tokio::test]
+async fn create_swap_refuses_a_cctp_payout_the_bridge_fee_consumes() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/quote"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(bridged_quote("0")))
+        .mount(&server)
+        .await;
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(TEST_MNEMONIC)
+        .build()
+        .expect("client builds");
+    let err = client
+        .create_swap(
+            KnownChain::Arkade,
+            TokenId::Btc,
+            TokenId::UsdcEthereum,
+            QuoteAmount::Source(1_500),
+            Some(Address::Evm(EVM_RECIPIENT.into())),
+            None,
+        )
+        .await
+        .expect_err("a payout the fee consumes is refused");
+    assert!(
+        matches!(&err, Error::InvalidSwap(message) if message.contains("too small to bridge")),
+        "got {err:?}"
+    );
+    let requests = server.received_requests().await.unwrap();
+    assert!(last_create_body(&requests).is_none(), "nothing was created");
+}
+
+/// Only payouts are bridged: USDC on Polygon as a source funds on Polygon.
+#[tokio::test]
+async fn create_swap_keeps_a_usdc_polygon_source_direct() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/swap/evm/arkade"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("not under test"))
+        .mount(&server)
+        .await;
+    let client = Client::builder()
+        .base_url(server.uri())
+        .mnemonic(TEST_MNEMONIC)
+        .build()
+        .expect("client builds");
+    let _ = client
+        .create_swap(
+            KnownChain::Polygon,
+            TokenId::UsdcPolygon,
+            TokenId::Btc,
+            QuoteAmount::Source(100_000_000),
+            Some(Address::Arkade(ARKADE_ADDRESS.into())),
+            None,
+        )
+        .await;
+    let requests = server.received_requests().await.unwrap();
+    let body = last_create_body(&requests).expect("swap creation was sent");
+    assert_eq!(body["evm_chain_id"], json!(137), "{body}");
+    assert!(body.get("bridge_source_chain").is_none(), "{body}");
+    assert!(body.get("bridge_target_chain").is_none(), "{body}");
+}

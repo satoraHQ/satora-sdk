@@ -3619,6 +3619,22 @@ async fn auto_claim_refuses_unlisted_contracts_other_destinations_and_bridged_pa
         panic!("a bridged payout is refused");
     };
     assert!(error.to_string().contains("bridge"), "{error}");
+    // A CCTP payout the SDK could bridge itself is still refused off Arbitrum,
+    // and for a token other than the destination's native USDC.
+    for (chain, token) in [
+        ("Polygon", "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"),
+        ("Ethereum", "0x0000000000000000000000000000000000000001"),
+        ("Tron", "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"),
+    ] {
+        rewrite_response(&store, |r| {
+            r["bridge_target_chain"] = json!(chain);
+            r["bridge_target_token_address"] = json!(token);
+        });
+        let NotSent(error) = auto_claim(&claimer).await else {
+            panic!("a {chain} payout the SDK cannot verify is refused");
+        };
+        assert!(error.to_string().contains("bridge"), "{chain}: {error}");
+    }
     assert_eq!(wallet.signatures.load(Ordering::Relaxed), 0);
     assert!(server.received_requests().await.unwrap().is_empty());
 }

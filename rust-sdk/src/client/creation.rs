@@ -23,7 +23,7 @@ use reqwest::Method;
 use serde_json::Value;
 use serde_json::json;
 
-fn evm_address(address: &str) -> Result<()> {
+pub(crate) fn evm_address(address: &str) -> Result<()> {
     if address.len() != 42
         || !address.starts_with("0x")
         || !address[2..].bytes().all(|b| b.is_ascii_hexdigit())

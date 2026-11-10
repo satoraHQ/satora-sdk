@@ -363,6 +363,13 @@ impl Client {
     ///
     /// Supports all nine API directions. Generic EVM targets and invoice payouts
     /// use [`Self::create_swap_request`] for explicit chains and destinations.
+    ///
+    /// A payout in native USDC on Ethereum or Polygon settles on Arbitrum and
+    /// bridges over CCTP to the destination, as [`Self::get_quote`] prices it:
+    /// the swap is created for Arbitrum USDC with that chain as the bridge
+    /// target. A source-pinned one is refused when its quote nets nothing after
+    /// the bridge fee. [`Self::create_swap_request`] creates exactly what it is
+    /// given.
     pub async fn create_swap(
         &self,
         source_chain: KnownChain,
@@ -410,6 +417,7 @@ impl Client {
                 "Bitcoin rails require TokenId::Btc".into(),
             ));
         }
+        let mut bridge = None;
         let request = match (source_chain, target, receive_to) {
             (KnownChain::Bitcoin, TokenId::Btc, Address::Arkade(target_address)) => {
                 let QuoteAmount::Target(sats) = amount else {
@@ -446,10 +454,53 @@ impl Client {
                 }
             }
             (rail, target, Address::Evm(target_address)) if evm_source.is_none() => {
-                let chain_id = target.chain().and_then(|chain| chain.evm_chain_id()).ok_or_else(|| Error::InvalidSwap("generic EVM targets require create_swap_request with an explicit chain ID".into()))?;
-                let target = EvmAsset {
-                    chain_id,
-                    token: target,
+                let target_chain = target.chain().ok_or_else(|| {
+                    Error::InvalidSwap(
+                        "generic EVM targets require create_swap_request with an explicit chain ID"
+                            .into(),
+                    )
+                })?;
+                // USDC payouts on Ethereum and Polygon settle on Arbitrum and bridge
+                // over CCTP, as `get_quote` prices them. Sources stay direct.
+                let target = match crate::client::quotes::cctp_routed_usdc_target(
+                    &crate::types::Chain::Known(target_chain.clone()),
+                    &target,
+                ) {
+                    Some(bridge_chain) => {
+                        // Validate before the guard sends a quote request.
+                        crate::client::creation::evm_address(&target_address)?;
+                        if let QuoteAmount::Source(_) = amount {
+                            self.ensure_cctp_payout_nets_positive(
+                                rail.clone(),
+                                target.clone(),
+                                amount.clone(),
+                                bridge_chain,
+                            )
+                            .await?;
+                        }
+                        bridge = Some(crate::types::BridgeRoute {
+                            chain: bridge_chain.to_owned(),
+                            token_address: target.as_wire_str().to_owned(),
+                            recipient: None,
+                            recipient_wallet: None,
+                            recipient_setup: false,
+                        });
+                        EvmAsset {
+                            chain_id: KnownChain::Arbitrum.evm_chain_id().ok_or_else(|| {
+                                Error::InvalidSwap("Arbitrum has no EVM chain id".into())
+                            })?,
+                            token: TokenId::UsdcArbitrum,
+                        }
+                    }
+                    None => EvmAsset {
+                        chain_id: target_chain.evm_chain_id().ok_or_else(|| {
+                            Error::InvalidSwap(
+                                "generic EVM targets require create_swap_request with an explicit chain ID"
+                                    .into(),
+                            )
+                        })?,
+                        token: target,
+                    },
                 };
                 match rail {
                     KnownChain::Bitcoin => SwapCreation::BitcoinToEvm {
@@ -520,10 +571,53 @@ impl Client {
             request,
             SwapOptions {
                 extra_fees_bps,
+                bridge,
                 ..Default::default()
             },
         )
         .await
+    }
+
+    /// Refuses a source-pinned CCTP payout whose bridge fee would consume the
+    /// whole output. The server only checks this when the claim is built, after
+    /// the user has funded the swap, so such a swap could never be claimed.
+    async fn ensure_cctp_payout_nets_positive(
+        &self,
+        rail: KnownChain,
+        target: TokenId,
+        amount: QuoteAmount,
+        bridge_chain: &str,
+    ) -> Result<()> {
+        let target_chain = target
+            .chain()
+            .ok_or_else(|| Error::InvalidSwap("CCTP payout target has no chain".into()))?;
+        use crate::types::Chain;
+        let mut request = crate::types::QuoteRequest::new(
+            Chain::Known(rail),
+            TokenId::Btc,
+            Chain::Known(target_chain),
+            target,
+            amount,
+        );
+        request.referral_code = self.referral_code.clone();
+        let quote = self.get_quote(request).await?;
+        let net: u128 = quote.net_target_amount.parse().map_err(|_| {
+            Error::InvalidSwap(format!(
+                "quote returned an invalid net target amount: {}",
+                quote.net_target_amount
+            ))
+        })?;
+        if net == 0 {
+            return Err(Error::InvalidSwap(format!(
+                "amount too small to bridge to {bridge_chain}: the CCTP fee ({} USDC units) \
+                 consumes the whole payout",
+                quote
+                    .bridge_fee
+                    .map(|fee| fee.to_string())
+                    .unwrap_or_else(|| "unknown".into())
+            )));
+        }
+        Ok(())
     }
 
     /// Create an EVM stablecoin → BTC-on-Arkade swap.

@@ -217,7 +217,7 @@ fn bridge_chain_name(chain: &str) -> Option<&'static str> {
 /// Hub chains whose native USDC is paid out over CCTP from Arbitrum rather
 /// than swapped on the chain itself (`isCctpRoutedUsdcTarget` in the
 /// TypeScript SDK). Returns the CCTP chain name. Sources stay direct.
-fn cctp_routed_usdc_target(chain: &Chain, token: &TokenId) -> Option<&'static str> {
+pub(crate) fn cctp_routed_usdc_target(chain: &Chain, token: &TokenId) -> Option<&'static str> {
     let (name, usdc) = match chain {
         Chain::Known(KnownChain::Ethereum) => ("Ethereum", TokenId::UsdcEthereum),
         Chain::Known(KnownChain::Polygon) => ("Polygon", TokenId::UsdcPolygon),
