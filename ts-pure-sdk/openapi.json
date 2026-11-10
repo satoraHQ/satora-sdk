@@ -5037,7 +5037,7 @@
           },
           "evm_htlc_sender": {
             "type": ["string", "null"],
-            "description": "The `sender` the EVM lock is keyed under, i.e. the address it refunds\nto. From HTLCErc20 v7 / HTLCNative v2 this is the depositor, which\ncalls the HTLC's `refund` itself; on older versions it is the\ncoordinator (`evm_coordinator_address`), refunded via its `refundTo`.\n`null` until the lock is observed."
+            "description": "The `sender` the EVM lock is keyed under, i.e. the address it refunds\nto. From HTLCErc20 v7 / HTLCNative v2 this is the depositor, which\ncalls the HTLC's `refund` itself. On older versions it is the\ncoordinator (`evm_coordinator_address`), refunded via its `refundTo`\n(the native coordinator's takes no token), except for an HTLCNative v1\nlock without a coordinator (zero `evm_coordinator_address`): that is\nthe client's own, refunded with the HTLC's `refund` from this address.\n`null` until the lock is accepted."
           },
           "evm_htlc_token": {
             "type": "string",
@@ -5334,7 +5334,7 @@
           },
           "evm_htlc_sender": {
             "type": ["string", "null"],
-            "description": "The `sender` the EVM lock is keyed under, i.e. the address it refunds\nto. From HTLCErc20 v7 / HTLCNative v2 this is the depositor, which\ncalls the HTLC's `refund` itself; on older versions it is the\ncoordinator (`evm_coordinator_address`), refunded via its `refundTo`.\n`null` until the lock is observed."
+            "description": "The `sender` the EVM lock is keyed under, i.e. the address it refunds\nto. From HTLCErc20 v7 / HTLCNative v2 this is the depositor, which\ncalls the HTLC's `refund` itself. On older versions it is the\ncoordinator (`evm_coordinator_address`), refunded via its `refundTo`\n(the native coordinator's takes no token), except for an HTLCNative v1\nlock without a coordinator (zero `evm_coordinator_address`): that is\nthe client's own, refunded with the HTLC's `refund` from this address.\n`null` until the lock is accepted."
           },
           "evm_htlc_token": {
             "type": "string",
@@ -5561,7 +5561,7 @@
           },
           "evm_htlc_sender": {
             "type": ["string", "null"],
-            "description": "The `sender` the EVM lock is keyed under, i.e. the address it refunds\nto. From HTLCErc20 v7 / HTLCNative v2 this is the depositor, which\ncalls the HTLC's `refund` itself; on older versions it is the\ncoordinator (`evm_coordinator_address`), refunded via its `refundTo`.\n`null` until the lock is observed."
+            "description": "The `sender` the EVM lock is keyed under, i.e. the address it refunds\nto. From HTLCErc20 v7 / HTLCNative v2 this is the depositor, which\ncalls the HTLC's `refund` itself. On older versions it is the\ncoordinator (`evm_coordinator_address`), refunded via its `refundTo`\n(the native coordinator's takes no token), except for an HTLCNative v1\nlock without a coordinator (zero `evm_coordinator_address`): that is\nthe client's own, refunded with the HTLC's `refund` from this address.\n`null` until the lock is accepted."
           },
           "evm_htlc_token": {
             "type": "string",

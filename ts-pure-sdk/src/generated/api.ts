@@ -2775,9 +2775,12 @@ export interface components {
             /**
              * @description The `sender` the EVM lock is keyed under, i.e. the address it refunds
              *     to. From HTLCErc20 v7 / HTLCNative v2 this is the depositor, which
-             *     calls the HTLC's `refund` itself; on older versions it is the
-             *     coordinator (`evm_coordinator_address`), refunded via its `refundTo`.
-             *     `null` until the lock is observed.
+             *     calls the HTLC's `refund` itself. On older versions it is the
+             *     coordinator (`evm_coordinator_address`), refunded via its `refundTo`
+             *     (the native coordinator's takes no token), except for an HTLCNative v1
+             *     lock without a coordinator (zero `evm_coordinator_address`): that is
+             *     the client's own, refunded with the HTLC's `refund` from this address.
+             *     `null` until the lock is accepted.
              */
             evm_htlc_sender?: string | null;
             /**
@@ -2964,9 +2967,12 @@ export interface components {
             /**
              * @description The `sender` the EVM lock is keyed under, i.e. the address it refunds
              *     to. From HTLCErc20 v7 / HTLCNative v2 this is the depositor, which
-             *     calls the HTLC's `refund` itself; on older versions it is the
-             *     coordinator (`evm_coordinator_address`), refunded via its `refundTo`.
-             *     `null` until the lock is observed.
+             *     calls the HTLC's `refund` itself. On older versions it is the
+             *     coordinator (`evm_coordinator_address`), refunded via its `refundTo`
+             *     (the native coordinator's takes no token), except for an HTLCNative v1
+             *     lock without a coordinator (zero `evm_coordinator_address`): that is
+             *     the client's own, refunded with the HTLC's `refund` from this address.
+             *     `null` until the lock is accepted.
              */
             evm_htlc_sender?: string | null;
             /**
@@ -3132,9 +3138,12 @@ export interface components {
             /**
              * @description The `sender` the EVM lock is keyed under, i.e. the address it refunds
              *     to. From HTLCErc20 v7 / HTLCNative v2 this is the depositor, which
-             *     calls the HTLC's `refund` itself; on older versions it is the
-             *     coordinator (`evm_coordinator_address`), refunded via its `refundTo`.
-             *     `null` until the lock is observed.
+             *     calls the HTLC's `refund` itself. On older versions it is the
+             *     coordinator (`evm_coordinator_address`), refunded via its `refundTo`
+             *     (the native coordinator's takes no token), except for an HTLCNative v1
+             *     lock without a coordinator (zero `evm_coordinator_address`): that is
+             *     the client's own, refunded with the HTLC's `refund` from this address.
+             *     `null` until the lock is accepted.
              */
             evm_htlc_sender?: string | null;
             /**
