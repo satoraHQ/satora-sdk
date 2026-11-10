@@ -123,6 +123,8 @@ impl Client {
                 crate::types::EvmHtlcKind::Erc20 => options
                     .evm_lock_token
                     .or_else(|| {
+                        // A swap stored before the server sent `evm_htlc_token`
+                        // carries only the deprecated `wbtc_address` (same value).
                         ["evm_htlc_token", "wbtc_address"]
                             .iter()
                             .find_map(|field| value[field].as_str()?.parse().ok())

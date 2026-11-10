@@ -12,22 +12,15 @@ const response = {
 };
 
 describe("fundingTermsOf lock token", () => {
-  it("reads evm_htlc_token over the deprecated wbtc_address", () => {
+  it("reads the lock token from evm_htlc_token", () => {
     const terms = fundingTermsOf({
       ...response,
       evm_htlc_token: "0xLockToken",
-      wbtc_address: "0xStale",
     });
     expect(terms?.lockToken).toBe("0xlocktoken");
   });
 
-  it("falls back to wbtc_address from servers before evm_htlc_token", () => {
-    expect(
-      fundingTermsOf({ ...response, wbtc_address: "0xWbtc" })?.lockToken,
-    ).toBe("0xwbtc");
-  });
-
-  it("names no lock token when the response has neither", () => {
+  it("names no lock token when the response has none", () => {
     expect(fundingTermsOf(response)?.lockToken).toBeUndefined();
   });
 });

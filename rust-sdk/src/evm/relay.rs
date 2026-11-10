@@ -60,10 +60,10 @@ pub struct RelayFundingOptions {
     /// never instead of it. Either way the server's current copy of the swap has to
     /// match the stored one, and the payload has to name the stored coordinator,
     /// which must also be the one persisted for the swap. The payload has to lock the
-    /// stored lock token (`evm_htlc_token`, or `wbtc_address` from older servers); an
-    /// EVM to Arkade swap stored before servers sent it names none, so with `None`
-    /// the payload's is signed. Pinned
-    /// contracts that differ from the stored swap are refused. Calls on the source
+    /// stored lock token: `evm_htlc_token`, or `wbtc_address` on a swap stored before
+    /// the server sent it. An EVM to Arkade swap stored before then names none, so
+    /// with `None` the payload's is signed. Pinned contracts that differ from the
+    /// stored swap are refused. Calls on the source
     /// token are decoded instead of listed as targets.
     pub funding: Option<FundingOptions>,
     /// Largest relay fee the server may take from the input. Only Ethereum charges one.
@@ -159,7 +159,7 @@ struct RelayRequest<'a> {
 pub(crate) struct RelaySwap {
     pub(crate) context: EvmContext,
     pub(crate) coordinator: Address,
-    /// EVM to Arkade responses from servers before `evm_htlc_token` omit it.
+    /// An EVM to Arkade swap stored before the server sent `evm_htlc_token` has none.
     pub(crate) lock_token: Option<Address>,
     source_amount: U256,
     gasless: bool,

@@ -225,7 +225,8 @@ pub struct EvmToBitcoinSwapResponse {
     #[serde(default)]
     pub evm_htlc_kind: EvmHtlcKind,
     /// Token contract locked in the EVM HTLC: the chain's lock token (the
-    /// zero address for `native` locks). `None` from servers before the field.
+    /// zero address for `native` locks). `None` on a swap stored before the
+    /// server sent it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evm_htlc_token: Option<String>,
     pub evm_htlc_version: i64,
@@ -269,7 +270,8 @@ pub struct EvmToLightningSwapResponse {
     #[serde(default)]
     pub evm_htlc_kind: EvmHtlcKind,
     /// Token contract locked in the EVM HTLC: the chain's lock token (the
-    /// zero address for `native` locks). `None` from servers before the field.
+    /// zero address for `native` locks). `None` on a swap stored before the
+    /// server sent it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evm_htlc_token: Option<String>,
     pub evm_htlc_version: i64,
@@ -324,7 +326,8 @@ macro_rules! evm_sourced_lock_token {
     ($($response:ty),*) => {$(
         impl $response {
             /// The token the client's lock holds: `evm_htlc_token`, or the
-            /// deprecated `wbtc_address` from servers before it.
+            /// deprecated `wbtc_address` (same value) on a swap stored
+            /// before the server sent it.
             pub fn lock_token(&self) -> &str {
                 self.evm_htlc_token
                     .as_deref()

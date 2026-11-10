@@ -17,8 +17,6 @@ export function fundingTermsOf(data: {
   source_amount?: string | number | null;
   source_token?: { token_id?: string | null } | null;
   evm_htlc_token?: string | null;
-  /** Deprecated alias of `evm_htlc_token`, read from servers before it. */
-  wbtc_address?: string | null;
 }): EvmFundingTerms | undefined {
   // A response without them records nothing: funding then fails closed.
   if (
@@ -43,6 +41,6 @@ export function fundingTermsOf(data: {
     timelock: data.evm_refund_locktime,
     sourceToken: data.source_token.token_id.toLowerCase(),
     sourceAmount: String(data.source_amount),
-    lockToken: (data.evm_htlc_token || data.wbtc_address)?.toLowerCase(),
+    lockToken: data.evm_htlc_token?.toLowerCase(),
   };
 }
