@@ -12,14 +12,13 @@ import type {
 } from "./api/client.js";
 import { getNetworkHrp, getNetworkName } from "./arkade-network.js";
 import { invoiceAmountMsat, invoicePaymentHash } from "./bolt11.js";
-import { parseXOnlyPubKey } from "./refund/arkade.js";
+import { parseXOnlyPubKey, refundableVhtlc } from "./refund/arkade.js";
 import { type BitcoinNetwork, verifyHtlcAddress } from "./refund/onchain.js";
 import { bytesToHex, type SwapParams } from "./signer/index.js";
 import type { LightningPaymentHash, StoredSwap } from "./storage/types.js";
 import {
   ARKADE_HTLC_SCRIPT_VERSION_STRICT,
   BTC_HTLC_SCRIPT_VERSION_STRICT,
-  StrictVhtlcScript,
 } from "./strict-vhtlc.js";
 
 /**
@@ -102,12 +101,11 @@ export function checkedLightningPaymentHash(
   },
 ): LightningPaymentHash {
   const lock = normalizeHash(data.hash_lock);
-  const returned = data.client_lightning_invoice
-    ? paymentHashOf(data.client_lightning_invoice)
-    : undefined;
+  const invoice = data.client_lightning_invoice || undefined;
   if (options.lightningInvoice !== undefined) {
     const hash = paymentHashOf(options.lightningInvoice);
-    if (returned !== undefined && returned !== hash) {
+    const returned = invoice === undefined ? hash : paymentHashOf(invoice);
+    if (returned !== hash) {
       throw new SwapVerificationError(
         `The server returned an invoice for hash ${returned}, not the supplied invoice's ${hash}; do not fund the swap`,
         {
@@ -125,7 +123,7 @@ export function checkedLightningPaymentHash(
     }
     return { hash: `0x${hash}`, source: "invoice" };
   }
-  if (!data.client_lightning_invoice || returned === undefined) {
+  if (invoice === undefined) {
     throw new SwapVerificationError(
       "The server returned no invoice for this Lightning address, so the swap's hash lock cannot be checked; do not fund it",
       {
@@ -135,13 +133,14 @@ export function checkedLightningPaymentHash(
       },
     );
   }
+  const returned = paymentHashOf(invoice);
   if (lock !== returned) {
     throw new SwapVerificationError(
       `The server created the swap under hash ${lock}, not the payment hash ${returned} of the invoice it resolved; do not fund it`,
       { field: "hash_lock", expected: returned, received: lock },
     );
   }
-  const msat = invoiceAmountMsat(data.client_lightning_invoice);
+  const msat = invoiceAmountMsat(invoice);
   const asked = [data.target_amount, options.targetAmountSats].filter(
     (amount) => amount !== undefined && amount !== null,
   );
@@ -189,22 +188,17 @@ export function assertArkadeToLightningVhtlc(
       },
     );
   }
-  const seconds = (value: number) => ({
-    type: "seconds" as const,
-    value: BigInt(value),
-  });
   const server = parseXOnlyPubKey(response.arkade_server_pk);
-  const vhtlc = new StrictVhtlcScript({
-    sender: parseXOnlyPubKey(bytesToHex(refundPublicKey)),
-    receiver: parseXOnlyPubKey(response.receiver_pk),
-    server,
+  const vhtlc = refundableVhtlc({
+    senderPubKey: bytesToHex(refundPublicKey),
+    receiverPubKey: response.receiver_pk,
+    serverPubKey: response.arkade_server_pk,
     preimageHash: ripemd160(hex.decode(paymentHash)),
-    refundLocktime: BigInt(response.vhtlc_refund_locktime),
-    unilateralClaimDelay: seconds(response.unilateral_claim_delay),
-    unilateralRefundDelay: seconds(response.unilateral_refund_delay),
-    unilateralRefundWithoutReceiverDelay: seconds(
+    refundLocktime: response.vhtlc_refund_locktime,
+    unilateralClaimDelay: response.unilateral_claim_delay,
+    unilateralRefundDelay: response.unilateral_refund_delay,
+    unilateralRefundWithoutReceiverDelay:
       response.unilateral_refund_without_receiver_delay,
-    ),
   });
   const expected = vhtlc
     .address(getNetworkHrp(getNetworkName(response.network)), server)

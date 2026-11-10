@@ -112,6 +112,45 @@ export function parseXOnlyPubKey(pubKeyHex: string): Uint8Array {
 }
 
 /**
+ * The VHTLC an Arkade-sourced swap locks in, rebuilt from its terms as a
+ * refund spends it. Creation checks build it here too, so a swap they accept
+ * is one this refund can spend.
+ */
+export function refundableVhtlc(params: {
+  senderPubKey: string;
+  receiverPubKey: string;
+  serverPubKey: string;
+  /** HASH160 of the preimage. */
+  preimageHash: Uint8Array;
+  refundLocktime: number;
+  unilateralClaimDelay: number;
+  unilateralRefundDelay: number;
+  unilateralRefundWithoutReceiverDelay: number;
+  scriptVersion?: number;
+}): StrictVhtlcScript {
+  if (
+    params.scriptVersion !== undefined &&
+    params.scriptVersion !== ARKADE_HTLC_SCRIPT_VERSION_STRICT
+  ) {
+    throw new Error(
+      `Unsupported Arkade HTLC script version: ${params.scriptVersion}`,
+    );
+  }
+  return new StrictVhtlcScript({
+    sender: parseXOnlyPubKey(params.senderPubKey),
+    receiver: parseXOnlyPubKey(params.receiverPubKey),
+    server: parseXOnlyPubKey(params.serverPubKey),
+    preimageHash: params.preimageHash,
+    refundLocktime: BigInt(params.refundLocktime),
+    unilateralClaimDelay: secondsToTimelock(params.unilateralClaimDelay),
+    unilateralRefundDelay: secondsToTimelock(params.unilateralRefundDelay),
+    unilateralRefundWithoutReceiverDelay: secondsToTimelock(
+      params.unilateralRefundWithoutReceiverDelay,
+    ),
+  });
+}
+
+/**
  * Refund a VHTLC swap after the locktime expires.
  *
  * This function:
@@ -157,9 +196,6 @@ export async function buildArkadeRefund(
     message: "Starting Arkade refund",
   });
 
-  // Parse keys
-  const userPkBytes = parseXOnlyPubKey(userPubKey);
-  const lendaswapPkBytes = parseXOnlyPubKey(lendaswapPubKey);
   const serverPkBytes = parseXOnlyPubKey(arkadeServerPubKey);
 
   // Compute preimage hash for VHTLC
@@ -188,29 +224,18 @@ export async function buildArkadeRefund(
   // Get server info
   const serverInfo = await arkProvider.getInfo();
 
-  // Construct VHTLC with the same parameters as the original swap
-  // For refund: user is the SENDER (refunding), lendaswap is the RECEIVER
-  const vhtlcOptions = {
-    sender: userPkBytes,
-    receiver: lendaswapPkBytes,
-    server: serverPkBytes,
+  // For a refund the user is the VHTLC's sender, Lendaswap its receiver.
+  const vhtlc = refundableVhtlc({
+    senderPubKey: userPubKey,
+    receiverPubKey: lendaswapPubKey,
+    serverPubKey: arkadeServerPubKey,
     preimageHash: preimageHashBytes,
-    refundLocktime: BigInt(refundLocktime),
-    unilateralClaimDelay: secondsToTimelock(unilateralClaimDelay),
-    unilateralRefundDelay: secondsToTimelock(unilateralRefundDelay),
-    unilateralRefundWithoutReceiverDelay: secondsToTimelock(
-      unilateralRefundWithoutReceiverDelay,
-    ),
-  };
-  if (
-    arkadeHtlcScriptVersion !== undefined &&
-    arkadeHtlcScriptVersion !== ARKADE_HTLC_SCRIPT_VERSION_STRICT
-  ) {
-    throw new Error(
-      `Unsupported Arkade HTLC script version: ${arkadeHtlcScriptVersion}`,
-    );
-  }
-  const vhtlc = new StrictVhtlcScript(vhtlcOptions);
+    refundLocktime,
+    unilateralClaimDelay,
+    unilateralRefundDelay,
+    unilateralRefundWithoutReceiverDelay,
+    scriptVersion: arkadeHtlcScriptVersion,
+  });
 
   // Get network HRP and verify computed VHTLC address
   const hrp = getNetworkHrp(networkName);
