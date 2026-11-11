@@ -4963,6 +4963,14 @@
             "description": "Slippage tolerance in basis points (e.g. `100` = 1%, `50` = 0.5%).\nBounded server-side; out-of-range values return 400.",
             "minimum": 0
           },
+          "swap_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The swap this calldata claims. Only with it can the server deliver a\nbridged USDC payout itself (no Circle forwarding fee): it delivers\nwhat it can find again, the payout of a swap created to bridge to\nthat chain. Without it the payout uses Circle's Forwarding Service."
+          },
           "to": {
             "$ref": "#/components/schemas/Token",
             "description": "Target asset the swap will produce."
