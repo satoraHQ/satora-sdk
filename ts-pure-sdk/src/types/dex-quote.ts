@@ -138,6 +138,7 @@ export type WireBridgeRate =
       proportional_fee_millionths: string;
       flat: string;
       flat_with_setup: string;
+      self_relayed?: boolean | null;
     }
   | { router: "layerzero"; native_fee_sats: string };
 
@@ -183,6 +184,7 @@ function fromWireBridgeRate(wire: WireBridgeRate): BridgeRate {
       proportional_fee_millionths: wire.proportional_fee_millionths,
       flat: wire.flat,
       flat_with_setup: wire.flat_with_setup,
+      self_relayed: wire.self_relayed ?? undefined,
     };
   }
   return { router: "layerzero", native_fee_sats: wire.native_fee_sats };
