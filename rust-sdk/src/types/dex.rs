@@ -80,6 +80,11 @@ pub struct DexCalldataRequest {
     pub slippage_bps: u16,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bridge_recipient: Option<BridgeRecipient>,
+    /// The swap the calldata claims. The server only delivers a bridged
+    /// payout itself, without Circle's forwarding fee, for a swap it knows
+    /// bridges to that chain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swap_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

@@ -464,6 +464,7 @@ impl AutoClaimer {
                             sender: coordinator.to_string(),
                             slippage_bps,
                             bridge_recipient: None,
+                            swap_id: None,
                         })
                         .await?;
                     let DexCallsPayload::Evm { calls } = response.payload;
@@ -597,6 +598,7 @@ impl AutoClaimer {
                 sender: coordinator.to_string(),
                 slippage_bps,
                 bridge_recipient: None,
+                swap_id: None,
             })
             .await?;
         let estimated = amount(&response.estimated_amount_out)?;

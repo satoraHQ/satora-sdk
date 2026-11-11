@@ -1783,6 +1783,7 @@ async fn dex_quote_and_unsigned_calldata_match_api_schema() {
         sender: "0x2222222222222222222222222222222222222222".into(),
         slippage_bps: 100,
         bridge_recipient: None,
+        swap_id: None,
     };
     let client = client(&server);
     let response = client
