@@ -3728,6 +3728,9 @@ export class Client {
           sender: swap.evm_coordinator_address,
           slippage_bps: slippageBps,
           bridge_recipient: bridgeRecipientParam,
+          // Names the swap so the server can deliver its bridged payout
+          // itself instead of charging Circle's forwarding fee.
+          swap_id: swap.id,
         },
       });
       if (fundResp.error || !fundResp.data) {

@@ -2434,6 +2434,14 @@ export interface components {
              *     Bounded server-side; out-of-range values return 400.
              */
             slippage_bps: number;
+            /**
+             * Format: uuid
+             * @description The swap this calldata claims. Only with it can the server deliver a
+             *     bridged USDC payout itself (no Circle forwarding fee): it delivers
+             *     what it can find again, the payout of a swap created to bridge to
+             *     that chain. Without it the payout uses Circle's Forwarding Service.
+             */
+            swap_id?: string | null;
             /** @description Target asset the swap will produce. */
             to: components["schemas"]["Token"];
         };
