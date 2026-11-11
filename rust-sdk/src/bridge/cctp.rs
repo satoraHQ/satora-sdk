@@ -192,6 +192,13 @@ pub fn relay_hook() -> Bytes {
     hook.into()
 }
 
+/// Whether the Satora server can deliver a payout on `destination_domain`
+/// itself: Ethereum (0) and Polygon (7), the CCTP destinations it runs on. A
+/// burn with [`relay_hook`] to any other domain would have nobody to mint it.
+pub fn server_can_deliver(destination_domain: u32) -> bool {
+    matches!(destination_domain, 0 | 7)
+}
+
 /// All immutable fields expected from a burn. Never choose an attestation just
 /// because it is the first message returned for a transaction.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

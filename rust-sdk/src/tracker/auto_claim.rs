@@ -606,29 +606,42 @@ impl AutoClaimer {
             .await?;
         // Who mints on the destination. The server says so in the quote for
         // this route, read now: it delivers only while it holds gas there.
-        let quote = self
-            .client
-            .get_dex_quote(crate::types::DexQuoteRequest {
-                from: DexToken::Evm {
-                    chain_id: ARBITRUM,
-                    address: context.source_token.to_string(),
-                },
-                to: DexToken::Evm {
-                    chain_id: destination_chain.chain_id,
-                    address: destination_chain.usdc.to_string(),
-                },
-                amount: DexAmount::ExactIn(text("evm_expected_sats")?.to_owned()),
-                slippage_bps,
-                cctp_recipient_setup: false,
-            })
-            .await?;
-        let self_relayed = matches!(
-            quote.bridge_rate,
-            Some(crate::types::BridgeRate::Cctp {
-                self_relayed: true,
-                ..
-            })
-        );
+        // The claim must not wait on that answer: without one Circle's
+        // Forwarding Service delivers, which works whatever the server does.
+        let self_relayed = crate::bridge::cctp::server_can_deliver(destination_chain.domain)
+            && match self
+                .client
+                .get_dex_quote(crate::types::DexQuoteRequest {
+                    from: DexToken::Evm {
+                        chain_id: ARBITRUM,
+                        address: context.source_token.to_string(),
+                    },
+                    to: DexToken::Evm {
+                        chain_id: destination_chain.chain_id,
+                        address: destination_chain.usdc.to_string(),
+                    },
+                    amount: DexAmount::ExactIn(text("evm_expected_sats")?.to_owned()),
+                    slippage_bps,
+                    cctp_recipient_setup: false,
+                })
+                .await
+            {
+                Ok(quote) => matches!(
+                    quote.bridge_rate,
+                    Some(crate::types::BridgeRate::Cctp {
+                        self_relayed: true,
+                        ..
+                    })
+                ),
+                Err(error) => {
+                    tracing::warn!(
+                        swap_id = %id,
+                        %error,
+                        "could not ask who delivers the CCTP payout, using Circle's Forwarding Service"
+                    );
+                    false
+                }
+            };
         let claim = cctp_payout_claim(
             calls,
             estimated,

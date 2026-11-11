@@ -1811,6 +1811,8 @@ async fn outbound_cctp_claim_accepts_a_server_delivered_burn_and_no_other_hook()
         relayed(7, Bytes::from(vec![0x5a; 32])),
         relayed(7, Bytes::new()),
         relayed(cctp::SOLANA_DOMAIN, cctp::relay_hook()),
+        // Base: the server delivers on Ethereum and Polygon only.
+        relayed(6, cctp::relay_hook()),
     ] {
         let (result, wallet) = claim(refused).await;
         assert!(result.is_err());
