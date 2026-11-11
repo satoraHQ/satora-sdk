@@ -75,10 +75,17 @@ export type BridgeRate =
        * 0.013% = `130 / 1_000_000`. Stringified u128.
        */
       proportional_fee_millionths: string;
-      /** Flat USDC fee deducted from the bridged amount, recipient already provisioned. Outbound: `forwardFee.high`; inbound: `"0"`. Stringified u64. */
+      /** Flat USDC fee deducted from the bridged amount, recipient already provisioned. Outbound: `forwardFee.high`, or `"0"` when `self_relayed`; inbound: `"0"`. Stringified u64. */
       flat: string;
       /** Flat-fee variant including a fresh non-EVM recipient's ATA rent (Solana). Equals `flat` otherwise; same units. Stringified u64. */
       flat_with_setup: string;
+      /**
+       * `true` when the Satora server mints the USDC on the destination chain
+       * itself instead of Circle's Forwarding Service (outbound USDC on
+       * Polygon and Ethereum, while the server holds gas there). `flat` is
+       * then `"0"`. Absent on servers that predate it.
+       */
+      self_relayed?: boolean;
     }
   | {
       router: "layerzero";

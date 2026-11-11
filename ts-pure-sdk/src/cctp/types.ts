@@ -24,6 +24,11 @@ export interface AttestationResponse {
     forwardState?: string | null;
     /** Transaction hash of the forward/mint on the destination chain. */
     forwardTxHash?: string | null;
+    /**
+     * Transaction that minted on the destination chain, whoever sent it.
+     * Set for messages delivered without the forwarding service too.
+     */
+    destinationMintTxHash?: string | null;
     /** Decoded CCTP message with amounts and fees. */
     decodedMessage?: {
       sourceDomain: string;
@@ -46,11 +51,15 @@ export interface AttestationResponse {
 export interface CctpMessageResult {
   /** Current message status. */
   status: CctpMessageStatus;
-  /** Transaction hash on the destination chain (from forwarding service). */
+  /**
+   * Transaction that delivered the USDC on the destination chain: Circle's
+   * forward, or the mint when the message was delivered without the
+   * forwarding service.
+   */
   forwardTxHash?: string;
   /** Amount received on destination in smallest units (after fee deduction). */
   amount?: string;
-  /** Forwarding fee executed in smallest units. */
+  /** CCTP fee executed in smallest units. */
   feeExecuted?: string;
 }
 

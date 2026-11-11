@@ -168,11 +168,13 @@ export interface TrackCctpMessageOptions {
 }
 
 /**
- * Poll the IRIS V2 API until the CCTP message is forwarded and delivered.
+ * Poll the IRIS V2 API until the CCTP message is delivered.
  *
- * Tracks attestation → forwarding → delivery on the destination chain.
+ * Tracks attestation → delivery on the destination chain, whether Circle's
+ * Forwarding Service delivers the message or somebody else mints it (the
+ * Satora server does for USDC payouts on Polygon and Ethereum).
  *
- * @returns The message result with forwarding details (destination tx hash, amount, fee).
+ * @returns The message result with delivery details (destination tx hash, amount, fee).
  * @throws If the message is not delivered within the timeout.
  */
 export async function trackCctpMessage(
@@ -238,17 +240,22 @@ export async function trackCctpMessage(
         continue;
       }
 
-      // Attestation is complete — check forwarding state
-      if (
-        (msg.forwardState === "COMPLETE" || msg.forwardState === "CONFIRMED") &&
-        msg.forwardTxHash
-      ) {
+      // Attestation is complete — check delivery. A message Circle's
+      // Forwarding Service delivers reports a `forwardState`; one somebody
+      // else mints (the Satora server, for USDC on Polygon and Ethereum)
+      // has none, and is delivered once IRIS has seen its mint.
+      const deliveryTxHash = msg.forwardState
+        ? (msg.forwardState === "COMPLETE" ||
+            msg.forwardState === "CONFIRMED") &&
+          msg.forwardTxHash
+        : msg.destinationMintTxHash;
+      if (deliveryTxHash) {
         emitStatus("COMPLETE");
         const cctpSentAmount = msg.decodedMessage?.decodedMessageBody?.amount;
         const cctpPaidFee = msg.decodedMessage?.decodedMessageBody?.feeExecuted;
         return {
           status: "COMPLETE",
-          forwardTxHash: msg.forwardTxHash,
+          forwardTxHash: deliveryTxHash,
           amount:
             cctpSentAmount && cctpPaidFee
               ? (BigInt(cctpSentAmount) - BigInt(cctpPaidFee)).toString()
@@ -269,7 +276,7 @@ export async function trackCctpMessage(
         );
       }
 
-      // Attestation complete but forwarding still in progress
+      // Attestation complete but delivery still in progress
       emitStatus("FORWARDING");
       await sleep(pollIntervalMs, signal);
     } catch (err) {
