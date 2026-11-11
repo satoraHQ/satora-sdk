@@ -44,6 +44,9 @@ const USDT_ETHEREUM = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
 const WBTC_POLYGON = "0x1BFD67037B42Cf73acF2047067bd4F2C47D9BfD6";
 const WBTC_ETHEREUM = "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599";
 
+// Circle Wrapped Bitcoin on Ethereum
+const CIRBTC_ETHEREUM = "0x72DFB2E44f59C5AD2bAFE84314E5b99a7cd5075E";
+
 // Well-known tBTC contract addresses
 const TBTC_ETHEREUM = "0x18084fbA666a33d37592fA2633fD49a74DD93a88";
 const TBTC_ARBITRUM = "0x6c84a8f1c29108F47a79964b5Fe888D4f4D0dE40";
@@ -82,6 +85,9 @@ export const Asset = {
   // WBTC
   WBTC_POLYGON: { chain: "137", tokenId: WBTC_POLYGON } as Asset,
   WBTC_ETHEREUM: { chain: "1", tokenId: WBTC_ETHEREUM } as Asset,
+
+  // Circle Wrapped Bitcoin
+  CIRBTC_ETHEREUM: { chain: "1", tokenId: CIRBTC_ETHEREUM } as Asset,
 
   // tBTC
   TBTC_ETHEREUM: { chain: "1", tokenId: TBTC_ETHEREUM } as Asset,
@@ -190,14 +196,14 @@ export function isBtc(token: { chain: string }): boolean {
 }
 
 /**
- * Returns true if the token is a BTC-pegged EVM asset (WBTC, tBTC, or RBTC,
+ * Returns true if the token is a BTC-pegged EVM asset (WBTC, cirBTC, tBTC, or RBTC,
  * Rootstock's coin). These should be displayed like BTC (sats/BTC, 8 decimal
  * precision) even though tBTC and RBTC have 18 on-chain decimals.
  */
 export function isBtcPegged(token: { chain: string; symbol: string }): boolean {
   const sym = token.symbol.toLowerCase();
   return (
-    (sym === "wbtc" || sym === "tbtc" || sym === "rbtc") &&
+    (sym === "wbtc" || sym === "cirbtc" || sym === "tbtc" || sym === "rbtc") &&
     isEvmToken(token.chain)
   );
 }
