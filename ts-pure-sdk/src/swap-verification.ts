@@ -6,8 +6,11 @@
 import { ripemd160 } from "@noble/hashes/legacy.js";
 import { hex } from "@scure/base";
 import type {
+  ArkadeToEvmSwapResponse,
   ArkadeToLightningSwapResponse,
+  BitcoinToEvmSwapResponse,
   BitcoinToLightningSwapResponse,
+  BtcToArkadeSwapResponse,
   GetSwapResponse,
 } from "./api/client.js";
 import { getNetworkHrp, getNetworkName } from "./arkade-network.js";
@@ -162,17 +165,31 @@ export function checkedLightningPaymentHash(
   return { hash: `0x${returned}`, source: "server-invoice" };
 }
 
+/** The terms of a VHTLC the user funds and refunds as its sender. */
+interface FundedVhtlcTerms {
+  id: string;
+  network: string;
+  receiver_pk: string;
+  arkade_server_pk: string;
+  arkade_htlc_script_version: number;
+  vhtlc_refund_locktime: number;
+  unilateral_claim_delay: number;
+  unilateral_refund_delay: number;
+  unilateral_refund_without_receiver_delay: number;
+}
+
 /**
- * Rebuilds the Arkade to Lightning VHTLC the user is asked to fund, as a
- * refund rebuilds it, from the invoice's payment hash and the swap's refund
- * key, and refuses a script version this client cannot refund. Consumers fund
- * `arkade_vhtlc_address` straight from the stored response, so it is checked
- * before the swap is first stored: at creation, or when recovery stores it.
+ * Rebuilds the VHTLC the user funds, as a refund rebuilds it, from `hash160`,
+ * the user's refund key and the server's keys and timelocks, and refuses a
+ * script version this client cannot refund or an `address` that differs.
  */
-export function assertArkadeToLightningVhtlc(
-  response: ArkadeToLightningSwapResponse,
-  paymentHash: string,
+function assertFundedVhtlc(
+  response: FundedVhtlcTerms,
+  addressField: string,
+  address: string,
+  hash160: Uint8Array,
   refundPublicKey: Uint8Array,
+  lockDescription: string,
 ): void {
   const swapId = response.id;
   if (
@@ -193,7 +210,7 @@ export function assertArkadeToLightningVhtlc(
     senderPubKey: bytesToHex(refundPublicKey),
     receiverPubKey: response.receiver_pk,
     serverPubKey: response.arkade_server_pk,
-    preimageHash: ripemd160(hex.decode(paymentHash)),
+    preimageHash: hash160,
     refundLocktime: response.vhtlc_refund_locktime,
     unilateralClaimDelay: response.unilateral_claim_delay,
     unilateralRefundDelay: response.unilateral_refund_delay,
@@ -203,30 +220,101 @@ export function assertArkadeToLightningVhtlc(
   const expected = vhtlc
     .address(getNetworkHrp(getNetworkName(response.network)), server)
     .encode();
-  if (expected !== response.arkade_vhtlc_address) {
+  if (expected !== address) {
     throw new SwapVerificationError(
-      `Swap ${swapId}'s VHTLC address ${response.arkade_vhtlc_address} does not lock to the invoice's payment hash and this client's refund key (expected ${expected}); do not fund it`,
-      {
-        field: "arkade_vhtlc_address",
-        expected,
-        received: response.arkade_vhtlc_address,
-        swapId,
-      },
+      `Swap ${swapId}'s VHTLC address ${address} does not lock to ${lockDescription} and this client's refund key (expected ${expected}); do not fund it`,
+      { field: addressField, expected, received: address, swapId },
     );
   }
 }
 
 /**
- * Rebuilds the Bitcoin to Lightning HTLC the user is asked to fund, as a
+ * Rebuilds the Arkade to Lightning VHTLC the user is asked to fund, as a
  * refund rebuilds it, from the invoice's payment hash and the swap's refund
- * key. The refund rebuilds it from `btc_hash_lock`, so that must be the
- * invoice's hash too, or the HTLC could be funded and never refunded. Checked
- * before the swap is first stored, like the Arkade to Lightning VHTLC.
+ * key, and refuses a script version this client cannot refund. Consumers fund
+ * `arkade_vhtlc_address` straight from the stored response, so it is checked
+ * before the swap is first stored: at creation, or when recovery stores it.
  */
-export function assertBitcoinToLightningHtlc(
-  response: BitcoinToLightningSwapResponse,
+export function assertArkadeToLightningVhtlc(
+  response: ArkadeToLightningSwapResponse,
   paymentHash: string,
   refundPublicKey: Uint8Array,
+): void {
+  assertFundedVhtlc(
+    response,
+    "arkade_vhtlc_address",
+    response.arkade_vhtlc_address,
+    ripemd160(hex.decode(paymentHash)),
+    refundPublicKey,
+    "the invoice's payment hash",
+  );
+}
+
+/**
+ * Rebuilds the Arkade to EVM VHTLC the user is asked to fund from the swap's
+ * own preimage hash and refund key, like {@link assertArkadeToLightningVhtlc}.
+ * The refund rebuilds it from `hash_lock`, so that must be the swap's SHA-256
+ * or HASH160 too.
+ */
+export function assertArkadeToEvmVhtlc(
+  response: ArkadeToEvmSwapResponse,
+  preimageHash: Uint8Array,
+  refundPublicKey: Uint8Array,
+): void {
+  const hash160 = ripemd160(preimageHash);
+  assertHashLock(response.id, "hash_lock", response.hash_lock, [
+    hex.encode(preimageHash),
+    hex.encode(hash160),
+  ]);
+  assertFundedVhtlc(
+    response,
+    "btc_vhtlc_address",
+    response.btc_vhtlc_address,
+    hash160,
+    refundPublicKey,
+    "the swap's preimage hash",
+  );
+}
+
+/** Refuses a hash lock that is none of `accepted` (lowercase hex). */
+function assertHashLock(
+  swapId: string,
+  field: string,
+  hashLock: string,
+  accepted: string[],
+): void {
+  const received = normalizeHash(hashLock);
+  if (!accepted.includes(received)) {
+    throw new SwapVerificationError(
+      `Swap ${swapId}'s ${field} ${received} is not this swap's hash lock ${accepted.join(" or ")}; do not fund it`,
+      { field, expected: accepted.join(" or "), received, swapId },
+    );
+  }
+}
+
+/** The terms of an on-chain HTLC the user funds and refunds. */
+interface FundedHtlcTerms {
+  id: string;
+  network: string;
+  btc_htlc_address: string;
+  btc_htlc_script_version: number;
+  btc_refund_locktime: number;
+}
+
+/**
+ * Rebuilds the on-chain HTLC the user funds, as a refund rebuilds it, from
+ * `hash160`, the server's claim key and the user's refund key. The refund
+ * rebuilds it from the response's hash lock, so that must be `hash160` too,
+ * or the HTLC could be funded and never refunded.
+ */
+function assertFundedHtlc(
+  response: FundedHtlcTerms,
+  hashField: string,
+  hashLock: string,
+  serverPk: string,
+  hash160: string,
+  refundPublicKey: Uint8Array,
+  lockDescription: string,
 ): void {
   const swapId = response.id;
   if (response.btc_htlc_script_version !== BTC_HTLC_SCRIPT_VERSION_STRICT) {
@@ -240,17 +328,11 @@ export function assertBitcoinToLightningHtlc(
       },
     );
   }
-  const hash160 = hex.encode(ripemd160(hex.decode(paymentHash)));
-  const serverHash160 = normalizeHash(response.btc_hash_lock);
+  const serverHash160 = normalizeHash(hashLock);
   if (serverHash160 !== hash160) {
     throw new SwapVerificationError(
-      `Swap ${swapId}'s HTLC hash ${serverHash160} is not the HASH160 ${hash160} of the invoice's payment hash; do not fund it`,
-      {
-        field: "btc_hash_lock",
-        expected: hash160,
-        received: serverHash160,
-        swapId,
-      },
+      `Swap ${swapId}'s HTLC hash ${serverHash160} is not the HASH160 ${hash160} of ${lockDescription}; do not fund it`,
+      { field: hashField, expected: hash160, received: serverHash160, swapId },
     );
   }
   const name = getNetworkName(response.network);
@@ -259,7 +341,7 @@ export function assertBitcoinToLightningHtlc(
   const binds = verifyHtlcAddress(
     response.btc_htlc_address,
     hash160,
-    bytesToHex(parseXOnlyPubKey(response.btc_server_pk)),
+    bytesToHex(parseXOnlyPubKey(serverPk)),
     bytesToHex(parseXOnlyPubKey(bytesToHex(refundPublicKey))),
     response.btc_refund_locktime,
     network,
@@ -267,16 +349,79 @@ export function assertBitcoinToLightningHtlc(
   );
   if (!binds) {
     throw new SwapVerificationError(
-      `Swap ${swapId}'s HTLC address ${response.btc_htlc_address} does not lock to the invoice's payment hash and this client's refund key; do not fund it`,
+      `Swap ${swapId}'s HTLC address ${response.btc_htlc_address} does not lock to ${lockDescription} and this client's refund key; do not fund it`,
       {
         field: "btc_htlc_address",
-        expected:
-          "an HTLC on the invoice's payment hash and this client's refund key",
+        expected: `an HTLC on ${lockDescription} and this client's refund key`,
         received: response.btc_htlc_address,
         swapId,
       },
     );
   }
+}
+
+/**
+ * Rebuilds the Bitcoin to Lightning HTLC the user is asked to fund, as a
+ * refund rebuilds it, from the invoice's payment hash and the swap's refund
+ * key. `btc_hash_lock` must be the HASH160 of the invoice's payment hash.
+ * Checked before the swap is first stored, like the Arkade to Lightning VHTLC.
+ */
+export function assertBitcoinToLightningHtlc(
+  response: BitcoinToLightningSwapResponse,
+  paymentHash: string,
+  refundPublicKey: Uint8Array,
+): void {
+  assertFundedHtlc(
+    response,
+    "btc_hash_lock",
+    response.btc_hash_lock,
+    response.btc_server_pk,
+    hex.encode(ripemd160(hex.decode(paymentHash))),
+    refundPublicKey,
+    "the invoice's payment hash",
+  );
+}
+
+/**
+ * Rebuilds the Bitcoin to EVM HTLC the user is asked to fund from the swap's
+ * own preimage hash and refund key, like {@link assertBitcoinToLightningHtlc}.
+ */
+export function assertBitcoinToEvmHtlc(
+  response: BitcoinToEvmSwapResponse,
+  preimageHash: Uint8Array,
+  refundPublicKey: Uint8Array,
+): void {
+  assertFundedHtlc(
+    response,
+    "btc_hash_lock",
+    response.btc_hash_lock,
+    response.btc_server_pk,
+    hex.encode(ripemd160(preimageHash)),
+    refundPublicKey,
+    "the swap's preimage hash",
+  );
+}
+
+/**
+ * Rebuilds the Bitcoin to Arkade HTLC the user is asked to fund from the
+ * swap's own preimage hash and refund key, like
+ * {@link assertBitcoinToLightningHtlc}. This direction names the HTLC's hash
+ * `hash_lock` and its server key `server_vhtlc_pk`.
+ */
+export function assertBitcoinToArkadeHtlc(
+  response: BtcToArkadeSwapResponse,
+  preimageHash: Uint8Array,
+  refundPublicKey: Uint8Array,
+): void {
+  assertFundedHtlc(
+    response,
+    "hash_lock",
+    response.hash_lock,
+    response.server_vhtlc_pk,
+    hex.encode(ripemd160(preimageHash)),
+    refundPublicKey,
+    "the swap's preimage hash",
+  );
 }
 
 /**
@@ -311,7 +456,9 @@ export function recoveredKeysChange(
  * must pay the hash of the secret in `swapParams`, and an Arkade or Bitcoin
  * to Lightning hash lock must be the payment hash of an invoice for the
  * swap's payout, with a lock that rebuilds from that hash and the refund key
- * in `swapParams`. A field that is missing or does not decode fails too.
+ * in `swapParams`. A Bitcoin to Arkade, Bitcoin to EVM or Arkade to EVM lock
+ * the user funds must rebuild from the preimage hash and refund key in
+ * `swapParams`. A field that is missing or does not decode fails too.
  */
 export function unboundTerms(
   fresh: GetSwapResponse,
@@ -339,6 +486,27 @@ export function unboundTerms(
         assertBitcoinToLightningHtlc(
           fresh,
           normalizeHash(checkedLightningPaymentHash({}, fresh).hash),
+          swapParams.publicKey,
+        );
+        break;
+      case "btc_to_arkade":
+        assertBitcoinToArkadeHtlc(
+          fresh,
+          swapParams.preimageHash,
+          swapParams.publicKey,
+        );
+        break;
+      case "bitcoin_to_evm":
+        assertBitcoinToEvmHtlc(
+          fresh,
+          swapParams.preimageHash,
+          swapParams.publicKey,
+        );
+        break;
+      case "arkade_to_evm":
+        assertArkadeToEvmVhtlc(
+          fresh,
+          swapParams.preimageHash,
           swapParams.publicKey,
         );
         break;

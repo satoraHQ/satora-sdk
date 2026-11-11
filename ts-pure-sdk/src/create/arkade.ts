@@ -5,6 +5,7 @@
 import { deriveEvmAddress } from "../evm/signing.js";
 import { bytesToHex } from "../signer/index.js";
 import { ARKADE_HTLC_SCRIPT_VERSION_STRICT } from "../strict-vhtlc.js";
+import { assertArkadeToEvmVhtlc } from "../swap-verification.js";
 import { retryOnHashCollision } from "./retry.js";
 import type {
   ArkadeToEvmSwapOptions,
@@ -99,6 +100,10 @@ export async function createArkadeToEvmSwapGeneric(
     if (!data) {
       throw new Error("No swap data returned");
     }
+
+    // The user funds btc_vhtlc_address, so it must be a VHTLC this client
+    // can refund before the swap is stored or returned.
+    assertArkadeToEvmVhtlc(data, swapParams.preimageHash, swapParams.publicKey);
 
     // Store the swap if storage is configured; pin the bridge claim
     // recipient (Solana ATA) so a bare claim can route the CCTP burn.

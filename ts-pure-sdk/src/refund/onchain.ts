@@ -618,6 +618,30 @@ export function verifyHtlcAddress(
   network: BitcoinNetwork,
   btcHtlcScriptVersion = 1,
 ): boolean {
+  return (
+    htlcAddress(
+      hashLock,
+      serverPubKey,
+      userPubKey,
+      refundLocktime,
+      network,
+      btcHtlcScriptVersion,
+    ) === expectedAddress
+  );
+}
+
+/**
+ * The Taproot address of the HTLC on these terms, with the same arguments as
+ * {@link verifyHtlcAddress}.
+ */
+export function htlcAddress(
+  hashLock: string,
+  serverPubKey: string,
+  userPubKey: string,
+  refundLocktime: number,
+  network: BitcoinNetwork,
+  btcHtlcScriptVersion = 1,
+): string {
   const hashLockBytes = hex.decode(hashLock);
   const serverPkBytes = hex.decode(serverPubKey);
   const userPkBytes = hex.decode(userPubKey);
@@ -630,11 +654,8 @@ export function verifyHtlcAddress(
     btcHtlcScriptVersion,
   );
 
-  const networkConfig = getNetwork(network);
-  const computedAddress = btc.Address(networkConfig).encode({
+  return btc.Address(getNetwork(network)).encode({
     type: "tr",
     pubkey: p2tr.tweakedPubkey,
   });
-
-  return computedAddress === expectedAddress;
 }

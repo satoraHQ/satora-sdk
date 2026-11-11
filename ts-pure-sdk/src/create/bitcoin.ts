@@ -5,6 +5,7 @@
 import { deriveEvmAddress } from "../evm/signing.js";
 import { bytesToHex } from "../signer/index.js";
 import { BTC_HTLC_SCRIPT_VERSION_STRICT } from "../strict-vhtlc.js";
+import { assertBitcoinToEvmHtlc } from "../swap-verification.js";
 import { retryOnHashCollision } from "./retry.js";
 import type {
   BitcoinToEvmSwapOptions,
@@ -91,6 +92,10 @@ export async function createBitcoinToEvmSwap(
     if (!data) {
       throw new Error("No swap data returned");
     }
+
+    // The user funds btc_htlc_address, so it must be an HTLC this client
+    // can refund before the swap is stored or returned.
+    assertBitcoinToEvmHtlc(data, swapParams.preimageHash, swapParams.publicKey);
 
     // Store the swap if storage is configured
     await ctx.storeSwap(
