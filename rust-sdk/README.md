@@ -833,7 +833,11 @@ Polygon, Base, …) through `EvmAutoClaim::bridge_api`, Circle's mainnet IRIS AP
 default (`None` turns this off; test networks pass their own). It takes only the Arbitrum DEX calls from the server, pins the
 adapter, destination domain, native USDC and the recorded recipient itself, caps
 the fee from Circle's quote, and checks on chain, before the burn, that the DEX
-left at least `target_amount` less the slippage. It refuses any other bridged
+left at least `target_amount` less the slippage. Where the server's quote for the
+route says it mints on the destination itself (`BridgeRate::Cctp::self_relayed`,
+USDC on Polygon and Ethereum while the server holds gas there), the burn carries
+`bridge::cctp::relay_hook()` and no forwarding fee; track it with
+`wait_cctp_relay`. Otherwise Circle's Forwarding Service delivers, as before. It refuses any other bridged
 payout (Solana, Tron, USDT0); claim those with a reviewed plan through
 `claim_evm_to_bridge`. Keep `AutoClaimConfig::timeout` (90
 seconds) below `TrackerOptions::execution_timeout`; `SwapTracker::new` checks it.

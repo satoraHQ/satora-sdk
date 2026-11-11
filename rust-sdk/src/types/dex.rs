@@ -31,6 +31,11 @@ pub enum BridgeRate {
         proportional_fee_millionths: String,
         flat: String,
         flat_with_setup: String,
+        /// The server mints the USDC on the destination chain itself instead
+        /// of Circle's Forwarding Service; `flat` is then zero. A server
+        /// released before it delivered payouts itself omits it.
+        #[serde(default)]
+        self_relayed: bool,
     },
     Layerzero {
         /// The LayerZero messaging fee the server pays in ETH and charges in sats.

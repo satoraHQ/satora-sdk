@@ -182,6 +182,16 @@ pub fn forwarding_hook(setup_solana_wallet: Option<[u8; 32]>) -> Bytes {
     hook.into()
 }
 
+/// Hook data of a burn the Satora server delivers itself: it calls
+/// `receiveMessage` on the destination, so Circle's Forwarding Service is not
+/// asked to and its fee is not charged. 32 bytes, as the adapter requires,
+/// that are not Circle's forwarding magic; nothing reads them on chain.
+pub fn relay_hook() -> Bytes {
+    let mut hook = vec![0; 32];
+    hook[..12].copy_from_slice(b"satora-relay");
+    hook.into()
+}
+
 /// All immutable fields expected from a burn. Never choose an attestation just
 /// because it is the first message returned for a transaction.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -337,6 +347,9 @@ pub struct CctpAttestation {
     pub event_nonce: Option<String>,
     pub forward_state: Option<String>,
     pub forward_tx_hash: Option<String>,
+    /// The mint on the destination chain, whoever sent it.
+    #[serde(default)]
+    pub destination_mint_tx_hash: Option<String>,
 }
 impl CctpAttestation {
     pub fn receive_calldata(&self, burn: &CctpBurn) -> Result<Bytes> {
@@ -489,6 +502,39 @@ impl BridgeApi {
             })
             .await
     }
+    /// Wait for the mint of a burn the Satora server delivers itself (its hook
+    /// is [`relay_hook`]) and return the destination transaction. The message
+    /// stays mintable by anyone with the attestation if the server never does.
+    pub async fn wait_cctp_relay(
+        &self,
+        txid: B256,
+        burn: &CctpBurn,
+        options: &PollOptions,
+    ) -> Result<String> {
+        if burn.hook != relay_hook() {
+            return Err(invalid("burn is not delivered by the server"));
+        }
+        options
+            .run(async {
+                loop {
+                    match self.cctp_attestation(txid, burn).await {
+                        Ok(Some(attestation)) => {
+                            if let Some(hash) = attestation
+                                .destination_mint_tx_hash
+                                .filter(|hash| !hash.is_empty())
+                            {
+                                return Ok(hash);
+                            }
+                        }
+                        Ok(None) | Err(crate::Error::Transport(_)) => {}
+                        Err(error) => return Err(error),
+                    }
+                    tokio::time::sleep(options.interval).await;
+                }
+            })
+            .await
+    }
+
     /// Wait for Circle's forwarding service, including EVM and Solana recipients.
     /// A failed forward retains a valid attestation for explicit mint recovery.
     pub async fn wait_cctp_forward(
@@ -497,7 +543,7 @@ impl BridgeApi {
         burn: &CctpBurn,
         options: &PollOptions,
     ) -> Result<String> {
-        if burn.hook.is_empty() {
+        if !burn.hook.starts_with(b"cctp-forward") {
             return Err(invalid("burn did not request forwarding"));
         }
         options

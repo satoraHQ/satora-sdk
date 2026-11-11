@@ -604,6 +604,31 @@ impl AutoClaimer {
         let fee = api
             .cctp_fee(arbitrum.domain, destination_chain.domain, 1000)
             .await?;
+        // Who mints on the destination. The server says so in the quote for
+        // this route, read now: it delivers only while it holds gas there.
+        let quote = self
+            .client
+            .get_dex_quote(crate::types::DexQuoteRequest {
+                from: DexToken::Evm {
+                    chain_id: ARBITRUM,
+                    address: context.source_token.to_string(),
+                },
+                to: DexToken::Evm {
+                    chain_id: destination_chain.chain_id,
+                    address: destination_chain.usdc.to_string(),
+                },
+                amount: DexAmount::ExactIn(text("evm_expected_sats")?.to_owned()),
+                slippage_bps,
+                cctp_recipient_setup: false,
+            })
+            .await?;
+        let self_relayed = matches!(
+            quote.bridge_rate,
+            Some(crate::types::BridgeRate::Cctp {
+                self_relayed: true,
+                ..
+            })
+        );
         let claim = cctp_payout_claim(
             calls,
             estimated,
@@ -612,6 +637,7 @@ impl AutoClaimer {
             destination_chain,
             recipient,
             coordinator,
+            self_relayed,
         )?;
         let wallet: Arc<dyn crate::evm::EvmWallet> = match &self.evm_wallet {
             Some(wallet) => wallet.clone(),
@@ -670,7 +696,13 @@ alloy::sol! {
 /// `estimated` is the DEX's expected output (the burn the plan expects); the
 /// burn is only bounded from below, by `minimum`, which must exceed the fee cap
 /// so the recipient always receives something.
+///
+/// `self_relayed` is the server's word that it mints on the destination
+/// itself: the burn then pays no forwarding fee and does not ask Circle to
+/// forward. Should the server not deliver after all, the payout is not lost:
+/// the attested message stays mintable by anyone.
 #[cfg(feature = "gasless")]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn cctp_payout_claim(
     mut dex_calls: Vec<crate::types::DexCall>,
     estimated: crate::evm::U256,
@@ -679,6 +711,7 @@ pub(crate) fn cctp_payout_claim(
     destination: crate::bridge::cctp::CctpChain,
     recipient: crate::evm::Address,
     coordinator: crate::evm::Address,
+    self_relayed: bool,
 ) -> Result<crate::bridge::OutboundClaim> {
     use crate::bridge::OutboundBridge;
     use crate::bridge::OutboundClaim;
@@ -689,7 +722,7 @@ pub(crate) fn cctp_payout_claim(
         return Err(invalid("invalid CCTP payout destination"));
     }
     let amount = estimated.max(minimum);
-    let max_fee = fee.max_fee(amount, true)?;
+    let max_fee = fee.max_fee(amount, !self_relayed)?;
     if minimum <= max_fee {
         return Err(invalid(format!(
             "payout floor ({minimum}) does not exceed the CCTP fee cap ({max_fee}); amount too small to bridge"
@@ -727,7 +760,11 @@ pub(crate) fn cctp_payout_claim(
                 amount,
                 max_fee,
                 min_finality: 1000,
-                hook: cctp::forwarding_hook(None),
+                hook: if self_relayed {
+                    cctp::relay_hook()
+                } else {
+                    cctp::forwarding_hook(None)
+                },
             },
             minimum_amount: minimum,
         },
@@ -834,6 +871,7 @@ mod cctp_payout_tests {
             destination,
             recipient,
             coordinator,
+            false,
         )
         .unwrap();
         let arbitrum = cctp::CctpChain::for_chain(42161).unwrap();
@@ -871,6 +909,34 @@ mod cctp_payout_tests {
     }
 
     #[test]
+    fn a_server_delivered_plan_pays_no_forwarding_fee_and_asks_for_none() {
+        let ethereum = cctp::CctpChain::for_bridge_name("Ethereum").unwrap();
+        // A $1 floor: Circle's forwarding fee to Ethereum alone would eat it.
+        let amount = U256::from(1_000_000);
+        let claim = cctp_payout_claim(
+            vec![],
+            amount,
+            amount,
+            &fee(),
+            ethereum,
+            Address::repeat_byte(0x11),
+            Address::repeat_byte(0x22),
+            true,
+        )
+        .unwrap();
+        let OutboundBridge::Cctp { burn, .. } = claim.bridge else {
+            panic!("expected a CCTP bridge")
+        };
+        burn.validate().unwrap();
+        assert_eq!(burn.hook, cctp::relay_hook());
+        assert_eq!(burn.hook.len(), 32);
+        assert!(!burn.hook.starts_with(b"cctp-forward"));
+        // 1.4 bps of 1 USDC with the 20% buffer.
+        assert_eq!(burn.max_fee, U256::from(168));
+        assert_eq!(burn.max_fee, fee().max_fee(amount, false).unwrap());
+    }
+
+    #[test]
     fn plan_bounds_the_burn_by_the_floor_when_the_estimate_is_lower() {
         let destination = cctp::CctpChain::for_bridge_name("Polygon").unwrap();
         let claim = cctp_payout_claim(
@@ -881,6 +947,7 @@ mod cctp_payout_tests {
             destination,
             Address::repeat_byte(0x11),
             Address::repeat_byte(0x22),
+            false,
         )
         .unwrap();
         let OutboundBridge::Cctp { burn, .. } = claim.bridge else {
@@ -902,6 +969,7 @@ mod cctp_payout_tests {
             ethereum,
             Address::repeat_byte(0x11),
             Address::repeat_byte(0x22),
+            false,
         )
         .unwrap_err();
         assert!(error.to_string().contains("too small to bridge"), "{error}");
@@ -919,6 +987,7 @@ mod cctp_payout_tests {
                     destination,
                     recipient,
                     Address::repeat_byte(0x22),
+                    false,
                 )
                 .is_err()
             );

@@ -1751,6 +1751,73 @@ fn approve_call(token: Address, spender: Address, amount: U256) -> (Address, U25
     )
 }
 
+/// A burn the server delivers carries its relay marker instead of Circle's
+/// forwarding magic. Any other hook data is still refused, and so is the
+/// marker on Solana, where the server never delivers.
+#[tokio::test]
+async fn outbound_cctp_claim_accepts_a_server_delivered_burn_and_no_other_hook() {
+    use crate::bridge::BridgeSubmission;
+    use crate::bridge::OutboundBridge;
+    use crate::bridge::OutboundClaim;
+    use crate::bridge::OutboundReceipt;
+    use crate::bridge::cctp;
+    let relayed = |destination_domain: u32, hook: Bytes| {
+        let mut burn = crate::bridge::tests::burn();
+        burn.source_chain_id = 42161;
+        burn.source_domain = 3;
+        burn.destination_domain = destination_domain;
+        burn.burn_token = cctp::CctpChain::for_chain(42161).unwrap().usdc;
+        burn.sender = cctp::ARBITRUM_ADAPTER;
+        burn.hook = hook;
+        burn
+    };
+    let claim = |burn: cctp::CctpBurn| async move {
+        let (client, mut wallet, _store) = arbitrum_claim();
+        wallet.extra_logs.push(event_log(
+            cctp::MessageSent {
+                message: crate::bridge::tests::message(&burn).into(),
+            },
+            burn.source_transmitter,
+        ));
+        let mut options = claim_options(&wallet);
+        options.sweep_token = burn.burn_token;
+        options.min_amount_out = U256::ZERO;
+        let request = OutboundClaim {
+            dex_calls: vec![outbound_dex_call()],
+            bridge: OutboundBridge::Cctp {
+                burn,
+                minimum_amount: U256::from(8_900_000),
+            },
+        };
+        let result = client
+            .claim_evm_to_bridge("test", &wallet, options, request, BridgeSubmission::Wallet)
+            .await;
+        (result, wallet)
+    };
+
+    let burn = relayed(7, cctp::relay_hook());
+    let (result, wallet) = claim(burn.clone()).await;
+    let OutboundReceipt::Cctp { burn: observed, .. } = result.unwrap() else {
+        panic!("expected CCTP transfer")
+    };
+    assert_eq!(observed.hook, cctp::relay_hook());
+    let (calls, _) = signed_calls(&wallet);
+    let bridge = cctp::bridgeBalanceCall::abi_decode(&calls[2].2).unwrap();
+    assert_eq!(bridge.destinationDomain, 7);
+    assert_eq!(bridge.hookData, cctp::relay_hook());
+    assert_eq!(bridge.maxFee, burn.max_fee);
+
+    for refused in [
+        relayed(7, Bytes::from(vec![0x5a; 32])),
+        relayed(7, Bytes::new()),
+        relayed(cctp::SOLANA_DOMAIN, cctp::relay_hook()),
+    ] {
+        let (result, wallet) = claim(refused).await;
+        assert!(result.is_err());
+        assert!(wallet.sent.lock().unwrap().is_empty());
+    }
+}
+
 #[tokio::test]
 async fn outbound_cctp_claim_approves_the_whole_balance_and_accepts_a_burn_above_the_quote() {
     use crate::bridge::BridgeSubmission;

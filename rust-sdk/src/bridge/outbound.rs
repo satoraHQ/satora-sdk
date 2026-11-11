@@ -92,6 +92,10 @@ impl OutboundBridge {
                     || *minimum_amount <= burn.max_fee
                     || *minimum_amount > burn.amount
                     || !(burn.hook == cctp::forwarding_hook(None)
+                        // Delivered by the server instead of Circle; it only
+                        // does so on EVM destinations.
+                        || (burn.hook == cctp::relay_hook()
+                            && burn.destination_domain != cctp::SOLANA_DOMAIN)
                         || (burn.destination_domain == cctp::SOLANA_DOMAIN
                             && burn.hook.len() == 65
                             && burn.hook[..33] == cctp::forwarding_hook(Some([0; 32]))[..33]))
