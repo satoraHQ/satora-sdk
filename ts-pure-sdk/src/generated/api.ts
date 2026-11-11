@@ -1329,6 +1329,13 @@ export interface components {
             bridge_target_chain?: string | null;
             /** @description USDC address on the bridge destination chain. */
             bridge_target_token_address?: string | null;
+            /**
+             * @description Transaction that delivered the bridged payout on the destination
+             *     chain, once the server has minted it there. Absent while the transfer
+             *     is in flight, and for payouts Circle's Forwarding Service delivers
+             *     (Circle's API reports that transaction).
+             */
+            bridge_target_txid?: string | null;
             btc_claim_txid?: string | null;
             btc_fund_txid?: string | null;
             btc_vhtlc_address: string;
@@ -1632,6 +1639,13 @@ export interface components {
             bridge_target_chain?: string | null;
             /** @description USDC address on the bridge destination chain. */
             bridge_target_token_address?: string | null;
+            /**
+             * @description Transaction that delivered the bridged payout on the destination
+             *     chain, once the server has minted it there. Absent while the transfer
+             *     is in flight, and for payouts Circle's Forwarding Service delivers
+             *     (Circle's API reports that transaction).
+             */
+            bridge_target_txid?: string | null;
             /** @description On-chain claim transaction ID (server claim) */
             btc_claim_txid?: string | null;
             /** @description On-chain funding transaction ID */
@@ -1859,8 +1873,8 @@ export interface components {
             fee_token: components["schemas"]["Token"];
             /**
              * @description Flat USDC fee deducted from the bridged amount, recipient already
-             *     provisioned. Outbound: `forwardFee.high`; inbound: `0` (we call
-             *     `receiveMessage` ourselves). Stringified `u64`.
+             *     provisioned. Outbound: `forwardFee.high`, or `0` when `self_relayed`;
+             *     inbound: `0` (we call `receiveMessage` ourselves). Stringified `u64`.
              */
             flat: string;
             /**
@@ -1882,6 +1896,15 @@ export interface components {
             proportional_fee_millionths: string;
             /** @enum {string} */
             router: "cctp";
+            /**
+             * @description `true` when the server mints the USDC on the destination chain
+             *     itself instead of Circle's Forwarding Service (outbound to chains
+             *     where it holds gas). `flat` is then `0`, and a client that builds
+             *     the burn itself must not request forwarding in its hook data, or
+             *     Circle charges the forwarding fee after all. Always `false`
+             *     inbound.
+             */
+            self_relayed: boolean;
         } | {
             /**
              * @description LayerZero messaging fee in sats: the live `quoteSend` fee converted
@@ -3619,6 +3642,13 @@ export interface components {
             bridge_target_chain?: string | null;
             /** @description USDC address on the bridge destination chain. */
             bridge_target_token_address?: string | null;
+            /**
+             * @description Transaction that delivered the bridged payout on the destination
+             *     chain, once the server has minted it there. Absent while the transfer
+             *     is in flight, and for payouts Circle's Forwarding Service delivers
+             *     (Circle's API reports that transaction).
+             */
+            bridge_target_txid?: string | null;
             /** @description EVM chain name (e.g. "Polygon", "Ethereum", "Arbitrum") */
             chain: string;
             /** @description EVM address that will sign the HTLC claim (SDK-derived for gasless claims) */

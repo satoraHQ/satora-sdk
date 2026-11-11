@@ -3066,6 +3066,13 @@
             ],
             "description": "USDC address on the bridge destination chain."
           },
+          "bridge_target_txid": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Transaction that delivered the bridged payout on the destination\nchain, once the server has minted it there. Absent while the transfer\nis in flight, and for payouts Circle's Forwarding Service delivers\n(Circle's API reports that transaction)."
+          },
           "btc_claim_txid": {
             "type": [
               "string",
@@ -3626,6 +3633,13 @@
             ],
             "description": "USDC address on the bridge destination chain."
           },
+          "bridge_target_txid": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Transaction that delivered the bridged payout on the destination\nchain, once the server has minted it there. Absent while the transfer\nis in flight, and for payouts Circle's Forwarding Service delivers\n(Circle's API reports that transaction)."
+          },
           "btc_claim_txid": {
             "type": [
               "string",
@@ -3975,6 +3989,7 @@
               "proportional_fee_millionths",
               "flat",
               "flat_with_setup",
+              "self_relayed",
               "router"
             ],
             "properties": {
@@ -3984,7 +3999,7 @@
               },
               "flat": {
                 "type": "string",
-                "description": "Flat USDC fee deducted from the bridged amount, recipient already\nprovisioned. Outbound: `forwardFee.high`; inbound: `0` (we call\n`receiveMessage` ourselves). Stringified `u64`."
+                "description": "Flat USDC fee deducted from the bridged amount, recipient already\nprovisioned. Outbound: `forwardFee.high`, or `0` when `self_relayed`;\ninbound: `0` (we call `receiveMessage` ourselves). Stringified `u64`."
               },
               "flat_with_setup": {
                 "type": "string",
@@ -3999,6 +4014,10 @@
                 "enum": [
                   "cctp"
                 ]
+              },
+              "self_relayed": {
+                "type": "boolean",
+                "description": "`true` when the server mints the USDC on the destination chain\nitself instead of Circle's Forwarding Service (outbound to chains\nwhere it holds gas). `flat` is then `0`, and a client that builds\nthe burn itself must not request forwarding in its hook data, or\nCircle charges the forwarding fee after all. Always `false`\ninbound."
               }
             }
           },
@@ -7218,6 +7237,13 @@
               "null"
             ],
             "description": "USDC address on the bridge destination chain."
+          },
+          "bridge_target_txid": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Transaction that delivered the bridged payout on the destination\nchain, once the server has minted it there. Absent while the transfer\nis in flight, and for payouts Circle's Forwarding Service delivers\n(Circle's API reports that transaction)."
           },
           "chain": {
             "type": "string",
