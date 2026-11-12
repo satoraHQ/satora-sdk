@@ -266,6 +266,13 @@ export function isTronToken(chain: string): boolean {
   return chain.toLowerCase() === "tron";
 }
 
+/**
+ * Kill switch for paying out USDC on Ethereum and Polygon over CCTP from
+ * Arbitrum. With `false`, those payouts run on the chain directly again.
+ * Keep in sync with `CCTP_ROUTED_USDC_ENABLED` in the Rust SDK.
+ */
+export const CCTP_ROUTED_USDC_ENABLED = true;
+
 /** Hub chains whose native USDC is paid out over CCTP from Arbitrum. */
 const CCTP_ROUTED_USDC_CHAINS: Record<string, string> = {
   "1": "Ethereum",
@@ -279,6 +286,7 @@ const CCTP_ROUTED_USDC_CHAINS: Record<string, string> = {
  * Sources are unaffected: USDC on these chains still funds a swap directly.
  */
 export function isCctpRoutedUsdcTarget(chain: string, token: string): boolean {
+  if (!CCTP_ROUTED_USDC_ENABLED) return false;
   const name = CCTP_ROUTED_USDC_CHAINS[toChain(chain)];
   return (
     name != null && USDC_ADDRESSES[name]?.toLowerCase() === token.toLowerCase()

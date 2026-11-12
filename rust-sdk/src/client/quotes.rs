@@ -214,10 +214,18 @@ fn bridge_chain_name(chain: &str) -> Option<&'static str> {
         .map(|(_, name)| *name)
 }
 
+/// Kill switch for paying out USDC on Ethereum and Polygon over CCTP from
+/// Arbitrum. With `false`, those payouts run on the chain directly again.
+/// Keep in sync with `CCTP_ROUTED_USDC_ENABLED` in the TypeScript SDK.
+pub(crate) const CCTP_ROUTED_USDC_ENABLED: bool = true;
+
 /// Hub chains whose native USDC is paid out over CCTP from Arbitrum rather
 /// than swapped on the chain itself (`isCctpRoutedUsdcTarget` in the
 /// TypeScript SDK). Returns the CCTP chain name. Sources stay direct.
 pub(crate) fn cctp_routed_usdc_target(chain: &Chain, token: &TokenId) -> Option<&'static str> {
+    if !CCTP_ROUTED_USDC_ENABLED {
+        return None;
+    }
     let (name, usdc) = match chain {
         Chain::Known(KnownChain::Ethereum) => ("Ethereum", TokenId::UsdcEthereum),
         Chain::Known(KnownChain::Polygon) => ("Polygon", TokenId::UsdcPolygon),
