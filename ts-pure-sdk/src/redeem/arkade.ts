@@ -35,6 +35,7 @@ import {
   getNetworkName,
   resolveArkadeServerUrlByName,
 } from "../arkade-network.js";
+import { submitOffchainTxOneShot } from "../arkade-submit.js";
 import { createSdkLogger, type Logger, type LogLevel } from "../logging.js";
 import {
   ARKADE_HTLC_SCRIPT_VERSION_STRICT,
@@ -350,47 +351,34 @@ export async function buildArkadeClaim(
 
   attachClaimConditionWitness(arkTx, checkpoints, preimageBytes);
 
-  // Sign the ark transaction
+  // Sign the ark transaction and, up front, every checkpoint (one-shot submit)
   const signedArkTx = await signer.sign(arkTx);
-
-  // Submit the transaction to the Arkade server
-  const signedArkTxBase64 = base64.encode(signedArkTx.toPSBT());
-  const { arkTxid, signedCheckpointTxs } = await arkProvider.submitTx(
-    signedArkTxBase64,
-    checkpoints.map((cp) => base64.encode(cp.toPSBT())),
+  const userSignedCheckpoints = await Promise.all(
+    checkpoints.map((cp) => signer.sign(cp, [0])),
   );
 
-  // Sign and finalize checkpoint transactions
-  const finalCheckpoints = await Promise.all(
-    signedCheckpointTxs.map(async (c) => {
-      const tx = Transaction.fromPSBT(base64.decode(c));
-      ensureConditionWitness(tx, 0, preimageBytes);
-      const signedCheckpoint = await signer.sign(tx, [0]);
-      return base64.encode(signedCheckpoint.toPSBT());
-    }),
-  );
-
-  logger.debug({
-    event: "arkade.claim.checkpoints_signed",
-    message: "Checkpoint transactions signed",
-  });
-
-  // Finalize the transaction
+  let arkTxid: string;
   try {
-    await arkProvider.finalizeTx(arkTxid, finalCheckpoints);
+    const result = await submitOffchainTxOneShot(
+      arkProvider,
+      signedArkTx,
+      checkpoints,
+      userSignedCheckpoints,
+    );
+    arkTxid = result.arkTxid;
+    logger.info({
+      event: "arkade.claim.finalized",
+      message: "Arkade claim finalized",
+      data: { arkTxid, mode: result.mode },
+    });
   } catch (error) {
     logger.error({
       event: "arkade.claim.finalize_failed",
-      message: "Failed to finalize Arkade claim",
+      message: "Failed to submit or finalize Arkade claim",
       error,
     });
     throw error;
   }
-  logger.info({
-    event: "arkade.claim.finalized",
-    message: "Arkade claim finalized",
-    data: { arkTxid },
-  });
 
   return {
     txId: arkTxid,

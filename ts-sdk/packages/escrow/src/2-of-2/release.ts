@@ -1,13 +1,15 @@
 import {
   ArkAddress,
   type ArkadeInfo,
-  type ArkProvider,
   type ArkTxInput,
+  assertSubmittedArkTxid,
   buildOffchainTx,
   CSVMultisigTapscript,
   combineTapscriptSigs,
+  matchServerCheckpoints,
+  type OperatorProvider,
   type RelativeTimelock,
-  Transaction,
+  type Transaction,
 } from "@arkade-os/sdk";
 import { base64, hex } from "@scure/base";
 import type { EscrowVtxoScript } from "./escrow-script.js";
@@ -153,42 +155,82 @@ export function signEscrowReleaseInPlace(
 }
 
 /**
- * Submit the fully-signed Arkade transaction with UNSIGNED checkpoints to the Arkade server, merge
- * the user (seller+arbiter) checkpoint sigs into the Arkade server-signed responses, and
- * finalize. Returns the arkTxid.
+ * Submit the fully-signed Arkade transaction with the user-signed (seller+arbiter)
+ * checkpoints in one call (one-shot submit). Returns the arkTxid.
  *
- * The submit/finalize split lets the Arkade server reject a malformed Arkade transaction before any
- * checkpoint signature is spent. Crash recovery between submit and finalize is
- * the caller's responsibility.
+ * An Arkade server that supports one-shot submit finalizes on `submitTx` and hands
+ * the checkpoints back with our sigs still on them. An older one strips them and
+ * returns server-signed checkpoints; we then merge the user sigs back in and call
+ * `finalizeTx`. Crash recovery between submit and finalize (older servers only)
+ * is the caller's responsibility.
  *
- * @param provider Arkade server provider used to submit and finalize the Arkade transaction
+ * @param provider Arkade server provider used to submit (and, if needed, finalize)
  * @param fullySignedArkTx Arkade transaction carrying both arbiter and seller tapscript sigs
- * @param userSignedCheckpoints checkpoints with arbiter+seller sigs (kept aside)
- * @param unsignedCheckpoints fresh-from-build checkpoints (no signatures)
+ * @param userSignedCheckpoints checkpoints with arbiter+seller sigs
+ * @param unsignedCheckpoints fresh-from-build checkpoints, used to match the server's response
  */
 export async function submitAndFinalizeEscrowRelease(
-  provider: ArkProvider,
+  provider: Pick<OperatorProvider, "submitTx" | "finalizeTx">,
   fullySignedArkTx: Transaction,
   userSignedCheckpoints: Transaction[],
   unsignedCheckpoints: Transaction[],
 ): Promise<string> {
-  const { arkTxid, signedCheckpointTxs } = await provider.submitTx(
-    base64.encode(fullySignedArkTx.toPSBT()),
-    unsignedCheckpoints.map((c) => base64.encode(c.toPSBT())),
+  if (userSignedCheckpoints.length !== unsignedCheckpoints.length) {
+    throw new Error(
+      `expected ${unsignedCheckpoints.length} user-signed checkpoints, got ${userSignedCheckpoints.length}`,
+    );
+  }
+  const userByTxid = new Map(
+    unsignedCheckpoints.map(
+      (c, i) => [c.id, userSignedCheckpoints[i]] as const,
+    ),
   );
 
-  const finalCheckpoints = signedCheckpointTxs.map((c, i) => {
-    const serverSigned = Transaction.fromPSBT(base64.decode(c));
-    const userSigned = userSignedCheckpoints[i];
+  const response = await provider.submitTx(
+    base64.encode(fullySignedArkTx.toPSBT()),
+    userSignedCheckpoints.map((c) => base64.encode(c.toPSBT())),
+  );
+  assertSubmittedArkTxid(response, fullySignedArkTx, "submitTx");
+  const { arkTxid } = response;
+  const matched = matchServerCheckpoints(
+    response.signedCheckpointTxs,
+    unsignedCheckpoints,
+    "submitTx",
+  );
+  const userSignedFor = (local: Transaction): Transaction => {
+    const userSigned = userByTxid.get(local.id);
     if (!userSigned) {
-      throw new Error(`missing user-signed checkpoint at index ${i}`);
+      throw new Error(`missing user-signed checkpoint ${local.id}`);
     }
-    combineTapscriptSigs(userSigned, serverSigned);
-    return base64.encode(serverSigned.toPSBT());
-  });
+    return userSigned;
+  };
 
+  if (
+    matched.every(({ server, local }) =>
+      carriesTapscriptSigs(server, userSignedFor(local)),
+    )
+  ) {
+    return arkTxid;
+  }
+
+  const finalCheckpoints = matched.map(({ server, local }) => {
+    combineTapscriptSigs(userSignedFor(local), server);
+    return base64.encode(server.toPSBT());
+  });
   await provider.finalizeTx(arkTxid, finalCheckpoints);
   return arkTxid;
+}
+
+/** Whether `server` already carries every tapscript sig `user` has on input 0. */
+function carriesTapscriptSigs(server: Transaction, user: Transaction): boolean {
+  const entries = (tx: Transaction) =>
+    (tx.getInput(0).tapScriptSig ?? []).map(
+      ([{ pubKey, leafHash }, sig]) =>
+        hex.encode(pubKey) + hex.encode(leafHash) + hex.encode(sig),
+    );
+  const have = new Set(entries(server));
+  const want = entries(user);
+  return want.length > 0 && want.every((e) => have.has(e));
 }
 
 /**

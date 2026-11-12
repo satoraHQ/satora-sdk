@@ -8,7 +8,7 @@
  * making the refund instant (no locktime wait).
  *
  * Two flows handle the two VTXO states:
- * - **Spendable VTXOs**: offchain send (submitTx / finalizeTx)
+ * - **Spendable VTXOs**: offchain send (one-shot submitTx; finalizeTx only on older arkd)
  * - **Recoverable / mixed VTXOs**: delegate batch (intent + forfeits → settle)
  */
 
@@ -17,6 +17,7 @@ import {
   type ArkProvider,
   buildOffchainTx,
   CSVMultisigTapscript,
+  combineTapscriptSigs,
   type IndexerProvider,
   Intent,
   networks,
@@ -38,6 +39,7 @@ import {
   getNetworkName,
   resolveArkadeServerUrlByName,
 } from "../arkade-network.js";
+import { submitOffchainTxOneShot } from "../arkade-submit.js";
 import {
   ARKADE_HTLC_SCRIPT_VERSION_STRICT,
   StrictVhtlcScript,
@@ -234,6 +236,10 @@ export async function collabRefundArkadeToEvmOffchain(
 
   const signer = SingleKey.fromHex(params.userSecretKey);
   const signedArkTx = await signer.sign(arkTx);
+  // Sign every checkpoint up front too (one-shot submit).
+  const userSignedCheckpoints = await Promise.all(
+    checkpoints.map((cp) => signer.sign(cp)),
+  );
 
   // POST to lendaswap backend for receiver cosigning.
   // The backend cosigns both ark_tx (for the 3-of-3 refund leaf) and
@@ -255,70 +261,35 @@ export async function collabRefundArkadeToEvmOffchain(
     );
   }
 
-  // Save the receiver's (lendaswap) tap_script_sigs from each cosigned
-  // checkpoint BEFORE submitting to arkd. arkd strips incoming signatures
-  // and only returns checkpoints with its own (server) signature.
-  // We must merge the receiver sigs back in before client-signing.
-  type TapScriptSigEntry = [
-    { pubKey: Uint8Array; leafHash: Uint8Array },
-    Uint8Array,
-  ];
-  const receiverCheckpointSigs = collabRes.data.checkpoint_txs.map((cp) => {
-    const tx = Transaction.fromPSBT(base64.decode(cp));
-    const inputSigs: TapScriptSigEntry[][] = [];
-    for (let i = 0; i < tx.inputsLength; i++) {
-      const input = tx.getInput(i);
-      const sigs: TapScriptSigEntry[] = [];
-      if (input.tapScriptSig) {
-        for (const [key, sig] of input.tapScriptSig) {
-          sigs.push([
-            {
-              pubKey: Uint8Array.from(key.pubKey),
-              leafHash: Uint8Array.from(key.leafHash),
-            },
-            Uint8Array.from(sig),
-          ]);
-        }
-      }
-      inputSigs.push(sigs);
-    }
-    return inputSigs;
-  });
-
-  // Submit to Arkade with the cosigned ark_tx and the backend-cosigned
-  // checkpoints. Arkade adds its server signature to both.
-  const submitRes = await arkProvider.submitTx(
-    collabRes.data.ark_tx,
-    collabRes.data.checkpoint_txs,
-  );
-
-  // Finalize: Arkade returns checkpoints with only the server signature.
-  // We must merge back the receiver sigs, then add the client (sender)
-  // signature to complete the 3-of-3.
-  const finalCheckpoints = await Promise.all(
-    submitRes.signedCheckpointTxs.map(async (cp, cpIdx) => {
+  // Merge the receiver's (lendaswap) checkpoint sigs into our own, so each
+  // checkpoint carries both user-side sigs of the 3-of-3 before submit.
+  const receiverCheckpoints = new Map(
+    collabRes.data.checkpoint_txs.map((cp) => {
       const tx = Transaction.fromPSBT(base64.decode(cp));
-
-      // Merge receiver tap_script_sigs back into each input
-      const savedSigs = receiverCheckpointSigs[cpIdx];
-      if (savedSigs) {
-        for (let i = 0; i < tx.inputsLength && i < savedSigs.length; i++) {
-          for (const [key, signature] of savedSigs[i]) {
-            tx.updateInput(i, {
-              tapScriptSig: [[key, signature]],
-            });
-          }
-        }
-      }
-
-      const signed = await signer.sign(tx);
-      return base64.encode(signed.toPSBT());
+      return [tx.id, tx] as const;
     }),
   );
+  const fullySignedCheckpoints = userSignedCheckpoints.map((userSigned) => {
+    const receiverSigned = receiverCheckpoints.get(userSigned.id);
+    if (!receiverSigned) {
+      throw new Error(
+        `Collaborative refund cosign returned no checkpoint ${userSigned.id}`,
+      );
+    }
+    return combineTapscriptSigs(receiverSigned, userSigned);
+  });
 
-  await arkProvider.finalizeTx(submitRes.arkTxid, finalCheckpoints);
+  // The backend added the receiver sig to our signed ark tx; submit it with
+  // the fully signed checkpoints. arkd finalizes in one call, or — if it is
+  // too old for one-shot — the helper merges our sigs back and finalizes.
+  const { arkTxid } = await submitOffchainTxOneShot(
+    arkProvider,
+    Transaction.fromPSBT(base64.decode(collabRes.data.ark_tx)),
+    checkpoints,
+    fullySignedCheckpoints,
+  );
 
-  return { txId: submitRes.arkTxid, refundAmount: totalAmount };
+  return { txId: arkTxid, refundAmount: totalAmount };
 }
 
 /**

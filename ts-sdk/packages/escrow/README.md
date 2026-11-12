@@ -60,7 +60,7 @@ import {
   (throws `ReleaseArkTxValidationError`).
 - `signEscrowArkTx` / `signEscrowReleaseInPlace` / `signEscrowCheckpoints` →
   produce the co-party signatures.
-- `submitAndFinalizeEscrowRelease` → submit to the Arkade server and finalize.
+- `submitAndFinalizeEscrowRelease` → submit to the Arkade server (one-shot; finalizes separately only on older servers).
 
 ## Monitor
 

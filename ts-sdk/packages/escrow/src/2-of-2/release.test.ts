@@ -2,16 +2,18 @@ import {
   type ArkadeInfo,
   CSVMultisigTapscript,
   networks,
+  Transaction,
 } from "@arkade-os/sdk";
 import { schnorr } from "@noble/curves/secp256k1.js";
-import { hex } from "@scure/base";
-import { describe, expect, it } from "vitest";
+import { base64, hex } from "@scure/base";
+import { describe, expect, it, vi } from "vitest";
 import { type EscrowScriptOptions, EscrowVtxoScript } from "./escrow-script.js";
 import {
   buildEscrowReleaseTx,
   type EscrowArkConfig,
   escrowArkConfigFromInfo,
   signEscrowReleaseInPlace,
+  submitAndFinalizeEscrowRelease,
 } from "./release.js";
 import { verifyReleaseArkTx } from "./verify.js";
 
@@ -222,5 +224,85 @@ describe("signEscrowReleaseInPlace", () => {
     signEscrowReleaseInPlace(b, arbiterSk);
 
     expect(hex.encode(a.arkTx.toPSBT())).toBe(hex.encode(b.arkTx.toPSBT()));
+  });
+});
+
+describe("submitAndFinalizeEscrowRelease", () => {
+  const sk = (seed: number) => {
+    const key = new Uint8Array(32);
+    key[31] = seed;
+    return key;
+  };
+  const decode = (b64: string) => Transaction.fromPSBT(base64.decode(b64));
+  const encode = (tx: Transaction) => base64.encode(tx.toPSBT());
+  const serverSign = (tx: Transaction) => {
+    tx.signIdx(sk(3), 0);
+    return encode(tx);
+  };
+
+  function signedRelease() {
+    const built = buildEscrowReleaseTx(
+      new EscrowVtxoScript(options),
+      funding,
+      outputs,
+      config,
+    );
+    const unsigned = built.checkpoints.map((c) => c.clone());
+    signEscrowReleaseInPlace(built, sk(1));
+    signEscrowReleaseInPlace(built, sk(2));
+    return { built, unsigned };
+  }
+
+  it("sends the user-signed checkpoints and skips finalize on a one-shot server", async () => {
+    const { built, unsigned } = signedRelease();
+    const provider = {
+      submitTx: vi.fn(async (_ark: string, cps: string[]) => ({
+        arkTxid: built.arkTx.id,
+        finalArkTx: encode(built.arkTx),
+        signedCheckpointTxs: cps.map((c) => serverSign(decode(c))),
+      })),
+      finalizeTx: vi.fn(),
+    };
+
+    const txid = await submitAndFinalizeEscrowRelease(
+      provider,
+      built.arkTx,
+      built.checkpoints,
+      unsigned,
+    );
+
+    expect(txid).toBe(built.arkTx.id);
+    const sent = provider.submitTx.mock.calls[0][1].map(decode);
+    expect(sent.map((c) => c.getInput(0).tapScriptSig?.length)).toEqual(
+      sent.map(() => 2),
+    );
+    expect(provider.finalizeTx).not.toHaveBeenCalled();
+  });
+
+  it("merges user sigs and finalizes on an older server", async () => {
+    const { built, unsigned } = signedRelease();
+    const provider = {
+      submitTx: vi.fn(async () => ({
+        arkTxid: built.arkTx.id,
+        finalArkTx: encode(built.arkTx),
+        signedCheckpointTxs: unsigned.map((c) => serverSign(c.clone())),
+      })),
+      finalizeTx: vi.fn(async () => {}),
+    };
+
+    const txid = await submitAndFinalizeEscrowRelease(
+      provider,
+      built.arkTx,
+      built.checkpoints,
+      unsigned,
+    );
+
+    expect(txid).toBe(built.arkTx.id);
+    const [finalTxid, finals] = provider.finalizeTx.mock
+      .calls[0] as unknown as [string, string[]];
+    expect(finalTxid).toBe(built.arkTx.id);
+    for (const cp of finals.map(decode)) {
+      expect(cp.getInput(0).tapScriptSig).toHaveLength(3);
+    }
   });
 });

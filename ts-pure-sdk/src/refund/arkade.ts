@@ -17,17 +17,17 @@ import {
   RestArkProvider,
   RestIndexerProvider,
   SingleKey,
-  Transaction,
   type VHTLC,
 } from "@arkade-os/sdk";
 import { ripemd160 } from "@noble/hashes/legacy.js";
-import { base64, hex } from "@scure/base";
+import { hex } from "@scure/base";
 
 import {
   getNetworkHrp,
   getNetworkName,
   resolveArkadeServerUrlByName,
 } from "../arkade-network.js";
+import { submitOffchainTxOneShot } from "../arkade-submit.js";
 import { createSdkLogger, type Logger, type LogLevel } from "../logging.js";
 import {
   ARKADE_HTLC_SCRIPT_VERSION_STRICT,
@@ -327,34 +327,22 @@ export async function buildArkadeRefund(
   // Create signer from user's secret key
   const signer = SingleKey.fromHex(userSecretKey);
 
-  // Sign the ark transaction
+  // Sign the ark transaction and, up front, every checkpoint (one-shot submit)
   const signedArkTx = await signer.sign(arkTx);
-
-  // Submit the transaction to the Arkade server
-  const signedArkTxBase64 = base64.encode(signedArkTx.toPSBT());
-  const { arkTxid, signedCheckpointTxs } = await arkProvider.submitTx(
-    signedArkTxBase64,
-    checkpoints.map((cp) => base64.encode(cp.toPSBT())),
+  const userSignedCheckpoints = await Promise.all(
+    checkpoints.map((cp) => signer.sign(cp)),
   );
 
-  const finalCheckpoints = await Promise.all(
-    signedCheckpointTxs.map(async (c) => {
-      const tx = Transaction.fromPSBT(base64.decode(c));
-      const signedCheckpoint = await signer.sign(tx);
-      return base64.encode(signedCheckpoint.toPSBT());
-    }),
+  const { arkTxid, mode } = await submitOffchainTxOneShot(
+    arkProvider,
+    signedArkTx,
+    checkpoints,
+    userSignedCheckpoints,
   );
-  logger.debug({
-    event: "arkade.refund.checkpoints_signed",
-    message: "Final checkpoint transactions signed",
-  });
-
-  // Finalize the transaction
-  await arkProvider.finalizeTx(arkTxid, finalCheckpoints);
   logger.info({
     event: "arkade.refund.finalized",
     message: "Arkade refund finalized",
-    data: { arkTxid },
+    data: { arkTxid, mode },
   });
 
   return {
