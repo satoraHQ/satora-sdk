@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@arkade-os/sdk':
-        specifier: ^0.5.1
-        version: 0.5.1(bufferutil@4.1.0)(utf-8-validate@6.0.6)
+        specifier: ^0.5.5
+        version: 0.5.5(bufferutil@4.1.0)(utf-8-validate@6.0.6)
       '@noble/curves':
         specifier: ^2.2.0
         version: 2.2.0
@@ -82,16 +82,19 @@ packages:
   '@adraffy/ens-normalize@1.11.1':
     resolution: {integrity: sha512-nhCBV3quEgesuf7c7KYfperqSS14T8bYuvJ8PcLJp6znkZpFc0AuW4qBtr8eKVyPPe/8RSr7sglCWPU5eaxwKQ==}
 
-  '@arkade-os/sdk@0.5.1':
-    resolution: {integrity: sha512-7oN45PXB8TuvI2POJ/CLwx0ZJDree0V5OBdr3//MWCbkpkVvJfZEsKJSws1+DiwSEmrHFTCYh4xz0vfoWXxKrg==}
+  '@arkade-os/sdk@0.5.5':
+    resolution: {integrity: sha512-RVOKdYWm+tsz7RaMpmXOzr1sjF7dUtmfvT3jc5sj0+J/b/VrRyCq2bael8ZNncNXulG7aZkpCKfpbNql7ih6Rg==}
     engines: {node: '>=22.13.0 <27'}
     peerDependencies:
+      '@arkade-os/compiler': ^0.1.0-rc.1
       '@react-native-async-storage/async-storage': '>=1.0.0'
       expo: '>=54.0.0'
       expo-background-task: ~1.0.10 || >=55.0.0
       expo-sqlite: ~16.0.10 || >=55.0.0
       expo-task-manager: ~14.0.9 || >=55.0.0
     peerDependenciesMeta:
+      '@arkade-os/compiler':
+        optional: true
       '@react-native-async-storage/async-storage':
         optional: true
       expo:
@@ -1982,7 +1985,7 @@ snapshots:
 
   '@adraffy/ens-normalize@1.11.1': {}
 
-  '@arkade-os/sdk@0.5.1(bufferutil@4.1.0)(utf-8-validate@6.0.6)':
+  '@arkade-os/sdk@0.5.5(bufferutil@4.1.0)(utf-8-validate@6.0.6)':
     dependencies:
       '@bitcoinerlab/descriptors-scure': 3.1.7
       '@marcbachmann/cel-js': 8.0.0
@@ -2047,7 +2050,7 @@ snapshots:
   '@biomejs/cli-win32-x64@2.3.15':
     optional: true
 
-  '@bitcoinerlab/descriptors-core@3.1.7(@noble/curves@2.4.0)(@noble/hashes@2.2.0)(@scure/base@2.4.0)(@scure/bip32@2.0.1)(@scure/btc-signer@2.4.1)':
+  '@bitcoinerlab/descriptors-core@3.1.7(@noble/curves@2.4.0)(@noble/hashes@2.4.0)(@scure/base@2.4.0)(@scure/bip32@2.0.1)(@scure/btc-signer@2.4.1)':
     dependencies:
       '@bitcoinerlab/miniscript': 2.0.0
       lodash.memoize: 4.1.2
@@ -2055,16 +2058,16 @@ snapshots:
       varuint-bitcoin: 2.0.0
     optionalDependencies:
       '@noble/curves': 2.4.0
-      '@noble/hashes': 2.2.0
+      '@noble/hashes': 2.4.0
       '@scure/base': 2.4.0
       '@scure/bip32': 2.0.1
       '@scure/btc-signer': 2.4.1
 
   '@bitcoinerlab/descriptors-scure@3.1.7':
     dependencies:
-      '@bitcoinerlab/descriptors-core': 3.1.7(@noble/curves@2.4.0)(@noble/hashes@2.2.0)(@scure/base@2.4.0)(@scure/bip32@2.0.1)(@scure/btc-signer@2.4.1)
+      '@bitcoinerlab/descriptors-core': 3.1.7(@noble/curves@2.4.0)(@noble/hashes@2.4.0)(@scure/base@2.4.0)(@scure/bip32@2.0.1)(@scure/btc-signer@2.4.1)
       '@noble/curves': 2.4.0
-      '@noble/hashes': 2.2.0
+      '@noble/hashes': 2.4.0
       '@scure/base': 2.4.0
       '@scure/bip32': 2.0.1
       '@scure/btc-signer': 2.4.1
