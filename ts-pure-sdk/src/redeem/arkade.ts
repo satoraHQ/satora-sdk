@@ -10,16 +10,16 @@
  */
 
 import {
-  type ArkProvider,
   type ArkTxInput,
   buildOffchainTx,
   ConditionWitness,
   CSVMultisigTapscript,
   type IndexerProvider,
-  Intent,
-  RestArkProvider,
+  type OperatorProvider,
+  Proof,
   RestIndexerProvider,
-  type SignedIntent,
+  RestOperatorProvider,
+  type SignedProof,
   SingleKey,
   setArkPsbtField,
   Transaction,
@@ -223,7 +223,7 @@ export async function buildArkadeClaim(
   const serverUrl = resolveArkadeServerUrlByName(networkName, arkadeServerUrl);
 
   // Create Arkade providers
-  const arkProvider: ArkProvider = new RestArkProvider(serverUrl);
+  const arkProvider: OperatorProvider = new RestOperatorProvider(serverUrl);
   const indexerProvider: IndexerProvider = new RestIndexerProvider(serverUrl);
 
   // Get server info
@@ -450,7 +450,7 @@ export async function continueArkadeClaim(
   const serverUrl = resolveArkadeServerUrlByName(networkName, arkadeServerUrl);
 
   // Create Arkade providers
-  const arkProvider: ArkProvider = new RestArkProvider(serverUrl);
+  const arkProvider: OperatorProvider = new RestOperatorProvider(serverUrl);
   const indexerProvider: IndexerProvider = new RestIndexerProvider(serverUrl);
 
   // Construct VHTLC with the same parameters as the original swap
@@ -529,7 +529,7 @@ export async function continueArkadeClaim(
 
   // Build a GetPendingTx intent to ask Arkade for pending transactions
   const now = Math.floor(Date.now() / 1000);
-  const intentMessage: Intent.GetPendingTxMessage = {
+  const intentMessage: Proof.GetPendingTxMessage = {
     type: "get-pending-tx",
     expire_at: now + 120,
   };
@@ -548,7 +548,7 @@ export async function continueArkadeClaim(
   }));
 
   // Create the intent proof PSBT
-  const intentProof = Intent.create(intentMessage, intentInputs);
+  const intentProof = Proof.create(intentMessage, intentInputs);
 
   // Set VtxoTaprootTree on each real input (skip input 0 which is the toSpend ref)
   for (let i = 0; i < vtxos.length; i++) {
@@ -571,7 +571,7 @@ export async function continueArkadeClaim(
 
   // Sign the intent proof
   const signedIntentProof = await signer.sign(intentProof);
-  const signedIntent: SignedIntent<Intent.GetPendingTxMessage> = {
+  const signedIntent: SignedProof<Proof.GetPendingTxMessage> = {
     proof: base64.encode(signedIntentProof.toPSBT()),
     message: intentMessage,
   };

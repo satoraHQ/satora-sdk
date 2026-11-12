@@ -9,13 +9,13 @@
  */
 
 import {
-  type ArkProvider,
   type ArkTxInput,
   buildOffchainTx,
   CSVMultisigTapscript,
   type IndexerProvider,
-  RestArkProvider,
+  type OperatorProvider,
   RestIndexerProvider,
+  RestOperatorProvider,
   SingleKey,
   type VHTLC,
 } from "@arkade-os/sdk";
@@ -219,7 +219,7 @@ export async function buildArkadeRefund(
   const serverUrl = resolveArkadeServerUrlByName(networkName, arkadeServerUrl);
 
   // Create Arkade providers
-  const arkProvider: ArkProvider = new RestArkProvider(serverUrl);
+  const arkProvider: OperatorProvider = new RestOperatorProvider(serverUrl);
   const indexerProvider: IndexerProvider = new RestIndexerProvider(serverUrl);
   // Get server info
   const serverInfo = await arkProvider.getInfo();

@@ -1,7 +1,7 @@
 import {
-  type ArkadeInfo,
   CSVMultisigTapscript,
   networks,
+  type OperatorInfo,
   Transaction,
 } from "@arkade-os/sdk";
 import { schnorr } from "@noble/curves/secp256k1.js";
@@ -67,13 +67,13 @@ const outputs = {
 };
 
 describe("escrowArkConfigFromInfo", () => {
-  it("derives config fields from ArkadeInfo", () => {
+  it("derives config fields from OperatorInfo", () => {
     const info = {
       signerPubkey: hex.encode(arkadeServerPubKey),
       unilateralExitDelay: 144n,
       checkpointTapscript: hex.encode(serverUnrollScript.script),
       dust: 330n,
-    } as unknown as ArkadeInfo;
+    } as unknown as OperatorInfo;
 
     const cfg = escrowArkConfigFromInfo(info);
     expect(cfg.arkadeServerPubKey).toEqual(arkadeServerPubKey);
@@ -87,7 +87,7 @@ describe("escrowArkConfigFromInfo", () => {
       signerPubkey: hex.encode(arkadeServerPubKey),
       unilateralExitDelay: 144n,
       dust: 330n,
-    } as unknown as ArkadeInfo;
+    } as unknown as OperatorInfo;
     expect(() => escrowArkConfigFromInfo(info)).toThrow(/checkpointTapscript/);
   });
 });

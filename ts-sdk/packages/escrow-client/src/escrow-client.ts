@@ -1,9 +1,9 @@
 import {
-  type ArkProvider,
   type ContractRepository,
   type IndexerProvider,
   type IWallet,
   type Network,
+  type OperatorProvider,
   Ramps,
   type WalletRepository,
 } from "@arkade-os/sdk";
@@ -58,7 +58,7 @@ export interface EscrowClientConfig {
   /** The consumer's swap client (see {@link SwapClient}). */
   swap: SwapClient;
   /** Arkade server provider (for fees + release submission). */
-  arkProvider: ArkProvider;
+  arkProvider: OperatorProvider;
   /** Indexer provider used to watch escrow addresses. */
   indexerProvider: IndexerProvider;
   /** Contract repository for the escrow monitor. */
@@ -118,7 +118,7 @@ export interface FundFromLightningHandle {
 export class EscrowClient {
   private constructor(
     private readonly swap: SwapClient,
-    private readonly arkProvider: ArkProvider,
+    private readonly arkProvider: OperatorProvider,
     private readonly monitor: EscrowMonitor,
   ) {}
 

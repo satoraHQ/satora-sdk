@@ -14,15 +14,15 @@
 
 import {
   ArkAddress,
-  type ArkProvider,
   buildOffchainTx,
   CSVMultisigTapscript,
   combineTapscriptSigs,
   type IndexerProvider,
-  Intent,
   networks,
-  RestArkProvider,
+  type OperatorProvider,
+  Proof,
   RestIndexerProvider,
+  RestOperatorProvider,
   SingleKey,
   setArkPsbtField,
   Transaction,
@@ -184,7 +184,7 @@ export async function collabRefundArkadeToEvmOffchain(
     params.arkadeServerUrl,
   );
 
-  const arkProvider: ArkProvider = new RestArkProvider(serverUrl);
+  const arkProvider: OperatorProvider = new RestOperatorProvider(serverUrl);
   const indexerProvider: IndexerProvider = new RestIndexerProvider(serverUrl);
   const serverInfo = await arkProvider.getInfo();
 
@@ -309,7 +309,7 @@ export async function collabRefundArkadeToEvmDelegate(
     params.arkadeServerUrl,
   );
 
-  const arkProvider: ArkProvider = new RestArkProvider(serverUrl);
+  const arkProvider: OperatorProvider = new RestOperatorProvider(serverUrl);
   const indexerProvider: IndexerProvider = new RestIndexerProvider(serverUrl);
   const serverInfo = await arkProvider.getInfo();
 
@@ -350,7 +350,7 @@ export async function collabRefundArkadeToEvmDelegate(
   const destination = ArkAddress.decode(params.destinationAddress);
 
   const now = Math.floor(Date.now() / 1000);
-  const intentMessage: Intent.RegisterMessage = {
+  const intentMessage: Proof.RegisterMessage = {
     type: "register",
     onchain_output_indexes: [],
     valid_at: now,
@@ -373,7 +373,7 @@ export async function collabRefundArkadeToEvmDelegate(
     sighashType: SigHash.ALL,
   }));
 
-  const intentProof = Intent.create(intentMessage, intentInputs, [
+  const intentProof = Proof.create(intentMessage, intentInputs, [
     { script: destination.pkScript, amount: totalAmount },
   ]);
 
@@ -442,7 +442,7 @@ export async function collabRefundArkadeToEvmDelegate(
   const settleRes = await params.apiClient.POST("/api/delegate/settle", {
     body: {
       intent_proof: collabRes.data.intent_proof,
-      intent_message: Intent.encodeMessage(intentMessage),
+      intent_message: Proof.encodeMessage(intentMessage),
       forfeit_psbts: collabRes.data.forfeit_psbts,
       cosigner_pk: cosignerPkHex,
       swap_id: null,

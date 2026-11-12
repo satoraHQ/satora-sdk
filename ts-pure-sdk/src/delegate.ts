@@ -10,14 +10,14 @@
 
 import {
   ArkAddress,
-  type ArkProvider,
   ConditionWitness,
   type IndexerProvider,
-  Intent,
   type NetworkName,
   networks,
-  RestArkProvider,
+  type OperatorProvider,
+  Proof,
   RestIndexerProvider,
+  RestOperatorProvider,
   SingleKey,
   setArkPsbtField,
   type TapLeafScript,
@@ -319,7 +319,7 @@ async function settleDelegate(
 
   const serverUrl = resolveArkadeServerUrlByName(networkName, arkadeServerUrl);
 
-  const arkProvider: ArkProvider = new RestArkProvider(serverUrl);
+  const arkProvider: OperatorProvider = new RestOperatorProvider(serverUrl);
   const indexerProvider: IndexerProvider = new RestIndexerProvider(serverUrl);
   const serverInfo = await arkProvider.getInfo();
 
@@ -365,7 +365,7 @@ async function settleDelegate(
 
   // Build intent message
   const now = Math.floor(Date.now() / 1000);
-  const intentMessage: Intent.RegisterMessage = {
+  const intentMessage: Proof.RegisterMessage = {
     type: "register",
     onchain_output_indexes: [],
     valid_at: now,
@@ -388,7 +388,7 @@ async function settleDelegate(
   }));
 
   // Build intent proof PSBT
-  const intentProof = Intent.create(intentMessage, intentInputs, [
+  const intentProof = Proof.create(intentMessage, intentInputs, [
     { script: destPkScript, amount: totalAmount },
   ]);
 
@@ -457,7 +457,7 @@ async function settleDelegate(
 
   // Serialize intent proof
   const intentProofBase64 = base64.encode(signedIntentProof.toPSBT());
-  const intentMessageJson = Intent.encodeMessage(intentMessage);
+  const intentMessageJson = Proof.encodeMessage(intentMessage);
 
   // POST to backend
   const settleUrl = `${lendaswapApiUrl.replace(/\/$/, "")}/api/delegate/settle`;

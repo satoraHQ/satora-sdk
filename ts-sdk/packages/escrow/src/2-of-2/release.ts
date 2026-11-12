@@ -1,12 +1,12 @@
 import {
   ArkAddress,
-  type ArkadeInfo,
   type ArkTxInput,
   assertSubmittedArkTxid,
   buildOffchainTx,
   CSVMultisigTapscript,
   combineTapscriptSigs,
   matchServerCheckpoints,
+  type OperatorInfo,
   type OperatorProvider,
   type RelativeTimelock,
   type Transaction,
@@ -17,7 +17,7 @@ import type { EscrowVtxoScript } from "./escrow-script.js";
 /**
  * Arkade server-derived parameters needed to build and submit an escrow release.
  *
- * Derive once at startup from `ArkProvider.getInfo()` via
+ * Derive once at startup from `OperatorProvider.getInfo()` via
  * {@link escrowArkConfigFromInfo}; these values are fixed by the Arkade server and
  * cannot be chosen by the escrow parties.
  */
@@ -39,7 +39,7 @@ export interface EscrowArkConfig {
  * decode the checkpoint tapscript, and map the unilateral-exit delay to a
  * relative timelock.
  */
-export function escrowArkConfigFromInfo(info: ArkadeInfo): EscrowArkConfig {
+export function escrowArkConfigFromInfo(info: OperatorInfo): EscrowArkConfig {
   if (!info.checkpointTapscript) {
     throw new Error("Arkade server info is missing checkpointTapscript");
   }

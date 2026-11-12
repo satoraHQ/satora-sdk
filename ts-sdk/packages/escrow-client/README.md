@@ -50,7 +50,7 @@ lifetime of your app.
 
 ```ts
 import {
-  RestArkProvider,
+  RestOperatorProvider,
   RestIndexerProvider,
   InMemoryContractRepository,
   InMemoryWalletRepository,
@@ -60,7 +60,7 @@ import { EscrowClient } from "@satora/escrow-client";
 
 const ARK_URL = "https://master.arkade.sh"; // the Arkade server (serves Arkade + indexer)
 
-const arkProvider = new RestArkProvider(ARK_URL);
+const arkProvider = new RestOperatorProvider(ARK_URL);
 const indexerProvider = new RestIndexerProvider(ARK_URL);
 
 const escrowClient = await EscrowClient.create({
