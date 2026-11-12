@@ -6,7 +6,7 @@ export const SDK_NAME = "swap";
 export const SDK_VERSION = "1.9.0";
 export const SDK_COMMIT_HASH = "unknown";
 /** @deprecated Retained for source compatibility; requests no longer send it. */
-export const SATORA_SERVER_VERSION = "0.3.25";
+export const SATORA_SERVER_VERSION = "0.3.26";
 export const CLIENT_AGENT = `${SDK_NAME}/${SDK_VERSION}`;
 export const DEFAULT_AA_BUNDLER_URL = "";
 export const DEFAULT_AA_POLICY_ID = "";
