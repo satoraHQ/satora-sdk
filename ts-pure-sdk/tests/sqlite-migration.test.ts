@@ -172,4 +172,36 @@ describe("SqliteSwapStorage schema migration", () => {
     );
     reopened.close();
   });
+
+  it("persists the payout target and bridge recipient, added to a database created before them", async () => {
+    const path = oldDatabase([
+      "evm_fund_txid",
+      "evm_coordinator_address",
+      "cctp_burn_txid",
+      "cctp_burn_last_valid_block_height",
+      "evm_rehashes",
+      "lightning_payment_hash",
+      "evm_funding_terms",
+    ]);
+    paths.push(path);
+    const pinned = {
+      targetAddress: "0x1111111111111111111111111111111111111111",
+      bridgeRecipient: "So1anaAtaRecipient11111111111111111111111111",
+      bridgeRecipientWallet: "So1anaWa11et111111111111111111111111111111111",
+    };
+
+    const storage = new SqliteSwapStorage(path);
+    expect((await storage.get(SWAP_ID))?.targetAddress).toBeUndefined();
+    await storage.store(storedSwap(pinned));
+    // A server refresh rewrites only the response, never the pinned target.
+    const stored = await storage.get(SWAP_ID);
+    if (!stored) throw new Error("swap not stored");
+    await storage.update(SWAP_ID, stored.response);
+    expect(await storage.get(SWAP_ID)).toMatchObject(pinned);
+    storage.close();
+
+    const reopened = new SqliteSwapStorage(path);
+    expect(await reopened.get(SWAP_ID)).toMatchObject(pinned);
+    reopened.close();
+  });
 });

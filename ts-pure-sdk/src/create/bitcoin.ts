@@ -5,7 +5,10 @@
 import { deriveEvmAddress } from "../evm/signing.js";
 import { bytesToHex } from "../signer/index.js";
 import { BTC_HTLC_SCRIPT_VERSION_STRICT } from "../strict-vhtlc.js";
-import { assertBitcoinToEvmHtlc } from "../swap-verification.js";
+import {
+  assertAddressEchoed,
+  assertBitcoinToEvmHtlc,
+} from "../swap-verification.js";
 import { retryOnHashCollision } from "./retry.js";
 import type {
   BitcoinToEvmSwapOptions,
@@ -97,6 +100,11 @@ export async function createBitcoinToEvmSwap(
     // can refund before the swap is stored or returned.
     assertBitcoinToEvmHtlc(data, swapParams.preimageHash, swapParams.publicKey);
 
+    // The claim pays the target and signs with the claiming key: both must
+    // be the ones this client sent.
+    assertAddressEchoed(data, "target_evm_address", options.targetAddress);
+    assertAddressEchoed(data, "client_evm_address", claimingAddress);
+
     // Store the swap if storage is configured
     await ctx.storeSwap(
       data.id,
@@ -105,7 +113,7 @@ export async function createBitcoinToEvmSwap(
         ...data,
         direction: "bitcoin_to_evm",
       },
-      undefined,
+      options.targetAddress,
       {
         recipient: options.bridgeParams?.recipient,
         recipientWallet: options.bridgeParams?.recipientWallet,

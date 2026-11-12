@@ -21,6 +21,7 @@ describe("inbound swaps claim with a per-swap key", () => {
         data: {
           id: "11111111-2222-3333-4444-555555555555",
           client_evm_address: opts.body.claiming_address,
+          target_evm_address: opts.body.target_address,
           bolt11_invoice: vectors.invoices.lnd_hold_index_7.bolt11,
           target_amount: "1",
         },

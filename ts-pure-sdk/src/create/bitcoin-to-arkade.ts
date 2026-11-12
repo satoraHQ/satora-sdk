@@ -12,7 +12,10 @@ import {
   ARKADE_HTLC_SCRIPT_VERSION_STRICT,
   BTC_HTLC_SCRIPT_VERSION_STRICT,
 } from "../strict-vhtlc.js";
-import { assertBitcoinToArkadeHtlc } from "../swap-verification.js";
+import {
+  assertAddressEchoed,
+  assertBitcoinToArkadeHtlc,
+} from "../swap-verification.js";
 import { retryOnHashCollision } from "./retry.js";
 import type {
   BitcoinToArkadeSwapOptions,
@@ -97,11 +100,16 @@ export async function createBitcoinToArkadeSwap(
       swapParams.publicKey,
     );
 
+    // The claim pays this address, so it must be the one this client sent.
+    assertAddressEchoed(data, "target_arkade_address", options.targetAddress);
+
     // Store the swap if storage is configured
-    await ctx.storeSwap(response.id, swapParams, {
-      ...response,
-      direction: "btc_to_arkade",
-    });
+    await ctx.storeSwap(
+      response.id,
+      swapParams,
+      { ...response, direction: "btc_to_arkade" },
+      options.targetAddress,
+    );
 
     return { response, swapParams };
   });

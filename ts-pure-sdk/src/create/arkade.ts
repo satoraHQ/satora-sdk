@@ -5,7 +5,10 @@
 import { deriveEvmAddress } from "../evm/signing.js";
 import { bytesToHex } from "../signer/index.js";
 import { ARKADE_HTLC_SCRIPT_VERSION_STRICT } from "../strict-vhtlc.js";
-import { assertArkadeToEvmVhtlc } from "../swap-verification.js";
+import {
+  assertAddressEchoed,
+  assertArkadeToEvmVhtlc,
+} from "../swap-verification.js";
 import { retryOnHashCollision } from "./retry.js";
 import type {
   ArkadeToEvmSwapOptions,
@@ -105,6 +108,11 @@ export async function createArkadeToEvmSwapGeneric(
     // can refund before the swap is stored or returned.
     assertArkadeToEvmVhtlc(data, swapParams.preimageHash, swapParams.publicKey);
 
+    // The claim pays the target and signs with the claiming key: both must
+    // be the ones this client sent.
+    assertAddressEchoed(data, "target_evm_address", options.targetAddress);
+    assertAddressEchoed(data, "client_evm_address", claimingAddress);
+
     // Store the swap if storage is configured; pin the bridge claim
     // recipient (Solana ATA) so a bare claim can route the CCTP burn.
     await ctx.storeSwap(
@@ -114,7 +122,7 @@ export async function createArkadeToEvmSwapGeneric(
         ...data,
         direction: "arkade_to_evm",
       },
-      undefined,
+      options.targetAddress,
       {
         recipient: options.bridgeParams?.recipient,
         recipientWallet: options.bridgeParams?.recipientWallet,

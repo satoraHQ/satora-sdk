@@ -530,6 +530,92 @@ const ADDRESS_FIELDS = [
   "evm_htlc_address",
 ];
 const INVOICE_FIELDS = ["bolt11_invoice", "client_lightning_invoice"];
+/**
+ * Where a swap pays out, and the EVM key its claim signs for. Fixed when the
+ * swap is created, for every direction: an EVM-sourced rehash moves only
+ * the hash lock and invoice.
+ */
+const PAYOUT_FIELDS = [
+  "target_evm_address",
+  "target_btc_address",
+  "target_arkade_address",
+  "client_evm_address",
+];
+
+/**
+ * An address in the form two copies of it compare by: hex and bech32 ignore
+ * case (the server checksums or lowercases them), base58 does not.
+ */
+function addressKey(address: string): string {
+  const lower = address.toLowerCase();
+  const bech32 = /^(bc|tb|bcrt|ark|tark)1/.test(lower);
+  return lower.startsWith("0x") || bech32 ? lower : address;
+}
+
+/**
+ * Whether two addresses are the same, by {@link addressKey}.
+ */
+export function sameAddress(a: string, b: string): boolean {
+  return addressKey(a) === addressKey(b);
+}
+
+/** The response field a direction's claim pays out to. */
+const PAYOUT_FIELD: Record<string, string> = {
+  arkade_to_evm: "target_evm_address",
+  bitcoin_to_evm: "target_evm_address",
+  lightning_to_evm: "target_evm_address",
+  evm_to_bitcoin: "target_btc_address",
+  lightning_to_bitcoin: "target_btc_address",
+  btc_to_arkade: "target_arkade_address",
+  evm_to_arkade: "target_arkade_address",
+  lightning_to_arkade: "target_arkade_address",
+};
+
+/**
+ * Where a stored swap's claim pays out: the target this client sent at
+ * creation, or for a swap without one (stored before it was pinned, or
+ * recovered) the stored copy's field for its direction, which a refresh
+ * cannot change. Only that field: one the stored copy lacks is not compared
+ * on refresh, so a server could add it.
+ */
+export function storedPayoutTarget(stored: StoredSwap): string | undefined {
+  if (stored.targetAddress) return stored.targetAddress;
+  const field = PAYOUT_FIELD[stored.response.direction];
+  if (!field) return undefined;
+  const value = (stored.response as unknown as Record<string, unknown>)[field];
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+/**
+ * Refuses a create response whose `field` is not the address this client
+ * sent. The claim pays out to that field, so a server answering with an
+ * address of its own would take the payout. With nothing requested, the
+ * server must not name one either.
+ */
+export function assertAddressEchoed(
+  response: Record<string, unknown>,
+  field: string,
+  requested: string | undefined,
+): void {
+  const received = response[field];
+  const named = typeof received === "string" && received !== "";
+  const matches =
+    requested === undefined || requested === ""
+      ? !named
+      : named && sameAddress(received, requested);
+  if (!matches) {
+    const swapId = typeof response.id === "string" ? response.id : undefined;
+    throw new SwapVerificationError(
+      `The server's ${field} for swap ${swapId ?? "(new)"} is ${String(received)}, expected ${requested ?? "none"}; not storing the swap`,
+      {
+        field,
+        expected: requested ?? "",
+        received: String(received),
+        swapId,
+      },
+    );
+  }
+}
 
 /**
  * An invoice compared by the hash it pays. One that does not decode is
@@ -563,12 +649,18 @@ export function withStoredTerms(
       : [refused.field];
   const before = stored.response as unknown as Record<string, unknown>;
   const kept: Record<string, unknown> = { ...fresh };
-  for (const field of [
-    "direction",
-    ...HASH_FIELDS,
-    ...ADDRESS_FIELDS,
-    ...INVOICE_FIELDS,
-  ]) {
+  // An EVM-sourced rehash legitimately moves the hash lock and invoice.
+  const terms = EVM_SOURCED.has(stored.response.direction)
+    ? ["direction", "bridge_target_chain", ...PAYOUT_FIELDS]
+    : [
+        "direction",
+        "bridge_target_chain",
+        ...HASH_FIELDS,
+        ...ADDRESS_FIELDS,
+        ...INVOICE_FIELDS,
+        ...PAYOUT_FIELDS,
+      ];
+  for (const field of terms) {
     if (field in before) kept[field] = before[field];
     else if (condemned.includes(field)) delete kept[field];
   }
@@ -580,18 +672,19 @@ export function withStoredTerms(
  * a direction, hash lock, lock address or invoice payment hash that differs
  * from the stored one, a Lightning to X invoice that does not pay this client's
  * preimage hash, or an X to Lightning hash lock that is not its invoice's
- * payment hash. These never change once a swap exists, so a difference means
+ * payment hash, or a payout address or claim key that differs from the
+ * stored one. These never change once a swap exists, so a difference means
  * the copy must not replace the stored one.
  *
- * EVM-sourced swaps are not checked: their funding uses what creation
- * recorded (`lightningPaymentHash`, `evmFundingTerms`), never the server's
- * copy, and a rehash legitimately moves their hash lock and invoice.
+ * EVM-sourced swaps are checked only for their direction and payout: their
+ * funding uses what creation recorded (`lightningPaymentHash`,
+ * `evmFundingTerms`), never the server's copy, and a rehash legitimately
+ * moves their hash lock and invoice.
  */
 export function swapTermsChange(
   stored: StoredSwap,
   fresh: GetSwapResponse,
 ): SwapVerificationError | undefined {
-  if (EVM_SOURCED.has(stored.response.direction)) return undefined;
   const before = stored.response as unknown as Record<string, unknown>;
   const after = fresh as unknown as Record<string, unknown>;
   const swapId = stored.swapId;
@@ -612,8 +705,13 @@ export function swapTermsChange(
     }
     return undefined;
   };
+  const payout =
+    compare(["direction", "bridge_target_chain"], (value) => value) ??
+    compare(PAYOUT_FIELDS, addressKey);
+  if (payout) return payout;
+  if (EVM_SOURCED.has(stored.response.direction)) return undefined;
+
   const difference =
-    compare(["direction"], (direction) => direction) ??
     compare(HASH_FIELDS, normalizeHash) ??
     compare(ADDRESS_FIELDS, (address) => address.toLowerCase()) ??
     compare(INVOICE_FIELDS, invoiceKey);

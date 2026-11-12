@@ -138,7 +138,10 @@ export class SqliteSwapStorage implements SwapStorage {
         cctp_burn_last_valid_block_height INTEGER,
         evm_rehashes TEXT,
         lightning_payment_hash TEXT,
-        evm_funding_terms TEXT
+        evm_funding_terms TEXT,
+        target_address TEXT,
+        bridge_recipient TEXT,
+        bridge_recipient_wallet TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_swaps_stored_at ON swaps(stored_at);
     `);
@@ -151,6 +154,9 @@ export class SqliteSwapStorage implements SwapStorage {
       ["evm_rehashes", "TEXT"],
       ["lightning_payment_hash", "TEXT"],
       ["evm_funding_terms", "TEXT"],
+      ["target_address", "TEXT"],
+      ["bridge_recipient", "TEXT"],
+      ["bridge_recipient_wallet", "TEXT"],
     ]) {
       if (this.#columns().includes(column)) continue;
       try {
@@ -181,8 +187,8 @@ export class SqliteSwapStorage implements SwapStorage {
     this.#db
       .prepare(
         `INSERT OR REPLACE INTO swaps
-         (swap_id, version, key_index, response, public_key, preimage, preimage_hash, secret_key, stored_at, updated_at, evm_fund_txid, evm_coordinator_address, cctp_burn_txid, cctp_burn_last_valid_block_height, evm_rehashes, lightning_payment_hash, evm_funding_terms)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (swap_id, version, key_index, response, public_key, preimage, preimage_hash, secret_key, stored_at, updated_at, evm_fund_txid, evm_coordinator_address, cctp_burn_txid, cctp_burn_last_valid_block_height, evm_rehashes, lightning_payment_hash, evm_funding_terms, target_address, bridge_recipient, bridge_recipient_wallet)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         swap.swapId,
@@ -204,6 +210,9 @@ export class SqliteSwapStorage implements SwapStorage {
           ? JSON.stringify(swap.lightningPaymentHash)
           : null,
         swap.evmFundingTerms ? JSON.stringify(swap.evmFundingTerms) : null,
+        swap.targetAddress ?? null,
+        swap.bridgeRecipient ?? null,
+        swap.bridgeRecipientWallet ?? null,
       );
   }
 
@@ -263,6 +272,9 @@ export class SqliteSwapStorage implements SwapStorage {
       evmFundingTerms: row.evm_funding_terms
         ? (JSON.parse(row.evm_funding_terms) as EvmFundingTerms)
         : undefined,
+      targetAddress: row.target_address ?? undefined,
+      bridgeRecipient: row.bridge_recipient ?? undefined,
+      bridgeRecipientWallet: row.bridge_recipient_wallet ?? undefined,
     };
   }
 
@@ -292,6 +304,9 @@ interface SqliteSwapRow {
   evm_rehashes: string | null;
   lightning_payment_hash: string | null;
   evm_funding_terms: string | null;
+  target_address: string | null;
+  bridge_recipient: string | null;
+  bridge_recipient_wallet: string | null;
 }
 
 /**

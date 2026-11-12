@@ -6,6 +6,7 @@ import { createArkadeToEvmSwapGeneric } from "../src/create/arkade.js";
 import { createBitcoinToEvmSwap } from "../src/create/bitcoin.js";
 import { createBitcoinToArkadeSwap } from "../src/create/bitcoin-to-arkade.js";
 import type { CreateSwapContext } from "../src/create/types.js";
+import { deriveEvmAddress } from "../src/evm/signing.js";
 import {
   Client,
   InMemorySwapStorage,
@@ -81,6 +82,13 @@ async function responses(user: SwapParams) {
     btc_htlc_script_version: 1,
     btc_refund_locktime: LOCKTIME,
     arkade_htlc_script_version: 1,
+    target_arkade_address:
+      vectors.swaps.lightning_to_arkade.response.target_arkade_address,
+  };
+  // What the server echoes of a to-EVM request: the target and claiming key.
+  const evmPayout = {
+    target_evm_address: "0x000000000000000000000000000000000000dEaD",
+    client_evm_address: deriveEvmAddress(user.secretKey),
   };
   const bitcoinToEvm = {
     id: "aaaaaaaa-0000-4000-8000-000000000002",
@@ -90,6 +98,7 @@ async function responses(user: SwapParams) {
     btc_htlc_address: btcHtlc(hash160Hex, keys.htlc, user),
     btc_htlc_script_version: 1,
     btc_refund_locktime: LOCKTIME,
+    ...evmPayout,
   };
   const arkadeToEvm = {
     id: "aaaaaaaa-0000-4000-8000-000000000003",
@@ -109,6 +118,7 @@ async function responses(user: SwapParams) {
       keys.receiver,
       keys.arkade,
     ),
+    ...evmPayout,
   };
 
   return {

@@ -11,7 +11,10 @@
 
 import { deriveEvmAddress } from "../evm/signing.js";
 import { bytesToHex } from "../signer/index.js";
-import { assertInvoicePays } from "../swap-verification.js";
+import {
+  assertAddressEchoed,
+  assertInvoicePays,
+} from "../swap-verification.js";
 import { retryOnHashCollision } from "./retry.js";
 import type {
   CreateSwapContext,
@@ -110,6 +113,10 @@ export async function createLightningToEvmSwap(
     }
 
     assertInvoicePays(data.bolt11_invoice, hashLock);
+    // The claim pays the target and signs with the claiming key: both must
+    // be the ones this client sent.
+    assertAddressEchoed(data, "target_evm_address", options.targetAddress);
+    assertAddressEchoed(data, "client_evm_address", claimingAddress);
 
     // Store the swap if storage is configured
     await ctx.storeSwap(
@@ -119,7 +126,7 @@ export async function createLightningToEvmSwap(
         ...data,
         direction: "lightning_to_evm",
       },
-      undefined,
+      options.targetAddress,
       {
         recipient: options.bridgeParams?.recipient,
         recipientWallet: options.bridgeParams?.recipientWallet,

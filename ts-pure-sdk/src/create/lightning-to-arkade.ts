@@ -8,7 +8,10 @@
 import { parseArkadeAddress } from "../arkade-address.js";
 import { bytesToHex } from "../signer/index.js";
 import { ARKADE_HTLC_SCRIPT_VERSION_STRICT } from "../strict-vhtlc.js";
-import { assertInvoicePays } from "../swap-verification.js";
+import {
+  assertAddressEchoed,
+  assertInvoicePays,
+} from "../swap-verification.js";
 import { retryOnHashCollision } from "./retry.js";
 import type {
   CreateSwapContext,
@@ -99,12 +102,16 @@ export async function createLightningToArkadeSwap(
     if (!data) throw new Error("No swap data returned");
 
     assertInvoicePays(data.bolt11_invoice, hashLock);
+    // The claim pays this address, so it must be the one this client sent.
+    assertAddressEchoed(data, "target_arkade_address", options.targetAddress);
 
     // Store the swap if storage is configured
-    await ctx.storeSwap(data.id, swapParams, {
-      ...data,
-      direction: "lightning_to_arkade",
-    });
+    await ctx.storeSwap(
+      data.id,
+      swapParams,
+      { ...data, direction: "lightning_to_arkade" },
+      options.targetAddress,
+    );
 
     return { response: data, swapParams };
   });

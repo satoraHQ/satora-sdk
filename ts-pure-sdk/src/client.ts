@@ -219,6 +219,7 @@ import {
 import {
   recoveredKeysChange,
   SwapVerificationError,
+  storedPayoutTarget,
   swapTermsChange,
   unboundTerms,
   withStoredTerms,
@@ -3444,7 +3445,8 @@ export class Client {
     const secret = storedSwap.preimage;
 
     // EVM-targeted swaps: use gasless claim via server (SDK signs internally)
-    // The destination is always the stored target_evm_address (set at swap creation time)
+    // The destination is the target this client sent at creation, never the
+    // server's copy of it.
     if (
       swap.direction === "arkade_to_evm" ||
       swap.direction === "bitcoin_to_evm" ||
@@ -3457,20 +3459,12 @@ export class Client {
       ) & {
         direction: string;
       };
-      // For Solana bridge targets the stored `target_evm_address` actually
-      // holds a base58 SPL pubkey, which can't satisfy the EIP-712
-      // `address destination` field. Fall back to `client_evm_address`
-      // (the user's EVM-side wallet at swap creation, used for refunds);
-      // the actual Solana destination rides on `bridgeRecipient`.
       const bridgeTargetChain = (evmSwap as { bridge_target_chain?: string })
         .bridge_target_chain;
       const isSolanaBridge = bridgeTargetChain === "Solana";
       const isTronBridge = bridgeTargetChain === "Tron";
 
-      const destination =
-        isSolanaBridge || isTronBridge
-          ? evmSwap.client_evm_address
-          : (evmSwap.target_evm_address ?? evmSwap.client_evm_address);
+      const destination = this.#resolveEvmClaimDestination(storedSwap);
 
       if (!destination) {
         return {
@@ -3487,7 +3481,7 @@ export class Client {
       const bridgeRecipient =
         options?.bridgeRecipient ??
         storedSwap.bridgeRecipient ??
-        (isTronBridge ? (evmSwap.target_evm_address ?? undefined) : undefined);
+        (isTronBridge ? storedPayoutTarget(storedSwap) : undefined);
       const bridgeRecipientWallet =
         options?.bridgeRecipient !== undefined
           ? options?.bridgeRecipientWallet
@@ -3531,31 +3525,13 @@ export class Client {
 
     if (isArkadeTarget) {
       // Determine destination address based on swap direction
-      let destinationAddress: string | undefined;
-
-      if (swap.direction === "btc_to_arkade") {
-        const btcToArkadeSwap = swap as BtcToArkadeSwapResponse & {
-          direction: "btc_to_arkade";
-        };
-        destinationAddress = btcToArkadeSwap.target_arkade_address;
-      } else if (
+      // The target this client sent at creation, never a fresh server answer.
+      const destinationAddress =
+        swap.direction === "btc_to_arkade" ||
         swap.direction === "evm_to_arkade" ||
         swap.direction === "lightning_to_arkade"
-      ) {
-        // For evm_to_arkade swaps, check if we have target_arkade_address in stored response
-        // Check if we have target_arkade_address in the stored response.
-        const storedResponse = swap as { target_arkade_address?: string };
-        if (storedResponse.target_arkade_address) {
-          destinationAddress = storedResponse.target_arkade_address;
-        } else {
-          // Fetch from API to get the full response with target_arkade_address
-          const freshSwap = await this.getSwap(id);
-          const evmToArkadeSwap = freshSwap as {
-            target_arkade_address: string;
-          };
-          destinationAddress = evmToArkadeSwap.target_arkade_address;
-        }
-      }
+          ? storedPayoutTarget(storedSwap)
+          : undefined;
 
       if (!destinationAddress) {
         return {
@@ -3615,18 +3591,25 @@ export class Client {
   }
 
   /**
-   * The user-facing EVM address the claim pays out to, as recorded at swap
-   * creation (falls back to the SDK's own EVM address for legacy swaps).
+   * The EVM address an EVM-targeted claim's Redeem pays out to, from what
+   * creation recorded (see {@link storedPayoutTarget}).
+   *
+   * For Solana and Tron bridge targets the target is not an EVM address and
+   * can't satisfy the EIP-712 `address destination` field, so the Redeem pays
+   * the swap's claiming key (`client_evm_address`, checked at creation) and
+   * the actual destination rides on `bridgeRecipient`. Legacy swaps without a
+   * target fall back to the claiming key too.
    */
-  #resolveEvmClaimDestination(
-    swap: ArkadeToEvmSwapResponse,
-  ): string | undefined {
-    const bridgeTargetChain = (swap as { bridge_target_chain?: string })
-      .bridge_target_chain;
-    const isSolanaBridge = bridgeTargetChain === "Solana";
-    return isSolanaBridge || bridgeTargetChain === "Tron"
-      ? swap.client_evm_address
-      : (swap.target_evm_address ?? swap.client_evm_address);
+  #resolveEvmClaimDestination(stored: StoredSwap): string | undefined {
+    const swap = stored.response as {
+      bridge_target_chain?: string | null;
+      client_evm_address?: string | null;
+    };
+    const bridgeTargetChain = swap.bridge_target_chain;
+    if (bridgeTargetChain === "Solana" || bridgeTargetChain === "Tron") {
+      return swap.client_evm_address ?? undefined;
+    }
+    return storedPayoutTarget(stored) ?? swap.client_evm_address ?? undefined;
   }
 
   /** Static facts about how an EVM-targeted swap has to be claimed. */
@@ -3789,7 +3772,7 @@ export class Client {
     options: { bridgeRecipient?: string; bridgeRecipientWallet?: string } = {},
   ): Promise<ClaimGaslessResult> {
     const { stored, swap } = await this.#loadEvmClaimSwap(id);
-    const destination = this.#resolveEvmClaimDestination(swap);
+    const destination = this.#resolveEvmClaimDestination(stored);
     if (!destination) {
       throw new Error(
         "No target address found for this swap; cannot build the claim.",
@@ -3886,8 +3869,7 @@ export class Client {
     if (
       (swap as { bridge_target_chain?: string }).bridge_target_chain === "Tron"
     ) {
-      bridgeRecipient ??=
-        stored.bridgeRecipient ?? swap.target_evm_address ?? undefined;
+      bridgeRecipient ??= stored.bridgeRecipient ?? storedPayoutTarget(stored);
       if (!bridgeRecipient || !isValidTronAddress(bridgeRecipient)) {
         throw new Error(
           "A valid Tron bridge recipient is required to claim this swap",
@@ -4852,10 +4834,10 @@ export class Client {
       };
     }
 
-    // Determine destination address: prefer explicit option, fall back to stored response
+    // Prefer the explicit option, then the target this client sent at
+    // creation; never the fresh server copy fetched above.
     const destinationAddress =
-      options?.destinationAddress ??
-      (swap as { target_btc_address?: string }).target_btc_address;
+      options?.destinationAddress ?? storedPayoutTarget(storedSwap);
     if (!destinationAddress) {
       return {
         success: false,
@@ -7467,7 +7449,9 @@ export class Client {
       secretKey: bytesToHex(swapParams.secretKey),
       storedAt: Date.now(),
       updatedAt: Date.now(),
-      targetAddress,
+      // The payout this client asked for; claims pay here, never to a
+      // server answer. Recovery rebuilding the swap keeps it.
+      targetAddress: targetAddress ?? existing?.targetAddress,
       bridgeRecipient: bridge?.recipient,
       bridgeRecipientWallet: bridge?.recipientWallet,
       evmFundTxid: existing?.evmFundTxid,

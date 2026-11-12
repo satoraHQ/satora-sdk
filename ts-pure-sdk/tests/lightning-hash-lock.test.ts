@@ -5,6 +5,7 @@ import { createLightningToArkadeSwap } from "../src/create/lightning-to-arkade.j
 import { createLightningToBitcoinSwap } from "../src/create/lightning-to-bitcoin.js";
 import { createLightningToEvmSwap } from "../src/create/lightning-to-evm.js";
 import type { CreateSwapContext } from "../src/create/types.js";
+import { deriveEvmAddress } from "../src/evm/signing.js";
 import {
   Client,
   InMemorySwapStorage,
@@ -140,9 +141,12 @@ describe("Lightning to X creation checks the hold invoice's payment hash", () =>
   });
 
   it("stores a Lightning to EVM invoice on the swap's hash lock", async () => {
-    const { ctx, stored } = contextAnswering(await paramsAt(7), {
+    const params = await paramsAt(7);
+    const { ctx, stored } = contextAnswering(params, {
       id: "11111111-2222-3333-4444-555555555555",
       bolt11_invoice: invoices.lnd_hold_index_7.bolt11,
+      target_evm_address: evmOptions.targetAddress,
+      client_evm_address: deriveEvmAddress(params.secretKey),
     });
     await createLightningToEvmSwap(evmOptions, ctx);
     expect(stored).toHaveLength(1);

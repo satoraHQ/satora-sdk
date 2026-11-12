@@ -7,6 +7,7 @@
 import { parseArkadeAddress } from "../arkade-address.js";
 import { bytesToHex } from "../signer/index.js";
 import { ARKADE_HTLC_SCRIPT_VERSION_STRICT } from "../strict-vhtlc.js";
+import { assertAddressEchoed } from "../swap-verification.js";
 import { fundingTermsOf } from "./funding-terms.js";
 import { retryOnHashCollision } from "./retry.js";
 import type {
@@ -90,6 +91,9 @@ export async function createEvmToArkadeSwapGeneric(
       throw new Error("No swap data returned");
     }
 
+    // The claim pays this address, so it must be the one this client sent.
+    assertAddressEchoed(data, "target_arkade_address", options.targetAddress);
+
     // Store the swap if storage is configured
     await ctx.storeSwap(
       data.id,
@@ -98,7 +102,7 @@ export async function createEvmToArkadeSwapGeneric(
         ...data,
         direction: "evm_to_arkade",
       },
-      undefined,
+      options.targetAddress,
       undefined,
       { evmFundingTerms: fundingTermsOf(data) },
     );
