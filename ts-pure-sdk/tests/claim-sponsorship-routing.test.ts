@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GetSwapResponse } from "../src/api/client.js";
+import { computeCoordinatorCallsHash } from "../src/evm/coordinator.js";
 import { Client, InMemorySwapStorage } from "../src/index.js";
 import type { GaslessSwapResponse } from "../src/redeem/gasless.js";
 import { claimViaGasless } from "../src/redeem/gasless.js";
@@ -95,7 +96,7 @@ async function fixture(
     if (url.includes("redeem-and-swap-calldata"))
       return Response.json({
         min_amount_out: "10000",
-        calls_hash: `0x${"00".repeat(32)}`,
+        calls_hash: computeCoordinatorCallsHash([]),
       });
     return Response.json(swap);
   });

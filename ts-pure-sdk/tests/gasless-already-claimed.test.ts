@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { computeCoordinatorCallsHash } from "../src/evm/coordinator.js";
 import {
   alreadyClaimedStatus,
   claimViaGasless,
@@ -30,7 +31,7 @@ function claim() {
     swap,
     destination: "0x7564105E977516C53bE337314c7E53838967bDaC",
     minAmountOut: 0n,
-    callsHash: `0x${"00".repeat(32)}`,
+    callsHash: computeCoordinatorCallsHash([]),
   });
 }
 

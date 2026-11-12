@@ -6,7 +6,12 @@
  */
 
 import type { ArkadeToEvmSwapResponse } from "../api/client.js";
-import { buildRedeemDigest, signEvmDigest } from "../evm/index.js";
+import {
+  buildRedeemDigest,
+  computeCoordinatorCallsHash,
+  normalizeBytes32,
+  signEvmDigest,
+} from "../evm/index.js";
 import { PROTOCOL_HEADERS } from "../protocol.js";
 import { CLIENT_AGENT } from "../version.js";
 import type { ClaimGaslessResult } from "./types.js";
@@ -97,6 +102,18 @@ export async function claimViaGasless(
 
   // sweepToken: if there's a DEX swap, sweep the target token; otherwise sweep WBTC
   const sweepToken = needsDexSwap ? targetTokenAddress : wbtcAddress;
+
+  // A direct claim needs no coordinator calls, and any call could move the
+  // locked amount elsewhere.
+  if (
+    !needsDexSwap &&
+    normalizeBytes32(callsHash) !==
+      normalizeBytes32(computeCoordinatorCallsHash([]))
+  ) {
+    throw new Error(
+      "Refusing the server's claim: server calls on a direct claim",
+    );
+  }
 
   // Build EIP-712 digest
   const digest = buildRedeemDigest({
