@@ -516,7 +516,6 @@ export async function continueArkadeClaim(
 
   // Get the claim TapLeafScript (needed for the GetPendingTx intent)
   const claimLeafScript = vhtlc.claim();
-  const claimScriptByte = claimLeafScript[1];
 
   // Encode the VHTLC tap tree
   const tapTree = vhtlc.encode();
@@ -602,12 +601,10 @@ export async function continueArkadeClaim(
       signedCheckpointTxs.map(async (c) => {
         const checkpointTx = Transaction.fromPSBT(base64.decode(c));
 
-        // Restore missing witness scripts from the ark tx
-        checkpointTx.updateInput(0, {
-          witnessScript: claimScriptByte,
-        });
-
-        // Inject the preimage into every checkpoint input (no-op if echoed)
+        // Checkpoint inputs are taproot (same as the first-claim finalize path).
+        // Do not set witnessScript here: @scure/btc-signer rejects
+        // "witnessScript without P2WSH" on non-P2WSH inputs, which aborts
+        // resume before sign/finalize. ConditionWitness alone is enough.
         for (let i = 0; i < checkpointTx.inputsLength; i++) {
           ensureConditionWitness(checkpointTx, i, preimageBytes);
         }
