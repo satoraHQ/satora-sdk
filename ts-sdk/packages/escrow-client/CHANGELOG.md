@@ -1,5 +1,25 @@
 # @satora/escrow-client
 
+## 14.0.0
+
+### Patch Changes
+
+- 42cc809: Use the current `@arkade-os/sdk` names (`OperatorProvider`, `RestOperatorProvider`, `Proof`, `SignedProof`, `OperatorInfo`) instead of their deprecated aliases. Type-only; no behaviour change.
+- e926b23: Bump `@arkade-os/sdk` to 0.5.5.
+- Updated dependencies [9d125fb]
+- Updated dependencies [800aa2f]
+- Updated dependencies [42cc809]
+- Updated dependencies [e926b23]
+- Updated dependencies [6ec950a]
+- Updated dependencies [c4af4d0]
+- Updated dependencies [dc9cca9]
+- Updated dependencies [0e154f7]
+- Updated dependencies [3fa9a4c]
+- Updated dependencies [5178b4f]
+- Updated dependencies [44a5ced]
+  - @satora/swap@1.10.0
+  - @satora/escrow@0.1.2
+
 ## 13.0.0
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # @satora/escrow
 
+## 0.1.2
+
+### Patch Changes
+
+- 800aa2f: Arkade claims, refunds, collaborative refunds and escrow releases now submit in one call (one-shot submit): checkpoints are signed up front and sent with the ark tx. Older Arkade servers still get a separate `finalizeTx`. `submitAndFinalizeEscrowRelease` now matches the server's checkpoints by txid instead of position.
+- 42cc809: Use the current `@arkade-os/sdk` names (`OperatorProvider`, `RestOperatorProvider`, `Proof`, `SignedProof`, `OperatorInfo`) instead of their deprecated aliases. Type-only; no behaviour change.
+- e926b23: Bump `@arkade-os/sdk` to 0.5.5.
+
 ## 0.1.1
 
 ### Patch Changes

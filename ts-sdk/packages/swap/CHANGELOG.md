@@ -1,5 +1,40 @@
 # @satora/swap
 
+## 1.10.0
+
+### Minor Changes
+
+- c4af4d0: Add `Asset.CIRBTC_ETHEREUM` for Circle Wrapped Bitcoin on Ethereum and recognize cirBTC as a BTC-pegged asset for BTC/sats display.
+- 44a5ced: USDC payouts on Ethereum and Polygon settle on Arbitrum and bridge over CCTP. `getQuote`, `composeQuote` and `createSwap` route a swap whose target is native USDC on either chain the way they route USDC on Base: the HTLC locks tBTC on Arbitrum, the claim swaps to Arbitrum USDC, and Circle's Forwarding Service mints it on the destination. The quote's `bridge_fee` carries the CCTP fee. Swaps funded from USDC on these chains, and every other token on them, still run on the chain directly.
+
+  New helpers: `isCctpRoutedUsdcTarget(chain, token)` and `isBridgedTarget(chain, token)`, which is true for any target that settles on Arbitrum and bridges.
+
+  `createSwap` now refuses a source-pinned CCTP payout whose quoted net output after the bridge fee is not positive. Before, such a swap could be funded and then never claimed, because only the claim checks the fee against the output. Circle's forwarding fee to Ethereum is over a dollar.
+
+### Patch Changes
+
+- 9d125fb: Arkade to Lightning and Bitcoin to Lightning creation, and recovery of a swap
+  not stored before, check the lock address the user funds against one rebuilt
+  from the invoice's payment hash and the swap's refund key (see the legacy SDK
+  changeset).
+- 800aa2f: Arkade claims, refunds, collaborative refunds and escrow releases now submit in one call (one-shot submit): checkpoints are signed up front and sent with the ark tx. Older Arkade servers still get a separate `finalizeTx`. `submitAndFinalizeEscrowRelease` now matches the server's checkpoints by txid instead of position.
+- 42cc809: Use the current `@arkade-os/sdk` names (`OperatorProvider`, `RestOperatorProvider`, `Proof`, `SignedProof`, `OperatorInfo`) instead of their deprecated aliases. Type-only; no behaviour change.
+- e926b23: Bump `@arkade-os/sdk` to 0.5.5.
+- 6ec950a: Target backend 0.3.26 in the x-satora-server-version header.
+- dc9cca9: Claims pay out to the target the swap was created with: creation refuses a
+  response naming another target or claiming address, the target is stored
+  with the swap, and a server refresh can no longer change a stored swap's
+  payout addresses. SQLite storage now keeps the target and bridge recipient
+  (see the legacy SDK changeset).
+- 0e154f7: A direct EVM claim refuses server calls (see the legacy SDK changeset).
+- 3fa9a4c: Type the new fields `GET /swap/{id}` returns for EVM-sourced swaps (`evm_to_bitcoin`, `evm_to_lightning` and `evm_to_arkade`): `evm_htlc_locked_amount` (the amount the HTLC holds, as observed from its `SwapCreated` event) and `evm_htlc_sender` (the address the lock is keyed under), both `null` until the lock is seen. `evm_htlc_token` names the token locked in the HTLC on all three; `wbtc_address`, which carried the same value, is deprecated but still sent (and now also on `evm_to_arkade`). The SDK reads the lock token from `evm_htlc_token` (falling back to `wbtc_address` only for swaps stored before the server sent it), so relay funding now also binds `evm_to_arkade` payloads to the lock token. With these, a REST client can build a unilateral refund without parsing the creation log.
+- 5178b4f: Check that a Lightning invoice pays the swap's hash lock at creation and when
+  recovery stores a swap for the first time, in every Lightning direction
+  except EVM-sourced ones, and keep a stored swap's hash locks, lock addresses,
+  invoice payment hashes and keys from being replaced by a server refresh or
+  recovery (see the legacy SDK changeset). A refused refresh still updates the
+  swap's status. `SwapVerificationError` is exported.
+
 ## 1.9.0
 
 ### Minor Changes
