@@ -799,8 +799,9 @@ impl Client {
                         signed_checkpoint_txs: p.signed_checkpoint_txs,
                     }),
                     // Nothing pending at arkd, yet the indexer shows our transaction
-                    // spending every input: arkd finalized it (on submit, or through
-                    // a finalize) before we could persist that.
+                    // spending every input: arkd finalized it before we could persist
+                    // that. arkd always finalizes on submit (one-shot), so accepted
+                    // means finalized; there is no accepted-but-unfinalized window.
                     None if pending.attempted
                         && journal_accepted(
                             &pending,
@@ -817,9 +818,10 @@ impl Client {
                             pending.attempted = true;
                             self.save_arkade_pending(id, pending.clone())?;
                         }
-                        // Owner-sign the checkpoints up front so arkd can finalize
-                        // in the same request (one-shot submit). Older servers drop
-                        // these signatures; we then sign again below and finalize.
+                        // Owner-sign the checkpoints up front so arkd finalizes in
+                        // the same request (one-shot submit). The finalize branch
+                        // below only resumes a pending transaction arkd still holds,
+                        // e.g. one a two-step SDK build submitted.
                         for checkpoint in &mut checkpoints {
                             sign_psbt(checkpoint, &pair, preimage)?;
                         }
