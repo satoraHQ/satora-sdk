@@ -27,6 +27,35 @@ function b64Encode(u: Uint8Array): string {
   return btoa(bin);
 }
 
+/** Whether `script` is a P2TR output script (`OP_1 <32-byte key>`). */
+function isP2tr(script: Uint8Array | undefined): boolean {
+  return script?.length === 34 && script[0] === 0x51 && script[1] === 0x20;
+}
+
+/**
+ * Parse an escrow PSBT built by the arbiter.
+ *
+ * ark-core records the spend script as `witnessScript` on taproot inputs, next
+ * to the tapleaf script that actually matters. A strict PSBT parser rejects
+ * that ("witnessScript without P2WSH"), so the field is dropped from taproot
+ * inputs and the result is parsed again with every check on, the taproot
+ * commitment check included. Nothing the signer or the arbiter needs is lost:
+ * the leaf script, control block and prevout stay, and the arbiter only takes
+ * the signatures from what comes back.
+ */
+function parseEscrowPsbt(psbt: Uint8Array): Transaction {
+  const lenient = Transaction.fromPSBT(psbt, { disableScriptCheck: true });
+  let stripped = false;
+  for (let i = 0; i < lenient.inputsLength; i++) {
+    const input = lenient.getInput(i);
+    if (input.witnessScript && isP2tr(input.witnessUtxo?.script)) {
+      lenient.updateInput(i, { witnessScript: undefined }, true);
+      stripped = true;
+    }
+  }
+  return Transaction.fromPSBT(stripped ? lenient.toPSBT() : psbt);
+}
+
 /** Result of signing an escrow ark transaction. */
 export interface SignedEscrowTx {
   /** The signed PSBT as a base64 string. */
@@ -50,7 +79,7 @@ export function signEscrowArkTx(
   secretKey: Uint8Array | string,
 ): SignedEscrowTx {
   const sk = typeof secretKey === "string" ? hex.decode(secretKey) : secretKey;
-  const tx = Transaction.fromPSBT(b64Decode(psbtB64));
+  const tx = parseEscrowPsbt(b64Decode(psbtB64));
   tx.signIdx(sk, 0);
 
   const txId = tx.id as unknown;
@@ -78,7 +107,7 @@ export function signEscrowCheckpoints(
 ): string[] {
   const sk = typeof secretKey === "string" ? hex.decode(secretKey) : secretKey;
   return psbtB64s.map((cpB64) => {
-    const tx = Transaction.fromPSBT(b64Decode(cpB64));
+    const tx = parseEscrowPsbt(b64Decode(cpB64));
     tx.signIdx(sk, 0);
     return b64Encode(tx.toPSBT());
   });
@@ -118,13 +147,13 @@ export async function signEscrowDelegate(
 
   // Sign intent proof — SingleKey.sign handles per-input sighash types
   // (input 0 is the toSpend ref, inputs 1+ are VTXOs with SIGHASH_ALL)
-  const intent = Transaction.fromPSBT(b64Decode(intentProofB64));
+  const intent = parseEscrowPsbt(b64Decode(intentProofB64));
   const signedIntent = await signer.sign(intent);
 
   // Sign forfeits — each has a single VTXO input with SIGHASH_ALL|ANYONECANPAY
   const signedForfeits: string[] = [];
   for (const b64 of forfeitPsbtsB64) {
-    const forfeit = Transaction.fromPSBT(b64Decode(b64));
+    const forfeit = parseEscrowPsbt(b64Decode(b64));
     const signed = await signer.sign(forfeit);
     signedForfeits.push(b64Encode(signed.toPSBT()));
   }
@@ -145,7 +174,7 @@ export async function signEscrowDelegate(
  * @returns The transaction ID as a hex string.
  */
 export function getArkTxid(psbtB64: string): string {
-  const tx = Transaction.fromPSBT(b64Decode(psbtB64));
+  const tx = parseEscrowPsbt(b64Decode(psbtB64));
   const txId = tx.id as unknown;
   return txId instanceof Uint8Array ? hex.encode(txId) : String(txId);
 }
