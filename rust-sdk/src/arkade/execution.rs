@@ -759,6 +759,8 @@ impl Client {
                 .iter()
                 .map(|p| restore(p, preimage))
                 .collect::<Result<Vec<_>>>()?;
+            // Whether arkd already finalized the spend, so no separate finalize is due.
+            let mut finalized = false;
             if !pending.submitted {
                 // The pending query's intent proof carries the preimage too.
                 let recovered = match recovered {
@@ -790,10 +792,23 @@ impl Client {
                     None => None,
                 };
                 let response = match recovered {
-                    Some(p) => SubmitOffchainTxResponse {
+                    // A pending transaction is by definition not finalized yet.
+                    Some(p) => Some(SubmitOffchainTxResponse {
+                        finalized: false,
                         signed_ark_tx: p.signed_ark_tx,
                         signed_checkpoint_txs: p.signed_checkpoint_txs,
-                    },
+                    }),
+                    // Nothing pending at arkd, yet the indexer shows our transaction
+                    // spending every input: arkd finalized it (on submit, or through
+                    // a finalize) before we could persist that.
+                    None if pending.attempted
+                        && journal_accepted(
+                            &pending,
+                            &validate_vtxos(&htlc, backend.vtxos(htlc.address()).await?)?,
+                        )? =>
+                    {
+                        None
+                    }
                     None => {
                         if continue_only {
                             return Err(invalid("no pending Arkade claim to continue"));
@@ -802,51 +817,69 @@ impl Client {
                             pending.attempted = true;
                             self.save_arkade_pending(id, pending.clone())?;
                         }
-                        backend.submit(ark.clone(), checkpoints.clone()).await?
+                        // Owner-sign the checkpoints up front so arkd can finalize
+                        // in the same request (one-shot submit). Older servers drop
+                        // these signatures; we then sign again below and finalize.
+                        for checkpoint in &mut checkpoints {
+                            sign_psbt(checkpoint, &pair, preimage)?;
+                        }
+                        Some(backend.submit(ark.clone(), checkpoints.clone()).await?)
                     }
                 };
-                verify_cosigned(&ark, &response.signed_ark_tx, htlc.options.server)?;
-                if response.signed_checkpoint_txs.len() != checkpoints.len() {
-                    return Err(invalid("Arkade returned the wrong checkpoint count"));
+                match response {
+                    None => finalized = true,
+                    Some(response) if response.finalized => {
+                        verify_cosigned(&ark, &response.signed_ark_tx, htlc.options.server)?;
+                        finalized = true;
+                    }
+                    Some(response) => {
+                        verify_cosigned(&ark, &response.signed_ark_tx, htlc.options.server)?;
+                        if response.signed_checkpoint_txs.len() != checkpoints.len() {
+                            return Err(invalid("Arkade returned the wrong checkpoint count"));
+                        }
+                        for (expected, received) in checkpoints
+                            .iter()
+                            .zip(response.signed_checkpoint_txs.iter())
+                        {
+                            verify_cosigned(expected, received, htlc.options.server)?;
+                        }
+                        for (expected, received) in
+                            checkpoints.iter_mut().zip(response.signed_checkpoint_txs)
+                        {
+                            *expected = merge_cosigned(expected, &received, htlc.options.server)?;
+                            sign_psbt(expected, &pair, preimage)?;
+                        }
+                        pending.checkpoints = checkpoints.iter().map(archive).collect();
+                        pending.submitted = true;
+                        self.save_arkade_pending(id, pending.clone())?;
+                        let (event, message) = spend_event(operation, SpendStep::CheckpointsSigned);
+                        sdk_log!(tail_log, Debug, event, message);
+                    }
                 }
-                for (expected, received) in checkpoints
-                    .iter()
-                    .zip(response.signed_checkpoint_txs.iter())
-                {
-                    verify_cosigned(expected, received, htlc.options.server)?;
-                }
-                for (expected, received) in
-                    checkpoints.iter_mut().zip(response.signed_checkpoint_txs)
-                {
-                    *expected = merge_cosigned(expected, &received, htlc.options.server)?;
-                    sign_psbt(expected, &pair, preimage)?;
-                }
-                pending.checkpoints = checkpoints.iter().map(archive).collect();
-                pending.submitted = true;
-                self.save_arkade_pending(id, pending.clone())?;
-                let (event, message) = spend_event(operation, SpendStep::CheckpointsSigned);
-                sdk_log!(tail_log, Debug, event, message);
             }
-            backend
-                .finalize(txid, checkpoints)
-                .await
-                .inspect_err(|error| match (operation, continued) {
-                    (ArkadeSpend::Claim, false) => sdk_log!(
-                        tail_log,
-                        Error,
-                        "arkade.claim.finalize_failed",
-                        "Failed to finalize Arkade claim";
-                        error = error
-                    ),
-                    (ArkadeSpend::Claim, true) => sdk_log!(
-                        tail_log,
-                        Error,
-                        "arkade.claim.continue_finalize_failed",
-                        "Failed to finalize pending Arkade claim";
-                        error = error
-                    ),
-                    (ArkadeSpend::Refund | ArkadeSpend::CooperativeRefund, _) => {}
-                })?;
+            if !finalized {
+                backend
+                    .finalize(txid, checkpoints)
+                    .await
+                    .inspect_err(|error| match (operation, continued) {
+                        (ArkadeSpend::Claim, false) => sdk_log!(
+                            tail_log,
+                            Error,
+                            "arkade.claim.finalize_failed",
+                            "Failed to finalize Arkade claim";
+                            error = error
+                        ),
+                        (ArkadeSpend::Claim, true) => sdk_log!(
+                            tail_log,
+                            Error,
+                            "arkade.claim.continue_finalize_failed",
+                            "Failed to finalize pending Arkade claim";
+                            error = error
+                        ),
+                        (ArkadeSpend::Refund | ArkadeSpend::CooperativeRefund, _) => {}
+                    })?;
+            }
+            pending.submitted = true;
             pending.completed = true;
             self.save_arkade_pending(id, pending.clone())?;
             let (event, message) = spend_event(operation, SpendStep::Finalized);

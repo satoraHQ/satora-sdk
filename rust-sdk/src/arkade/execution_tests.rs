@@ -31,6 +31,9 @@ struct Backend {
     final_checkpoints: Mutex<Vec<Psbt>>,
     pending: Mutex<Vec<ark_rs::core::server::PendingTx>>,
     fail_submit: AtomicBool,
+    /// arkd finalizing in the submit request when every checkpoint arrives
+    /// owner-signed (one-shot submit); off, it models an older arkd.
+    oneshot: AtomicBool,
     /// arkd refusing an input as recoverable before accepting anything. The mock
     /// refuses whatever the inputs' `expires_at` says, so a test can submit fresh
     /// inputs and only then move them past expiry.
@@ -140,22 +143,30 @@ impl ArkadeBackend for Backend {
             if self.tamper.load(Ordering::Relaxed) {
                 checkpoints[0].unsigned_tx.output[0].value = Amount::from_sat(1);
             }
+            let submitted = checkpoints.clone();
             sign_psbt(&mut ark, &self.server, None)?;
             for cp in &mut checkpoints {
                 sign_psbt(cp, &self.server, None)?;
             }
-            self.pending
-                .lock()
-                .unwrap()
-                .push(ark_rs::core::server::PendingTx {
-                    ark_txid: ark.unsigned_tx.compute_txid(),
-                    signed_ark_tx: ark.clone(),
-                    signed_checkpoint_txs: checkpoints.clone(),
-                });
+            let finalized = self.oneshot.load(Ordering::Relaxed)
+                && ark_rs::core::send::checkpoint_signatures_retained(&submitted, &checkpoints);
+            if finalized {
+                *self.final_checkpoints.lock().unwrap() = checkpoints.clone();
+            } else {
+                self.pending
+                    .lock()
+                    .unwrap()
+                    .push(ark_rs::core::server::PendingTx {
+                        ark_txid: ark.unsigned_tx.compute_txid(),
+                        signed_ark_tx: ark.clone(),
+                        signed_checkpoint_txs: checkpoints.clone(),
+                    });
+            }
             if self.fail_submit.swap(false, Ordering::Relaxed) {
                 return Err(transport("interrupted submit response"));
             }
             Ok(SubmitOffchainTxResponse {
+                finalized,
                 signed_ark_tx: ark,
                 signed_checkpoint_txs: checkpoints,
             })
@@ -327,6 +338,7 @@ fn setup_with_lock(
         final_checkpoints: Mutex::new(vec![]),
         pending: Mutex::new(vec![]),
         fail_submit: AtomicBool::new(false),
+        oneshot: AtomicBool::new(false),
         refuse_recoverable: AtomicBool::new(false),
         pending_queries: AtomicUsize::new(0),
         preimage_hash: options.preimage_hash,
@@ -494,6 +506,108 @@ async fn claims_reject_underfunding_and_tampered_cosigner_transactions() {
             .is_err()
     );
     assert_eq!(backend.finalize_count.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn oneshot_submit_finalizes_without_a_separate_finalize() {
+    let (client, backend, store, destination) = setup("btc_to_arkade");
+    backend.oneshot.store(true, Ordering::Relaxed);
+    let receipt = client
+        .spend_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            spend_options(destination),
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt.claim_amount_sats, 100_000);
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 1);
+    assert_eq!(backend.finalize_count.load(Ordering::Relaxed), 0);
+    let pending = store
+        .get_swap("arkade")
+        .unwrap()
+        .unwrap()
+        .metadata
+        .arkade_pending
+        .unwrap();
+    assert!(pending.submitted && pending.completed);
+    // The submitted checkpoints carried our signature next to arkd's.
+    let own = Signer::from_mnemonic(MNEMONIC)
+        .unwrap()
+        .derive_swap_params(0)
+        .unwrap();
+    let own = Keypair::from_secret_key(
+        &Secp256k1::new(),
+        &secp256k1::SecretKey::from_slice(&own.secret).unwrap(),
+    )
+    .x_only_public_key()
+    .0;
+    let checkpoints = backend.final_checkpoints.lock().unwrap();
+    assert_eq!(checkpoints.len(), 2);
+    assert!(checkpoints.iter().all(|p| p.inputs.iter().all(|i| {
+        let signers: Vec<_> = i.tap_script_sigs.keys().map(|(pk, _)| *pk).collect();
+        signers.contains(&own) && signers.contains(&backend.server.x_only_public_key().0)
+    })));
+}
+
+#[tokio::test]
+async fn oneshot_finalize_lost_before_persisting_completes_from_the_indexer() {
+    let (client, mut backend, store, destination) = setup("evm_to_arkade");
+    backend.oneshot.store(true, Ordering::Relaxed);
+    backend.fail_submit.store(true, Ordering::Relaxed);
+    assert!(
+        client
+            .spend_arkade(
+                "arkade",
+                &backend,
+                None,
+                ArkadeSpend::Claim,
+                spend_options(destination.clone())
+            )
+            .await
+            .is_err()
+    );
+    let pending = store
+        .get_swap("arkade")
+        .unwrap()
+        .unwrap()
+        .metadata
+        .arkade_pending
+        .unwrap();
+    assert!(pending.attempted && !pending.submitted);
+    // arkd finalized on submit: nothing is pending and the indexer shows our
+    // transaction spending every input.
+    let txid = Psbt::from_str(&pending.ark_tx)
+        .unwrap()
+        .unsigned_tx
+        .compute_txid();
+    for vtxo in &mut backend.vtxos {
+        vtxo.is_spent = true;
+        vtxo.ark_txid = Some(txid);
+    }
+    let receipt = client
+        .spend_arkade(
+            "arkade",
+            &backend,
+            None,
+            ArkadeSpend::Claim,
+            spend_options(destination),
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt.ark_txid, txid);
+    assert_eq!(backend.submit_count.load(Ordering::Relaxed), 1);
+    assert_eq!(backend.finalize_count.load(Ordering::Relaxed), 0);
+    let pending = store
+        .get_swap("arkade")
+        .unwrap()
+        .unwrap()
+        .metadata
+        .arkade_pending
+        .unwrap();
+    assert!(pending.completed);
 }
 
 #[tokio::test]
