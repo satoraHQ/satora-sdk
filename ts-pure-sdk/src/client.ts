@@ -8952,6 +8952,19 @@ export class Client {
     // 5. Sign the Permit2 EIP-712 typed data
     const signature = await signer.signTypedData(freshFunding.typedData);
 
+    // Resolve code on the signing chain; never classify a wallet by signature length.
+    const depositorCode = signer.getCode
+      ? await signer.getCode(signer.address)
+      : undefined;
+    if (
+      depositorCode === undefined &&
+      /^0x[0-9a-fA-F]{128}0[01]$/.test(signature)
+    ) {
+      throw new Error(
+        "Permit2 signature has recovery byte 0/1; provide EvmSigner.getCode to safely distinguish EOA and contract-wallet signatures",
+      );
+    }
+
     // 6. Encode executeAndCreateWithPermit2 calldata
     const encoded = encodeExecuteAndCreateWithPermit2(
       freshFunding.coordinatorAddress,
@@ -8967,6 +8980,7 @@ export class Client {
         nonce: freshFunding.nonce,
         deadline: freshFunding.deadline,
         signature,
+        depositorCode,
       },
     );
 

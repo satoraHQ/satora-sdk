@@ -52,10 +52,10 @@ export interface EvmSigner {
   /** Current chain ID the wallet is connected to. */
   chainId: number;
 
-  /**
-   * Sign EIP-712 typed data.
-   * Must return the 65-byte hex signature (0x-prefixed).
-   */
+  /** Read account code on this chain; return "0x" for an account without code. */
+  getCode?(address: string): Promise<string>;
+
+  /** Sign EIP-712 data; returns EOA or opaque ERC-1271 signature bytes. */
   signTypedData(typedData: EIP712TypedData): Promise<string>;
 
   /**

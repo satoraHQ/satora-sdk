@@ -1115,6 +1115,34 @@ export interface ExecuteAndCreateWithPermit2Params {
   deadline: bigint;
   /** Signature bytes (compact 65-byte: r || s || v) */
   signature: string;
+  /** On-chain depositor code. Only explicit empty code permits EOA normalization. */
+  depositorCode?: string;
+}
+
+/** Normalize only signatures belonging to a verified code-free Permit2 owner. */
+export function normalizePermit2Signature(
+  signature: string,
+  depositorCode?: string,
+): string {
+  // Missing code is unknown, not evidence of an EOA. In particular, 7702
+  // delegation markers and ERC-1271 signatures must remain opaque.
+  if (depositorCode !== "0x") return signature;
+  const hex = signature.startsWith("0x") ? signature.slice(2) : signature;
+  if (
+    !/^[0-9a-fA-F]+$/.test(hex) ||
+    (hex.length !== 128 && hex.length !== 130)
+  ) {
+    throw new Error("Invalid Permit2 EOA signature: expected 64 or 65 bytes");
+  }
+  if (hex.length === 128) return signature;
+  const v = Number.parseInt(hex.slice(-2), 16);
+  if (v === 27 || v === 28) return signature;
+  if (v !== 0 && v !== 1) {
+    throw new Error(
+      "Invalid Permit2 EOA signature: recovery byte must be 0, 1, 27 or 28",
+    );
+  }
+  return signature.slice(0, -2) + (v + 27).toString(16);
 }
 
 /**
@@ -1177,9 +1205,11 @@ export function encodeExecuteAndCreateWithPermit2(
   const callsEncodedBytes = BigInt(callsEncoded.length / 2);
 
   // Encode signature as dynamic bytes (tail)
-  const sigClean = params.signature.startsWith("0x")
-    ? params.signature.slice(2)
-    : params.signature;
+  const signature = normalizePermit2Signature(
+    params.signature,
+    params.depositorCode,
+  );
+  const sigClean = signature.startsWith("0x") ? signature.slice(2) : signature;
   const sigLength = sigClean.length / 2;
   const sigPaddedLength = Math.ceil(sigLength / 32) * 32;
   const signatureEncoded =
