@@ -56,6 +56,10 @@ pub struct DexQuoteRequest {
     pub amount: DexAmount,
     pub slippage_bps: u16,
     pub cctp_recipient_setup: bool,
+    /// The swap whose bridged payout is priced: who delivers a CCTP payout
+    /// is then decided for that swap, as the server's claim builders decide.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swap_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

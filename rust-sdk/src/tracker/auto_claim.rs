@@ -607,10 +607,15 @@ impl AutoClaimer {
             .cctp_fee(arbitrum.domain, destination_chain.domain, 1000)
             .await?;
         // Who mints on the destination. The server says so in the quote for
-        // this route, read now: it delivers only while it holds gas there.
-        // The claim must not wait on that answer: without one Circle's
+        // this swap, read now: it delivers only while it holds gas there,
+        // and only a burn minted to the payout address it recorded. The
+        // claim must not wait on that answer: without one Circle's
         // Forwarding Service delivers, which works whatever the server does.
+        let recorded = value["target_evm_address"]
+            .as_str()
+            .and_then(|text| text.parse::<Address>().ok());
         let self_relayed = crate::bridge::cctp::server_can_deliver(destination_chain.domain)
+            && recorded == Some(recipient)
             && match self
                 .client
                 .get_dex_quote(crate::types::DexQuoteRequest {
@@ -625,6 +630,7 @@ impl AutoClaimer {
                     amount: DexAmount::ExactIn(text("evm_expected_sats")?.to_owned()),
                     slippage_bps,
                     cctp_recipient_setup: false,
+                    swap_id: Some(id.to_owned()),
                 })
                 .await
             {

@@ -682,6 +682,7 @@ impl Client {
                     },
                     slippage_bps,
                     cctp_recipient_setup: request.bridge_recipient_setup,
+                    swap_id: None,
                 })
                 .await?;
             let (btc, evm, decimals) = match (btc_source, source_pinned) {

@@ -1774,6 +1774,7 @@ async fn dex_quote_and_unsigned_calldata_match_api_schema() {
         amount: DexAmount::ExactOut(u128::MAX.to_string()),
         slippage_bps: 100,
         cctp_recipient_setup: true,
+        swap_id: None,
     };
     assert_schema(&serde_json::to_value(request).unwrap(), "DexQuoteRequest");
     let calldata_request = DexCalldataRequest {
