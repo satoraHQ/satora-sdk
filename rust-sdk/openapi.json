@@ -5115,6 +5115,14 @@
             "description": "Slippage tolerance the SDK will use at execution time, in basis\npoints (e.g. `100` = 1%, `50` = 0.5%). Affects route selection —\nsome pools only quote at higher tolerances — so passing the same\nvalue here that the SDK will later send to `/dex-calldata` keeps\nthe displayed quote consistent with what actually executes.\nBounded server-side; out-of-range values return 400.",
             "minimum": 0
           },
+          "swap_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The swap whose bridged payout this quote prices, when it is one. Who\ndelivers a CCTP payout is then decided for that swap, as its claim\ncalldata decides it, instead of for the quoted amount."
+          },
           "to": {
             "$ref": "#/components/schemas/Token",
             "description": "Target asset. Same-chain quotes use the same chain id as `from`;\ncross-chain quotes bridge (a different EVM chain id, or a\n`Token::Solana` base58 SPL address for CCTP-to-Solana)."

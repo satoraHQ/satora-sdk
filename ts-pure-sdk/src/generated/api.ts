@@ -2572,6 +2572,13 @@ export interface components {
              */
             slippage_bps: number;
             /**
+             * Format: uuid
+             * @description The swap whose bridged payout this quote prices, when it is one. Who
+             *     delivers a CCTP payout is then decided for that swap, as its claim
+             *     calldata decides it, instead of for the quoted amount.
+             */
+            swap_id?: string | null;
+            /**
              * @description Target asset. Same-chain quotes use the same chain id as `from`;
              *     cross-chain quotes bridge (a different EVM chain id, or a
              *     `Token::Solana` base58 SPL address for CCTP-to-Solana).
