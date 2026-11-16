@@ -8532,6 +8532,7 @@ export class Client {
    *     nonce: params.nonce,
    *     deadline: params.deadline,
    *     signature,
+   *     depositorCode: (await publicClient.getCode({ address: userWalletAddress })) ?? "0x",
    *   },
    * );
    * ```
@@ -8681,6 +8682,7 @@ export class Client {
    * const signer: EvmSigner = {
    *   address: walletClient.account.address,
    *   chainId: walletClient.chain.id,
+   *   getCode: async (address) => (await publicClient.getCode({ address })) ?? "0x",
    *   signTypedData: (td) => walletClient.signTypedData({ ...td, account: walletClient.account }),
    *   sendTransaction: (tx) => walletClient.sendTransaction({ to: tx.to, data: tx.data, value: tx.value, type: tx.type, chain, gas: tx.gas }),
    *   waitForReceipt: (hash) => publicClient.waitForReceipt({ hash }),
@@ -8952,17 +8954,16 @@ export class Client {
     // 5. Sign the Permit2 EIP-712 typed data
     const signature = await signer.signTypedData(freshFunding.typedData);
 
-    // Resolve code on the signing chain; never classify a wallet by signature length.
-    const depositorCode = signer.getCode
-      ? await signer.getCode(signer.address)
-      : undefined;
-    if (
-      depositorCode === undefined &&
-      /^0x[0-9a-fA-F]{128}0[01]$/.test(signature)
-    ) {
-      throw new Error(
-        "Permit2 signature has recovery byte 0/1; provide EvmSigner.getCode to safely distinguish EOA and contract-wallet signatures",
-      );
+    // Only parity-form signatures need classification. Unknown code must not
+    // reject or rewrite opaque ERC-1271 bytes; simulation remains authoritative.
+    let depositorCode: string | undefined;
+    if (/^0x[0-9a-fA-F]{128}0[01]$/.test(signature) && signer.getCode) {
+      try {
+        depositorCode = await signer.getCode(signer.address);
+      } catch {
+        // Preserve the original signature when the optional reader is unavailable.
+        // Do not mask a subsequent funding simulation error with a code-read error.
+      }
     }
 
     // 6. Encode executeAndCreateWithPermit2 calldata

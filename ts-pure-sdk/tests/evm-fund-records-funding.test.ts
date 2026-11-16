@@ -81,6 +81,55 @@ describe("fundSwap records the funding on the stored swap", () => {
     });
   }
 
+  it.each([
+    ["00", undefined, "00"],
+    ["01", undefined, "01"],
+    ["00", "0x", "1b"],
+    ["01", "0x", "1c"],
+    ["00", "0x6000", "00"],
+    ["01", "0xef01000000000000000000000000000000000000000001", "01"],
+    ["00", "unavailable", "00"],
+    ["01", "unavailable", "01"],
+    ["1b", "unavailable", "1b"],
+    ["1c", "unavailable", "1c"],
+    ["", "unavailable", ""],
+  ])("funding preserves compatibility for v=%s and code=%s", async (v, code, expectedV) => {
+    serverAnswering({ swap: swapResponse(), permit2: permit2Params });
+    const { client } = await unfundedClient();
+    const signature = `0x${"11".repeat(64)}${v}`;
+    const expected = `0x${"11".repeat(64)}${expectedV}`;
+    const signer = fundingSigner({ transactionHash: MINED, logs: [REAL_LOG] });
+    signer.signTypedData = async () => signature;
+    const getCode = vi.fn(async () => {
+      if (code === "unavailable") throw new Error("RPC unavailable");
+      return code ?? "0x";
+    });
+    if (code !== undefined) signer.getCode = getCode;
+    const originalCall = signer.call;
+    const call = vi.fn(originalCall);
+    signer.call = call;
+    const send = vi.fn(signer.sendTransaction);
+    signer.sendTransaction = send;
+    await expect(client.fundSwap(SWAP_ID, signer)).resolves.toEqual({
+      txHash: MINED,
+    });
+    expect(getCode).toHaveBeenCalledTimes(
+      code !== undefined && (v === "00" || v === "01") ? 1 : 0,
+    );
+    const data =
+      send.mock.calls.length &&
+      call.mock.calls.find(
+        ([tx]) => tx.to.toLowerCase() === COORDINATOR.toLowerCase(),
+      )?.[0].data;
+    expect(data).toBeDefined();
+    expect(send.mock.calls[0][0].data).toBe(data);
+    const args = (data as string).slice(10);
+    const offset = Number(BigInt(`0x${args.slice(640, 704)}`)) * 2;
+    expect(
+      `0x${args.slice(offset + 64, offset + 64 + expected.length - 2)}`,
+    ).toBe(expected);
+  });
+
   it("tells the server which transaction funded the swap", async () => {
     const fetchMock = serverAnswering({
       swap: swapResponse(),

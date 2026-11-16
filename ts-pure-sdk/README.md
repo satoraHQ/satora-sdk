@@ -149,6 +149,8 @@ missing.
 import type { EvmSigner } from "@satora/swap";
 ```
 
+For Permit2 funding, provide `getCode` on the signing chain so the SDK can safely normalize EOA signatures ending in 0/1. Without a successful code read, signatures remain unchanged and funding simulation determines validity. Contract and delegated-account signatures are preserved. Direct `encodeExecuteAndCreateWithPermit2` callers can pass `depositorCode` from the same chain (use `"0x"` for no code).
+
 **wagmi / viem:**
 
 ```typescript
@@ -159,6 +161,7 @@ const publicClient = createPublicClient({chain, transport: http()});
 const signer: EvmSigner = {
   address: walletClient.account.address,
   chainId: chain.id,
+  getCode: async (address) => (await publicClient.getCode({ address: address as `0x${string}` })) ?? "0x",
   signTypedData: (td) =>
     walletClient.signTypedData({...td, account: walletClient.account}),
   sendTransaction: (tx) =>
@@ -191,6 +194,7 @@ const sent = new Map<string, TransactionResponse>();
 const signer: EvmSigner = {
   address: await wallet.getAddress(),
   chainId: Number((await wallet.provider.getNetwork()).chainId),
+  getCode: (address) => wallet.provider.getCode(address),
   signTypedData: (td) =>
     wallet.signTypedData(td.domain, td.types, td.message),
   sendTransaction: (tx) =>

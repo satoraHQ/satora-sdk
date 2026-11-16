@@ -32,6 +32,7 @@ export interface EIP712TypedData {
  * const signer: EvmSigner = {
  *   address: walletClient.account.address,
  *   chainId: walletClient.chain.id,
+ *   getCode: async (address) => (await publicClient.getCode({ address })) ?? "0x",
  *   signTypedData: (td) => walletClient.signTypedData({ ...td, account: walletClient.account }),
  *   sendTransaction: (tx) => walletClient.sendTransaction({ to: tx.to, data: tx.data, value: tx.value, type: tx.type, chain, gas: tx.gas }),
  *   waitForReceipt: (hash) => publicClient.waitForTransactionReceipt({ hash }),
