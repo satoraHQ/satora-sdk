@@ -29,23 +29,11 @@ import { classifyDestination, toLightningDestination } from "./destination.js";
  */
 export type SwapClient = Pick<
   Client,
-  "createLightningToArkadeSwap" | "claimArkade"
+  | "createLightningToArkadeSwap"
+  | "claimArkade"
+  | "createArkadeToLightningSwap"
+  | "getQuote"
 >;
-
-/**
- * Thrown by the Lightning-withdrawal methods while Arkade→Lightning swaps are
- * being rebuilt on the new Lightning provider. The API shape is kept so
- * consumers don't have to churn; the capability returns with the provider.
- */
-export class LightningWithdrawalUnavailableError extends Error {
-  constructor() {
-    super(
-      "Withdrawing to Lightning is temporarily unavailable: Arkade→Lightning " +
-        "swaps are being rebuilt on the new Lightning provider.",
-    );
-    this.name = "LightningWithdrawalUnavailableError";
-  }
-}
 
 /**
  * Dependencies for {@link EscrowClient}.
@@ -199,14 +187,34 @@ export class EscrowClient {
    * Use `recipientSats` as the `amountSats` for an LNURL / Lightning-address
    * {@link withdrawToLightning} — e.g. pre-fill the amount from the available
    * payout balance so the user doesn't have to compute fees by hand.
+   *
+   * Pass the Lightning `destination` (address / LNURL / invoice) when known:
+   * the quote then uses the provider's real Lightning send fee for that payment
+   * instead of the flat network-fee estimate, so the quoted `recipientSats` is
+   * what {@link withdrawToLightning} will actually be able to fund.
    */
-  async quoteLightningWithdrawal(_sourceAmountSats: number): Promise<{
+  async quoteLightningWithdrawal(
+    sourceAmountSats: number,
+    destination?: string,
+  ): Promise<{
     /** Sats the recipient receives (pass as `amountSats` to withdrawToLightning). */
     recipientSats: number;
     /** Sats actually spent from the payout to fund the swap VHTLC. */
     sourceSats: number;
   }> {
-    throw new LightningWithdrawalUnavailableError();
+    const quote = await this.swap.getQuote({
+      sourceChain: "Arkade",
+      sourceToken: "btc",
+      targetChain: "Lightning",
+      targetToken: "btc",
+      sourceAmount: sourceAmountSats,
+      lightningDestination: destination?.trim() || undefined,
+    });
+    // Amounts are serialized as strings over the wire.
+    return {
+      recipientSats: Number(quote.net_target_amount),
+      sourceSats: Number(quote.net_source_amount),
+    };
   }
 
   /**
@@ -235,10 +243,16 @@ export class EscrowClient {
     fundingTxid: string;
     sourceAmountSats: number;
   }> {
-    // Validate the destination up front so callers still get shape errors
-    // (bad LNURL, missing amount) rather than only the unavailability error.
-    toLightningDestination(params.destination, params.amountSats);
-    throw new LightningWithdrawalUnavailableError();
+    const { response } = await this.swap.createArkadeToLightningSwap(
+      toLightningDestination(params.destination, params.amountSats),
+    );
+    // source_amount is serialized as a string over the wire.
+    const sourceAmountSats = Number(response.source_amount);
+    const fundingTxid = await params.wallet.send({
+      address: response.arkade_vhtlc_address,
+      amount: sourceAmountSats,
+    });
+    return { swapId: response.id, fundingTxid, sourceAmountSats };
   }
 
   /**

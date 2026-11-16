@@ -39,12 +39,18 @@ export function classifyDestination(destination: string): DestinationKind {
 }
 
 /** Fields of the swap SDK's Arkade→Lightning options we route a destination to. */
-export interface LightningDestination {
-  lightningInvoice?: string;
-  lightningAddress?: string;
-  lnurl?: string;
-  amountSats?: number;
-}
+export type LightningDestination =
+  | { lightningInvoice: string }
+  | {
+      lightningAddress: string;
+      /** Sats the recipient receives (a BOLT11 invoice pins its own). */
+      targetAmountSats: number;
+    }
+  | {
+      lnurl: string;
+      /** Sats the recipient receives (a BOLT11 invoice pins its own). */
+      targetAmountSats: number;
+    };
 
 /**
  * Map a Lightning destination string to the swap SDK's mutually-exclusive
@@ -74,6 +80,6 @@ export function toLightningDestination(
     );
   }
   return address
-    ? { lightningAddress: input, amountSats }
-    : { lnurl: input, amountSats };
+    ? { lightningAddress: input, targetAmountSats: amountSats }
+    : { lnurl: input, targetAmountSats: amountSats };
 }

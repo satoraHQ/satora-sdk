@@ -137,13 +137,13 @@ describe("toLightningDestination", () => {
   it("maps a Lightning address with amountSats", () => {
     expect(toLightningDestination(LN_ADDRESS, 5000)).toEqual({
       lightningAddress: LN_ADDRESS,
-      amountSats: 5000,
+      targetAmountSats: 5000,
     });
   });
   it("maps an LNURL with amountSats", () => {
     expect(toLightningDestination(LNURL, 5000)).toEqual({
       lnurl: LNURL,
-      amountSats: 5000,
+      targetAmountSats: 5000,
     });
   });
   it("requires amountSats for address / lnurl", () => {

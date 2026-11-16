@@ -166,7 +166,11 @@ ignored.
 // Optional: quote the recipient amount for a full-payout withdrawal
 // (payout minus the swap fee) so you don't have to do fee math.
 // `availableSats` is the spendable payout in your wallet.
-const {recipientSats} = await escrowClient.quoteLightningWithdrawal(availableSats);
+// Passing the destination prices the real Lightning send fee for it.
+const {recipientSats} = await escrowClient.quoteLightningWithdrawal(
+  availableSats,
+  "user@lnurl.example.com",
+);
 
 const {swapId, fundingTxid, sourceAmountSats} =
   await escrowClient.withdrawToLightning({
@@ -235,7 +239,7 @@ escrowClient.dispose(); // stop watching, clear listeners
 | `EscrowClient.create(config)`                                  | Construct with `{ swap, arkProvider, indexerProvider, contractRepository, walletRepository }`.           |
 | `fundFromLightning({ escrow, network, amountSats })`           | Create a LN→escrow swap; returns `{ swapId, invoice, escrowAddress, awaitFunded() }`.                    |
 | `withdraw({ wallet, destination, amountSats? })`               | Smart withdrawal — auto-routes to Lightning / L1 / Arkade by destination. Returns `{ method, txid, … }`. |
-| `quoteLightningWithdrawal(sourceAmountSats)`                   | `{ recipientSats, sourceSats }` — recipient amount after the swap fee.                                   |
+| `quoteLightningWithdrawal(sourceAmountSats, destination?)`     | `{ recipientSats, sourceSats }` — recipient amount after the swap fee.                                   |
 | `withdrawToLightning({ wallet, destination, amountSats? })`    | Withdraw the payout to a BOLT11 / LNURL / Lightning address.                                             |
 | `withdrawToL1({ wallet, destinationAddress, amountSats? })`    | Withdraw the payout onchain via collaborative offboard.                                                  |
 | `withdrawToArkade({ wallet, destinationAddress, amountSats })` | Withdraw the payout to another Arkade address (offchain Arkade transfer).                                |
