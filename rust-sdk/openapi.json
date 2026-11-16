@@ -4017,7 +4017,7 @@
               },
               "self_relayed": {
                 "type": "boolean",
-                "description": "`true` when the server mints the USDC on the destination chain\nitself instead of Circle's Forwarding Service (outbound to chains\nwhere it holds gas). `flat` is then `0`, and a client that builds\nthe burn itself must not request forwarding in its hook data, or\nCircle charges the forwarding fee after all. Always `false`\ninbound."
+                "description": "`true` when the payout is priced as minted on the destination by\nthe server itself instead of Circle's Forwarding Service\n(outbound to chains where it holds gas). `flat` is then `0`.\n\nThe server only mints a burn it can attribute to a swap: that\nswap's own claim, burned through the swap's coordinator and\nminted to the swap's recorded payout address, without Circle's\nforwarding hook. Claim calldata from `/dex-calldata` (with\n`swap_id`) and `redeem-and-swap-calldata` is built that way. A\nclient that builds the burn itself may rely on this flag only\nwhen it named the swap in the quote (`swap_id`) and its burn meets\nthose conditions; any other burn must request forwarding and pay\nthe forwarding fee, or nobody delivers it. Always `false`\ninbound."
               }
             }
           },

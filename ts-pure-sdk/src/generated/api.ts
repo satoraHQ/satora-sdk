@@ -1897,11 +1897,19 @@ export interface components {
             /** @enum {string} */
             router: "cctp";
             /**
-             * @description `true` when the server mints the USDC on the destination chain
-             *     itself instead of Circle's Forwarding Service (outbound to chains
-             *     where it holds gas). `flat` is then `0`, and a client that builds
-             *     the burn itself must not request forwarding in its hook data, or
-             *     Circle charges the forwarding fee after all. Always `false`
+             * @description `true` when the payout is priced as minted on the destination by
+             *     the server itself instead of Circle's Forwarding Service
+             *     (outbound to chains where it holds gas). `flat` is then `0`.
+             *
+             *     The server only mints a burn it can attribute to a swap: that
+             *     swap's own claim, burned through the swap's coordinator and
+             *     minted to the swap's recorded payout address, without Circle's
+             *     forwarding hook. Claim calldata from `/dex-calldata` (with
+             *     `swap_id`) and `redeem-and-swap-calldata` is built that way. A
+             *     client that builds the burn itself may rely on this flag only
+             *     when it named the swap in the quote (`swap_id`) and its burn meets
+             *     those conditions; any other burn must request forwarding and pay
+             *     the forwarding fee, or nobody delivers it. Always `false`
              *     inbound.
              */
             self_relayed: boolean;
