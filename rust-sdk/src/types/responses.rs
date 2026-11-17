@@ -49,6 +49,10 @@ pub struct BitcoinToEvmSwapResponse {
     pub bridge_target_chain: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bridge_target_token_address: Option<String>,
+    /// The destination transaction that minted a bridged payout the server
+    /// delivered itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge_target_txid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub btc_claim_txid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -97,6 +101,10 @@ pub struct ArkadeToEvmSwapResponse {
     pub bridge_target_chain: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bridge_target_token_address: Option<String>,
+    /// The destination transaction that minted a bridged payout the server
+    /// delivered itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge_target_txid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub btc_claim_txid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -160,6 +168,10 @@ pub struct LightningToEvmSwapResponse {
     pub bridge_target_chain: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bridge_target_token_address: Option<String>,
+    /// The destination transaction that minted a bridged payout the server
+    /// delivered itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge_target_txid: Option<String>,
     pub chain: String,
     pub client_evm_address: String,
     pub created_at: String,

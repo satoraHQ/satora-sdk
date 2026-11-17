@@ -1771,8 +1771,18 @@ async fn outbound_cctp_claim_accepts_a_server_delivered_burn_and_no_other_hook()
         burn.hook = hook;
         burn
     };
-    let claim = |burn: cctp::CctpBurn| async move {
-        let (client, mut wallet, _store) = arbitrum_claim();
+    let claim_recorded = |burn: cctp::CctpBurn, chain: &'static str, recipient: Option<Address>| async move {
+        let (client, mut wallet, store) = arbitrum_claim();
+        let mut record = store.get_swap("test").unwrap().unwrap();
+        let mut response = serde_json::to_value(&record.response).unwrap();
+        response["bridge_target_chain"] = json!(chain);
+        response["target_evm_address"] = json!(
+            recipient
+                .unwrap_or(Address::from_word(burn.mint_recipient))
+                .to_string()
+        );
+        record.response = serde_json::from_value(response).unwrap();
+        store.store_swap(record).unwrap();
         wallet.extra_logs.push(event_log(
             cctp::MessageSent {
                 message: crate::bridge::tests::message(&burn).into(),
@@ -1795,6 +1805,7 @@ async fn outbound_cctp_claim_accepts_a_server_delivered_burn_and_no_other_hook()
         (result, wallet)
     };
 
+    let claim = |burn: cctp::CctpBurn| async move { claim_recorded(burn, "Polygon", None).await };
     let burn = relayed(7, cctp::relay_hook());
     let (result, wallet) = claim(burn.clone()).await;
     let OutboundReceipt::Cctp { burn: observed, .. } = result.unwrap() else {
@@ -1815,6 +1826,15 @@ async fn outbound_cctp_claim_accepts_a_server_delivered_burn_and_no_other_hook()
         relayed(6, cctp::relay_hook()),
     ] {
         let (result, wallet) = claim(refused).await;
+        assert!(result.is_err());
+        assert!(wallet.sent.lock().unwrap().is_empty());
+    }
+
+    // Not the payout the swap recorded: nobody would mint it.
+    let elsewhere = Address::repeat_byte(0xcd);
+    for (chain, recipient) in [("Ethereum", None), ("Polygon", Some(elsewhere))] {
+        let (result, wallet) =
+            claim_recorded(relayed(7, cctp::relay_hook()), chain, recipient).await;
         assert!(result.is_err());
         assert!(wallet.sent.lock().unwrap().is_empty());
     }
@@ -7126,4 +7146,17 @@ async fn tracking_observes_the_client_lock_under_the_sender_of_its_generation() 
             );
         }
     }
+}
+
+#[test]
+fn a_swap_response_keeps_the_destination_mint_txid() {
+    let (_client, _wallet, store) = arbitrum_claim();
+    let record = store.get_swap("test").unwrap().unwrap();
+    let mut response = serde_json::to_value(&record.response).unwrap();
+    response["bridge_target_txid"] = json!("0xmint");
+    let typed: crate::types::GetSwapResponse = serde_json::from_value(response).unwrap();
+    assert_eq!(
+        serde_json::to_value(&typed).unwrap()["bridge_target_txid"],
+        json!("0xmint")
+    );
 }

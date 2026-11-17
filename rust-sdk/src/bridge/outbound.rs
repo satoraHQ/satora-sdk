@@ -250,6 +250,33 @@ alloy::sol! {
 }
 use OftAdapterEvents::BridgeInitiated as OftBridgeInitiated;
 
+/// A burn the server delivers itself ([`cctp::relay_hook`]) is the swap's
+/// only when it mints to the destination chain and payout address the swap
+/// recorded: any other is minted by nobody, since Circle is not asked to.
+/// The server also delivers only a payout it said it would, through
+/// `self_relayed` on a `/dex-quote` that names the swap: use the relay hook
+/// only after such a quote, and Circle's forwarding hook otherwise.
+fn relay_matches_swap(
+    response: &crate::types::GetSwapResponse,
+    burn: &cctp::CctpBurn,
+) -> Result<()> {
+    let value = serde_json::to_value(response).map_err(|e| crate::Error::Decode(e.to_string()))?;
+    let domain = value["bridge_target_chain"]
+        .as_str()
+        .and_then(cctp::CctpChain::for_bridge_name)
+        .map(|chain| chain.domain);
+    let recipient = value["target_evm_address"]
+        .as_str()
+        .and_then(|text| text.parse::<alloy::primitives::Address>().ok())
+        .map(|address| address.into_word());
+    if domain != Some(burn.destination_domain) || recipient != Some(burn.mint_recipient) {
+        return Err(invalid(
+            "a burn for the server to deliver must mint to the swap's recorded destination chain and payout address",
+        ));
+    }
+    Ok(())
+}
+
 impl Client {
     /// Claim and bridge the DEX output. A restart reads the stored claim receipt
     /// and reconstructs the CCTP burn or LayerZero GUID without revealing the
@@ -276,6 +303,9 @@ impl Client {
                     Some(_) if claim_started => return Err(invalid("outbound bridge differs from the persisted claim")),
                     _ => {
                         // Validate before reserving the route or revealing any secret.
+                        if let OutboundBridge::Cctp{burn,..}=&request.bridge && burn.hook==cctp::relay_hook() {
+                            relay_matches_swap(&stored.response,burn)?;
+                        }
                         request.bridge.calls(wallet,&options).await?;
                         self.save_bridge_operation(id,"outbound_claim",BridgeOperation {intent: intent.clone(),transaction_hash:None,user_operation_hash:None,complete:false})?;
                     }
