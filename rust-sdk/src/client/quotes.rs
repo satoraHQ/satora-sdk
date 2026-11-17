@@ -650,6 +650,9 @@ impl Client {
                 .as_wire_str()
                 .eq_ignore_ascii_case(&pivot.btc_pegged_token.address);
         let btc_pinned = btc_source == source_pinned;
+        // The route a source-pinned BTC payout bridged over CCTP was quoted
+        // on, while the server reported delivering it itself.
+        let mut self_relayed_route = None;
         let (btc, evm, decimals, bridge_fee, bridge_native_fee) = if direct_pivot {
             let (num, den) = rate(&pivot.btc_peg_rate)?;
             let (btc, evm) = if btc_pinned {
@@ -671,6 +674,7 @@ impl Client {
             } else {
                 (remote, pivot_token)
             };
+            let route = (from.clone(), to.clone());
             let dex = self
                 .get_dex_quote(DexQuoteRequest {
                     from,
@@ -713,6 +717,18 @@ impl Client {
                 }
                 Some(BridgeRate::Cctp { .. }) | None => 0,
             };
+            if btc_source
+                && source_pinned
+                && matches!(
+                    dex.bridge_rate,
+                    Some(BridgeRate::Cctp {
+                        self_relayed: true,
+                        ..
+                    })
+                )
+            {
+                self_relayed_route = Some(route);
+            }
             (
                 btc,
                 evm,
@@ -736,10 +752,31 @@ impl Client {
         let protocol_fee =
             to_u64(&(&btc * BigUint::from((effective_rate * 1e18).round() as u128) / fee_scale))?;
         let total = BigUint::from(network_fee) + BigUint::from(protocol_fee);
+        // The server decides who delivers a CCTP payout on what enters the
+        // bridge: the DEX output of the BTC left after the BTC-side fees, the
+        // amount swap creation quotes too. A payout just over its minimum can
+        // fall under it once the fees are off, and then pays Circle's
+        // forwarding fee after all: ask again at that amount.
+        let net_bridge_fee = match self_relayed_route {
+            Some((from, to)) if btc > total => {
+                let dex = self
+                    .get_dex_quote(DexQuoteRequest {
+                        from,
+                        to,
+                        amount: DexAmount::ExactIn((sub(&btc, &total) * &pivot_scale).to_string()),
+                        slippage_bps,
+                        cctp_recipient_setup: request.bridge_recipient_setup,
+                        swap_id: None,
+                    })
+                    .await?;
+                integer(dex.bridge_fee.as_deref().unwrap_or("0"))?
+            }
+            _ => bridge_fee.clone(),
+        };
         let (source, target, net_source, net_target) = match (btc_source, source_pinned) {
             (true, true) => {
                 let gross = &evm + &bridge_fee;
-                let net = sub(&ratio(sub(&btc, &total) * &gross, &btc), &bridge_fee);
+                let net = sub(&ratio(sub(&btc, &total) * &gross, &btc), &net_bridge_fee);
                 (btc.clone(), gross, btc.clone(), net)
             }
             (true, false) => (btc.clone(), evm.clone(), &btc + &total, evm.clone()),
@@ -773,10 +810,10 @@ impl Client {
             target_amount: target.to_string(),
             net_source_amount: net_source.to_string(),
             net_target_amount: net_target.to_string(),
-            bridge_fee: if bridge_fee.is_zero() {
+            bridge_fee: if net_bridge_fee.is_zero() {
                 None
             } else {
-                Some(to_u64(&bridge_fee)?)
+                Some(to_u64(&net_bridge_fee)?)
             },
         })
     }

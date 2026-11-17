@@ -440,3 +440,49 @@ async fn usdc_payouts_on_polygon_and_ethereum_pivot_through_arbitrum() {
         assert_eq!(body["to"]["chain_id"], to_chain);
     }
 }
+
+/// The server delivers a Polygon payout itself only at the full amount: with
+/// the BTC-side fees off it falls under its minimum and Circle forwards it,
+/// as swap creation then decides.
+#[tokio::test]
+async fn a_self_relayed_payout_is_priced_on_what_is_left_after_the_btc_fees() {
+    use wiremock::matchers::body_partial_json;
+    let cctp = |self_relayed: bool| json!({"router": "cctp", "fee_token": {"kind": "evm", "chain_id": 137, "address": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359"}, "proportional_fee_millionths": "0", "flat": if self_relayed {"0"} else {"200000"}, "flat_with_setup": if self_relayed {"0"} else {"200000"}, "self_relayed": self_relayed});
+    for (net_self_relayed, bridge_fee, net_target) in
+        [(false, Some(200_000), "99300000"), (true, None, "99500000")]
+    {
+        let server = MockServer::start().await;
+        Mock::given(path("/dex-quote"))
+            .and(body_partial_json(json!({"amount": {"value": "1000000000000000"}})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"expected_amount_in":{"raw":"1000000000000000","decimals":18},"estimated_amount_out":{"raw":"100000000","decimals":6},"bridge_fee":"0","bridge_rate":cctp(true),"estimated_settlement_seconds":15,"router":"cctp","cache_ttl_seconds":30})))
+            .mount(&server)
+            .await;
+        Mock::given(path("/dex-quote"))
+            .and(body_partial_json(json!({"amount": {"value": "995000000000000"}})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"expected_amount_in":{"raw":"995000000000000","decimals":18},"estimated_amount_out":{"raw":"99500000","decimals":6},"bridge_fee": if net_self_relayed {"0"} else {"200000"},"bridge_rate":cctp(net_self_relayed),"estimated_settlement_seconds":15,"router":"cctp","cache_ttl_seconds":30})))
+            .mount(&server)
+            .await;
+        let (pairs, mut fees, config) = data();
+        fees.pairs[0].fees.source_sats = 500;
+        let q = Client::new(&server.uri())
+            .unwrap()
+            .compose_quote_with_data(
+                request(
+                    true,
+                    Chain::polygon(),
+                    "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+                    QuoteAmount::Source(100_000),
+                ),
+                100,
+                &pairs,
+                &fees,
+                &config,
+                0.0,
+            )
+            .await
+            .unwrap();
+        assert_eq!(q.target_amount, "100000000");
+        assert_eq!(q.bridge_fee, bridge_fee);
+        assert_eq!(q.net_target_amount, net_target);
+    }
+}

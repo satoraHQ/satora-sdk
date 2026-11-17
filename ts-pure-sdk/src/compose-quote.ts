@@ -498,7 +498,8 @@ async function composeBtcToEvm(
     );
   }
 
-  const { btcSats, evmSmallest, evmDecimals, bridgeFee } = pivot;
+  const { btcSats, evmSmallest, evmDecimals } = pivot;
+  let { bridgeFee } = pivot;
   const networkFeeSats = baseNetworkFeeSats + pivot.bridgeNativeFeeSats;
 
   // Protocol fee in sats: floor(btc_sats × fee_percentage). The server
@@ -521,13 +522,32 @@ async function composeBtcToEvm(
   // Target-pinned: net_source = btc_sats + fees, target echoes pinned.
   let netSource: bigint;
   let netTarget: bigint;
+  // Source-pinned: the DEX output before the bridge fee comes off.
+  const grossTarget = evmSmallest + bridgeFee;
   if (params.sourceAmount != null) {
     const effectiveSats = btcSats - BigInt(totalFeeSats);
+    // The server decides who delivers a CCTP payout on what enters the
+    // bridge: the DEX output of the BTC left after the BTC-side fees, the
+    // amount swap creation quotes too. A payout just over the server's
+    // minimum can fall under it once the fees are off, and then pays
+    // Circle's forwarding fee after all: ask again at that amount.
+    if (pivot.selfRelayed === true && effectiveSats > 0n) {
+      const net = await dexSourcePinned(
+        effectiveSats,
+        params,
+        deps,
+        btcPegged,
+        pivotChainId,
+        toToken,
+        pivotScale,
+      );
+      bridgeFee = net.bridgeFee;
+    }
     netSource = btcSats;
     netTarget = netTargetSourcePinned(
       btcSats,
       effectiveSats,
-      evmSmallest,
+      grossTarget - bridgeFee,
       bridgeFee,
     );
   } else {
@@ -552,7 +572,7 @@ async function composeBtcToEvm(
     // side (`expected_amount_in`), so adding it here would overshoot the pin.
     // Keyed on the same predicate as `net_target` above.
     target_amount: (params.sourceAmount != null
-      ? evmSmallest + bridgeFee
+      ? grossTarget
       : evmSmallest
     ).toString(),
     net_source_amount: netSource.toString(),
@@ -572,6 +592,8 @@ interface BtcEvmPivot {
    * LayerZero messaging fee for USDT0); `0` if none.
    */
   bridgeNativeFeeSats: number;
+  /** The server delivers this CCTP payout itself, without Circle's fee. */
+  selfRelayed?: boolean;
 }
 
 /**
@@ -603,7 +625,17 @@ async function dexSourcePinned(
     evmDecimals: dexQuote.estimated_amount_out.decimals,
     bridgeFee: BigInt(dexQuote.bridge_fee ?? "0"),
     bridgeNativeFeeSats: bridgeNativeFeeSats(dexQuote),
+    selfRelayed: isSelfRelayed(dexQuote),
   };
+}
+
+function isSelfRelayed(dexQuote: {
+  bridge_rate?: DexQuoteResponse["bridge_rate"];
+}): boolean {
+  return (
+    dexQuote.bridge_rate?.router === "cctp" &&
+    dexQuote.bridge_rate.self_relayed === true
+  );
 }
 
 /**
