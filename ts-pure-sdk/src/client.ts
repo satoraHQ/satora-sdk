@@ -3047,6 +3047,10 @@ export class Client {
       throw new Error("No swap data returned");
     }
 
+    if (data.id !== id) {
+      throw new Error(`Requested swap ${id}, but server returned ${data.id}`);
+    }
+
     if (options?.updateStorage && this.#swapStorage) {
       // No compare-and-swap around the update: a concurrent getSwap or
       // recovery runs the same checks before it writes, so it cannot change
@@ -10360,7 +10364,7 @@ export class Client {
       );
     }
 
-    const evmKey = this.#getEvmSigningKey();
+    const evmKey = this.#getCollabRefundEvmSigningKey(storedSwap);
     const privateKey = evmKey.startsWith("0x") ? evmKey : `0x${evmKey}`;
     const address = deriveEvmAddress(evmKey);
 
@@ -10372,8 +10376,8 @@ export class Client {
    * deterministic EVM signing key for this wallet without requiring a
    * specific swap to be stored locally.
    *
-   * Same key, same address as {@link getSwapDepositorKey} (both derive
-   * from `m/44'/60'/0'/0/0`). Intended for standalone recovery tools
+   * This returns only the shared `m/44'/60'/0'/0/0` account, not a
+   * per-swap deposit key. Intended for legacy standalone recovery tools
    * where the user supplies the burn details manually and a per-swap
    * record may no longer exist (e.g. fresh device, cleared site data).
    */

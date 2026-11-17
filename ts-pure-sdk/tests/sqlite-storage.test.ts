@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { GetSwapResponse } from "../src/api/client.js";
 import { BTC_HTLC_SCRIPT_VERSION_STRICT } from "../src/index.js";
@@ -52,6 +55,36 @@ describe("SqliteWalletStorage", () => {
 
     const keyIndex = await storage.getKeyIndex();
     expect(keyIndex).toBe(2);
+  });
+
+  it("reserves distinct indices for concurrent swaps", async () => {
+    const indices = await Promise.all(
+      Array.from({ length: 32 }, () => storage.incrementKeyIndex()),
+    );
+    expect(new Set(indices).size).toBe(32);
+    expect(indices).toEqual(Array.from({ length: 32 }, (_, index) => index));
+    expect(await storage.getKeyIndex()).toBe(32);
+  });
+
+  it("reserves distinct indices across connections to the same wallet", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "swap-key-reservation-"));
+    const path = join(directory, "wallet.db");
+    const first = new SqliteWalletStorage(path);
+    const second = new SqliteWalletStorage(path);
+    try {
+      const indices = await Promise.all(
+        Array.from({ length: 32 }, (_, index) =>
+          (index % 2 ? first : second).incrementKeyIndex(),
+        ),
+      );
+      expect(new Set(indices).size).toBe(32);
+      expect(await first.getKeyIndex()).toBe(32);
+      expect(await second.getKeyIndex()).toBe(32);
+    } finally {
+      first.close();
+      second.close();
+      rmSync(directory, { recursive: true });
+    }
   });
 
   it("should clear all data", async () => {

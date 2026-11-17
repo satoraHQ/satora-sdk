@@ -75,9 +75,16 @@ export class SqliteWalletStorage implements WalletStorage {
   }
 
   async incrementKeyIndex(): Promise<number> {
-    const current = await this.getKeyIndex();
-    await this.setKeyIndex(current + 1);
-    return current;
+    // Reserve the index in one statement, including across connections to
+    // the same database. A read followed by an awaited write can hand two
+    // swaps the same key (and therefore the same deposit address).
+    const row = this.#db
+      .prepare(
+        "UPDATE wallet SET key_index = key_index + 1 WHERE id = 1 RETURNING key_index - 1 AS reserved_index",
+      )
+      .get() as { reserved_index: number } | undefined;
+    if (!row) throw new Error("Cannot reserve a swap key: wallet row missing");
+    return row.reserved_index;
   }
 
   async clear(): Promise<void> {
