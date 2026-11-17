@@ -65,8 +65,67 @@ describe("deposit ownership compatibility", () => {
     });
     await storage.store(record);
     await expect(client.getSwapDepositorKey(record.swapId)).rejects.toThrow(
-      "Cannot sign for this swap",
+      "Cannot export a deposit key",
     );
+  });
+
+  it.each([
+    "shared",
+    "per-swap",
+    "external",
+  ])("exports the compatible key for non-gasless %s records", async (account) => {
+    const { client, storage, record } = await setup();
+    Object.assign(record.response, {
+      gasless: false,
+      client_evm_address:
+        account === "shared"
+          ? client.getEvmAddress()
+          : account === "per-swap"
+            ? deriveEvmAddress(record.secretKey)
+            : "0x1111111111111111111111111111111111111111",
+    });
+    await storage.store(record);
+    const exported = await client.getSwapDepositorKey(record.swapId);
+    expect(exported.privateKey).toBe(
+      account === "per-swap"
+        ? `0x${record.secretKey}`
+        : client.getEvmDepositorKey().privateKey,
+    );
+  });
+
+  it("preserves the shared-key fallback for gasless records with no address", async () => {
+    const { client, storage, record } = await setup();
+    Object.assign(record.response, { client_evm_address: undefined });
+    await storage.store(record);
+    expect(await client.getSwapDepositorKey(record.swapId)).toEqual(
+      client.getEvmDepositorKey(),
+    );
+  });
+
+  const canonicalId = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+  it.each([
+    canonicalId.toUpperCase(),
+    canonicalId.replace(/-/g, ""),
+    `{${canonicalId}}`,
+    `urn:uuid:${canonicalId}`,
+  ])("accepts equivalent UUID %s", async (id) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ id: canonicalId })),
+    );
+    const { client } = await setup();
+    expect((await client.getSwap(id)).id).toBe(canonicalId);
+  });
+
+  it("rejects genuinely different UUIDs", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ id: canonicalId })),
+    );
+    const { client } = await setup();
+    await expect(
+      client.getSwap("4f2504e0-4f89-11d3-9a0c-0305e82c3301"),
+    ).rejects.toThrow("Requested swap");
   });
 
   it.each([

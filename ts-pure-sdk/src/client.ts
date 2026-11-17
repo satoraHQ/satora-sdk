@@ -3047,7 +3047,21 @@ export class Client {
       throw new Error("No swap data returned");
     }
 
-    if (data.id !== id) {
+    // Rust's UUID parser accepts these equivalent representations. Keep
+    // non-UUID identifiers exact rather than stripping arbitrary characters.
+    const comparableId = (value: string): string => {
+      const uuid = value.match(
+        /^(?:([0-9a-f]{32})|([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})|\{([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\}|urn:uuid:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}))$/i,
+      );
+      return uuid
+        ? uuid
+            .slice(1)
+            .find((part) => part !== undefined)!
+            .replace(/-/g, "")
+            .toLowerCase()
+        : value;
+    };
+    if (comparableId(data.id) !== comparableId(id)) {
       throw new Error(`Requested swap ${id}, but server returned ${data.id}`);
     }
 
@@ -10364,7 +10378,26 @@ export class Client {
       );
     }
 
-    const evmKey = this.#getCollabRefundEvmSigningKey(storedSwap);
+    const response = storedSwap.response as {
+      client_evm_address?: string;
+      gasless?: boolean;
+    };
+    const depositor = response.client_evm_address?.toLowerCase();
+    const sharedKey = this.#getEvmSigningKey();
+    const sharedAddress = deriveEvmAddress(sharedKey).toLowerCase();
+    const swapAddress = deriveEvmAddress(storedSwap.secretKey).toLowerCase();
+    // Recognize both historical SDK deposit accounts independently of the
+    // gasless flag. For older non-gasless records the advertised address may
+    // be the external wallet, while Permit2 funding used the shared SDK key;
+    // preserve that export's existing fallback rather than guessing a new key.
+    let evmKey = sharedKey;
+    if (depositor === swapAddress) {
+      evmKey = storedSwap.secretKey;
+    } else if (depositor && depositor !== sharedAddress && response.gasless) {
+      throw new Error(
+        `Cannot export a deposit key for swap ${swapId}: depositor ${response.client_evm_address} is not an SDK-controlled account. Use the depositor wallet.`,
+      );
+    }
     const privateKey = evmKey.startsWith("0x") ? evmKey : `0x${evmKey}`;
     const address = deriveEvmAddress(evmKey);
 
