@@ -86,7 +86,7 @@ export async function createArkadeToEvmSwapGeneric(
         ? Number(options.sourceAmount)
         : undefined,
       amount_out: options.targetAmount?.toString(),
-      referral_code: options.referralCode,
+      referral_code: options.referralCode ?? ctx.referralCode,
       extra_fees: options.extraFees,
       gasless: options.gasless ?? true,
       bridge_target_chain: options.bridgeParams?.targetChain,

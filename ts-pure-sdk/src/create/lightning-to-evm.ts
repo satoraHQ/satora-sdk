@@ -94,7 +94,7 @@ export async function createLightningToEvmSwap(
       amount_in: options.sourceAmount,
       amount_out: options.targetAmount?.toString(),
       invoice_description: options.invoiceDescription,
-      referral_code: options.referralCode,
+      referral_code: options.referralCode ?? ctx.referralCode,
       extra_fees: options.extraFees,
       gasless: options.gasless ?? true,
       bridge_target_chain: options.bridgeParams?.targetChain,

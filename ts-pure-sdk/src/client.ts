@@ -1500,9 +1500,12 @@ export interface ClientConfig {
   baseUrl: string;
   /**
    * Optional default referral code (`referral_id` on the swap backend).
-   * If set, every `createSwap` / `getQuote` call that doesn't pass its
-   * own `referralCode` will use this value. Useful for SDK consumers
-   * that always attribute swaps to the same developer key.
+   * If set, every quote (`getQuote`, `composeQuote`,
+   * `getLightningSendQuote`) and every create (`createSwap` and the
+   * direct `create*Swap` methods) that doesn't pass its own `referralCode`
+   * uses this value, so quote and create are priced with the same fees.
+   * Useful for SDK consumers that always attribute swaps to the same
+   * developer key.
    */
   referralCode?: string;
   /** Optional default headers to send with SDK API requests. */
@@ -1610,8 +1613,11 @@ export class ClientBuilder {
   }
 
   /**
-   * Sets a default referral code for every `createSwap` / `getQuote`
-   * call. Per-call `referralCode` always wins.
+   * Sets a default referral code for every quote (`getQuote`,
+   * `composeQuote`, `getLightningSendQuote`) and every create
+   * (`createSwap` and the direct `create*Swap` methods), so quote and
+   * create are priced with the same fees. Per-call `referralCode` always
+   * wins.
    * @returns The builder instance for chaining.
    */
   withReferralCode(referralCode: string): this {
@@ -1623,7 +1629,8 @@ export class ClientBuilder {
    * @deprecated Use {@link withReferralCode}. Kept as a backwards-compat
    * alias for SDK consumers that haven't migrated from the old
    * `X-Org-Code` model — both sides flow through the same per-call
-   * `referral_code` plumbing now.
+   * `referral_code` plumbing now, so the default applies to every quote
+   * and create exactly like {@link withReferralCode}.
    */
   withOrgCode(orgCode: string): this {
     return this.withReferralCode(orgCode);
@@ -2616,6 +2623,11 @@ export class Client {
    * which takes pre-fetched primitives as a dependency object.
    */
   async composeQuote(params: ComposeQuoteParams): Promise<QuoteResponse> {
+    // Per-call referral wins; fall back to the client default, like getQuote.
+    params = {
+      ...params,
+      referralCode: params.referralCode ?? this.#config.referralCode,
+    };
     // Only fetch the referral delta when a referral / extra-fee is in play —
     // otherwise it's a guaranteed-zero round-trip. It's session-static per
     // (code, extraFees), so cache it like the other primitives.
@@ -7425,6 +7437,7 @@ export class Client {
       baseUrl: this.#config.baseUrl,
       deriveSwapParams: () => this.deriveSwapParams(),
       evmAddress: this.getEvmAddress(),
+      referralCode: this.#config.referralCode,
       logger: this.#config.logger,
       logLevel: this.#config.logLevel,
       skipKeyIndices: async (n: number) => {

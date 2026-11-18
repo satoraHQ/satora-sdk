@@ -78,7 +78,7 @@ export async function createBitcoinToArkadeSwap(
       user_id: userId,
       sats_receive: options.satsReceive,
       target_arkade_address: options.targetAddress,
-      referral_code: options.referralCode,
+      referral_code: options.referralCode ?? ctx.referralCode,
       extra_fees: options.extraFees,
       btc_htlc_script_version: BTC_HTLC_SCRIPT_VERSION_STRICT,
       arkade_htlc_script_version: ARKADE_HTLC_SCRIPT_VERSION_STRICT,

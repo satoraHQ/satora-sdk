@@ -114,7 +114,7 @@ export async function createArkadeToLightningSwap(
     refund_pk: refundPk,
     user_id: userId,
     arkade_htlc_script_version: ARKADE_HTLC_SCRIPT_VERSION_STRICT,
-    referral_code: options.referralCode,
+    referral_code: options.referralCode ?? ctx.referralCode,
     extra_fees: options.extraFees,
   };
 

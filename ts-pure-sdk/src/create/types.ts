@@ -593,6 +593,12 @@ export interface CreateSwapContext {
   evmAddress: string;
   /** Jump the key index forward by `n` (used to skip past reused indices). */
   skipKeyIndices?: (n: number) => Promise<void>;
+  /**
+   * Client-level default referral code (`withReferralCode` / `withOrgCode`),
+   * sent when a create call doesn't pass its own `referralCode`, so a create
+   * is priced like the matching `getQuote`.
+   */
+  referralCode?: string;
   /** Optional logger sink. Silent by default. */
   logger?: Logger;
   /** Minimum log level to emit. Defaults to `silent`. */

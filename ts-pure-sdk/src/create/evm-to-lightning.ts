@@ -83,7 +83,7 @@ export async function createEvmToLightningSwap(
       target_amount_sats: options.targetAmountSats,
       user_address: userAddress ?? "",
       user_id: userId,
-      referral_code: options.referralCode,
+      referral_code: options.referralCode ?? ctx.referralCode,
       extra_fees: options.extraFees,
       gasless: options.gasless ?? false,
       bridge_source_chain: options.inboundBridgeParams?.sourceChain,

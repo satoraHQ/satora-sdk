@@ -87,7 +87,7 @@ export async function createLightningToArkadeSwap(
       target_amount_sats: options.targetAmountSats,
       target_arkade_address: options.targetAddress,
       arkade_htlc_script_version: ARKADE_HTLC_SCRIPT_VERSION_STRICT,
-      referral_code: options.referralCode,
+      referral_code: options.referralCode ?? ctx.referralCode,
       extra_fees: options.extraFees,
       // `undefined` is omitted from the JSON body so the server applies its
       // default; an explicit "" is sent to blank the invoice description.

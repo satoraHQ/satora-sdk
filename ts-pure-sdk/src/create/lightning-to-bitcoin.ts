@@ -72,7 +72,7 @@ export async function createLightningToBitcoinSwap(
       target_amount_sats: options.targetAmountSats,
       target_address: options.targetAddress,
       btc_htlc_script_version: BTC_HTLC_SCRIPT_VERSION_STRICT,
-      referral_code: options.referralCode,
+      referral_code: options.referralCode ?? ctx.referralCode,
       extra_fees: options.extraFees,
       invoice_description: options.invoiceDescription,
     };

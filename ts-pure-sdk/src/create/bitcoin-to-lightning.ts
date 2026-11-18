@@ -102,7 +102,7 @@ export async function createBitcoinToLightningSwap(
     refund_pk: refundPk,
     user_id: userId,
     btc_htlc_script_version: BTC_HTLC_SCRIPT_VERSION_STRICT,
-    referral_code: options.referralCode,
+    referral_code: options.referralCode ?? ctx.referralCode,
     extra_fees: options.extraFees,
   };
 
