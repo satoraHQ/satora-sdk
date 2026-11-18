@@ -155,6 +155,7 @@ export class SqliteSwapStorage implements SwapStorage {
     // Databases created before these columns existed.
     for (const [column, type] of [
       ["evm_fund_txid", "TEXT"],
+      ["evm_funding_user_op_hash", "TEXT"],
       ["evm_coordinator_address", "TEXT"],
       ["cctp_burn_txid", "TEXT"],
       ["cctp_burn_last_valid_block_height", "INTEGER"],
@@ -194,8 +195,8 @@ export class SqliteSwapStorage implements SwapStorage {
     this.#db
       .prepare(
         `INSERT OR REPLACE INTO swaps
-         (swap_id, version, key_index, response, public_key, preimage, preimage_hash, secret_key, stored_at, updated_at, evm_fund_txid, evm_coordinator_address, cctp_burn_txid, cctp_burn_last_valid_block_height, evm_rehashes, lightning_payment_hash, evm_funding_terms, target_address, bridge_recipient, bridge_recipient_wallet)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (swap_id, version, key_index, response, public_key, preimage, preimage_hash, secret_key, stored_at, updated_at, evm_fund_txid, evm_coordinator_address, cctp_burn_txid, cctp_burn_last_valid_block_height, evm_rehashes, lightning_payment_hash, evm_funding_terms, target_address, bridge_recipient, bridge_recipient_wallet, evm_funding_user_op_hash)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         swap.swapId,
@@ -220,6 +221,7 @@ export class SqliteSwapStorage implements SwapStorage {
         swap.targetAddress ?? null,
         swap.bridgeRecipient ?? null,
         swap.bridgeRecipientWallet ?? null,
+        swap.evmFundingUserOpHash ?? null,
       );
   }
 
@@ -266,6 +268,7 @@ export class SqliteSwapStorage implements SwapStorage {
       storedAt: row.stored_at,
       updatedAt: row.updated_at,
       evmFundTxid: row.evm_fund_txid ?? undefined,
+      evmFundingUserOpHash: row.evm_funding_user_op_hash ?? undefined,
       evmCoordinatorAddress: row.evm_coordinator_address ?? undefined,
       cctpBurnTxid: row.cctp_burn_txid ?? undefined,
       cctpBurnLastValidBlockHeight:
@@ -305,6 +308,7 @@ interface SqliteSwapRow {
   stored_at: number;
   updated_at: number;
   evm_fund_txid: string | null;
+  evm_funding_user_op_hash: string | null;
   evm_coordinator_address: string | null;
   cctp_burn_txid: string | null;
   cctp_burn_last_valid_block_height: number | null;

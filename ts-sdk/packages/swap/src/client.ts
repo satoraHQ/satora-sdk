@@ -723,6 +723,13 @@ export class Client {
   }
 
   /** Delegated to the legacy client (migration checkpoint). */
+  gaslessFundingPlan(
+    ...args: Parameters<LegacyClient["gaslessFundingPlan"]>
+  ): ReturnType<LegacyClient["gaslessFundingPlan"]> {
+    return this.#legacy.gaslessFundingPlan(...args);
+  }
+
+  /** Delegated to the legacy client (migration checkpoint). */
   getEvmFundingExpectation(
     ...args: Parameters<LegacyClient["getEvmFundingExpectation"]>
   ): ReturnType<LegacyClient["getEvmFundingExpectation"]> {

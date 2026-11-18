@@ -39,4 +39,10 @@ export interface AaConfig {
    * must have enough native gas token to pay for execution.
    */
   paymasterPolicyId?: string;
+
+  /** Explicit local-test opt-in: fundSwapGasless may use account-paid gas.
+   * The deposit account must be prefunded with native ETH. Never advertised
+   * as sponsored; production deposit UIs should reject this mode.
+   */
+  allowSelfPaidFunding?: boolean;
 }

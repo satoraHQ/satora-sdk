@@ -27,8 +27,23 @@ import { createSwapSmartAccountClient } from "./smartAccount.js";
 import type { AaConfig } from "./types.js";
 import {
   buildCctpInboundBatch,
+  PERMIT2_ADDRESS,
   type UseropCalldataResponse,
 } from "./userOp.js";
+
+/** `ERC20.allowance(owner, spender)`. */
+const ALLOWANCE_ABI = [
+  {
+    type: "function",
+    name: "allowance",
+    stateMutability: "view",
+    inputs: [
+      { name: "owner", type: "address" },
+      { name: "spender", type: "address" },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+] as const;
 
 /**
  * CCTPv2 burn/mint message layout (see Circle's `MessageTransmitterV2`):
@@ -142,6 +157,8 @@ export interface SubmitBalanceUserOpParams {
    * into a retry if calldata ever asks for more than the recovered swap.
    */
   expectedMaxSourceAmount?: bigint;
+  /** Persist the signed operation hash before any submission can reach the bundler. */
+  onSigned?: (userOpHash: Hex) => Promise<void>;
   /** Optional logger sink. Silent by default. */
   logger?: Logger;
   /** Minimum log level to emit. Defaults to `silent`. */
@@ -208,6 +225,24 @@ async function sendBalanceUserOp(
     transport: http(aa.rpcUrl ?? aa.bundlerUrl),
   });
 
+  // What the account already lets Permit2 pull, read from the swap's
+  // recorded source token (not the payload's). The batch builder then only
+  // approves when needed and resets a lingering partial allowance first —
+  // required for tokens without EIP-2612 that also refuse a non-zero →
+  // non-zero approve. An unreadable allowance falls back to the
+  // unconditional approve(max).
+  let permit2Allowance: bigint | undefined;
+  try {
+    permit2Allowance = (await publicClient.readContract({
+      address: params.expected.terms.sourceToken as Address,
+      abi: ALLOWANCE_ABI,
+      functionName: "allowance",
+      args: [accountAddress, PERMIT2_ADDRESS],
+    })) as bigint;
+  } catch {
+    permit2Allowance = undefined;
+  }
+
   const { calls } = await buildCctpInboundBatch({
     server,
     expected: params.expected,
@@ -217,6 +252,7 @@ async function sendBalanceUserOp(
     cctpAttestation: "0x" as Hex,
     chainId: chain.id,
     skipReceiveMessage: true,
+    permit2Allowance,
   });
 
   if (preflightSimulate) {
@@ -229,7 +265,46 @@ async function sendBalanceUserOp(
     });
   }
 
-  const userOpHash = await aaClient.sendUserOperation({ calls });
+  let userOpHash: Hex;
+  if (params.onSigned) {
+    const { formatUserOperationRequest, getUserOperationHash } = await import(
+      "viem/account-abstraction"
+    );
+    const prepared = await aaClient.prepareUserOperation({ calls });
+    const signed = {
+      ...prepared,
+      signature: await smartAccount.signUserOperation(prepared),
+    };
+    const entryPoint = smartAccount.entryPoint;
+    userOpHash = getUserOperationHash({
+      chainId: chain.id,
+      entryPointAddress: entryPoint.address,
+      entryPointVersion: entryPoint.version,
+      userOperation: signed as never,
+    });
+    // Failure to compute or persist the hash must prevent submission. Once
+    // persisted, a lost RPC response must not authorize another funding.
+    await params.onSigned(userOpHash);
+    await (
+      aaClient as unknown as {
+        request(
+          args: { method: string; params: unknown[] },
+          options: { retryCount: number },
+        ): Promise<unknown>;
+      }
+    ).request(
+      {
+        method: "eth_sendUserOperation",
+        params: [
+          formatUserOperationRequest(signed as never),
+          entryPoint.address,
+        ],
+      },
+      { retryCount: 0 },
+    );
+  } else {
+    userOpHash = await aaClient.sendUserOperation({ calls });
+  }
   if (noWait) {
     return { userOpHash, smartAccountAddress: accountAddress };
   }

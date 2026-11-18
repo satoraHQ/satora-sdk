@@ -82,7 +82,7 @@ describe("SqliteSwapStorage schema migration", () => {
     expect(legacy?.evmFundTxid).toBeUndefined();
     expect(legacy?.evmCoordinatorAddress).toBeUndefined();
 
-    await storage.store(storedSwap());
+    await storage.store({ ...storedSwap(), evmFundingUserOpHash: FUND_TXID });
     const funded = await storage.get(SWAP_ID);
     expect(funded?.evmFundTxid).toBe(FUND_TXID);
     expect(funded?.evmCoordinatorAddress).toBe(COORDINATOR);
@@ -90,6 +90,7 @@ describe("SqliteSwapStorage schema migration", () => {
 
     const reopened = new SqliteSwapStorage(path);
     expect((await reopened.get(SWAP_ID))?.evmFundTxid).toBe(FUND_TXID);
+    expect((await reopened.get(SWAP_ID))?.evmFundingUserOpHash).toBe(FUND_TXID);
     reopened.close();
   });
 

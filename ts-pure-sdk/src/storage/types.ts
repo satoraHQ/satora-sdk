@@ -131,6 +131,9 @@ export interface StoredSwap {
    */
   evmFundTxid?: string;
 
+  /** Signed sponsored funding: reconcile before allowing another attempt. */
+  evmFundingUserOpHash?: string;
+
   /**
    * For an EVM → Lightning swap, the payment hash this client fixed at
    * creation. Every funding path refuses to lock under any other hash (the

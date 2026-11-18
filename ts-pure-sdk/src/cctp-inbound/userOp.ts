@@ -34,7 +34,8 @@ const MESSAGE_TRANSMITTER_V2 =
   "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64" as const;
 
 /** Canonical Permit2 deployment — same on all EVM chains. */
-const PERMIT2_ADDRESS = "0x000000000022D473030F116dDEE9F6B43aC78BA3" as const;
+export const PERMIT2_ADDRESS =
+  "0x000000000022D473030F116dDEE9F6B43aC78BA3" as const;
 
 const MESSAGE_TRANSMITTER_ABI = parseAbi([
   "function receiveMessage(bytes message, bytes attestation) external returns (bool)",
@@ -112,6 +113,15 @@ export interface BuildCctpInboundBatchParams {
   chainId: number;
   /** Whether USDC is already at `smartAccountAddress` (skip receiveMessage). */
   skipReceiveMessage?: boolean;
+  /**
+   * The account's current `allowance(smartAccount, Permit2)` on the source
+   * token. When given, the approve step is composed from it: skipped when the
+   * allowance already covers the input, and preceded by an `approve(0)` reset
+   * when a smaller non-zero allowance lingers — tokens of the USDT family
+   * revert a non-zero → non-zero approve. When omitted, `approve(max)` is
+   * always sent (safe for USDC, whose approve overwrites).
+   */
+  permit2Allowance?: bigint;
 }
 
 /** A single (target, data, value) call the smart account will execute. */
@@ -177,17 +187,27 @@ export async function buildCctpInboundBatch(
     });
   }
 
-  // 2. USDC.approve(Permit2, max) — idempotent; lets Permit2 pull from us.
-  const approveData = encodeFunctionData({
-    abi: ERC20_APPROVE_ABI,
-    functionName: "approve",
-    args: [PERMIT2_ADDRESS as Address, maxUint256],
-  });
-  calls.push({
-    to: checked.sourceToken as Address,
-    data: approveData,
-    value: 0n,
-  });
+  // 2. Let Permit2 pull the input from the account. With a known allowance
+  //    the approve is only sent when needed, and a lingering smaller
+  //    non-zero allowance is reset to 0 first (USDT-family tokens revert a
+  //    non-zero → non-zero approve). Without one, approve(max) as before.
+  const sourceAmount = checked.sourceAmount;
+  const allowance = params.permit2Allowance;
+  if (allowance === undefined || allowance < sourceAmount) {
+    const approve = (amount: bigint) => ({
+      to: checked.sourceToken as Address,
+      data: encodeFunctionData({
+        abi: ERC20_APPROVE_ABI,
+        functionName: "approve",
+        args: [PERMIT2_ADDRESS as Address, amount],
+      }),
+      value: 0n,
+    });
+    if (allowance !== undefined && allowance > 0n) {
+      calls.push(approve(0n));
+    }
+    calls.push(approve(maxUint256));
+  }
 
   // 3. Permit2 witness signature, produced via the smart account.
   //    Kernel's signTypedData applies its message-marker wrap so the
@@ -201,7 +221,6 @@ export async function buildCctpInboundBatch(
       .join("")}`,
   );
   const permit2Deadline = BigInt(Math.floor(Date.now() / 1000) + 30 * 60);
-  const sourceAmount = checked.sourceAmount;
 
   const typedData = buildPermit2TypedData({
     chainId,

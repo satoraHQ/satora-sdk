@@ -1891,6 +1891,8 @@ export class ClientBuilder {
  */
 const AA_CHAIN_ID = 42161;
 
+const gaslessFundingInFlight = new Set<string>();
+
 export class Client {
   readonly #apiClient: ApiClient;
   readonly #config: ClientConfig;
@@ -7476,6 +7478,7 @@ export class Client {
       bridgeRecipient: bridge?.recipient,
       bridgeRecipientWallet: bridge?.recipientWallet,
       evmFundTxid: existing?.evmFundTxid,
+      evmFundingUserOpHash: existing?.evmFundingUserOpHash,
       // Fixed at creation and never taken from a server answer: recovery
       // rebuilding the swap keeps it, and a fresh device has none.
       lightningPaymentHash:
@@ -9015,14 +9018,21 @@ export class Client {
       data: encoded.data,
       gas: await gasLimitFor(signer, encoded, PERMIT2_FUND_GAS),
     });
-    const mined = await this.#awaitFunding(swapId, signer, txHash, encoded, {
-      htlcAddress: freshFunding.htlcAddress,
-      preimageHash: freshFunding.preimageHash,
-      claimAddress: freshFunding.claimAddress,
-      coordinatorAddress: freshFunding.coordinatorAddress,
-      lockSender: freshFunding.lockSender,
-      token: freshFunding.lockTokenAddress,
-    });
+    const mined = await this.#awaitFunding(
+      swapId,
+      signer,
+      txHash,
+      encoded,
+      {
+        htlcAddress: freshFunding.htlcAddress,
+        preimageHash: freshFunding.preimageHash,
+        claimAddress: freshFunding.claimAddress,
+        coordinatorAddress: freshFunding.coordinatorAddress,
+        lockSender: freshFunding.lockSender,
+        token: freshFunding.lockTokenAddress,
+      },
+      { forgetFailed: true },
+    );
     return { txHash: mined };
   }
 
@@ -10105,19 +10115,65 @@ export class Client {
   }
 
   /**
-   * Fund an EVM-sourced swap via the gasless relay.
+   * How {@link fundSwapGasless} funds a gasless swap locking on `chainId`,
+   * decided before the user is shown a deposit address:
    *
-   * Signs the Permit2 authorization and (optionally) an EIP-2612 permit
-   * off-chain, then POSTs them to the server which submits the on-chain
-   * transactions on behalf of the user. No wallet or ETH required.
+   * - `sponsored` on Arbitrum, where the paymaster runs: this SDK submits
+   *   `approve(Permit2)` + `executeAndCreateWithPermit2` itself as one
+   *   paymaster-sponsored UserOp from the depositor's Kernel account. No
+   *   server relay, no ETH on the deposit account.
+   * - `relay` on every other chain, which has no sponsorship policy: the
+   *   server's legacy relay submits the funding from the signed permits.
+   *
+   * Throws when the sponsored path applies but this client was built
+   * without AA config and a paymaster policy. Explicit self-paid testing
+   * returns `self-paid` and requires native ETH on the account,
+   * so callers can refuse to request a deposit that
+   * could not be moved afterwards.
+   */
+  gaslessFundingPlan(chainId: number): {
+    mode: "sponsored" | "self-paid" | "relay";
+  } {
+    if (chainId !== AA_CHAIN_ID) return { mode: "relay" };
+    if (!this.#config.aa) {
+      throw new Error(
+        `Gasless funding on chain ${chainId} is submitted by this SDK as a sponsored UserOp and requires AA config. Call \`.withAa({ bundlerUrl, paymasterPolicyId })\` on the ClientBuilder before \`.build()\`.`,
+      );
+    }
+    if (!this.#config.aa.paymasterPolicyId?.trim()) {
+      if (this.#config.aa.allowSelfPaidFunding) return { mode: "self-paid" };
+      throw new Error(
+        "Sponsored funding requires a paymasterPolicyId. Self-paid local tests must explicitly set allowSelfPaidFunding and prefund the account with ETH.",
+      );
+    }
+    return { mode: "sponsored" };
+  }
+
+  /**
+   * Fund an EVM-sourced gasless swap. No wallet or ETH is required by
+   * default; explicit self-paid testing requires native ETH.
+   * {@link gaslessFundingPlan} decides the path from the swap's chain:
+   *
+   * On Arbitrum the SDK funds the swap itself: it submits
+   * `approve(Permit2)` (only when the allowance needs it, with a zero-reset
+   * for USDT-style tokens — no EIP-2612 support needed) +
+   * `executeAndCreateWithPermit2` as one paymaster-sponsored UserOp from
+   * the depositor's own Kernel account (EIP-7702), the same mechanism the
+   * CCTP-inbound settlement and refund continuations use. A sponsorship or
+   * configuration failure surfaces as an error — there is no fallback to
+   * the server relay.
+   *
+   * On other chains it signs the Permit2 authorization and (optionally) an
+   * EIP-2612 permit off-chain, then POSTs them to the server's legacy
+   * relay, which submits the on-chain transactions on behalf of the user.
    *
    * @param swapId - The UUID of the swap (must have been created with gasless=true)
-   * @returns The relay transaction hash
+   * @returns The funding transaction hash
    *
    * @example
    * ```ts
    * const result = await client.fundSwapGasless(swap.response.id);
-   * console.log("Funded via relay:", result.txHash);
+   * console.log("Funded:", result.txHash);
    * ```
    */
   async fundSwapGasless(
@@ -10130,6 +10186,22 @@ export class Client {
        */
       funding?: FundingPins;
     },
+  ): Promise<{ txHash: string }> {
+    const lock = `${this.#config.baseUrl}:${swapId.toLowerCase()}`;
+    if (gaslessFundingInFlight.has(lock)) {
+      throw new Error(`Funding already in progress for swap ${swapId}`);
+    }
+    gaslessFundingInFlight.add(lock);
+    try {
+      return await this.#fundSwapGaslessOnce(swapId, options);
+    } finally {
+      gaslessFundingInFlight.delete(lock);
+    }
+  }
+
+  async #fundSwapGaslessOnce(
+    swapId: string,
+    options?: { funding?: FundingPins },
   ): Promise<{ txHash: string }> {
     // 1. Look up stored swap to get the secret key
     const storedSwap = await this.getStoredSwap(swapId);
@@ -10152,6 +10224,13 @@ export class Client {
     }
 
     const chainId = (swap as { evm_chain_id: number }).evm_chain_id;
+
+    // Where the paymaster runs the SDK submits the funding itself; the
+    // server relay is legacy there and never a fallback — a sponsorship or
+    // configuration failure is the caller's to see.
+    if (this.gaslessFundingPlan(chainId).mode !== "relay") {
+      return this.#fundSwapGaslessSponsored(swapId, storedSwap, swap, options);
+    }
 
     // 2. Fetch Permit2 funding data (includes fee transfer in calls + EIP-2612 data)
     const baseUrl = this.#config.baseUrl.replace(/\/$/, "");
@@ -10345,6 +10424,183 @@ export class Client {
       coordinatorAddress: checked.coordinator,
     });
     return { txHash: result.tx_hash };
+  }
+
+  /**
+   * The sponsored arm of {@link fundSwapGasless}: the deposit sits on the
+   * depositor's own address, so funding is exactly a refund continuation's
+   * balance UserOp — `approve(Permit2)` (as the allowance requires) +
+   * `executeAndCreateWithPermit2`, sponsored by the paymaster, from the
+   * Kernel account the depositor key owns under EIP-7702. The batch is
+   * checked against the swap's recorded terms and hash lock before anything
+   * is signed, and capped at the swap's recorded input.
+   */
+  async #fundSwapGaslessSponsored(
+    swapId: string,
+    stored: StoredSwap,
+    swap: GetSwapResponse,
+    options?: { funding?: FundingPins },
+  ): Promise<{ txHash: string }> {
+    // Do not rebuild an operation whose submission outcome is unknown.
+    // Different DEX outputs can create distinct locks for the same hash.
+    if (!this.#swapStorage)
+      throw new Error("Sponsored funding requires swap storage");
+    if (stored.evmFundingUserOpHash) {
+      const key = this.#gaslessDepositorKey(swapId, stored, swap);
+      const { client } = await this.cctpInbound.createSmartAccountClient({
+        signer: keyToKernelOwnerSigner(
+          hexToBytes(key.replace(/^0x/, "")),
+          AA_CHAIN_ID,
+        ),
+      });
+      const receipt = await client
+        .getUserOperationReceipt({
+          hash: stored.evmFundingUserOpHash as `0x${string}`,
+        })
+        .catch(() => null);
+      if (!receipt) {
+        throw new Error(
+          `Funding outcome unknown for ${stored.evmFundingUserOpHash}; retry later to check it. No new funding was submitted.`,
+        );
+      }
+      if (!receipt.success) {
+        await this.#setFundingUserOp(swapId, undefined);
+        throw new Error(
+          "Previous funding operation reverted; retry funding again.",
+        );
+      }
+      const txHash = receipt.receipt.transactionHash;
+      await this.#recordEvmFunding(swapId, { txid: txHash });
+      await this.#hintEvmFunding(swapId, txHash);
+      return { txHash };
+    }
+    const expected: ExpectedFunding = {
+      ...this.#fundingExpectation(swapId, stored),
+      pins: options?.funding,
+    };
+    // The server said Arbitrum; the terms this client recorded at creation
+    // must agree before anything is signed for that chain.
+    if (expected.terms.chainId !== AA_CHAIN_ID) {
+      throw new Error(
+        `Swap ${swapId} locks on chain ${expected.terms.chainId}, not the sponsored chain ${AA_CHAIN_ID}; refusing to fund it there`,
+      );
+    }
+    if (stored.evmFundTxid) {
+      const { createPublicClient, http } = await import("viem");
+      const { arbitrum } = await import("viem/chains");
+      const rpc = createPublicClient({
+        chain: arbitrum,
+        transport: http(this.#config.aa?.rpcUrl ?? this.#config.aa?.bundlerUrl),
+      });
+      const receipt = await rpc
+        .getTransactionReceipt({
+          hash: stored.evmFundTxid as `0x${string}`,
+        })
+        .catch(() => null);
+      if (!receipt) {
+        throw new Error(
+          `Funding transaction ${stored.evmFundTxid} is pending or its outcome is unknown; no new funding was submitted.`,
+        );
+      }
+      if (receipt.status === "reverted") {
+        await this.#forgetEvmFunding(swapId, stored.evmFundTxid);
+      } else if (receipt.status === "success" && receipt.logs !== undefined) {
+        const sender =
+          (expected.terms.htlcVersion ?? 0) >= 7
+            ? deriveEvmAddress(this.#gaslessDepositorKey(swapId, stored, swap))
+            : expected.terms.coordinator;
+        const locks = findSwapCreated(receipt.logs, {
+          htlcAddress: expected.terms.htlcAddress,
+          hashLock: expected.hashLock,
+          claimAddress: expected.terms.claimAddress,
+          senders: [sender],
+          token: expected.terms.lockToken,
+        });
+        if (locks.length > 0) {
+          await this.#hintEvmFunding(swapId, receipt.transactionHash);
+          return { txHash: receipt.transactionHash };
+        }
+        if (provesNoLockUnder(receipt, expected.hashLock)) {
+          await this.#forgetEvmFunding(swapId, stored.evmFundTxid);
+        } else {
+          throw new Error(
+            "Recorded funding has an unexpected lock; refusing to fund again.",
+          );
+        }
+      } else {
+        throw new Error(
+          "Cannot verify recorded funding; no new funding was submitted.",
+        );
+      }
+    }
+
+    const key = this.#gaslessDepositorKey(swapId, stored, swap);
+    const owner = keyToKernelOwnerSigner(
+      hexToBytes(key.replace(/^0x/, "")),
+      AA_CHAIN_ID,
+    );
+    const submitted = await this.cctpInbound.submitBalanceUserOp({
+      swapId,
+      onSigned: (hash) => this.#setFundingUserOp(swapId, hash),
+      expected,
+      signer: owner,
+      // The deposit the user was asked for; calldata demanding more must
+      // fail rather than draw on unrelated balance in the account.
+      expectedMaxSourceAmount: BigInt(expected.terms.sourceAmount),
+    });
+    const txHash = submitted.transactionHash;
+    if (!txHash) {
+      throw new Error(
+        `Sponsored funding UserOp ${submitted.userOpHash} for swap ${swapId} returned no transaction hash`,
+      );
+    }
+    await this.#recordEvmFunding(swapId, {
+      txid: txHash,
+      coordinatorAddress: expected.terms.coordinator,
+    });
+    await this.#hintEvmFunding(swapId, txHash);
+    return { txHash };
+  }
+
+  async #setFundingUserOp(
+    swapId: string,
+    hash: string | undefined,
+  ): Promise<void> {
+    const current = await this.#swapStorage?.get(swapId);
+    if (!current || !this.#swapStorage)
+      throw new Error("Cannot persist funding operation");
+    await this.#swapStorage.store({
+      ...current,
+      evmFundingUserOpHash: hash,
+      updatedAt: Date.now(),
+    });
+  }
+
+  /**
+   * The SDK-controlled key whose address the swap's deposit was sent to:
+   * the wallet-level key for current gasless swaps, the per-swap key for
+   * legacy ones. The sponsored funding runs from that address's own Kernel
+   * account, so a depositor this SDK does not control cannot be funded
+   * here.
+   */
+  #gaslessDepositorKey(
+    swapId: string,
+    stored: StoredSwap,
+    swap: GetSwapResponse,
+  ): string {
+    const depositor = (
+      swap as { client_evm_address?: string | null }
+    ).client_evm_address?.toLowerCase();
+    const sharedKey = this.#getEvmSigningKey();
+    if (!depositor || depositor === deriveEvmAddress(sharedKey).toLowerCase()) {
+      return sharedKey;
+    }
+    if (depositor === deriveEvmAddress(stored.secretKey).toLowerCase()) {
+      return stored.secretKey;
+    }
+    throw new Error(
+      `Cannot fund swap ${swapId} sponsored: its depositor ${depositor} is not an SDK-controlled account. Fund it from that wallet with fundSwap.`,
+    );
   }
 
   /**

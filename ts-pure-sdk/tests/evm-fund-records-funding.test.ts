@@ -67,6 +67,7 @@ describe("fundSwap records the funding on the stored swap", () => {
   }
 
   function fundingSigner(receipt: {
+    status?: "success" | "reverted";
     transactionHash: string;
     logs?: (typeof REAL_LOG)[];
   }) {
@@ -260,9 +261,22 @@ describe("fundSwap records the funding on the stored swap", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("clears a wallet funding record after a confirmed revert", async () => {
+    serverAnswering({ swap: swapResponse(), permit2: permit2Params });
+    const { client, storage } = await unfundedClient();
+    const signer = fundingSigner({
+      status: "reverted",
+      transactionHash: SENT,
+      logs: [],
+    });
+    await expect(client.fundSwap(SWAP_ID, signer)).rejects.toThrow(
+      "Funding transaction failed",
+    );
+    expect((await storage.get(SWAP_ID))?.evmFundTxid).toBeUndefined();
+  });
+
   it("rejects a replacement that did not create the HTLC", async () => {
-    // A cancel mines with status success and no logs; the sent hash stays
-    // recorded so a later refund can still find the real funding.
+    // A confirmed cancel creates no lock; clear the sent hash so funding can retry.
     serverAnswering({ swap: swapResponse(), permit2: permit2Params });
     const { client, storage } = await unfundedClient();
     const cancel = `0x${"cc".repeat(32)}`;
@@ -272,7 +286,7 @@ describe("fundSwap records the funding on the stored swap", () => {
       /did not create the HTLC/,
     );
     expect(await storage.get(SWAP_ID)).toMatchObject({
-      evmFundTxid: SENT,
+      evmFundTxid: undefined,
       evmCoordinatorAddress: COORDINATOR,
     });
   });
