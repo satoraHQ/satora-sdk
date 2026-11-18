@@ -4956,14 +4956,17 @@ export class Client {
       };
     }
 
-    // The claim reveals the preimage and has to confirm before the server
-    // can refund, so it pays for a two-block confirmation.
+    // Ordinary claims use the two-block estimate. Recipient payouts retain
+    // their explicitly committed absolute fee; callers can request a rate check.
     const feeRateSatPerVb =
       options?.feeRateSatPerVb ??
-      Math.max(2, (await fetchFeeRateEstimate(esploraUrls, 2)) ?? 0);
+      (storedSwap.bitcoinPayout
+        ? 0 // The caller committed an absolute fee; never silently reduce recipients.
+        : Math.max(2, (await fetchFeeRateEstimate(esploraUrls, 2)) ?? 0));
 
     try {
       const result = buildOnchainClaimTransaction({
+        bitcoinPayout: storedSwap.bitcoinPayout,
         fundingTxId: htlcOutput.txid,
         fundingVout: htlcOutput.vout,
         htlcAmount: htlcOutput.amount,
@@ -7566,6 +7569,7 @@ export class Client {
       bridgeRecipientWallet: bridge?.recipientWallet,
       evmFundTxid: existing?.evmFundTxid,
       evmFundingUserOpHash: existing?.evmFundingUserOpHash,
+      bitcoinPayout: existing?.bitcoinPayout,
       // Fixed at creation and never taken from a server answer: recovery
       // rebuilding the swap keeps it, and a fresh device has none.
       lightningPaymentHash:

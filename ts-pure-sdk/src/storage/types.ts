@@ -70,6 +70,9 @@ export interface LightningPaymentHash {
  * ```
  */
 export interface StoredSwap {
+  /** Locally committed recipient outputs, retained in full backups. */
+  bitcoinPayout?: BitcoinPayout;
+
   /** Schema version for migrations */
   version: number;
 
@@ -183,4 +186,11 @@ export interface StoredSwap {
    * cannot find an older burn never causes a second one.
    */
   cctpBurnLastValidBlockHeight?: number;
+}
+
+/** Minimum recipient commitments; surplus is split equally in list order. This primitive does not create or fund a payment. */
+export interface BitcoinPayout {
+  recipients: { address: string; amountSats: string }[];
+  /** Explicit miner fee; replacement fees may consume surplus but never recipient commitments. */
+  feeSats: string;
 }

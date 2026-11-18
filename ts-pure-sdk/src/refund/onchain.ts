@@ -16,12 +16,17 @@ import { ripemd160 } from "@noble/hashes/legacy.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { hex } from "@scure/base";
 import * as btc from "@scure/btc-signer";
+import { validateBitcoinPayout } from "../create/bitcoin-payout.js";
+import type { BitcoinPayout } from "../storage/types.js";
 
 /** Bitcoin network type */
 export type BitcoinNetwork = "mainnet" | "testnet" | "signet" | "regtest";
 
 /** Parameters needed to build a claim transaction for an on-chain Taproot HTLC */
 export interface OnchainClaimParams {
+  /** Committed recipient minimums. Surplus is split equally; shortfalls reject. */
+  bitcoinPayout?: BitcoinPayout;
+
   /** The funding transaction ID (hex, no 0x prefix) */
   fundingTxId: string;
   /** The output index in the funding transaction */
@@ -52,6 +57,7 @@ export interface OnchainClaimParams {
 
 /** Result of building a claim transaction */
 export interface OnchainClaimResult {
+  vsize: number;
   /** The signed transaction hex (ready to broadcast) */
   txHex: string;
   /** Transaction ID (hash) */
@@ -352,7 +358,17 @@ export function buildOnchainClaimTransaction(
   );
 
   // Calculate fee
-  const fee = CLAIM_TX_VBYTES * BigInt(Math.ceil(feeRateSatPerVb));
+  const payout = params.bitcoinPayout;
+  const validated = payout
+    ? validateBitcoinPayout(payout, getNetwork(network))
+    : undefined;
+  const fee =
+    validated?.fee ?? CLAIM_TX_VBYTES * BigInt(Math.ceil(feeRateSatPerVb));
+  const remainder = validated ? htlcAmount - validated.total - fee : 0n;
+  if (validated && remainder < 0n)
+    throw new Error(
+      "Funded amount cannot cover the committed recipients and fee",
+    );
   if (fee >= htlcAmount) {
     throw new Error(
       `Fee (${fee} sats) exceeds HTLC amount (${htlcAmount} sats)`,
@@ -387,11 +403,26 @@ export function buildOnchainClaimTransaction(
       amount: htlcAmount,
     },
     tapLeafScript: [hashlockLeaf],
-    sequence: 0xffffffff,
+    sequence: payout ? 0xfffffffd : 0xffffffff,
   });
 
   // Add output (destination)
-  tx.addOutputAddress(destinationAddress, claimAmount, networkConfig);
+  if (payout) {
+    const count = BigInt(payout.recipients.length);
+    const share = remainder / count;
+    const leftover = remainder % count;
+    for (const [index, recipient] of payout.recipients.entries()) {
+      tx.addOutputAddress(
+        recipient.address,
+        BigInt(recipient.amountSats) +
+          share +
+          (BigInt(index) < leftover ? 1n : 0n),
+        networkConfig,
+      );
+    }
+  } else {
+    tx.addOutputAddress(destinationAddress, claimAmount, networkConfig);
+  }
 
   // Manually compute sighash, sign, and build the full witness.
   // We can't use tx.signIdx() because finalize() only produces [signature]
@@ -443,6 +474,14 @@ export function buildOnchainClaimTransaction(
     finalScriptWitness: [preimageBytes, sig, leafScript, encodedControlBlock],
   });
 
+  if (
+    payout &&
+    (!Number.isFinite(feeRateSatPerVb) ||
+      feeRateSatPerVb < 0 ||
+      fee < BigInt(Math.ceil(tx.vsize * feeRateSatPerVb)))
+  )
+    throw new Error("Committed fee does not meet the requested fee rate");
+
   // Extract the signed transaction
   const txHex = hex.encode(tx.extract());
   const txId = tx.id;
@@ -454,6 +493,7 @@ export function buildOnchainClaimTransaction(
   });
 
   return {
+    vsize: tx.vsize,
     txHex,
     txId,
     claimAmount,

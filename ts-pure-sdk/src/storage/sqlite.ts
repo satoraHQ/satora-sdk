@@ -9,6 +9,7 @@ import type { GetSwapResponse } from "../api/client.js";
 import type { EvmFundingTerms } from "../evm/funding-pins.js";
 import type { SwapStorage, WalletStorage } from "./index.js";
 import type {
+  BitcoinPayout,
   EvmRehashRecord,
   LightningPaymentHash,
   StoredSwap,
@@ -154,6 +155,7 @@ export class SqliteSwapStorage implements SwapStorage {
     `);
     // Databases created before these columns existed.
     for (const [column, type] of [
+      ["bitcoin_payout", "TEXT"],
       ["evm_fund_txid", "TEXT"],
       ["evm_funding_user_op_hash", "TEXT"],
       ["evm_coordinator_address", "TEXT"],
@@ -195,8 +197,8 @@ export class SqliteSwapStorage implements SwapStorage {
     this.#db
       .prepare(
         `INSERT OR REPLACE INTO swaps
-         (swap_id, version, key_index, response, public_key, preimage, preimage_hash, secret_key, stored_at, updated_at, evm_fund_txid, evm_coordinator_address, cctp_burn_txid, cctp_burn_last_valid_block_height, evm_rehashes, lightning_payment_hash, evm_funding_terms, target_address, bridge_recipient, bridge_recipient_wallet, evm_funding_user_op_hash)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (swap_id, version, key_index, response, public_key, preimage, preimage_hash, secret_key, stored_at, updated_at, evm_fund_txid, evm_coordinator_address, cctp_burn_txid, cctp_burn_last_valid_block_height, evm_rehashes, lightning_payment_hash, evm_funding_terms, target_address, bridge_recipient, bridge_recipient_wallet, evm_funding_user_op_hash, bitcoin_payout)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         swap.swapId,
@@ -222,6 +224,7 @@ export class SqliteSwapStorage implements SwapStorage {
         swap.bridgeRecipient ?? null,
         swap.bridgeRecipientWallet ?? null,
         swap.evmFundingUserOpHash ?? null,
+        swap.bitcoinPayout ? JSON.stringify(swap.bitcoinPayout) : null,
       );
   }
 
@@ -269,6 +272,9 @@ export class SqliteSwapStorage implements SwapStorage {
       updatedAt: row.updated_at,
       evmFundTxid: row.evm_fund_txid ?? undefined,
       evmFundingUserOpHash: row.evm_funding_user_op_hash ?? undefined,
+      bitcoinPayout: row.bitcoin_payout
+        ? (JSON.parse(row.bitcoin_payout) as BitcoinPayout)
+        : undefined,
       evmCoordinatorAddress: row.evm_coordinator_address ?? undefined,
       cctpBurnTxid: row.cctp_burn_txid ?? undefined,
       cctpBurnLastValidBlockHeight:
@@ -297,6 +303,7 @@ export class SqliteSwapStorage implements SwapStorage {
 }
 
 interface SqliteSwapRow {
+  bitcoin_payout: string | null;
   swap_id: string;
   version: number;
   key_index: number;

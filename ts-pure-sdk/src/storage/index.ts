@@ -9,6 +9,7 @@ import type { GetSwapResponse } from "../api/client.js";
 import type { StoredSwap } from "./types.js";
 
 export type {
+  BitcoinPayout,
   EvmRehashRecord,
   LightningPaymentHash,
   StoredSwap,

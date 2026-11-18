@@ -348,6 +348,7 @@ export {
   idbStorageFactory,
 } from "./storage/idb.js";
 export type {
+  BitcoinPayout,
   StorageFactory,
   StoredSwap,
   SwapStorage,
