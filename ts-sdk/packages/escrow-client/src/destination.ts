@@ -40,7 +40,15 @@ export function classifyDestination(destination: string): DestinationKind {
 
 /** Fields of the swap SDK's Arkade→Lightning options we route a destination to. */
 export type LightningDestination =
-  | { lightningInvoice: string }
+  | {
+      lightningInvoice: string;
+      /**
+       * Fixed lock: exact sats to lock from the payout. Must cover the invoice
+       * amount + protocol fee + Lightning send fee; any surplus is charged as
+       * network fee (capped by the backend).
+       */
+      sourceAmountSats?: number;
+    }
   | {
       lightningAddress: string;
       /** Sats the recipient receives (a BOLT11 invoice pins its own). */
@@ -56,15 +64,31 @@ export type LightningDestination =
  * Map a Lightning destination string to the swap SDK's mutually-exclusive
  * `lightningInvoice` / `lightningAddress` / `lnurl` fields. Throws if it isn't a
  * Lightning destination, or if `amountSats` is missing for LNURL / address.
+ *
+ * `sourceAmountSats` (BOLT11 only) is a fixed lock: the exact sats to lock from
+ * the payout, passed through as the swap SDK's `sourceAmountSats`. It must be a
+ * positive integer, and is rejected for LNURL / address, whose amount is the
+ * recipient amount (`amountSats`).
  */
 export function toLightningDestination(
   destination: string,
   amountSats?: number,
+  sourceAmountSats?: number,
 ): LightningDestination {
   const input = destination.trim();
+  if (
+    sourceAmountSats !== undefined &&
+    (!Number.isSafeInteger(sourceAmountSats) || sourceAmountSats <= 0)
+  ) {
+    throw new Error(
+      `sourceAmountSats must be a positive integer, got ${sourceAmountSats}`,
+    );
+  }
   // The BOLT11 invoice carries its own amount, so amountSats is not needed.
   if (isBolt11(input)) {
-    return { lightningInvoice: input };
+    return sourceAmountSats === undefined
+      ? { lightningInvoice: input }
+      : { lightningInvoice: input, sourceAmountSats };
   }
   const address = isLnAddress(input);
   const lnurl = isLnurl(input);
@@ -72,6 +96,12 @@ export function toLightningDestination(
     throw new Error(
       "unrecognized Lightning destination: expected a BOLT11 invoice, " +
         "LNURL (lnurl1...), or Lightning address (user@host)",
+    );
+  }
+  if (sourceAmountSats !== undefined) {
+    throw new Error(
+      "sourceAmountSats is only supported with a BOLT11 invoice; pass " +
+        `amountSats (the recipient amount) for a Lightning ${address ? "address" : "LNURL"}`,
     );
   }
   if (amountSats === undefined) {

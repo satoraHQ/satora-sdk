@@ -134,6 +134,32 @@ describe("toLightningDestination", () => {
       lightningInvoice: BOLT11_MAINNET,
     });
   });
+  it("passes a fixed lock sourceAmountSats through for BOLT11", () => {
+    expect(toLightningDestination(BOLT11_MAINNET, undefined, 1200)).toEqual({
+      lightningInvoice: BOLT11_MAINNET,
+      sourceAmountSats: 1200,
+    });
+    // amountSats is still ignored for BOLT11.
+    expect(toLightningDestination(BOLT11_MAINNET, 1000, 1200)).toEqual({
+      lightningInvoice: BOLT11_MAINNET,
+      sourceAmountSats: 1200,
+    });
+  });
+  it("rejects a non-positive or non-integer sourceAmountSats", () => {
+    for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() =>
+        toLightningDestination(BOLT11_MAINNET, undefined, bad),
+      ).toThrow(/sourceAmountSats must be a positive integer/);
+    }
+  });
+  it("rejects sourceAmountSats for address / lnurl", () => {
+    expect(() => toLightningDestination(LN_ADDRESS, 5000, 6000)).toThrow(
+      /only supported with a BOLT11 invoice/,
+    );
+    expect(() => toLightningDestination(LNURL, undefined, 6000)).toThrow(
+      /only supported with a BOLT11 invoice/,
+    );
+  });
   it("maps a Lightning address with amountSats", () => {
     expect(toLightningDestination(LN_ADDRESS, 5000)).toEqual({
       lightningAddress: LN_ADDRESS,

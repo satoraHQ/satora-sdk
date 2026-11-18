@@ -188,6 +188,21 @@ export class EscrowClient {
    * {@link withdrawToLightning} — e.g. pre-fill the amount from the available
    * payout balance so the user doesn't have to compute fees by hand.
    *
+   * For a BOLT11 invoice, use the fixed-lock flow instead: quote with the sats
+   * to spend, have the recipient issue an invoice for `recipientSats`, then
+   * lock exactly the quoted source amount:
+   *
+   * ```ts
+   * const { recipientSats } = await client.quoteLightningWithdrawal(sourceSats);
+   * // The recipient issues a BOLT11 invoice for exactly recipientSats.
+   * const invoice = await requestInvoice(recipientSats);
+   * await client.withdrawToLightning({
+   *   wallet,
+   *   destination: invoice,
+   *   sourceAmountSats: sourceSats,
+   * });
+   * ```
+   *
    * Pass the Lightning `destination` (address / LNURL / invoice) when known:
    * the quote then uses the provider's real Lightning send fee for that payment
    * instead of the flat network-fee estimate, so the quoted `recipientSats` is
@@ -226,10 +241,21 @@ export class EscrowClient {
    * recipient receives) is **required** for LNURL / address and **ignored**
    * for a BOLT11 invoice (the amount is taken from the invoice).
    *
+   * `sourceAmountSats` (BOLT11 only) makes the swap a **fixed lock**: exactly
+   * that many sats are locked from the payout. It must cover the invoice amount
+   * plus the protocol fee and Lightning send fee; any surplus is charged as
+   * network fee (capped), otherwise swap creation fails. Typical flow:
+   * {@link quoteLightningWithdrawal}(`sourceSats`) → `recipientSats` → the
+   * recipient invoices `recipientSats` → `withdrawToLightning({ destination:
+   * invoice, sourceAmountSats: sourceSats })`. Without it, a BOLT11 swap locks
+   * invoice + fees as quoted by the server. Passing `sourceAmountSats` with an
+   * LNURL / address throws (use `amountSats` there).
+   *
    * Creates the swap and funds its VHTLC from the buyer wallet's payout; the
    * Lendaswap server then claims the VHTLC and pays the recipient. Returns the
    * swap id, the VHTLC funding txid, and the sats sent (recipient amount plus
-   * the swap fee — must be <= the available payout).
+   * the swap fee — must be <= the available payout; equals `sourceAmountSats`
+   * for a fixed lock).
    */
   async withdrawToLightning(params: {
     /** Buyer wallet holding the released payout VTXO(s). */
@@ -238,13 +264,23 @@ export class EscrowClient {
     destination: string;
     /** Recipient amount in sats. Required for LNURL / address; ignored for BOLT11. */
     amountSats?: number;
+    /**
+     * BOLT11 only: exact sats to lock from the payout (fixed lock). Must cover
+     * invoice + protocol fee + Lightning send fee; surplus is charged as
+     * network fee. Rejected for LNURL / address.
+     */
+    sourceAmountSats?: number;
   }): Promise<{
     swapId: string;
     fundingTxid: string;
     sourceAmountSats: number;
   }> {
     const { response } = await this.swap.createArkadeToLightningSwap(
-      toLightningDestination(params.destination, params.amountSats),
+      toLightningDestination(
+        params.destination,
+        params.amountSats,
+        params.sourceAmountSats,
+      ),
     );
     // source_amount is serialized as a string over the wire.
     const sourceAmountSats = Number(response.source_amount);

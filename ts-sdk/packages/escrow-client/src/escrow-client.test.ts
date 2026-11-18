@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import { EscrowClient, type SwapClient } from "./escrow-client.js";
 
 const LN_ADDRESS = "alice@example.com";
+const BOLT11 = "lnbc12u1pfixedlock";
 const VHTLC_ADDRESS = "tark1vhtlc";
 
 function setup(sourceAmount = "1050") {
@@ -77,6 +78,54 @@ describe("EscrowClient Lightning withdrawal", () => {
       fundingTxid: "fund-txid",
       sourceAmountSats: 1050,
     });
+  });
+
+  it("creates a fixed-lock BOLT11 swap and funds its source amount", async () => {
+    const { swap, wallet, client } = setup("1200");
+    const res = await (await client).withdrawToLightning({
+      wallet,
+      destination: ` ${BOLT11} `,
+      sourceAmountSats: 1200,
+    });
+    expect(swap.createArkadeToLightningSwap).toHaveBeenCalledWith({
+      lightningInvoice: BOLT11,
+      sourceAmountSats: 1200,
+    });
+    expect(wallet.send).toHaveBeenCalledWith({
+      address: VHTLC_ADDRESS,
+      amount: 1200,
+    });
+    expect(res).toEqual({
+      swapId: "swap-1",
+      fundingTxid: "fund-txid",
+      sourceAmountSats: 1200,
+    });
+  });
+
+  it("creates a BOLT11 swap without a fixed lock when sourceAmountSats is omitted", async () => {
+    const { swap, wallet, client } = setup("1050");
+    await (await client).withdrawToLightning({ wallet, destination: BOLT11 });
+    expect(swap.createArkadeToLightningSwap).toHaveBeenCalledWith({
+      lightningInvoice: BOLT11,
+    });
+    expect(wallet.send).toHaveBeenCalledWith({
+      address: VHTLC_ADDRESS,
+      amount: 1050,
+    });
+  });
+
+  it("rejects sourceAmountSats with a Lightning address before creating a swap", async () => {
+    const { swap, wallet, client } = setup();
+    await expect(
+      (await client).withdrawToLightning({
+        wallet,
+        destination: LN_ADDRESS,
+        amountSats: 1000,
+        sourceAmountSats: 1200,
+      }),
+    ).rejects.toThrow(/only supported with a BOLT11 invoice/);
+    expect(swap.createArkadeToLightningSwap).not.toHaveBeenCalled();
+    expect(wallet.send).not.toHaveBeenCalled();
   });
 
   it("routes a Lightning destination through withdraw()", async () => {
