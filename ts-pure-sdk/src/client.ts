@@ -1328,9 +1328,12 @@ export interface GetLightningSendQuoteParams {
   sourceToken?: string;
   /**
    * Total to lock on the source chain, in the source token's smallest
-   * unit (sats for Arkade and Bitcoin, token units for EVM); fees are
-   * deducted from the Lightning payout (send-max). `lightningAddress`/`lnurl` only;
-   * mutually exclusive with `targetAmountSats`.
+   * unit (sats for Arkade and Bitcoin, token units for EVM); mutually
+   * exclusive with `targetAmountSats`. With `lightningAddress`/`lnurl`
+   * fees are deducted from the Lightning payout (send-max). With
+   * `lightningInvoice` (Arkade and Bitcoin only) it is a fixed lock: the
+   * quote shows the split create would persist, surplus over invoice +
+   * fees charged as network fee, or fails like create would.
    */
   sourceAmount?: bigint | number | string;
   /**
@@ -1340,7 +1343,7 @@ export interface GetLightningSendQuoteParams {
   sourceAmountSats?: number;
   /**
    * BOLT11 invoice the user wants paid; its amount pins the payout.
-   * `sourceAmount` cannot be combined with it.
+   * Combine with `sourceAmount` for a fixed lock.
    */
   lightningInvoice?: string;
   /** Lightning address (`user@domain`). */
@@ -1418,8 +1421,9 @@ function classifyLightningDestination(
 /**
  * Options for a sats-denominated (Arkade or on-chain Bitcoin) → Lightning
  * create from the generic `createSwap` inputs. A BOLT11 invoice pins the
- * payout (`targetAmount` is an optional cross-check, `sourceAmount` is not
- * applicable); an LNURL or lightning address takes exactly one of the two.
+ * payout (`targetAmount` is an optional cross-check; `sourceAmount` makes
+ * it a fixed lock of exactly that many sats); an LNURL or lightning
+ * address takes exactly one of the two.
  */
 function satsToLightningOptions(
   options: CreateSwapOptions,
@@ -1432,10 +1436,17 @@ function satsToLightningOptions(
     extraFees: options.extraFees,
   };
   if (kind === "invoice") {
-    if (options.sourceAmount != null) {
+    if (options.sourceAmount != null && options.targetAmount != null) {
       throw new Error(
-        "sourceAmount cannot be combined with a BOLT11 invoice destination (the invoice fixes the payout)",
+        "Provide at most one of sourceAmount (fixed lock) or targetAmount with a BOLT11 invoice destination",
       );
+    }
+    if (options.sourceAmount != null) {
+      return {
+        lightningInvoice: destination,
+        sourceAmountSats: Number(options.sourceAmount),
+        ...common,
+      };
     }
     return {
       lightningInvoice: destination,

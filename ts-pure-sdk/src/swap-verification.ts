@@ -57,6 +57,36 @@ export class SwapVerificationError extends Error {
   }
 }
 
+/**
+ * A fixed-lock invoice swap (`lightningInvoice` + `sourceAmountSats`) must
+ * ask for exactly the requested lock: a caller like an escrow can only fund
+ * that amount, and a larger one would leave the swap underfunded.
+ */
+export function assertFixedLockAmount(
+  options: { lightningInvoice?: string; sourceAmountSats?: number },
+  data: { id?: string; source_amount: string | number },
+): void {
+  if (
+    options.lightningInvoice === undefined ||
+    options.sourceAmountSats === undefined
+  ) {
+    return;
+  }
+  const expected = BigInt(options.sourceAmountSats);
+  const received = BigInt(data.source_amount);
+  if (received !== expected) {
+    throw new SwapVerificationError(
+      `The server asks for a lock of ${received} sats, not the requested ${expected}; do not fund the swap`,
+      {
+        field: "source_amount",
+        expected: expected.toString(),
+        received: received.toString(),
+        swapId: data.id,
+      },
+    );
+  }
+}
+
 /** A hex hash without `0x`, lowercase. */
 export function normalizeHash(hash: string): string {
   return hash.toLowerCase().replace(/^0x/, "");

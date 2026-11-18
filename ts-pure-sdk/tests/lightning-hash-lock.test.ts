@@ -194,7 +194,7 @@ describe("Lightning to X creation checks the hold invoice's payment hash", () =>
 
 describe("X to Lightning creation checks the hash lock against the invoice", () => {
   type Destination =
-    | { lightningInvoice: string }
+    | { lightningInvoice: string; sourceAmountSats?: number }
     | { lightningAddress: string };
   const withAmount = (destination: Destination) =>
     "lightningInvoice" in destination
@@ -277,6 +277,36 @@ describe("X to Lightning creation checks the hash lock against the invoice", () 
       );
       expect(error.field).toBe("client_lightning_invoice");
       expect(error.expected).toBe("19000 sats");
+      expect(stored).toHaveLength(0);
+    });
+
+    it("sends a fixed lock with the invoice and accepts a swap asking exactly for it", async () => {
+      const { ctx, post, stored } = contextAnswering(
+        await paramsAt(index),
+        response,
+      );
+      const lock = Number(response.source_amount);
+      await create({ lightningInvoice: invoice, sourceAmountSats: lock }, ctx);
+      expect(post).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          body: expect.objectContaining({
+            lightning_invoice: invoice,
+            source_amount_sats: lock,
+          }),
+        }),
+      );
+      expect(stored).toHaveLength(1);
+    });
+
+    it("refuses a fixed-lock swap that asks for another lock amount", async () => {
+      const { ctx, stored } = contextAnswering(await paramsAt(index), response);
+      const lock = Number(response.source_amount) - 27;
+      const error = await refusal(
+        create({ lightningInvoice: invoice, sourceAmountSats: lock }, ctx),
+      );
+      expect(error.field).toBe("source_amount");
+      expect(error.expected).toBe(String(lock));
       expect(stored).toHaveLength(0);
     });
 

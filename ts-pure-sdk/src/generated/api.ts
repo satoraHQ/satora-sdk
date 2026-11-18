@@ -1409,8 +1409,10 @@ export interface components {
              */
             lightning_address?: string | null;
             /**
-             * @description BOLT11 invoice the user wants paid. Must carry an amount (which
-             *     pins the payout — `source_amount_sats` cannot be combined with it).
+             * @description BOLT11 invoice the user wants paid. Must carry an amount, which
+             *     pins the payout. By default the fees go on top of it and the lock
+             *     amount follows from the Lightning send fee quoted for this invoice;
+             *     pass `source_amount_sats` as well to lock a fixed amount instead.
              *     Mutually exclusive with `lightning_address` and `lnurl`.
              */
             lightning_invoice?: string | null;
@@ -1425,10 +1427,20 @@ export interface components {
             refund_pk: string;
             /**
              * Format: int64
-             * @description Total amount the user wants to lock on Arkade in satoshis (fees are
-             *     deducted from the Lightning payout — use this for send-max flows).
-             *     Only valid with `lightning_address`/`lnurl`; mutually exclusive
-             *     with `target_amount_sats`.
+             * @description Total amount the user wants to lock on Arkade in satoshis; mutually
+             *     exclusive with `target_amount_sats`.
+             *
+             *     With `lightning_address`/`lnurl` (send-max): fees are deducted from
+             *     the Lightning payout.
+             *
+             *     With `lightning_invoice` (fixed lock): the VHTLC amount is exactly
+             *     this. It must cover invoice amount + protocol fee + the Lightning
+             *     send fee quoted for the invoice, else the request fails with a 400
+             *     naming the shortfall. Any surplus is charged as network fee, capped
+             *     at max(1% of the lock, 100 sats, the route's `/quote` send-fee
+             *     estimate); a larger surplus is refused. Typical flow: `/quote` with
+             *     this source amount, request an invoice over its `net_target_amount`,
+             *     then create with both.
              */
             source_amount_sats?: number | null;
             /**
@@ -1757,8 +1769,10 @@ export interface components {
              */
             lightning_address?: string | null;
             /**
-             * @description BOLT11 invoice the user wants paid. Must carry an amount (which
-             *     pins the payout; `source_amount_sats` cannot be combined with it).
+             * @description BOLT11 invoice the user wants paid. Must carry an amount, which
+             *     pins the payout. By default the fees go on top of it and the lock
+             *     amount follows from the Lightning send fee quoted for this invoice;
+             *     pass `source_amount_sats` as well to lock a fixed amount instead.
              *     Mutually exclusive with `lightning_address` and `lnurl`.
              */
             lightning_invoice?: string | null;
@@ -1773,10 +1787,19 @@ export interface components {
             refund_pk: string;
             /**
              * Format: int64
-             * @description Total amount the user wants to lock on-chain in satoshis (fees are
-             *     deducted from the Lightning payout; use this for send-max flows).
-             *     Only valid with `lightning_address`/`lnurl`; mutually exclusive
-             *     with `target_amount_sats`.
+             * @description Total amount the user wants to lock on-chain in satoshis; mutually
+             *     exclusive with `target_amount_sats`.
+             *
+             *     With `lightning_address`/`lnurl` (send-max): fees are deducted from
+             *     the Lightning payout.
+             *
+             *     With `lightning_invoice` (fixed lock): the HTLC amount is exactly
+             *     this. It must cover invoice amount + protocol fee + the Lightning
+             *     send fee quoted for the invoice + the server's on-chain claim fee,
+             *     else the request fails with a 400 naming the shortfall. Any surplus
+             *     is charged as network fee, capped at max(1% of the lock, 100 sats,
+             *     the route's `/quote` send-fee estimate); a larger surplus is
+             *     refused.
              */
             source_amount_sats?: number | null;
             /**
@@ -3338,7 +3361,8 @@ export interface components {
             /**
              * Format: int64
              * @description Provider-quoted Lightning send fee, charged as the network fee,
-             *     in satoshis.
+             *     in satoshis (plus, for a fixed-lock invoice quote, the lock's
+             *     surplus over invoice + fees).
              */
             network_fee_sats: number;
             /**
@@ -5366,15 +5390,19 @@ export interface operations {
                 source_token?: string | null;
                 /**
                  * @description Total to lock on the source chain, in the source token's smallest
-                 *     unit (satoshis for Arkade and Bitcoin, token units for EVM); fees are deducted
-                 *     from the Lightning payout (send-max). Only valid with
-                 *     `lightning_address`/`lnurl`; mutually exclusive with
-                 *     `target_amount_sats`.
+                 *     unit (satoshis for Arkade and Bitcoin, token units for EVM); mutually
+                 *     exclusive with `target_amount_sats`. With `lightning_address`/`lnurl`
+                 *     fees are deducted from the Lightning payout (send-max). With
+                 *     `lightning_invoice` (Arkade and Bitcoin only) it is a fixed lock:
+                 *     the quote reports the same split create would persist (surplus over
+                 *     invoice + fees charged as network fee) or the same 400 naming the
+                 *     shortfall or excess surplus.
                  */
                 source_amount?: string | null;
                 /**
-                 * @description BOLT11 invoice the user wants paid; pins the payout. Mutually
-                 *     exclusive with `lightning_address` and `lnurl`.
+                 * @description BOLT11 invoice the user wants paid; pins the payout. Combine with
+                 *     `source_amount` for a fixed lock. Mutually exclusive with
+                 *     `lightning_address` and `lnurl`.
                  */
                 lightning_invoice?: string | null;
                 /**

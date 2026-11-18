@@ -9,6 +9,7 @@ import { bytesToHex } from "../signer/index.js";
 import { BTC_HTLC_SCRIPT_VERSION_STRICT } from "../strict-vhtlc.js";
 import {
   assertBitcoinToLightningHtlc,
+  assertFixedLockAmount,
   checkedLightningPaymentHash,
   normalizeHash,
 } from "../swap-verification.js";
@@ -31,6 +32,14 @@ import type {
  * payout), or `lightningAddress`/`lnurl` with one of `sourceAmountSats`
  * (send-max: fees deducted from the payout) or `targetAmountSats` (exact
  * payout: fees added on top).
+ *
+ * `lightningInvoice` + `sourceAmountSats` is a fixed lock: the HTLC is
+ * exactly `sourceAmountSats`, which must cover invoice + protocol fee +
+ * Lightning send fee (else a 400 names the shortfall); the surplus is
+ * charged as network fee, up to a cap. Flow for a fixed budget:
+ * `getQuote({ sourceAmount })`, invoice its `net_target_amount`, then
+ * create with `{ lightningInvoice, sourceAmountSats }`. The returned
+ * `source_amount` is checked to equal `sourceAmountSats`.
  *
  * As for Arkade → Lightning, the swap's hash lock is the invoice's payment
  * hash; the derived swap key is only the HTLC's refund key, so a
@@ -108,6 +117,7 @@ export async function createBitcoinToLightningSwap(
   }
 
   const { hash } = checkedLightningPaymentHash(options, data);
+  assertFixedLockAmount(options, data);
   assertBitcoinToLightningHtlc(data, normalizeHash(hash), swapParams.publicKey);
 
   // The derived key is what signs a refund of the HTLC after its locktime.

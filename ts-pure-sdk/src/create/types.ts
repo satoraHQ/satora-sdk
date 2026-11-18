@@ -431,14 +431,20 @@ export type ArkadeToLightningSwapOptions = {
 } & (
   | {
       /**
-       * BOLT11 invoice to pay. Its amount pins the payout, so no
-       * `sourceAmountSats` here; an optional `targetAmountSats` is
-       * cross-checked against the invoice by the server.
+       * BOLT11 invoice to pay. Its amount pins the payout; an optional
+       * `targetAmountSats` is cross-checked against the invoice by the
+       * server.
        */
       lightningInvoice: string;
       lightningAddress?: undefined;
       lnurl?: undefined;
-      sourceAmountSats?: undefined;
+      /**
+       * Optional fixed lock in sats: lock exactly this instead of invoice
+       * + fees. Must cover invoice + protocol fee + Lightning send fee;
+       * the surplus is charged as network fee (capped). Mutually exclusive
+       * with `targetAmountSats`.
+       */
+      sourceAmountSats?: number;
       targetAmountSats?: number;
     }
   | ({

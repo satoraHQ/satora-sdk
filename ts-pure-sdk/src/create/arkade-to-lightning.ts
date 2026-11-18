@@ -10,6 +10,7 @@ import { bytesToHex } from "../signer/index.js";
 import { ARKADE_HTLC_SCRIPT_VERSION_STRICT } from "../strict-vhtlc.js";
 import {
   assertArkadeToLightningVhtlc,
+  assertFixedLockAmount,
   checkedLightningPaymentHash,
   normalizeHash,
 } from "../swap-verification.js";
@@ -31,6 +32,14 @@ import type {
  * payout), or `lightningAddress`/`lnurl` with one of `sourceAmountSats`
  * (send-max: fees deducted from the payout) or `targetAmountSats` (exact
  * payout: fees added on top).
+ *
+ * `lightningInvoice` + `sourceAmountSats` is a fixed lock: the VHTLC is
+ * exactly `sourceAmountSats`, which must cover invoice + protocol fee +
+ * Lightning send fee (else a 400 names the shortfall); the surplus is
+ * charged as network fee, up to a cap. Flow for a fixed budget:
+ * `getQuote({ sourceAmount })`, invoice its `net_target_amount`, then
+ * create with `{ lightningInvoice, sourceAmountSats }`. The returned
+ * `source_amount` is checked to equal `sourceAmountSats`.
  *
  * Unlike the other directions, the swap's hash lock is the invoice's
  * payment hash — the derived swap key is only used for the refund path
@@ -120,6 +129,7 @@ export async function createArkadeToLightningSwap(
   }
 
   const { hash } = checkedLightningPaymentHash(options, data);
+  assertFixedLockAmount(options, data);
   assertArkadeToLightningVhtlc(data, normalizeHash(hash), swapParams.publicKey);
 
   // Store the swap if storage is configured — the derived key is what
