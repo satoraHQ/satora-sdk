@@ -233,6 +233,7 @@ impl SdkLogger {
     }
 
     #[cfg(any(
+        test,
         feature = "gasless",
         all(feature = "native-rails", not(target_family = "wasm"))
     ))]
@@ -324,6 +325,10 @@ impl RecordingLogger {
             .collect()
     }
 
+    #[cfg(any(
+        feature = "gasless",
+        all(feature = "native-rails", not(target_family = "wasm"))
+    ))]
     pub(crate) fn find(&self, event: &str) -> Option<LogRecord> {
         self.records()
             .into_iter()
