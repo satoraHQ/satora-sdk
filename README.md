@@ -6,15 +6,13 @@ Monorepo containing client SDKs for Lendaswap - Bitcoin-to-stablecoin atomic swa
 
 This repository contains interconnected packages:
 
-### [`core/`](./core/) - Rust Core Library
+### [`rust-sdk/`](./rust-sdk/) - Satora Rust SDK
 
-Platform-agnostic Rust library containing:
+Use `satora-rust-sdk` for Rust integrations. The Rust library name is `lendaswap_sdk`. It handles swap creation, key management, and recovery across Bitcoin, Arkade, Lightning, and EVM chains. See the [Rust SDK README](./rust-sdk/README.md) for supported routes and examples.
 
-- API client for the Lendaswap backend
-- Type definitions matching the backend API schema
-- HTTP request handling with `reqwest`
+Native Swift and Kotlin apps can use the Rust SDK through bindings you provide.
 
-### [`ts-sdk/`](./ts-sdk/) - Satora TypeScript SDKs (recommended)
+### [`ts-sdk/`](./ts-sdk/) - Satora TypeScript SDKs
 
 The `@satora/*` packages. The one to build against is
 [`@satora/swap`](./ts-sdk/packages/swap/) — the swap client:
