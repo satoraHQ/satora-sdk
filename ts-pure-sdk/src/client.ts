@@ -4151,14 +4151,8 @@ export class Client {
 
     if (vtxoStatus === "spent") {
       // A submitted-but-not-finalized Arkade offchain tx can make the original
-      // VHTLC inputs look spent. Try to resume that pending tx before declaring
-      // the claim already spent.
-      const continued = await this.continueArkadeClaimSwap(id);
-      if (continued.success) return continued;
-      return {
-        success: false,
-        message: "All VTXOs have already been spent.",
-      };
+      // VHTLC inputs look spent. Resume it and surface any finalization error.
+      return this.#continueArkadeClaim(claimParams, options);
     }
 
     // Route based on VTXO status:
@@ -4457,13 +4451,26 @@ export class Client {
       };
     }
 
-    const claimParams = this.#extractArkadeClaimParams(id, storedSwap);
+    return this.#continueArkadeClaim(
+      this.#extractArkadeClaimParams(id, storedSwap),
+    );
+  }
 
+  async #continueArkadeClaim(
+    claimParams: ArkadeVhtlcParams,
+    options?: ArkadeClaimOptions,
+  ): Promise<{
+    success: boolean;
+    message: string;
+    txId?: string;
+    claimAmount?: bigint;
+  }> {
     try {
       const result = await continueArkadeClaim({
         ...claimParams,
-        destinationAddress: "", // not needed for continue
-        arkadeServerUrl: this.#config.arkadeServerUrl,
+        destinationAddress: options?.destinationAddress,
+        arkadeServerUrl:
+          options?.arkadeServerUrl ?? this.#config.arkadeServerUrl,
         logger: this.#config.logger,
         logLevel: this.#config.logLevel,
       });

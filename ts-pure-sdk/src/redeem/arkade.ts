@@ -10,6 +10,7 @@
  */
 
 import {
+  ArkAddress,
   type ArkTxInput,
   buildOffchainTx,
   ConditionWitness,
@@ -315,7 +316,6 @@ export async function buildArkadeClaim(
   }));
 
   // Parse destination address
-  const { ArkAddress } = await import("@arkade-os/sdk");
   const destAddr = ArkAddress.decode(destinationAddress);
   const destPkScript = destAddr.pkScript;
 
@@ -386,8 +386,11 @@ export async function buildArkadeClaim(
   };
 }
 
+/** Resume an existing claim, checking its recipient when supplied by the caller. */
 export async function continueArkadeClaim(
-  params: ArkadeClaimParams,
+  params: Omit<ArkadeClaimParams, "destinationAddress"> & {
+    destinationAddress?: string;
+  },
 ): Promise<ArkadeClaimResult> {
   const {
     userSecretKey,
@@ -401,7 +404,7 @@ export async function continueArkadeClaim(
     unilateralClaimDelay,
     unilateralRefundDelay,
     unilateralRefundWithoutReceiverDelay,
-    // destinationAddress not needed — we continue an existing pending tx
+    destinationAddress,
     network,
     arkadeHtlcScriptVersion,
     arkadeServerUrl,
@@ -516,7 +519,6 @@ export async function continueArkadeClaim(
 
   // Get the claim TapLeafScript (needed for the GetPendingTx intent)
   const claimLeafScript = vhtlc.claim();
-  const claimScriptByte = claimLeafScript[1];
 
   // Encode the VHTLC tap tree
   const tapTree = vhtlc.encode();
@@ -585,6 +587,27 @@ export async function continueArkadeClaim(
     );
   }
 
+  if (destinationAddress) {
+    const expectedScript = hex.encode(
+      ArkAddress.decode(destinationAddress).pkScript,
+    );
+    for (const { arkTxid, finalArkTx } of pendingTxs) {
+      const arkTx = Transaction.fromPSBT(base64.decode(finalArkTx));
+      if (arkTx.id !== arkTxid) {
+        throw new Error(
+          "Pending Arkade claim transaction ID does not match its PSBT.",
+        );
+      }
+      // The offchain claim puts the recipient first, followed by the anchor.
+      const { amount, script } = arkTx.getOutput(0);
+      if (!amount || !script || hex.encode(script) !== expectedScript) {
+        throw new Error(
+          "Pending Arkade claim does not pay the requested destination address.",
+        );
+      }
+    }
+  }
+
   logger.info({
     event: "arkade.claim.pending_txs_found",
     message: "Found pending Arkade claim transactions",
@@ -602,12 +625,7 @@ export async function continueArkadeClaim(
       signedCheckpointTxs.map(async (c) => {
         const checkpointTx = Transaction.fromPSBT(base64.decode(c));
 
-        // Restore missing witness scripts from the ark tx
-        checkpointTx.updateInput(0, {
-          witnessScript: claimScriptByte,
-        });
-
-        // Inject the preimage into every checkpoint input (no-op if echoed)
+        // Taproot checkpoints carry the preimage in the Arkade condition witness.
         for (let i = 0; i < checkpointTx.inputsLength; i++) {
           ensureConditionWitness(checkpointTx, i, preimageBytes);
         }
