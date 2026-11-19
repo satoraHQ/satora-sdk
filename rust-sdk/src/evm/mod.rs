@@ -74,7 +74,7 @@ pub(crate) fn rpc_client(url: url::Url) -> alloy::rpc::client::RpcClient {
 
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     let transport = Http::with_client(
-        reqwest::Client::builder()
+        crate::crypto_init::http_builder()
             .timeout(RPC_TIMEOUT)
             .build()
             .unwrap_or_else(|_| reqwest::Client::new()),
@@ -181,7 +181,7 @@ pub trait EvmWallet: WalletPlatform {
 /// decimals: the daemon's configured `wbtc` and `EvmChain::wbtc_decimals`. EVM to
 /// Arkade responses name no lock token, and an amount locked in any other token
 /// says nothing about the BTC the swap is owed.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
 pub(crate) fn lock_asset(chain_id: u64) -> Option<(Address, u32)> {
     use alloy::primitives::address;
     match chain_id {

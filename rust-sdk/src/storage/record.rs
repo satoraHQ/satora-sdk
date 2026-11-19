@@ -27,11 +27,11 @@ pub struct SwapMetadata {
     pub tracking: Option<serde_json::Value>,
     /// Non-secret bridge intents, persisted before submission.
     pub bridge_operations: Option<std::collections::BTreeMap<String, BridgeOperation>>,
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
     pub arkade_delegate: Option<crate::arkade::ArkadeDelegateState>,
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
     pub arkade_pending: Option<crate::arkade::ArkadePending>,
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
     pub arkade_funding: Option<crate::arkade::ArkadeFunding>,
     pub btc_spend_txid: Option<String>,
     pub btc_spend_fee: Option<u64>,
@@ -151,7 +151,7 @@ impl SwapMetadata {
     /// for another funding path.
     #[cfg(any(
         feature = "gasless",
-        not(all(target_arch = "wasm32", target_os = "unknown"))
+        all(feature = "native-rails", not(target_family = "wasm"))
     ))]
     pub(crate) fn relay_signature_outstanding(&self) -> bool {
         self.evm_fund_relay.as_ref().is_some_and(|journal| {
@@ -171,7 +171,7 @@ impl SwapMetadata {
                 self.extra.remove(stringify!($field));
             )*};
         }
-        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
         merge!(arkade_delegate, arkade_pending, arkade_funding);
         merge!(
             tracking,

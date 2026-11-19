@@ -95,7 +95,7 @@ fn check_deposit_address(response: &GetSwapResponse, sent: &str) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
 fn arkade_address(address: &str) -> Result<()> {
     let decoded = ark_rs::core::ArkAddress::decode(address)
         .map_err(|e| Error::InvalidSwap(format!("invalid Arkade address: {e}")))?;
@@ -110,10 +110,10 @@ fn arkade_address(address: &str) -> Result<()> {
     Ok(())
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(not(all(feature = "native-rails", not(target_family = "wasm"))))]
 fn arkade_address(_: &str) -> Result<()> {
     Err(Error::InvalidSwap(
-        "Arkade creation is unavailable in the WASM SDK".into(),
+        "Arkade creation requires native-rails".into(),
     ))
 }
 
@@ -151,10 +151,10 @@ impl Client {
         options: SwapOptions,
     ) -> Result<Swap> {
         use SwapCreation::*;
-        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        #[cfg(not(all(feature = "native-rails", not(target_family = "wasm"))))]
         if !matches!(&request, LightningToEvm { .. } | EvmToLightning { .. }) {
             return Err(Error::InvalidSwap(
-                "the WASM SDK supports Lightning/EVM swaps".into(),
+                "this build supports Lightning/EVM swaps".into(),
             ));
         }
         let mut body = json!({});
@@ -442,7 +442,7 @@ impl Client {
                 if let Some(sent) = &deposit_address {
                     check_deposit_address(&response, sent)?;
                 }
-                #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+                #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
                 if matches!(
                     response,
                     GetSwapResponse::BtcToArkade(_) | GetSwapResponse::BitcoinToEvm(_)

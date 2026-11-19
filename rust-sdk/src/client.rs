@@ -54,12 +54,12 @@ mod storage;
 
 #[cfg(any(
     feature = "gasless",
-    not(all(target_arch = "wasm32", target_os = "unknown"))
+    all(feature = "native-rails", not(target_family = "wasm"))
 ))]
 pub(crate) use lightning::INVOICE_HASH_MISMATCH;
 #[cfg(any(
     feature = "gasless",
-    not(all(target_arch = "wasm32", target_os = "unknown"))
+    all(feature = "native-rails", not(target_family = "wasm"))
 ))]
 pub(crate) use lightning::invoice_payment_hash;
 pub use quotes::DEFAULT_COMPOSE_SLIPPAGE_BPS;
@@ -82,18 +82,18 @@ const API_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// Bound on an offchain payment from the internal Arkade wallet, a few arkd round trips.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
 pub(crate) const WALLET_PAYMENT_TIMEOUT: Duration = Duration::from_secs(120);
 /// Bound on a batch join by the internal Arkade wallet. Ark batches run about every 60
 /// seconds on mainnet (arkd announces `sessionDuration` 60), so this covers a few.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
 const WALLET_BATCH_TIMEOUT: Duration = Duration::from_secs(300);
 /// Bound on an offboard, whose batch join ark-client retries up to three times.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
 pub(crate) const WALLET_OFFBOARD_TIMEOUT: Duration = Duration::from_secs(600);
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 fn default_http() -> reqwest::Client {
-    reqwest::Client::builder()
+    crate::crypto_init::http_builder()
         .timeout(API_TIMEOUT)
         .connect_timeout(CONNECT_TIMEOUT)
         .build()
@@ -140,13 +140,13 @@ fn is_preimage_collision(err: &Error) -> bool {
 
 #[derive(Clone)]
 pub struct Client {
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
     pub(crate) arkade_execution: Arc<tokio::sync::Mutex<()>>,
     /// Spends of the internal Arkade wallet's own VTXOs. VHTLC claims and refunds never
     /// select those, so they take `arkade_execution` and do not wait for a batch here.
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
     pub(crate) wallet_execution: Arc<tokio::sync::Mutex<()>>,
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
     pub(crate) bitcoin_execution: Arc<tokio::sync::Mutex<()>>,
     quote_cache: Arc<tokio::sync::Mutex<quotes::QuoteCache>>,
     #[cfg(feature = "gasless")]
@@ -167,7 +167,7 @@ pub struct Client {
     /// to arkd (`claim`, `arkade_balance`, `arkade_settle`,
     /// `arkade_offchain_address`, and `create_swap` with `receive_to =
     /// None`).
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
     pub(crate) arkade_config: Option<crate::arkade::ArkadeConfig>,
     /// Cached, lazily-initialised Arkade wallet. Held on the Client so
     /// stateful bits — saved boarding-output descriptors (`new_boarding_output`
@@ -177,27 +177,30 @@ pub struct Client {
     /// `settle` would each construct a fresh wallet with an empty
     /// DB, so settle would never see the boarding output the user
     /// just funded.
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
     pub(crate) arkade_wallet: Arc<tokio::sync::OnceCell<crate::arkade::ArkadeWallet>>,
     pub(crate) log: SdkLogger,
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
     pub(crate) bitcoin_depth: crate::observation::BitcoinDepth,
     #[cfg(all(
         feature = "gasless",
-        not(all(target_arch = "wasm32", target_os = "unknown"))
+        feature = "native-rails",
+        not(target_family = "wasm")
     ))]
     pub(crate) evm_readers: EvmReaders,
     /// Basis points of the created target.
     #[cfg(all(
         feature = "gasless",
-        not(all(target_arch = "wasm32", target_os = "unknown"))
+        feature = "native-rails",
+        not(target_family = "wasm")
     ))]
     pub(crate) shortfall_limit: Arc<std::sync::atomic::AtomicU32>,
 }
 
 #[cfg(all(
     feature = "gasless",
-    not(all(target_arch = "wasm32", target_os = "unknown"))
+    feature = "native-rails",
+    not(target_family = "wasm")
 ))]
 pub(crate) type EvmReaders =
     Arc<std::sync::RwLock<std::collections::HashMap<u64, Arc<dyn crate::evm::EvmWallet>>>>;
@@ -227,30 +230,32 @@ impl Client {
             storage: Arc::new(InMemorySwapStorage::new()),
             process_records: Arc::default(),
             referral_code: None,
-            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
             arkade_config: None,
-            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
             arkade_wallet: Arc::new(tokio::sync::OnceCell::new()),
-            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
             arkade_execution: Arc::default(),
-            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
             wallet_execution: Arc::default(),
-            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
             bitcoin_execution: Arc::default(),
             quote_cache: Arc::default(),
             #[cfg(feature = "gasless")]
             evm_execution: Arc::default(),
             log: SdkLogger::tracing(),
-            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
             bitcoin_depth: crate::observation::BitcoinDepth::new(None),
             #[cfg(all(
                 feature = "gasless",
-                not(all(target_arch = "wasm32", target_os = "unknown"))
+                feature = "native-rails",
+                not(target_family = "wasm")
             ))]
             evm_readers: Arc::default(),
             #[cfg(all(
                 feature = "gasless",
-                not(all(target_arch = "wasm32", target_os = "unknown"))
+                feature = "native-rails",
+                not(target_family = "wasm")
             ))]
             shortfall_limit: Arc::default(),
         })
@@ -284,7 +289,7 @@ impl Client {
 
     /// Confirmations a server-funded Bitcoin HTLC needs before it is claimable,
     /// like the TypeScript `getBitcoinMinConfirmations`. `None` reads as 0.
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
     pub fn bitcoin_min_confirmations(&self) -> Option<u32> {
         self.bitcoin_depth.get()
     }
@@ -293,7 +298,7 @@ impl Client {
     /// to replace it once the claim reveals the preimage. Every clone of this
     /// client shares the setting, so it takes effect on the next chain read of
     /// every swap its trackers watch, including swaps already tracked.
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
     pub fn set_bitcoin_min_confirmations(&self, confirmations: Option<u32>) {
         self.bitcoin_depth.set(confirmations);
     }
@@ -309,7 +314,8 @@ impl Client {
     /// Every clone of this client shares the readers.
     #[cfg(all(
         feature = "gasless",
-        not(all(target_arch = "wasm32", target_os = "unknown"))
+        feature = "native-rails",
+        not(target_family = "wasm")
     ))]
     pub fn set_evm_reader(&self, reader: Arc<dyn crate::evm::EvmWallet>) {
         self.evm_readers
@@ -328,7 +334,8 @@ impl Client {
     /// natural value. Every clone of this client shares the limit.
     #[cfg(all(
         feature = "gasless",
-        not(all(target_arch = "wasm32", target_os = "unknown"))
+        feature = "native-rails",
+        not(target_family = "wasm")
     ))]
     pub fn set_conversion_shortfall_limit(&self, basis_points: u32) {
         self.shortfall_limit
@@ -338,7 +345,8 @@ impl Client {
     /// The limit last set with [`Self::set_conversion_shortfall_limit`], 0 if none.
     #[cfg(all(
         feature = "gasless",
-        not(all(target_arch = "wasm32", target_os = "unknown"))
+        feature = "native-rails",
+        not(target_family = "wasm")
     ))]
     pub fn conversion_shortfall_limit(&self) -> u32 {
         self.shortfall_limit
@@ -348,7 +356,8 @@ impl Client {
     /// Whether [`Self::set_evm_reader`] gave this client a reader for `chain_id`.
     #[cfg(all(
         feature = "gasless",
-        not(all(target_arch = "wasm32", target_os = "unknown"))
+        feature = "native-rails",
+        not(target_family = "wasm")
     ))]
     pub fn has_evm_reader(&self, chain_id: u64) -> bool {
         self.evm_reader(chain_id).is_some()
@@ -356,7 +365,8 @@ impl Client {
 
     #[cfg(all(
         feature = "gasless",
-        not(all(target_arch = "wasm32", target_os = "unknown"))
+        feature = "native-rails",
+        not(target_family = "wasm")
     ))]
     pub(crate) fn evm_reader(&self, chain_id: u64) -> Option<Arc<dyn crate::evm::EvmWallet>> {
         self.evm_readers
@@ -453,7 +463,7 @@ impl Client {
         // Resolve `None` receive_to to the SDK's internal Arkade wallet.
         let receive_to = match receive_to {
             Some(addr) => addr,
-            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
             None => {
                 if !matches!(target, TokenId::Btc) {
                     return Err(Error::InvalidSwap(
@@ -463,10 +473,10 @@ impl Client {
                 let wallet = self.arkade_wallet().await?;
                 Address::Arkade(wallet.offchain_address().await?)
             }
-            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            #[cfg(not(all(feature = "native-rails", not(target_family = "wasm"))))]
             None => {
                 return Err(Error::InvalidSwap(
-                    "WASM requires an explicit swap destination".into(),
+                    "this build requires an explicit swap destination".into(),
                 ));
             }
         };
@@ -717,7 +727,7 @@ impl Client {
     ///
     /// **Referral code**: attached to every swap from this client; set
     /// once on the builder via [`ClientBuilder::referral_code`].
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
     pub async fn create_evm_to_arkade_swap(
         &self,
         source: TokenId,
@@ -775,7 +785,7 @@ impl Client {
     /// locktime, and a `btc_htlc_address` other than the rebuilt one; [`Error::Decode`]
     /// refuses a server key, hash lock or refund locktime that does not parse. Such a
     /// swap stays in storage for recovery; never fund its address.
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
     pub async fn create_bitcoin_to_arkade_swap(
         &self,
         sats_receive: u64,
@@ -820,7 +830,7 @@ impl Client {
     /// An invoice that does not pay the hash of this client's preimage is
     /// refused with [`Error::InvalidSwap`] before anything is stored, as
     /// [`Self::create_swap_request`] describes.
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
     pub async fn create_lightning_to_arkade_swap(
         &self,
         sats_receive: u64,
@@ -837,7 +847,7 @@ impl Client {
 
     /// Create a Lightning → Arkade swap with an exact source or target amount.
     /// `invoice_description` is at most 639 UTF-8 bytes; `None` uses the server default.
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
     pub async fn create_lightning_to_arkade_swap_with_options(
         &self,
         amount: QuoteAmount,
@@ -887,7 +897,7 @@ impl Client {
     /// returned invoice other than the supplied one, is refused with
     /// [`Error::InvalidSwap`] before anything is stored, as
     /// [`Self::create_swap_request`] describes.
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
     pub async fn create_arkade_to_lightning_swap(
         &self,
         destination: crate::types::LightningDestination,
@@ -897,7 +907,7 @@ impl Client {
     }
 
     /// Create an Arkade → Lightning swap with a per-swap referral surcharge.
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
     pub async fn create_arkade_to_lightning_swap_with_options(
         &self,
         destination: crate::types::LightningDestination,
@@ -1031,7 +1041,7 @@ impl Client {
 ///
 /// Set the config via `ClientBuilder::arkade_config` at build time;
 /// these methods return [`Error::InvalidSwap`] when no config is set.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
 impl Client {
     /// Fetch the stored [`crate::arkade::ArkadeConfig`] or error with a
     /// uniform message. Internal helper so every arkade-touching method
@@ -1278,11 +1288,11 @@ pub struct ClientBuilder {
     storage_path: Option<PathBuf>,
     http: Option<reqwest::Client>,
     referral_code: Option<String>,
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
     arkade_config: Option<crate::arkade::ArkadeConfig>,
     logger: Option<Arc<dyn Logger>>,
     log_level: Option<LogLevel>,
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
     bitcoin_min_confirmations: Option<u32>,
 }
 
@@ -1365,7 +1375,7 @@ impl ClientBuilder {
     /// `receive_to`). Omit if the client will only do EVM-side
     /// operations. A blank `identity_mnemonic` is filled with the client's
     /// mnemonic.
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
     pub fn arkade_config(mut self, config: crate::arkade::ArkadeConfig) -> Self {
         self.arkade_config = Some(config);
         self
@@ -1394,7 +1404,7 @@ impl ClientBuilder {
     /// replaced its funding could take both legs). Set 1 or more for a
     /// block-depth policy that does not rely on the funder's good behaviour.
     /// Change it later with [`Client::set_bitcoin_min_confirmations`].
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
     pub fn bitcoin_min_confirmations(mut self, confirmations: u32) -> Self {
         self.bitcoin_min_confirmations = Some(confirmations);
         self
@@ -1484,9 +1494,9 @@ impl ClientBuilder {
         let storage = self
             .storage
             .unwrap_or_else(|| Arc::new(InMemorySwapStorage::new()));
-        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
         let mut arkade_config = self.arkade_config;
-        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
         if let Some(config) = &mut arkade_config
             && config.identity_mnemonic.trim().is_empty()
             && let Some(mnemonic) = signer.mnemonic()
@@ -1508,30 +1518,32 @@ impl ClientBuilder {
             storage,
             process_records: Arc::default(),
             referral_code: self.referral_code,
-            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
             arkade_config,
-            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
             arkade_wallet: Arc::new(tokio::sync::OnceCell::new()),
-            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
             arkade_execution: Arc::default(),
-            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
             wallet_execution: Arc::default(),
-            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
             bitcoin_execution: Arc::default(),
             quote_cache: Arc::default(),
             #[cfg(feature = "gasless")]
             evm_execution: Arc::default(),
             log,
-            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
             bitcoin_depth: crate::observation::BitcoinDepth::new(self.bitcoin_min_confirmations),
             #[cfg(all(
                 feature = "gasless",
-                not(all(target_arch = "wasm32", target_os = "unknown"))
+                feature = "native-rails",
+                not(target_family = "wasm")
             ))]
             evm_readers: Arc::default(),
             #[cfg(all(
                 feature = "gasless",
-                not(all(target_arch = "wasm32", target_os = "unknown"))
+                feature = "native-rails",
+                not(target_family = "wasm")
             ))]
             shortfall_limit: Arc::default(),
         })
@@ -1958,7 +1970,7 @@ fn validate_sats(value: u128) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
 #[cfg(test)]
 mod tests {
     use super::*;

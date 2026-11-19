@@ -7,6 +7,8 @@ This crate is standalone and uses the repository’s pinned Rust toolchain.
 ## Usage
 
 ```rust,no_run
+# #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
+# mod native_example {
 use lendaswap_sdk::{Client, types::{Address, QuoteAmount}};
 
 # async fn example(mnemonic: String) -> Result<(), lendaswap_sdk::Error> {
@@ -27,12 +29,42 @@ let details = client.get_swap_details(&swap.id).await?;
 # let _ = details;
 # Ok(())
 # }
+# }
 ```
 
 `Client::new(base_url)` creates a query-only client. The builder requires a
 mnemonic, an xprv or wallet storage (see seed storage below). The default URL is `https://api.satora.io`. Amounts are in
 source/target token smallest units; EVM amounts use `u128` inputs and decimal
 strings on the wire, while Bitcoin amounts must be positive and fit in `i64`.
+
+## Native TLS backends
+
+The default features, `native-tls` and `native-rails`, keep the existing native
+HTTP backend and the Arkade and on-chain Bitcoin APIs. To use rustls for
+Lightning ↔ EVM with EVM execution and the optional status WebSocket, select:
+
+```toml
+satora-rust-sdk = { version = "0.0.1", default-features = false, features = ["rustls-tls", "gasless", "websocket"] }
+```
+
+`rustls-tls` uses rustls for SDK HTTP, EVM RPC, and WebSocket traffic. If both
+TLS features are enabled, the SDK selects native TLS. Cargo features are
+additive across the application. The `native-rails` feature restores Arkade,
+on-chain Bitcoin execution and the tracker, and currently brings native TLS
+through upstream dependencies. Leave it disabled for a graph without
+native-tls or OpenSSL. Native SQLite storage is available in either profile.
+
+If you previously disabled default features and still want the original
+native profile, enable both `native-tls` and `native-rails`. On
+`wasm32-unknown-unknown`, Fetch supplies HTTPS through the JS host.
+
+Run `sh tests/check_rustls_graph.sh` to audit the native rustls graph, or
+pass a target triple to audit another platform. To smoke-test the default
+rustls HTTP and WebSocket clients against the live API, run:
+
+```sh
+cargo test --locked --no-default-features --features rustls-tls,websocket --test tls_live -- --ignored
+```
 
 ## Browser and Node.js WASM
 
@@ -758,6 +790,8 @@ and EVM chain using `ReaderSet`. Use `contract_references` to reconstruct and
 validate references; manually supplied references are trusted application input.
 
 ```rust,no_run
+# #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
+# mod native_example {
 use std::sync::Arc;
 use lendaswap_sdk::{Client, Result};
 use lendaswap_sdk::observation::{ContractManager, ContractReader, ManagerOptions, ReferenceOptions};
@@ -800,6 +834,7 @@ match events.recv().await {
 }
 worker.shutdown().await?;
 # Ok(())
+# }
 # }
 ```
 

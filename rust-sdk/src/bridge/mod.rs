@@ -39,6 +39,9 @@ impl BridgeApi {
     /// `https://scan-testnet.layerzero-api.com`). A path on it is kept.
     pub fn new(iris: &str, layerzero: &str) -> Result<Self> {
         Ok(Self {
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            http: crate::crypto_init::http_builder().build()?,
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             http: Client::new(),
             iris: Url::parse(iris)?,
             layerzero: Url::parse(layerzero)?,

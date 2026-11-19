@@ -14,12 +14,8 @@
 //! `tonic`/`ark-rs`, esplora over HTTPS, alloy's bundler/node calls),
 //! so we install the provider at every public `Client` entry point.
 //!
-//! Why `ring` and not `aws-lc-rs`: `ring` builds without a C
-//! toolchain and works cleanly across all our target triples (incl.
-//! cross-compiled linux-arm64 / osx-x64 in CI). `aws-lc-rs` produces
-//! smaller hot-path crypto but needs CMake/clang. Easy to flip later
-//! by swapping the Cargo feature + this module's `default_provider`
-//! call.
+//! The SDK selects ring for its process default and respects a provider
+//! already installed by the application.
 
 use std::sync::Once;
 
@@ -33,4 +29,16 @@ pub(crate) fn ensure_default_provider_installed() {
     INIT.call_once(|| {
         let _ = rustls::crypto::ring::default_provider().install_default();
     });
+}
+
+/// Construct an HTTP client with the selected SDK TLS backend, even if Cargo
+/// feature unification has enabled a different Reqwest default.
+pub(crate) fn http_builder() -> reqwest::ClientBuilder {
+    ensure_default_provider_installed();
+    let builder = reqwest::Client::builder();
+    #[cfg(feature = "native-tls")]
+    let builder = builder.tls_backend_native();
+    #[cfg(all(feature = "rustls-tls", not(feature = "native-tls")))]
+    let builder = builder.tls_backend_rustls();
+    builder
 }

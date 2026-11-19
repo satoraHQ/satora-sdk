@@ -234,7 +234,7 @@ impl SdkLogger {
 
     #[cfg(any(
         feature = "gasless",
-        not(all(target_arch = "wasm32", target_os = "unknown"))
+        all(feature = "native-rails", not(target_family = "wasm"))
     ))]
     pub(crate) fn swap_id(mut self, id: &str) -> Self {
         if self.level != LogLevel::Silent {
@@ -245,7 +245,7 @@ impl SdkLogger {
 
     /// Adds a context field to every record; an event's own field of the same
     /// name wins.
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(any(test, all(feature = "native-rails", not(target_family = "wasm"))))]
     pub(crate) fn with(mut self, key: &str, value: impl Into<Value>) -> Self {
         if self.level != LogLevel::Silent {
             Arc::make_mut(&mut self.context)

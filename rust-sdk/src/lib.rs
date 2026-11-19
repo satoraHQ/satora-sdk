@@ -6,9 +6,9 @@
 
 #![doc = include_str!("../README.md")]
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
 pub mod actions;
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
 pub mod bitcoin;
 #[cfg(feature = "gasless")]
 pub mod bridge;
@@ -16,7 +16,7 @@ pub mod client;
 pub mod control;
 pub mod error;
 pub mod logging;
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
 pub mod observation;
 pub mod request;
 pub mod signer;
@@ -24,7 +24,7 @@ pub mod storage;
 #[cfg(feature = "websocket")]
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub mod subscription;
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
 pub mod tracker;
 pub mod types;
 
@@ -36,7 +36,7 @@ pub mod aa;
 // Arkade VHTLC claim + balance + settle flow (offchain spend). Owns
 // the boilerplate `ark-client` requires (wallet, blockchain,
 // persistence impls) so consumers don't have to re-implement them.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
 pub mod arkade;
 
 // Internal-only: wire-format structs that public types route through via
@@ -51,7 +51,7 @@ mod wire;
 // guard.
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 mod crypto_init;
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
 mod strict_vhtlc;
 
 pub use client::Client;

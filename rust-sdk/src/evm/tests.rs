@@ -3534,6 +3534,7 @@ async fn native_claims_are_refused_before_the_bridge_route_is_pinned() {
     );
 }
 
+#[cfg(feature = "native-rails")]
 #[test]
 fn native_source_references_track_the_zero_asset_word() {
     use crate::observation::ContractRef;
@@ -3583,6 +3584,7 @@ fn native_source_references_track_the_zero_asset_word() {
     }
 }
 
+#[cfg(feature = "native-rails")]
 fn record_claim_destination(store: &InMemorySwapStorage, destination: Address) {
     rewrite_response(store, |r| r["target_evm_address"] = json!(destination));
     store
@@ -3595,6 +3597,7 @@ fn record_claim_destination(store: &InMemorySwapStorage, destination: Address) {
         )
         .unwrap();
 }
+#[cfg(feature = "native-rails")]
 fn auto_claimer(
     client: Client,
     wallet: &Arc<Wallet>,
@@ -3624,12 +3627,14 @@ fn auto_claimer(
     claimer.evm_wallet = Some(wallet.clone());
     claimer
 }
+#[cfg(feature = "native-rails")]
 fn deployment(wallet: &Wallet) -> crate::tracker::EvmDeployment {
     crate::tracker::EvmDeployment {
         htlc: wallet.htlc.address,
         coordinator: wallet.coordinator,
     }
 }
+#[cfg(feature = "native-rails")]
 async fn auto_claim(claimer: &crate::tracker::AutoClaimer) -> crate::tracker::ExecutionResult {
     use crate::tracker::ActionExecutor;
     claimer
@@ -3639,6 +3644,7 @@ async fn auto_claim(claimer: &crate::tracker::AutoClaimer) -> crate::tracker::Ex
 }
 /// The daemon's answer for the fixture's direct 100000 payout: its target less 1%,
 /// with no calls.
+#[cfg(feature = "native-rails")]
 async fn mount_calldata(server: &wiremock::MockServer, status: u16) {
     use alloy::primitives::keccak256;
     use alloy::sol_types::SolValue;
@@ -3648,6 +3654,7 @@ async fn mount_calldata(server: &wiremock::MockServer, status: u16) {
         .mount(server)
         .await;
 }
+#[cfg(feature = "native-rails")]
 async fn mount_relay(server: &wiremock::MockServer, status: u16, expected: u64) {
     wiremock::Mock::given(wiremock::matchers::method("POST"))
         .and(wiremock::matchers::path("/swap/test/claim-gasless"))
@@ -3659,6 +3666,7 @@ async fn mount_relay(server: &wiremock::MockServer, status: u16, expected: u64) 
         .await;
 }
 
+#[cfg(feature = "native-rails")]
 #[tokio::test]
 async fn auto_claim_refuses_unlisted_contracts_other_destinations_and_bridged_payouts() {
     use crate::tracker::ExecutionResult::NotSent;
@@ -3728,6 +3736,7 @@ async fn auto_claim_refuses_unlisted_contracts_other_destinations_and_bridged_pa
     assert!(server.received_requests().await.unwrap().is_empty());
 }
 
+#[cfg(feature = "native-rails")]
 #[tokio::test]
 async fn auto_claim_retries_a_relay_claim_only_while_nothing_was_sent() {
     use crate::tracker::ActionExecutor;
@@ -3777,6 +3786,7 @@ async fn auto_claim_retries_a_relay_claim_only_while_nothing_was_sent() {
     );
 }
 
+#[cfg(feature = "native-rails")]
 #[tokio::test]
 async fn auto_claim_falls_back_to_the_relay_when_the_sponsored_claim_sent_nothing() {
     let (_, wallet, store) = setup(true);
@@ -3821,6 +3831,7 @@ async fn auto_claim_falls_back_to_the_relay_when_the_sponsored_claim_sent_nothin
 
 /// Auto-claims a `fixture` swap with target 100000 through a relay whose calldata
 /// answers with `minimum` and `calls_hash`, expecting `relayed` claim requests.
+#[cfg(feature = "native-rails")]
 async fn relay_auto_claim(
     fixture: &str,
     dex: bool,
@@ -3853,6 +3864,7 @@ async fn relay_auto_claim(
     (auto_claim(&claimer).await, wallet)
 }
 
+#[cfg(feature = "native-rails")]
 #[tokio::test]
 async fn auto_claim_relays_a_payout_at_the_daemon_slippage_floor_below_its_target() {
     use crate::tracker::ExecutionResult;
@@ -3882,6 +3894,7 @@ async fn auto_claim_relays_a_payout_at_the_daemon_slippage_floor_below_its_targe
     }
 }
 
+#[cfg(feature = "native-rails")]
 #[tokio::test]
 async fn auto_claim_refuses_server_calls_on_a_direct_relay_payout() {
     let (result, wallet) =
@@ -7026,6 +7039,7 @@ async fn a_record_without_the_locks_amount_falls_through_to_the_normal_flow() {
 
 /// A chain RPC serving `log` as the only HTLC event, mined at block 99 of
 /// 100 with the tip at `timestamp`.
+#[cfg(feature = "native-rails")]
 async fn chain_with_log(log: EvmLog, timestamp: u64) -> wiremock::MockServer {
     use wiremock::Mock;
     use wiremock::MockServer;
@@ -7048,6 +7062,7 @@ async fn chain_with_log(log: EvmLog, timestamp: u64) -> wiremock::MockServer {
     server
 }
 
+#[cfg(feature = "native-rails")]
 #[tokio::test]
 async fn tracking_observes_the_client_lock_under_the_sender_of_its_generation() {
     use crate::actions::ActionInput;

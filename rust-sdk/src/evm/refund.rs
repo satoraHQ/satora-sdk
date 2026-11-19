@@ -267,7 +267,7 @@ impl Client {
     /// be what this wallet holds: its own hash lock, one of its own addresses, and
     /// the coordinator its own funding went through. Only that funding can make
     /// one of its addresses a depositor under its hash.
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
     pub(crate) async fn owner_funded_evm_htlc(
         &self,
         id: &str,
