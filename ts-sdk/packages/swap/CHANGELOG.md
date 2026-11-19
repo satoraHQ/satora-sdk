@@ -1,5 +1,34 @@
 # @satora/swap
 
+## 1.11.0
+
+### Minor Changes
+
+- 98fd942: `fundSwapGasless` funds Arbitrum swaps itself, as one paymaster-sponsored UserOp from the depositor's own Kernel account (EIP-7702): `approve(Permit2)` + `executeAndCreateWithPermit2`, the mechanism the CCTP-inbound settlement and refund continuations already use. The server's legacy relay is no longer involved there, and a sponsorship or configuration failure surfaces as an error instead of falling back to it. The batch only approves Permit2 when the account's allowance requires it and resets a lingering smaller allowance to zero first, so tokens without EIP-2612 — including USDT-style tokens that revert a non-zero → non-zero approve — fund without a prior approval transaction. A funding this client already recorded is answered with its transaction instead of being submitted again. Chains without a sponsorship policy (Ethereum, Polygon) keep the relay, and legacy swaps whose depositor is the per-swap key are funded from that key's account.
+
+  New `gaslessFundingPlan(chainId)` names the funding path (`sponsored` on Arbitrum, `relay` elsewhere) and throws when the sponsored path applies but the client was built without `withAa(...)` — callable before a deposit address is shown, so no deposit is requested that could not be moved afterwards.
+
+  Integrators upgrading existing Arbitrum gasless flows must configure `withAa(...)` and call `gaslessFundingPlan(chainId)` before displaying a deposit address. The usdc2bitcoin, usdt2bitcoin and tbtc2bitcoin apps now withhold deposit instructions while this check is pending or fails; they no longer discover missing AA configuration only after a deposit arrives.
+
+  Arbitrum sponsored funding requires a nonempty `paymasterPolicyId` as well as AA
+  configuration. Tests using Alto without a paymaster must explicitly set
+  `allowSelfPaidFunding: true` and provide native ETH; the funding plan reports
+  `self-paid`, which deposit UIs reject.
+
+### Patch Changes
+
+- 18e7df2: Target backend 0.3.28 in the x-satora-server-version header.
+- 55e9016: Track USDC payouts on Polygon and Ethereum that the Satora server delivers itself. For these the server now calls `receiveMessage` on the destination chain instead of Circle's Forwarding Service, so the quote's `bridge_fee` carries only Circle's fast-transfer fee and no forwarding fee. `trackCctpMessage` completes such a transfer on its destination mint (Circle's API reports no forward for it) and returns that transaction as `forwardTxHash`. Before, it kept reporting `FORWARDING` until it timed out.
+
+  The CCTP `bridge_rate` of a quote has a new `self_relayed` flag, and a claimed swap names the destination transaction in `bridge_target_txid` once the server has minted it.
+
+  Claims that fetch their calldata from `/dex-calldata` now name the swap (`swap_id`). The server only delivers a bridged payout itself for a swap it knows bridges to that chain, and only above the minimum payout size it is configured with; anything else keeps Circle's Forwarding Service and its fee.
+
+  A quote composed for a BTC amount prices the forwarding fee on what reaches the bridge once the BTC-side fees are off, the amount the swap is created with. A payout that only clears the server's minimum before those fees now shows Circle's forwarding fee.
+- fca22ab: The default referral code set with `withReferralCode` / `withOrgCode` now also applies to the direct `create*Swap` methods (e.g. `createArkadeToLightningSwap`), so quote and create are priced with the same fees. A per-call `referralCode` still wins.
+- 449c493: Arkade/Bitcoin → Lightning: allow `sourceAmountSats` together with `lightningInvoice` (and `sourceAmount` with a BOLT11 destination in `createSwap` / `getLightningSendQuote`) for a fixed lock amount. The created swap's `source_amount` is checked to equal the requested lock before it is stored.
+- 6a0d0c2: Normalize Permit2 funding signatures with recovery byte 0/1 to 27/28 when account code confirms an EOA, while preserving compact and contract-wallet signatures. Add optional `EvmSigner.getCode` support for safe account classification; preserve original signatures when account code is unavailable. Direct calldata encoder consumers can supply `depositorCode` to enable normalization.
+
 ## 1.10.2
 
 ### Patch Changes

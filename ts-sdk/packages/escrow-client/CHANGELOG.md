@@ -1,5 +1,18 @@
 # @satora/escrow-client
 
+## 15.0.1
+
+### Patch Changes
+
+- c2c5f37: `withdrawToLightning` accepts an optional `sourceAmountSats` for a BOLT11 invoice: a fixed lock that locks exactly that amount from the payout (quote with `quoteLightningWithdrawal(sourceSats)`, invoice `recipientSats`, then withdraw with `sourceAmountSats: sourceSats`). `toLightningDestination` gains a matching third argument. Passing `sourceAmountSats` with an LNURL / Lightning address throws.
+- Updated dependencies [18e7df2]
+- Updated dependencies [55e9016]
+- Updated dependencies [fca22ab]
+- Updated dependencies [449c493]
+- Updated dependencies [6a0d0c2]
+- Updated dependencies [98fd942]
+  - @satora/swap@1.11.0
+
 ## 15.0.0
 
 ### Major Changes
