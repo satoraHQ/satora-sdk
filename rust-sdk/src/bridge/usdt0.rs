@@ -426,7 +426,7 @@ impl BridgeApi {
                         ) => last_error = Some(error.to_string()),
                         Err(error) => return Err(error),
                     }
-                    tokio::time::sleep(options.interval).await;
+                    crate::runtime::sleep(options.interval).await;
                 }
             })
             .await;

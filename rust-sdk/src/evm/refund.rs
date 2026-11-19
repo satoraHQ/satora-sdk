@@ -267,6 +267,7 @@ impl Client {
     /// be what this wallet holds: its own hash lock, one of its own addresses, and
     /// the coordinator its own funding went through. Only that funding can make
     /// one of its addresses a depositor under its hash.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     pub(crate) async fn owner_funded_evm_htlc(
         &self,
         id: &str,
@@ -433,7 +434,7 @@ impl Client {
                 tokio::pin!(recorded);
                 let early = tokio::select! {
                     result = &mut recorded => Some(result),
-                    () = tokio::time::sleep(SERVER_FUNDING_HEDGE) => None,
+                    () = crate::runtime::sleep(SERVER_FUNDING_HEDGE) => None,
                 };
                 let lookup = || async {
                     self.server_funding_hash(id, "client.refundSwap.serverLookupFailed")
@@ -619,7 +620,7 @@ impl Client {
         options: RefundOptions,
         depositor: bool,
     ) -> Result<EvmReceipt> {
-        tokio::time::timeout(options.timeout, async {
+        crate::runtime::timeout(options.timeout, async {
             let _execution = self.evm_execution.lock().await;
             let stored = self
                 .get_stored_swap(id)?
@@ -767,7 +768,7 @@ impl Client {
         options: RefundOptions,
         depositor: bool,
     ) -> Result<EvmReceipt> {
-        tokio::time::timeout(options.timeout, async {
+        crate::runtime::timeout(options.timeout, async {
             // A recorded submission is verified from the chain alone, so a
             // retry does not depend on the API being up.
             let _execution = self.evm_execution.lock().await;

@@ -46,7 +46,7 @@ pub enum Error {
     /// status meanwhile, and give it up only once a check by hand shows where the funds
     /// went.
     ///
-    /// From [`Client::fund_arkade_swap`](crate::Client::fund_arkade_swap), a spender of
+    /// From `Client::fund_arkade_swap`, a spender of
     /// a journaled input that arkd names resolves on a later call, once arkd shows its
     /// VHTLC output or returns it paying nothing to the VHTLC. A spender arkd does not
     /// name, a journaled input arkd does not know, and a journal for another VHTLC
@@ -74,6 +74,7 @@ pub enum Error {
     InsufficientGas(String),
 }
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 impl From<rusqlite::Error> for Error {
     fn from(err: rusqlite::Error) -> Self {
         Self::Storage(err.to_string())

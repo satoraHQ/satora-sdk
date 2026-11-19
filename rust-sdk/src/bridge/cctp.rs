@@ -504,7 +504,7 @@ impl BridgeApi {
                         Ok(None) | Err(crate::Error::Transport(_)) => {}
                         Err(error) => return Err(error),
                     }
-                    tokio::time::sleep(options.interval).await;
+                    crate::runtime::sleep(options.interval).await;
                 }
             })
             .await
@@ -536,7 +536,7 @@ impl BridgeApi {
                         Ok(None) | Err(crate::Error::Transport(_)) => {}
                         Err(error) => return Err(error),
                     }
-                    tokio::time::sleep(options.interval).await;
+                    crate::runtime::sleep(options.interval).await;
                 }
             })
             .await
@@ -576,7 +576,7 @@ impl BridgeApi {
                         Ok(None) | Err(crate::Error::Transport(_)) => {}
                         Err(error) => return Err(error),
                     }
-                    tokio::time::sleep(options.interval).await;
+                    crate::runtime::sleep(options.interval).await;
                 }
             })
             .await

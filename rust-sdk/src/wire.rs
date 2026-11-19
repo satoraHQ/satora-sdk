@@ -12,7 +12,6 @@
 //! evolve them (rename fields, change types, drop them entirely) without it
 //! counting as a breaking change in the public API.
 
-use crate::strict_vhtlc::ARKADE_HTLC_SCRIPT_VERSION_STRICT;
 use crate::types::Chain;
 use crate::types::CreateArkadeToLightningSwapRequest;
 use crate::types::CreateEvmToArkadeSwapRequest;
@@ -22,6 +21,9 @@ use crate::types::QuoteAmount;
 use crate::types::QuoteRequest;
 use crate::types::TokenId;
 use serde::Serialize;
+
+/// Version of the Arkade VHTLC script requested on the wire.
+pub const ARKADE_HTLC_SCRIPT_VERSION_STRICT: i64 = 1;
 
 /// Flat wire shape for `GET /quote`. Mirrors the OpenAPI query parameters
 /// exactly: `source_amount` / `target_amount` are siblings (the

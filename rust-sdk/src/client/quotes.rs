@@ -3,6 +3,7 @@ use super::check_status;
 use crate::Error;
 use crate::Result;
 use crate::logging::sdk_log;
+use crate::runtime::Monotonic;
 use crate::types::*;
 use num_bigint::BigUint;
 use num_traits::ToPrimitive;
@@ -14,7 +15,6 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::future::Future;
 use std::time::Duration;
-use std::time::Instant;
 
 /// Slippage [`Client::get_quote`] composes with, the TypeScript SDK's default.
 pub const DEFAULT_COMPOSE_SLIPPAGE_BPS: u16 = 100;
@@ -84,7 +84,7 @@ const USDT0_ADDRESSES: [&str; 12] = [
 ];
 
 #[derive(Default)]
-pub(super) struct QuoteCache(HashMap<String, (Instant, Value)>);
+pub(super) struct QuoteCache(HashMap<String, (Monotonic, Value)>);
 
 fn invalid(message: &str) -> Error {
     Error::InvalidSwap(message.into())
@@ -480,7 +480,7 @@ impl Client {
         // Holding the async mutex shares a single fetch among concurrent callers.
         // Cancellation or errors drop the guard without caching a failed request.
         let mut cache = self.quote_cache.lock().await;
-        cache.0.retain(|_, (expiry, _)| *expiry > Instant::now());
+        cache.0.retain(|_, (expiry, _)| *expiry > Monotonic::now());
         if let Some((_, value)) = cache.0.get(&key) {
             return serde_json::from_value(value.clone()).map_err(|e| Error::Decode(e.to_string()));
         }
@@ -491,7 +491,7 @@ impl Client {
         cache.0.insert(
             key,
             (
-                Instant::now() + Duration::from_secs(60),
+                Monotonic::now() + Duration::from_secs(60),
                 serde_json::to_value(&value).map_err(|e| Error::Decode(e.to_string()))?,
             ),
         );
@@ -829,7 +829,7 @@ mod tests {
         client.quote_cache.lock().await.0.insert(
             "test".into(),
             (
-                Instant::now() - Duration::from_secs(1),
+                Monotonic::now() - Duration::from_secs(1),
                 serde_json::json!(1),
             ),
         );

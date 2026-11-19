@@ -43,21 +43,48 @@ pub use funding::FundingOptions;
 pub use funding::Permit2FundingData;
 pub use wallet::RpcWallet;
 pub(crate) use wallet::evm_receipt;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod wasm_rpc;
 
+/// An asynchronous wallet operation. JS-backed futures can be local on WASM.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub type WalletFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub type WalletFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + 'a>>;
+
+#[doc(hidden)]
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub trait WalletPlatform: Send + Sync {}
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+impl<T: ?Sized + Send + Sync> WalletPlatform for T {}
+
+#[doc(hidden)]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub trait WalletPlatform {}
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl<T: ?Sized> WalletPlatform for T {}
 
 /// reqwest and alloy transports default to no timeout, so a peer that accepts a
 /// request and never answers would hold an execution lock indefinitely.
-pub(crate) const RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 pub(crate) const RESUME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 pub(crate) fn rpc_client(url: url::Url) -> alloy::rpc::client::RpcClient {
-    let http = reqwest::Client::builder()
-        .timeout(RPC_TIMEOUT)
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new());
-    alloy::rpc::client::RpcClient::new(alloy::transports::http::Http::with_client(http, url), false)
+    use alloy::transports::http::Http;
+
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    let transport = Http::with_client(
+        reqwest::Client::builder()
+            .timeout(RPC_TIMEOUT)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new()),
+        url,
+    );
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    let transport = wasm_rpc::TimedHttp(Http::new(url));
+    alloy::rpc::client::RpcClient::new(transport, false)
 }
+
 pub(crate) fn http_provider(url: url::Url) -> alloy::providers::RootProvider {
     alloy::providers::RootProvider::new(rpc_client(url))
 }
@@ -114,7 +141,7 @@ impl std::fmt::Debug for EvmTypedData {
 /// Adapt an external wallet and its chain reader. Implementations must submit on
 /// `chain_id`, return complete receipt logs, and surface failed/replaced transactions.
 /// Every signature is recovered locally before submission.
-pub trait EvmWallet: Send + Sync {
+pub trait EvmWallet: WalletPlatform {
     fn address(&self) -> Address;
     fn chain_id(&self) -> u64;
     fn sign_typed_data<'a>(&'a self, data: &'a EvmTypedData) -> WalletFuture<'a, Signature>;
@@ -154,6 +181,7 @@ pub trait EvmWallet: Send + Sync {
 /// decimals: the daemon's configured `wbtc` and `EvmChain::wbtc_decimals`. EVM to
 /// Arkade responses name no lock token, and an amount locked in any other token
 /// says nothing about the BTC the swap is owed.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) fn lock_asset(chain_id: u64) -> Option<(Address, u32)> {
     use alloy::primitives::address;
     match chain_id {

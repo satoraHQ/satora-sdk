@@ -14,8 +14,6 @@ use bitcoin::taproot::TaprootBuilder;
 use bitcoin::taproot::TaprootSpendInfo;
 use std::str::FromStr;
 
-pub const ARKADE_HTLC_SCRIPT_VERSION_STRICT: i64 = 1;
-
 #[derive(Debug, Clone)]
 struct TaprootScriptItem {
     script: ScriptBuf,

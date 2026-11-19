@@ -245,7 +245,7 @@ impl Client {
         swap_id: &str,
         opts: GaslessOpts,
     ) -> Result<FundSwapReceipt> {
-        tokio::time::timeout(
+        crate::runtime::timeout(
             GASLESS_FUNDING_TIMEOUT,
             self.fund_swap_gasless_inner(swap_id, opts),
         )
@@ -635,10 +635,10 @@ impl Client {
                     );
                     return Ok(());
                 }
-                tokio::time::sleep(POLL_INTERVAL).await;
+                crate::runtime::sleep(POLL_INTERVAL).await;
             }
         };
-        tokio::time::timeout(timeout, poll).await.map_err(|_| {
+        crate::runtime::timeout(timeout, poll).await.map_err(|_| {
             Error::Timeout(format!(
                 "swap {swap_id} did not receive enough deposit funding within {timeout:?}"
             ))

@@ -1,10 +1,10 @@
 use crate::Error;
 use crate::Result;
+use crate::runtime::SystemTime;
+use crate::runtime::UNIX_EPOCH;
 use crate::types::GetSwapResponse;
 use serde::Deserialize;
 use serde::Serialize;
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
 
 /// Derivation required by an EVM swap recovered from either SDK.
 /// An external address requires an external signer; it must never fall back to a local key.
@@ -27,8 +27,11 @@ pub struct SwapMetadata {
     pub tracking: Option<serde_json::Value>,
     /// Non-secret bridge intents, persisted before submission.
     pub bridge_operations: Option<std::collections::BTreeMap<String, BridgeOperation>>,
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     pub arkade_delegate: Option<crate::arkade::ArkadeDelegateState>,
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     pub arkade_pending: Option<crate::arkade::ArkadePending>,
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     pub arkade_funding: Option<crate::arkade::ArkadeFunding>,
     pub btc_spend_txid: Option<String>,
     pub btc_spend_fee: Option<u64>,
@@ -146,6 +149,10 @@ impl SwapMetadata {
     /// The relay can still use a signed relay funding until its deadline, whatever
     /// it answered, so only a funded or expired relay journal leaves the swap free
     /// for another funding path.
+    #[cfg(any(
+        feature = "gasless",
+        not(all(target_arch = "wasm32", target_os = "unknown"))
+    ))]
     pub(crate) fn relay_signature_outstanding(&self) -> bool {
         self.evm_fund_relay.as_ref().is_some_and(|journal| {
             !matches!(
@@ -164,12 +171,11 @@ impl SwapMetadata {
                 self.extra.remove(stringify!($field));
             )*};
         }
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        merge!(arkade_delegate, arkade_pending, arkade_funding);
         merge!(
             tracking,
             bridge_operations,
-            arkade_delegate,
-            arkade_pending,
-            arkade_funding,
             btc_spend_txid,
             btc_spend_fee,
             target_address,

@@ -1,13 +1,18 @@
 use crate::Error;
 use crate::Result;
 use crate::Signer;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use rusqlite::Connection;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use rusqlite::OptionalExtension;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use rusqlite::TransactionBehavior;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::time::Duration;
 
 /// Persistence for the wallet seed, like the TypeScript `WalletStorage`.
@@ -97,10 +102,12 @@ impl WalletStorage for InMemoryWalletStorage {
 /// Uses the TypeScript `SqliteWalletStorage` table, so a wallet file written
 /// by the TypeScript SDK opens directly. Its `key_index` column is left alone.
 /// Keep this file separate from the swap database.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub struct SqliteWalletStorage {
     connection: Mutex<Connection>,
 }
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 impl SqliteWalletStorage {
     /// Open or create a wallet file in an existing directory. On Unix a new
     /// file is created readable by its owner only. Names SQLite treats
@@ -170,6 +177,7 @@ fn create_owner_only(path: &Path) -> Result<()> {
     }
 }
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 impl std::fmt::Debug for SqliteWalletStorage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SqliteWalletStorage")
@@ -177,6 +185,7 @@ impl std::fmt::Debug for SqliteWalletStorage {
     }
 }
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 impl WalletStorage for SqliteWalletStorage {
     fn get_mnemonic(&self) -> Result<Option<String>> {
         Self::read(&*self.connection()?)
@@ -215,6 +224,7 @@ impl WalletStorage for SqliteWalletStorage {
     }
 }
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 #[cfg(test)]
 mod tests {
     use super::*;

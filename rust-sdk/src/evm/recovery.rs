@@ -220,7 +220,7 @@ impl Client {
         bundler: &BundlerClient,
         wallet: &dyn EvmWallet,
     ) -> Result<Option<B256>> {
-        tokio::time::timeout(
+        crate::runtime::timeout(
             RESUME_TIMEOUT,
             self.resume_gasless_funding_inner(id, bundler, wallet),
         )
@@ -278,7 +278,7 @@ impl Client {
         wallet: &dyn EvmWallet,
         options: &RefundOptions,
     ) -> Result<RefundedEvmBalance> {
-        tokio::time::timeout(options.timeout, async {
+        crate::runtime::timeout(options.timeout, async {
             let stored = self
                 .get_stored_swap(id)?
                 .ok_or_else(|| invalid("swap record missing"))?;
@@ -336,7 +336,7 @@ impl Client {
         refund: &RefundOptions,
         destination: &str,
     ) -> Result<String> {
-        tokio::time::timeout(
+        crate::runtime::timeout(
             refund.timeout,
             self.prepare_refunded_evm_swap_continuation_inner(id, wallet, refund, destination),
         )
@@ -473,7 +473,7 @@ impl Client {
         wallet: &dyn EvmWallet,
         options: DepositRecovery,
     ) -> Result<EvmReceipt> {
-        tokio::time::timeout(
+        crate::runtime::timeout(
             options.timeout,
             self.recover_deposit(
                 id,

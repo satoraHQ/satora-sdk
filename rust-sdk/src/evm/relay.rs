@@ -28,6 +28,7 @@ use crate::aa::kernel::wrap_erc1271_signature;
 use crate::aa::permit2::PERMIT2_ADDRESS;
 use crate::aa::signing::sign_hash;
 use crate::logging::sdk_log;
+use crate::runtime::Instant;
 use crate::storage::RelayFundingJournal;
 use crate::storage::RelayFundingOutcome;
 use crate::types::GetSwapResponse;
@@ -38,7 +39,6 @@ use rand::RngCore;
 use reqwest::Method;
 use serde_json::json;
 use std::time::Duration;
-use tokio::time::Instant;
 use url::Url;
 
 alloy::sol! {
@@ -51,7 +51,7 @@ alloy::sol! {
 /// so a lagging node cannot report a nonce as dead while a block could still spend it.
 pub(super) const EXPIRY_MARGIN: u64 = 120;
 
-/// What `tokio::time::timeout` waits for a duration too large to add to an instant.
+/// Fallback relay request deadline when the caller's budget cannot fit in an instant.
 const FAR_FUTURE: Duration = Duration::from_secs(86_400 * 365 * 30);
 
 #[derive(Clone, Debug)]
@@ -493,7 +493,7 @@ impl Client {
         id: &str,
         options: RelayFundingOptions,
     ) -> Result<RelayFundingState> {
-        tokio::time::timeout(options.budget(), async {
+        crate::runtime::timeout(options.budget(), async {
             let _execution = self.evm_execution.lock().await;
             self.reconcile_relay(id, None, &options).await
         })
@@ -511,7 +511,7 @@ impl Client {
         let deadline = Instant::now()
             .checked_add(budget)
             .unwrap_or_else(|| Instant::now() + FAR_FUTURE);
-        let funded = tokio::time::timeout(budget, async {
+        let funded = crate::runtime::timeout(budget, async {
             let _execution = self.evm_execution.lock().await;
             self.fund_relay(id, reader, options, deadline).await
         })
@@ -813,7 +813,9 @@ impl Client {
         // bounds this request instead of the client-wide timeout.
         let sent = self
             .api_request(Method::POST, url.clone())
-            .timeout(deadline.saturating_duration_since(Instant::now()))
+            .timeout(crate::runtime::http_timeout(
+                deadline.saturating_duration_since(Instant::now()),
+            ))
             .json(&request)
             .send()
             .await;
@@ -821,8 +823,11 @@ impl Client {
             Err(error) => {
                 // A connect error after a redirect comes from a later hop, after the
                 // first one read the body.
-                let refused = (error.is_connect() || error.is_builder())
-                    && error.url().is_none_or(|sent_to| *sent_to == url);
+                let unsent = error.is_builder();
+                #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+                let unsent = unsent || error.is_connect();
+                // Fetch does not distinguish connect errors from failures after sending.
+                let refused = unsent && error.url().is_none_or(|sent_to| *sent_to == url);
                 return self.relay_failed(id, journal, refused, error.into());
             }
             Ok(response) => {

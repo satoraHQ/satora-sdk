@@ -95,6 +95,7 @@ fn check_deposit_address(response: &GetSwapResponse, sent: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 fn arkade_address(address: &str) -> Result<()> {
     let decoded = ark_rs::core::ArkAddress::decode(address)
         .map_err(|e| Error::InvalidSwap(format!("invalid Arkade address: {e}")))?;
@@ -109,8 +110,16 @@ fn arkade_address(address: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn arkade_address(_: &str) -> Result<()> {
+    Err(Error::InvalidSwap(
+        "Arkade creation is unavailable in the WASM SDK".into(),
+    ))
+}
+
 impl Client {
-    /// Create any API swap direction with explicit rails and EVM chain IDs.
+    /// Create a swap with explicit rails and EVM chain IDs. WASM supports the
+    /// Lightning-to-EVM and EVM-to-Lightning directions.
     /// Local metadata is persisted with the response before returning.
     ///
     /// A Lightning swap is checked before anything is stored, and refused with
@@ -124,10 +133,10 @@ impl Client {
     /// agreement with the hash lock is checked.
     ///
     /// For Bitcoin→Arkade and Bitcoin→EVM the HTLC is rebuilt from the client's
-    /// keys and the response, as [`Self::bitcoin_htlc`] does. [`Error::InvalidSwap`]
-    /// refuses a hash lock that is not HASH160 of this client's preimage, an unknown
-    /// network, an unsupported script version or zero refund locktime, and a
-    /// `btc_htlc_address` other than the rebuilt one; [`Error::Decode`] refuses a
+    /// keys and the response, as `Self::bitcoin_htlc` on native targets does.
+    /// [`Error::InvalidSwap`] refuses a hash lock that is not HASH160 of this client's
+    /// preimage, an unknown network, an unsupported script version or zero refund locktime, and
+    /// a `btc_htlc_address` other than the rebuilt one; [`Error::Decode`] refuses a
     /// server key, hash lock or refund locktime that does not parse. Such a swap
     /// stays in storage for recovery; never fund its address.
     ///
@@ -142,6 +151,12 @@ impl Client {
         options: SwapOptions,
     ) -> Result<Swap> {
         use SwapCreation::*;
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        if !matches!(&request, LightningToEvm { .. } | EvmToLightning { .. }) {
+            return Err(Error::InvalidSwap(
+                "the WASM SDK supports Lightning/EVM swaps".into(),
+            ));
+        }
         let mut body = json!({});
         let (route, evm_source, evm_target, invoice_owned) = match &request {
             BitcoinToArkade {
@@ -427,6 +442,7 @@ impl Client {
                 if let Some(sent) = &deposit_address {
                     check_deposit_address(&response, sent)?;
                 }
+                #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
                 if matches!(
                     response,
                     GetSwapResponse::BtcToArkade(_) | GetSwapResponse::BitcoinToEvm(_)

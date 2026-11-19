@@ -220,7 +220,7 @@ impl Client {
         calls: Vec<crate::types::DexCall>,
         max_native_fee: U256,
     ) -> Result<EvmReceipt> {
-        tokio::time::timeout(options.timeout, async {
+        crate::runtime::timeout(options.timeout, async {
             let _execution = self.evm_execution.lock().await;
             let (material, tx) = self
                 .prepare_evm_claim(id, wallet, &options, calls, max_native_fee)
@@ -370,7 +370,7 @@ impl Client {
         wallet: &dyn EvmWallet,
         mut options: EvmClaimOptions,
     ) -> Result<EvmSubmission> {
-        tokio::time::timeout(options.timeout,async {
+        crate::runtime::timeout(options.timeout,async {
             let _execution = self.evm_execution.lock().await;
             let material = self.claim_material(id,wallet,&options).await?;
             // The daemon settles a native lock with a fixed shape: no calls, the coin
@@ -404,7 +404,7 @@ impl Client {
             self.update_swap_metadata(id,SwapMetadata {evm_claim_started:Some(true),..Default::default()})?;
             // The daemon can hold this until its relay goes out, so the operation deadline
             // bounds this request instead of the client-wide timeout.
-            let response = self.api_request(Method::POST,self.swap_action_url(id,"claim-gasless")?).timeout(options.timeout).json(&json!({
+            let response = self.api_request(Method::POST,self.swap_action_url(id,"claim-gasless")?).timeout(crate::runtime::http_timeout(options.timeout)).json(&json!({
                 "secret":material.preimage,"destination":options.destination,"v":u8::from(signature.v())+27,"r":format!("0x{:064x}",signature.r()),"s":format!("0x{:064x}",signature.s()),
                 "dex_calldata":dex_calldata,"bridge_recipient":stored.metadata.bridge_recipient,"bridge_recipient_wallet":stored.metadata.bridge_recipient_wallet
             })).send().await?;
@@ -446,7 +446,7 @@ impl Client {
         config: &crate::aa::UserOpConfig,
         max_native_fee: U256,
     ) -> Result<crate::aa::orchestrate::FundSwapReceipt> {
-        tokio::time::timeout(options.timeout, async {
+        crate::runtime::timeout(options.timeout, async {
             let _execution = self.evm_execution.lock().await;
             let stored = self
                 .get_stored_swap(id)?
@@ -551,7 +551,7 @@ impl Client {
         wallet: &dyn EvmWallet,
         config: &crate::aa::UserOpConfig,
     ) -> Result<Option<B256>> {
-        tokio::time::timeout(
+        crate::runtime::timeout(
             RESUME_TIMEOUT,
             self.resume_evm_claim_userop_inner(id, wallet, config),
         )

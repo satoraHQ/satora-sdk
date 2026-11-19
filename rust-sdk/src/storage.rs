@@ -6,8 +6,8 @@
 //!
 //! [`SwapStorage`] is what callers implement against their persistence
 //! layer (an embedded DB, a server-side store, …). [`InMemorySwapStorage`]
-//! is shipped for tests and quick starts. [`SqliteSwapStorage`] provides a
-//! durable local store, configured with [`crate::ClientBuilder::storage_path`].
+//! is shipped for tests and quick starts. On native targets, `SqliteSwapStorage` provides a
+//! durable local store, configured with `ClientBuilder::storage_path`.
 
 use crate::error::Error;
 use crate::error::Result;
@@ -18,6 +18,7 @@ use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 
 mod record;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 mod sqlite;
 mod wallet;
 pub use record::BridgeOperation;
@@ -29,8 +30,10 @@ pub use record::RelayFundingJournal;
 pub use record::RelayFundingOutcome;
 pub use record::StoredSwap;
 pub use record::SwapMetadata;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub use sqlite::SqliteSwapStorage;
 pub use wallet::InMemoryWalletStorage;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub use wallet::SqliteWalletStorage;
 pub use wallet::WalletStorage;
 
@@ -83,7 +86,7 @@ pub trait SwapStorage: Send + Sync {
     }
 
     /// Records this build cannot decode, as (swap ID, error). [`Self::list_swaps`]
-    /// skips them, and [`crate::tracker::SwapTracker::restore`] reports them as
+    /// skips them, and `SwapTracker::restore` reports them as
     /// failures.
     fn unreadable_swaps(&self) -> Result<Vec<(String, String)>> {
         Ok(Vec::new())

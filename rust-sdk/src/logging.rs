@@ -232,6 +232,10 @@ impl SdkLogger {
         child
     }
 
+    #[cfg(any(
+        feature = "gasless",
+        not(all(target_arch = "wasm32", target_os = "unknown"))
+    ))]
     pub(crate) fn swap_id(mut self, id: &str) -> Self {
         if self.level != LogLevel::Silent {
             Arc::make_mut(&mut self.context).swap_id = Some(id.to_owned());
@@ -241,6 +245,7 @@ impl SdkLogger {
 
     /// Adds a context field to every record; an event's own field of the same
     /// name wins.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     pub(crate) fn with(mut self, key: &str, value: impl Into<Value>) -> Self {
         if self.level != LogLevel::Silent {
             Arc::make_mut(&mut self.context)

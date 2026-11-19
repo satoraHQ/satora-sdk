@@ -40,6 +40,7 @@ dependencies = [
  "alloy-core",
  "alloy-eips",
  "alloy-genesis",
+ "alloy-json-rpc",
  "alloy-network",
  "alloy-provider",
  "alloy-rpc-client",
@@ -605,6 +606,7 @@ dependencies = [
  "tower",
  "tracing",
  "url",
+ "wasm-bindgen-futures",
  "wasmtimer",
 ]
 
@@ -4838,6 +4840,9 @@ dependencies = [
  "bip39",
  "bitcoin",
  "esplora-client",
+ "getrandom 0.2.17",
+ "getrandom 0.3.4",
+ "gloo-timers",
  "hex",
  "lightning-invoice",
  "num-bigint",
@@ -4852,8 +4857,10 @@ dependencies = [
  "thiserror 1.0.69",
  "tiny-keccak",
  "tokio",
+ "tower-service",
  "tracing",
  "url",
+ "web-time",
 ]
 
 [[package]]

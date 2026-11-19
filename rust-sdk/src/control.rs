@@ -50,7 +50,7 @@ impl PollOptions {
         tokio::select! {
             biased;
             _ = self.cancellation.cancelled() => Err(Error::Cancelled),
-            result = tokio::time::timeout(self.timeout, future) => {
+            result = crate::runtime::timeout(self.timeout, future) => {
                 result.map_err(|_| Error::Timeout("operation deadline exceeded".into()))?
             }
         }

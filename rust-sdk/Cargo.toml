@@ -30,34 +30,36 @@ crate-type = ["rlib"]
 # to a ZeroDev Kernel V3.3 implementation. Off by default: pulls in alloy,
 # so the base SDK (quote, create_swap) stays lean and the FFI / dotnet
 # layer can opt out.
-gasless = ["dep:alloy", "dep:alloy-provider", "dep:alloy-dyn-abi"]
+gasless = [
+  "dep:alloy",
+  "dep:alloy-provider",
+  "dep:alloy-dyn-abi",
+  "dep:getrandom_03",
+  "dep:tower-service",
+]
 
 electrum = ["dep:electrum-client"]
-websocket = ["dep:tokio-tungstenite", "dep:futures-util", "dep:uuid", "tokio/net"]
+websocket = ["dep:tokio-tungstenite", "dep:futures-util", "dep:uuid"]
 
 [dependencies]
 # Crypto: HD wallet derivation, secp256k1, hashes.
 # `bitcoin` re-exports `secp256k1`; no need to pull it in directly.
 bip39 = "2"
 bitcoin = { version = "0.32", default-features = false, features = ["std", "serde"] }
-electrum-client = { version = "0.24.1", optional = true }
-futures-util = { version = "0.3", optional = true, features = ["sink"] }
 hex = "0.4"
 # The version the swap server parses invoices with, so both accept the same ones.
 lightning-invoice = "0.33.2"
 num-bigint = "0.4"
 num-traits = "0.2"
-reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls", "query"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "query"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 thiserror = "1"
 tiny-keccak = { version = "2", features = ["keccak"] }
-tokio-tungstenite = { version = "0.28", optional = true, features = ["native-tls"] }
 # `log` forwards SDK events to a `log` crate logger when no tracing subscriber is set.
 tracing = { version = "0.1", features = ["log"] }
 url = "2"
-uuid = { version = "1", optional = true }
 
 # Account-abstraction (`gasless` feature only). `sol-types` for the `sol!`
 # ABI blocks, `rpc-types` for the ERC-4337 `PackedUserOperation` wire type,
@@ -72,13 +74,16 @@ alloy-provider = { version = "1", optional = true, features = ["erc4337-api"] }
 # `rand` is used by both the gasless flow (Permit2 nonces) and the
 # Arkade settle flow (ark-rs `Client::settle` requires a CSPRNG).
 rand = "0.8"
+tokio = { version = "1", features = ["sync", "macros"] }
+
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
+tokio = { version = "1", features = ["time", "rt"] }
+electrum-client = { version = "0.24.1", optional = true }
+futures-util = { version = "0.3", optional = true, features = ["sink"] }
+uuid = { version = "1", optional = true }
+tokio-tungstenite = { version = "0.28", optional = true, features = ["native-tls"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
-# `tokio` for timer-based polling (`wait_for_swap_status`) and the
-# gasless receipt-poll sleep. Non-optional because `reqwest` already
-# pulls a tokio runtime in transitively — the `time` feature is tiny
-# and gating it would force a feature flag onto a fundamental client
-# primitive.
-tokio = { version = "1", features = ["sync", "time", "rt", "macros"] }
 
 # Arkade VHTLC claim + balance + settle. `ark-rs` for the core VHTLC
 # script + gRPC client to arkd, `ark-bdk-wallet` for the on-chain
@@ -99,10 +104,22 @@ esplora-client = { version = "0.11", default-features = false, features = ["asyn
 # the backend we want without leaving the choice to feature unification.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+alloy = { version = "1", optional = true, features = ["wasm-bindgen", "json-rpc"] }
+# Enable the JS entropy backend for rand and the Alloy dependency graph.
+getrandom = { version = "0.2", features = ["js"] }
+getrandom_03 = { package = "getrandom", version = "0.3", optional = true, features = ["wasm_js"] }
+gloo-timers = { version = "0.3", features = ["futures"] }
+tower-service = { version = "0.3", optional = true }
+web-time = "1"
+
 [build-dependencies]
 serde_json = "1"
 
-[dev-dependencies]
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dev-dependencies]
 jsonschema = { version = "0.46.4", default-features = false }
 log = "0.4"
 tempfile = "3"

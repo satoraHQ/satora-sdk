@@ -34,6 +34,41 @@ mnemonic, an xprv or wallet storage (see seed storage below). The default URL is
 source/target token smallest units; EVM amounts use `u128` inputs and decimal
 strings on the wire, while Bitcoin amounts must be positive and fit in `i64`.
 
+## Browser and Node.js WASM
+
+The Rust library supports `wasm32-unknown-unknown` for Lightning/EVM swap
+creation, status polling and recovery. Enable `gasless` for the EVM wallet,
+funding, claim and refund APIs. The SDK remains a Rust dependency of your WASM
+application. Compile the application with wasm-bindgen and use its JS glue to
+drive Rust futures from the host event loop.
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo build --locked --lib --target wasm32-unknown-unknown --no-default-features --features gasless
+```
+
+The build needs Clang with a WebAssembly backend for `secp256k1-sys`. If
+the system toolchain lacks one, set `CC_wasm32_unknown_unknown` and
+`AR_wasm32_unknown_unknown` to the full paths of LLVM's `clang` and `llvm-ar`.
+
+Use a browser secure context or a Node.js runtime with global Fetch and
+Web Crypto. Browser requests also need CORS support from the swap API and
+any RPC endpoints. The SDK uses JS timers for polling and operation deadlines.
+A host wallet can implement `EvmWallet` with local futures on WASM. On native
+targets it continues to require thread-safe wallets and `Send` futures.
+
+Use `create_swap_request` with an explicit Lightning/EVM route and destination.
+Arkade, on-chain Bitcoin execution, file-backed SQLite, WebSockets and the
+background tracker are native-only. The WASM client defaults to in-memory
+storage and still uses the synchronous storage interface.
+
+Run the same WASM integration test in Node.js and a headless browser with
+`python3 tests/run_wasm.py`. It needs `wasm-bindgen-test-runner` from the
+`wasm-bindgen-cli` version in `Cargo.lock`, Node.js, and a browser and its
+WebDriver on your path. Pass `node` or `browser` to run either runtime on its
+own. Both use a local mock swap API and EVM RPC and simulate transaction
+submission and receipts.
+
 ## Current coverage
 
 | Operation                 | Rust support                                                                                                                                                                                |

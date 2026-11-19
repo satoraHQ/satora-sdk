@@ -9,6 +9,8 @@ use crate::aa::abi::TokenPermissions;
 use crate::aa::permit2::PERMIT2_ADDRESS;
 use crate::aa::permit2::PermitWitnessParams;
 use crate::aa::permit2::permit2_digest;
+use crate::runtime::SystemTime;
+use crate::runtime::UNIX_EPOCH;
 use crate::types::EvmHtlcKind;
 use alloy::primitives::keccak256;
 use alloy::sol;
@@ -18,8 +20,6 @@ use rand::RngCore;
 use reqwest::Method;
 use serde_json::json;
 use std::time::Duration;
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
 
 /// A funding reserved with no recorded hash: sent or not, only the caller can tell.
 pub(crate) const UNRESOLVED_FUNDING: &str = "funding may already be submitted; attach its transaction, or release evm_fund_started once nothing was sent";
@@ -294,7 +294,7 @@ impl Client {
         options: FundingOptions,
     ) -> Result<EvmReceipt> {
         let timeout = options.timeout;
-        tokio::time::timeout(
+        crate::runtime::timeout(
             timeout,
             self.fund_swap_with_wallet_inner(id, wallet, options),
         )

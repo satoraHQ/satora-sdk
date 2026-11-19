@@ -191,7 +191,7 @@ impl Client {
         node_rpc_url: Option<&Url>,
         timeout: Duration,
     ) -> Result<EvmReceipt> {
-        tokio::time::timeout(timeout, async {
+        crate::runtime::timeout(timeout, async {
             let wallet = self.depositor_wallet(id, node_rpc_url).await?;
             self.sweep_with_wallet(id, &wallet, token, destination)
                 .await
@@ -244,7 +244,7 @@ impl Client {
         node_rpc_url: Option<&Url>,
         timeout: Duration,
     ) -> Result<DepositorRefund> {
-        tokio::time::timeout(timeout, async {
+        crate::runtime::timeout(timeout, async {
             let wallet = self.depositor_wallet(id, node_rpc_url).await?;
             self.refund_htlc_with_wallet(id, &wallet, timeout).await
         })
@@ -265,7 +265,7 @@ impl Client {
         node_rpc_url: Option<&Url>,
         timeout: Duration,
     ) -> Result<DepositorRefund> {
-        tokio::time::timeout(timeout, async {
+        crate::runtime::timeout(timeout, async {
             let wallet = self.depositor_wallet(id, node_rpc_url).await?;
             let (stored, _) = self.stored_source(id)?;
             let options = stored_refund_options(&stored, timeout)?;
@@ -294,7 +294,7 @@ impl Client {
         node_rpc_url: Option<&Url>,
         timeout: Duration,
     ) -> Result<super::rehash::EvmRehash> {
-        tokio::time::timeout(timeout, async {
+        crate::runtime::timeout(timeout, async {
             let wallet = self.depositor_wallet(id, node_rpc_url).await?;
             let (stored, _) = self.stored_source(id)?;
             let options = stored_refund_options(&stored, timeout)?;

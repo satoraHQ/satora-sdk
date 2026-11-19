@@ -71,6 +71,15 @@ use serde_json::Value;
 use std::time::Duration;
 use tracing::info;
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+type ReserveCallback<'a> = dyn Fn() -> Result<()> + Send + Sync + 'a;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+type ReserveCallback<'a> = dyn Fn() -> Result<()> + 'a;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+type SubmittedCallback<'a> = dyn Fn(B256) -> Result<()> + Send + Sync + 'a;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+type SubmittedCallback<'a> = dyn Fn(B256) -> Result<()> + 'a;
+
 /// Stub `signature` placeholder for gas-estimation passes — matches
 /// ZeroDev's `DUMMY_ECDSA_SIG` exactly (see `@zerodev/sdk/constants.ts`).
 ///
@@ -214,8 +223,8 @@ pub struct FundSwapReceipt {
 pub(crate) async fn fund_swap_observed(
     inputs: FundSwapInputs,
     clients: FundSwapClients<'_>,
-    reserve: &(dyn Fn() -> Result<()> + Send + Sync),
-    submitted: &(dyn Fn(B256) -> Result<()> + Send + Sync),
+    reserve: &ReserveCallback<'_>,
+    submitted: &SubmittedCallback<'_>,
 ) -> Result<FundSwapReceipt> {
     info!(
         eoa = %inputs.eoa_address,
@@ -308,8 +317,8 @@ impl std::fmt::Debug for PublishInputs {
 pub async fn publish_batch_observed(
     inputs: PublishInputs,
     clients: FundSwapClients<'_>,
-    reserve: &(dyn Fn() -> Result<()> + Send + Sync),
-    submitted: &(dyn Fn(B256) -> Result<()> + Send + Sync),
+    reserve: &ReserveCallback<'_>,
+    submitted: &SubmittedCallback<'_>,
 ) -> Result<FundSwapReceipt> {
     if clients
         .node
@@ -525,8 +534,8 @@ fn generate_permit2_nonce_and_deadline() -> (U256, U256) {
     let mut nonce_bytes = [0u8; 32];
     OsRng.fill_bytes(&mut nonce_bytes);
     let nonce = U256::from_be_bytes(nonce_bytes);
-    let deadline_unix = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let deadline_unix = crate::runtime::SystemTime::now()
+        .duration_since(crate::runtime::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
         + PERMIT2_DEADLINE_HORIZON.as_secs();
@@ -736,7 +745,7 @@ async fn poll_receipt(
                 tracing::warn!(attempt, error = %e, "fund_swap: receipt poll errored");
             }
         }
-        tokio::time::sleep(RECEIPT_POLL_INTERVAL).await;
+        crate::runtime::sleep(RECEIPT_POLL_INTERVAL).await;
     }
     info!(
         attempts = RECEIPT_POLL_ATTEMPTS,
@@ -769,8 +778,8 @@ pub async fn publish_with_config(
     chain_id: u64,
     calls: &[Call],
     config: &UserOpConfig,
-    reserve: &(dyn Fn() -> Result<()> + Send + Sync),
-    submitted: &(dyn Fn(B256) -> Result<()> + Send + Sync),
+    reserve: &ReserveCallback<'_>,
+    submitted: &SubmittedCallback<'_>,
 ) -> Result<FundSwapReceipt> {
     let bundler = BundlerClient::new(config.aa.bundler_url.clone(), config.aa.bundler_casing)?;
     let paymaster = config

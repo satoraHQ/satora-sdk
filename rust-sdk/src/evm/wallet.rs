@@ -128,7 +128,7 @@ impl EvmWallet for RpcWallet {
     }
     fn wait_for_receipt(&self, hash: B256) -> WalletFuture<'_, EvmReceipt> {
         Box::pin(async move {
-            tokio::time::timeout(Duration::from_secs(120), async {
+            crate::runtime::timeout(Duration::from_secs(120), async {
                 loop {
                     if let Some(receipt) = self
                         .provider
@@ -138,7 +138,7 @@ impl EvmWallet for RpcWallet {
                     {
                         return evm_receipt(&receipt);
                     }
-                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    crate::runtime::sleep(Duration::from_secs(2)).await;
                 }
             })
             .await

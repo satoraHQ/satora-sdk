@@ -127,7 +127,7 @@ impl Client {
         options: RefundOptions,
         depositor: bool,
     ) -> Result<EvmRehash> {
-        tokio::time::timeout(options.timeout, async {
+        crate::runtime::timeout(options.timeout, async {
             let _execution = self.evm_execution.lock().await;
             // A rehash to this invoice already recorded is verified from its
             // receipt and returned; the server is not asked to sign again.
@@ -172,8 +172,8 @@ impl Client {
                     )));
                 }
             }
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            let now = crate::runtime::SystemTime::now()
+                .duration_since(crate::runtime::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or_default();
             let expires_at = parsed.expires_at().map(|d| d.as_secs()).unwrap_or(u64::MAX);

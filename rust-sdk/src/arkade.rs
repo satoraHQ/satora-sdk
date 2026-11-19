@@ -24,9 +24,9 @@
 use crate::client::Client;
 use crate::error::Error;
 use crate::error::Result;
-pub use crate::strict_vhtlc::ARKADE_HTLC_SCRIPT_VERSION_STRICT;
 pub use crate::strict_vhtlc::StrictVhtlcOptions;
 pub use crate::strict_vhtlc::StrictVhtlcScript;
+pub use crate::wire::ARKADE_HTLC_SCRIPT_VERSION_STRICT;
 use ark_bdk_wallet::Wallet;
 use ark_rs::client::Blockchain;
 use ark_rs::client::BoltzReferralId;

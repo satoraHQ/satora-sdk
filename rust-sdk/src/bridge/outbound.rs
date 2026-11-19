@@ -289,7 +289,7 @@ impl Client {
         request: OutboundClaim,
         mode: BridgeSubmission<'_>,
     ) -> Result<OutboundReceipt> {
-        tokio::time::timeout(options.timeout,async {
+        crate::runtime::timeout(options.timeout,async {
             let intent=json!({"bridge":request.bridge,"coordinator":options.coordinator,"htlc":options.htlc,"destination":options.destination,"sweep_token":options.sweep_token});
             {
                 let _guard=self.evm_execution.lock().await;

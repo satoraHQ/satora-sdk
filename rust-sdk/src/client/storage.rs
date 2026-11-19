@@ -51,6 +51,7 @@ impl Client {
         self.process_records.clear()
     }
 
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     pub(crate) fn unreadable_swaps(&self) -> Result<Vec<(String, String)>> {
         self.storage.unreadable_swaps()
     }
