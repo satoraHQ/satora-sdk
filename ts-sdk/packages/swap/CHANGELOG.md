@@ -1,5 +1,12 @@
 # @satora/swap
 
+## 1.11.1
+
+### Patch Changes
+
+- 5dd4115: Target backend 0.3.29 in the x-satora-server-version header.
+- 6d35241: Fix resuming pending Arkade claims on Taproot checkpoints. Claim retries verify the requested recipient before finalizing and report errors from the resume attempt.
+
 ## 1.11.0
 
 ### Minor Changes
