@@ -993,6 +993,48 @@
         }
       }
     },
+    "/promo-codes/{code}": {
+      "get": {
+        "tags": [
+          "swap-pairs"
+        ],
+        "summary": "Look up a promo code.",
+        "operationId": "get_promo_code",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "path",
+            "description": "Promo code",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The promo code can be used",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromoCodeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown, revoked, expired or used-up promo code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/quote": {
       "get": {
         "tags": [
@@ -1119,6 +1161,18 @@
               ],
               "format": "int32",
               "minimum": 0
+            }
+          },
+          {
+            "name": "promo_code",
+            "in": "query",
+            "description": "Optional promo code. Its rate replaces the base fee for this swap\n(rejected with 400 if unknown, expired, used up, or the swap is too large).",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -1283,6 +1337,18 @@
               "format": "int32",
               "minimum": 0
             }
+          },
+          {
+            "name": "promo_code",
+            "in": "query",
+            "description": "Optional promo code. Its rate replaces the base fee for this swap\n(rejected with 400 if unknown, expired, used up, or the swap is too large).",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -1352,6 +1418,18 @@
               "format": "int32",
               "minimum": 0
             }
+          },
+          {
+            "name": "promo_code",
+            "in": "query",
+            "description": "Optional promo code. Its rate replaces the base fee for this swap\n(rejected with 400 if unknown, expired, used up, or the swap is too large).",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -1366,7 +1444,7 @@
             }
           },
           "400": {
-            "description": "extra_fees exceeds the referral key's cap",
+            "description": "extra_fees exceeds the referral key's cap, or the promo code is invalid",
             "content": {
               "application/json": {
                 "schema": {
@@ -3045,6 +3123,13 @@
             "type": "string",
             "description": "Hash lock provided by the client (32-byte hex string with 0x prefix)."
           },
+          "promo_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional promo code. Its rate replaces the base fee for this swap\n(rejected with 400 if unknown, expired, used up, or the swap is too large)."
+          },
           "referral_code": {
             "type": [
               "string",
@@ -3307,6 +3392,13 @@
             ],
             "description": "LNURL-pay string to resolve into an invoice over the payout amount.\nMutually exclusive with the other destination fields."
           },
+          "promo_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional promo code. Its rate replaces the base fee for this swap\n(rejected with 400 if unknown, expired, used up, or the swap is too large)."
+          },
           "referral_code": {
             "type": [
               "string",
@@ -3517,6 +3609,13 @@
             "type": "string",
             "description": "Hash lock provided by the client (20-byte hex string, no 0x prefix).\nThe client generates a secret and computes HASH160(secret) = RIPEMD160(SHA256(secret)).\nThis hash is used for both the on-chain Bitcoin HTLC (OP_HASH160) and the Arkade VHTLC.\nClient will use the secret to claim the Arkade VHTLC later."
           },
+          "promo_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional promo code. Its rate replaces the base fee for this swap\n(rejected with 400 if unknown, expired, used up, or the swap is too large)."
+          },
           "referral_code": {
             "type": [
               "string",
@@ -3622,6 +3721,13 @@
           "hash_lock": {
             "type": "string",
             "description": "Hash lock provided by the client (32-byte hex string with 0x prefix)."
+          },
+          "promo_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional promo code. Its rate replaces the base fee for this swap\n(rejected with 400 if unknown, expired, used up, or the swap is too large)."
           },
           "referral_code": {
             "type": [
@@ -3889,6 +3995,13 @@
               "null"
             ],
             "description": "LNURL-pay string to resolve into an invoice over the payout amount.\nMutually exclusive with the other destination fields."
+          },
+          "promo_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional promo code. Its rate replaces the base fee for this swap\n(rejected with 400 if unknown, expired, used up, or the swap is too large)."
           },
           "referral_code": {
             "type": [
@@ -5480,6 +5593,13 @@
             "type": "string",
             "description": "Hash lock (0x-prefixed 32-byte hex). Client generates secret, computes SHA256(secret)."
           },
+          "promo_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional promo code. Its rate replaces the base fee for this swap\n(rejected with 400 if unknown, expired, used up, or the swap is too large)."
+          },
           "receiver_pk": {
             "type": "string",
             "description": "User's Arkade VHTLC claim key (receiver)."
@@ -5797,6 +5917,13 @@
           "hash_lock": {
             "type": "string",
             "description": "Hash lock (0x-prefixed 32-byte hex). Client generates secret, computes SHA256(secret)."
+          },
+          "promo_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional promo code. Its rate replaces the base fee for this swap\n(rejected with 400 if unknown, expired, used up, or the swap is too large)."
           },
           "referral_code": {
             "type": [
@@ -6121,6 +6248,13 @@
               "null"
             ],
             "description": "LNURL-pay string to resolve into an invoice over the payout amount.\nMutually exclusive with the other destination fields."
+          },
+          "promo_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional promo code. Its rate replaces the base fee for this swap\n(rejected with 400 if unknown, expired, used up, or the swap is too large)."
           },
           "referral_code": {
             "type": [
@@ -6813,6 +6947,13 @@
             ],
             "description": "Optional BOLT11 invoice description (max 639 bytes)."
           },
+          "promo_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional promo code. Its rate replaces the base fee for this swap\n(rejected with 400 if unknown, expired, used up, or the swap is too large)."
+          },
           "referral_code": {
             "type": [
               "string",
@@ -7024,6 +7165,13 @@
               "null"
             ],
             "description": "Shown in the payer's wallet; the server default applies when omitted."
+          },
+          "promo_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional promo code. Its rate replaces the base fee for this swap\n(rejected with 400 if unknown, expired, used up, or the swap is too large)."
           },
           "referral_code": {
             "type": [
@@ -7269,6 +7417,13 @@
               "null"
             ],
             "description": "Optional description shown in the payer's wallet when they open the\nhold invoice."
+          },
+          "promo_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional promo code. Its rate replaces the base fee for this swap\n(rejected with 400 if unknown, expired, used up, or the swap is too large)."
           },
           "referral_code": {
             "type": [
@@ -7638,6 +7793,40 @@
           }
         }
       },
+      "PromoCodeResponse": {
+        "type": "object",
+        "required": [
+          "code",
+          "fee_rate",
+          "max_amount_sats",
+          "remaining_uses",
+          "expires_at"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "fee_rate": {
+            "type": "number",
+            "format": "double",
+            "description": "Base fee for a swap using this code, as a decimal fraction (e.g.\n`0.001` = 0.1%). Replaces the pair's `fee_percentage`."
+          },
+          "max_amount_sats": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Largest swap the code applies to, in sats (BTC leg)."
+          },
+          "remaining_uses": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Swaps that can still use the code."
+          }
+        }
+      },
       "QuoteResponse": {
         "type": "object",
         "required": [
@@ -7851,6 +8040,13 @@
             "format": "int32",
             "description": "Optional per-swap fee surcharge in basis points. Rejected with 400 if\nit exceeds the referral key's `max_extra_fee_bps`. When omitted the\nkey's `default_extra_fee_bps` applies.",
             "minimum": 0
+          },
+          "promo_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional promo code. Its rate replaces the base fee for this swap\n(rejected with 400 if unknown, expired, used up, or the swap is too large)."
           },
           "ref": {
             "type": [

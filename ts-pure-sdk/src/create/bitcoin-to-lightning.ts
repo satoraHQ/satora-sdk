@@ -104,6 +104,7 @@ export async function createBitcoinToLightningSwap(
     btc_htlc_script_version: BTC_HTLC_SCRIPT_VERSION_STRICT,
     referral_code: options.referralCode ?? ctx.referralCode,
     extra_fees: options.extraFees,
+    promo_code: options.promoCode,
   };
 
   const { data, error } = await ctx.apiClient.POST("/swap/bitcoin/lightning", {

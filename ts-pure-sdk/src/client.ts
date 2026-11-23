@@ -252,6 +252,7 @@ import {
   fromWireReferralFeeResponse,
   fromWireSwapPairsResponse,
   type NetworkFeesResponse,
+  type PromoCodeResponse,
   type QuoteResponse,
   type ReferralFeeResponse,
   type SwapPairsResponse,
@@ -1290,6 +1291,12 @@ export interface GetQuoteParams {
    */
   extraFees?: number;
   /**
+   * Optional promo code. Its rate replaces the base fee for this swap;
+   * pass it identically on the quote and the create. Rejected (400) when
+   * unknown, expired, used up, or the swap is larger than it allows.
+   */
+  promoCode?: string;
+  /**
    * Optional Lightning destination (BOLT11 invoice, lightning address or
    * LNURL) for Arkade/EVM → Lightning quotes. When set, the quote is served
    * by `/quote/lightning-send` and prices the swap with the provider's
@@ -1370,6 +1377,12 @@ export interface GetLightningSendQuoteParams {
    * Must be passed identically on the corresponding createSwap.
    */
   extraFees?: number;
+  /**
+   * Optional promo code. Its rate replaces the base fee for this swap;
+   * pass it identically on the quote and the create. Rejected (400) when
+   * unknown, expired, used up, or the swap is larger than it allows.
+   */
+  promoCode?: string;
 }
 
 /**
@@ -1441,6 +1454,7 @@ function satsToLightningOptions(
   const common = {
     referralCode: options.referralCode,
     extraFees: options.extraFees,
+    promoCode: options.promoCode,
   };
   if (kind === "invoice") {
     if (options.sourceAmount != null && options.targetAmount != null) {
@@ -2547,16 +2561,44 @@ export class Client {
   async getReferralFee(params: {
     referralCode?: string;
     extraFees?: number;
+    /**
+     * Optional promo code. Its rate replaces the base fee for this swap;
+     * pass it identically on the quote and the create. Rejected (400) when
+     * unknown, expired, used up, or the swap is larger than it allows.
+     */
+    promoCode?: string;
   }): Promise<ReferralFeeResponse> {
     const { data, error } = await this.#apiClient.GET("/referral-fee", {
       params: {
-        query: { ref: params.referralCode, extra_fees: params.extraFees },
+        query: {
+          ref: params.referralCode,
+          extra_fees: params.extraFees,
+          promo_code: params.promoCode,
+        },
       },
     });
     if (error || !data) {
       throw new Error(`Failed to get referral fee: ${JSON.stringify(error)}`);
     }
     return fromWireReferralFeeResponse(data as WireReferralFeeResponse);
+  }
+
+  /**
+   * Look up a promo code: its fee rate, the largest swap it applies to, uses
+   * left and expiry. Throws with the server's reason when the code is
+   * unknown, revoked, expired or used up.
+   */
+  async getPromoCode(code: string): Promise<PromoCodeResponse> {
+    const { data, error } = await this.#apiClient.GET("/promo-codes/{code}", {
+      params: { path: { code } },
+    });
+    if (error || !data) {
+      const reason =
+        (error as { error?: string } | undefined)?.error ??
+        JSON.stringify(error);
+      throw new Error(`Invalid promo code: ${reason}`);
+    }
+    return data as PromoCodeResponse;
   }
 
   /**
@@ -2639,13 +2681,16 @@ export class Client {
     // otherwise it's a guaranteed-zero round-trip. It's session-static per
     // (code, extraFees), so cache it like the other primitives.
     const referralFee =
-      params.referralCode != null || params.extraFees != null
+      params.referralCode != null ||
+      params.extraFees != null ||
+      params.promoCode != null
         ? this.#composeStatic(
-            `referral-fee|${params.referralCode ?? ""}|${params.extraFees ?? ""}`,
+            `referral-fee|${params.referralCode ?? ""}|${params.extraFees ?? ""}|${params.promoCode ?? ""}`,
             () =>
               this.getReferralFee({
                 referralCode: params.referralCode,
                 extraFees: params.extraFees,
+                promoCode: params.promoCode,
               }),
           )
         : Promise.resolve(undefined);
@@ -2755,6 +2800,7 @@ export class Client {
           // Per-call referral wins; fall back to the client default.
           referralCode: params.referralCode ?? this.#config.referralCode,
           extraFees: params.extraFees,
+          promoCode: params.promoCode,
           bridgeRecipientSetup: params.bridgeRecipientSetup,
         });
       } catch (err) {
@@ -2818,6 +2864,7 @@ export class Client {
           // Per-call referral wins; fall back to the client default.
           ref: params.referralCode ?? this.#config.referralCode,
           extra_fees: params.extraFees,
+          promo_code: params.promoCode,
         },
       },
     });
@@ -2886,6 +2933,7 @@ export class Client {
       targetAmountSats,
       referralCode: params.referralCode,
       extraFees: params.extraFees,
+      promoCode: params.promoCode,
     });
 
     // Arkade and Bitcoin are 1:1, so the pinned side carries the pre-fee
@@ -3028,6 +3076,7 @@ export class Client {
       // (set via withReferralCode / withOrgCode).
       ref: params.referralCode ?? this.#config.referralCode,
       extra_fees: params.extraFees,
+      promo_code: params.promoCode,
     };
     const { data, error } = await this.#apiClient.GET("/quote", {
       params: {
@@ -7671,6 +7720,7 @@ export class Client {
         sourceAmount: options.sourceAmount,
         referralCode: options.referralCode,
         extraFees: options.extraFees,
+        promoCode: options.promoCode,
         bridgeRecipientSetup: options.bridgeRecipientSetup,
       });
       if (BigInt(quote.net_target_amount) <= 0n) {
@@ -7743,6 +7793,7 @@ export class Client {
           : undefined,
         referralCode: options.referralCode,
         extraFees: options.extraFees,
+        promoCode: options.promoCode,
         bridgeParams,
       });
     }
@@ -7779,6 +7830,7 @@ export class Client {
         targetAddress: options.targetAddress,
         referralCode: options.referralCode,
         extraFees: options.extraFees,
+        promoCode: options.promoCode,
       });
     }
 
@@ -7797,6 +7849,7 @@ export class Client {
         targetAddress: options.targetAddress,
         referralCode: options.referralCode,
         extraFees: options.extraFees,
+        promoCode: options.promoCode,
       });
     }
 
@@ -7821,6 +7874,7 @@ export class Client {
             : BigInt(options.targetAmount),
         referralCode: options.referralCode,
         extraFees: options.extraFees,
+        promoCode: options.promoCode,
         bridgeParams,
       });
     }
@@ -7866,6 +7920,7 @@ export class Client {
             : BigInt(options.targetAmount),
         referralCode: options.referralCode,
         extraFees: options.extraFees,
+        promoCode: options.promoCode,
         bridgeParams,
       });
     }
@@ -7882,6 +7937,7 @@ export class Client {
         targetAddress: options.targetAddress,
         referralCode: options.referralCode,
         extraFees: options.extraFees,
+        promoCode: options.promoCode,
       });
     }
 
@@ -7905,6 +7961,7 @@ export class Client {
         userAddress: options.userAddress,
         referralCode: options.referralCode,
         extraFees: options.extraFees,
+        promoCode: options.promoCode,
         gasless: options.gasless,
         inboundBridgeParams,
       };
@@ -7969,6 +8026,7 @@ export class Client {
             : Number(options.targetAmount),
         referralCode: options.referralCode,
         extraFees: options.extraFees,
+        promoCode: options.promoCode,
         gasless: options.gasless,
         inboundBridgeParams,
       });
@@ -7998,6 +8056,7 @@ export class Client {
             : Number(options.targetAmount),
         referralCode: options.referralCode,
         extraFees: options.extraFees,
+        promoCode: options.promoCode,
         gasless: options.gasless,
         inboundBridgeParams,
       });

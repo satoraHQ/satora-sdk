@@ -418,6 +418,7 @@ export type {
   NetworkFee,
   NetworkFeePairEntry,
   NetworkFeesResponse,
+  PromoCodeResponse,
   QuoteResponse,
   SwapPairInfo,
   SwapPairsResponse,

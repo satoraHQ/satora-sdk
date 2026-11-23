@@ -329,6 +329,12 @@ export interface ComposeQuoteParams {
   /** Per-swap extra-fee surcharge (bps), capped per referral key. */
   extraFees?: number;
   /**
+   * Optional promo code. Its rate replaces the base fee for this swap;
+   * pass it identically on the quote and the create. Rejected (400) when
+   * unknown, expired, used up, or the swap is larger than it allows.
+   */
+  promoCode?: string;
+  /**
    * `true` when a Solana CCTP recipient has no USDC ATA yet — folds the higher
    * ATA-setup bridge fee. Only meaningful for Solana targets.
    */

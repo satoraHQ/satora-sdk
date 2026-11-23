@@ -402,6 +402,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/promo-codes/{code}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Look up a promo code. */
+        get: operations["get_promo_code"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/quote": {
         parameters: {
             query?: never;
@@ -1328,6 +1345,11 @@ export interface components {
             gasless?: boolean;
             /** @description Hash lock provided by the client (32-byte hex string with 0x prefix). */
             hash_lock: string;
+            /**
+             * @description Optional promo code. Its rate replaces the base fee for this swap
+             *     (rejected with 400 if unknown, expired, used up, or the swap is too large).
+             */
+            promo_code?: string | null;
             /** @description Optional referral code for tracking. */
             referral_code?: string | null;
             /** @description Refund public key used to generate the Arkade VHTLC. */
@@ -1443,6 +1465,11 @@ export interface components {
              *     Mutually exclusive with the other destination fields.
              */
             lnurl?: string | null;
+            /**
+             * @description Optional promo code. Its rate replaces the base fee for this swap
+             *     (rejected with 400 if unknown, expired, used up, or the swap is too large).
+             */
+            promo_code?: string | null;
             /** @description Optional referral code for fee exemption */
             referral_code?: string | null;
             /** @description User's refund public key for the Arkade VHTLC (sender role). */
@@ -1569,6 +1596,11 @@ export interface components {
              *     Client will use the secret to claim the Arkade VHTLC later.
              */
             hash_lock: string;
+            /**
+             * @description Optional promo code. Its rate replaces the base fee for this swap
+             *     (rejected with 400 if unknown, expired, used up, or the swap is too large).
+             */
+            promo_code?: string | null;
             /** @description Optional referral code for fee exemption */
             referral_code?: string | null;
             /** @description User's refund public key for the on-chain Bitcoin HTLC */
@@ -1653,6 +1685,11 @@ export interface components {
             gasless?: boolean;
             /** @description Hash lock provided by the client (32-byte hex string with 0x prefix). */
             hash_lock: string;
+            /**
+             * @description Optional promo code. Its rate replaces the base fee for this swap
+             *     (rejected with 400 if unknown, expired, used up, or the swap is too large).
+             */
+            promo_code?: string | null;
             /** @description Optional referral code for tracking. */
             referral_code?: string | null;
             /** @description Refund public key used to generate the Bitcoin HTLC. */
@@ -1803,6 +1840,11 @@ export interface components {
              *     Mutually exclusive with the other destination fields.
              */
             lnurl?: string | null;
+            /**
+             * @description Optional promo code. Its rate replaces the base fee for this swap
+             *     (rejected with 400 if unknown, expired, used up, or the swap is too large).
+             */
+            promo_code?: string | null;
             /** @description Optional referral code for fee exemption */
             referral_code?: string | null;
             /** @description User's refund public key for the on-chain HTLC. */
@@ -2799,6 +2841,11 @@ export interface components {
             gasless?: boolean;
             /** @description Hash lock (0x-prefixed 32-byte hex). Client generates secret, computes SHA256(secret). */
             hash_lock: string;
+            /**
+             * @description Optional promo code. Its rate replaces the base fee for this swap
+             *     (rejected with 400 if unknown, expired, used up, or the swap is too large).
+             */
+            promo_code?: string | null;
             /** @description User's Arkade VHTLC claim key (receiver). */
             receiver_pk: string;
             /** @description Optional referral code for tracking. */
@@ -2971,6 +3018,11 @@ export interface components {
             gasless?: boolean;
             /** @description Hash lock (0x-prefixed 32-byte hex). Client generates secret, computes SHA256(secret). */
             hash_lock: string;
+            /**
+             * @description Optional promo code. Its rate replaces the base fee for this swap
+             *     (rejected with 400 if unknown, expired, used up, or the swap is too large).
+             */
+            promo_code?: string | null;
             /** @description Optional referral code for tracking. */
             referral_code?: string | null;
             /** @description User's target BTC address to receive claimed funds. */
@@ -3162,6 +3214,11 @@ export interface components {
              *     Mutually exclusive with the other destination fields.
              */
             lnurl?: string | null;
+            /**
+             * @description Optional promo code. Its rate replaces the base fee for this swap
+             *     (rejected with 400 if unknown, expired, used up, or the swap is too large).
+             */
+            promo_code?: string | null;
             /** @description Optional referral code for fee exemption. */
             referral_code?: string | null;
             /**
@@ -3442,6 +3499,11 @@ export interface components {
             hash_lock: string;
             /** @description Optional BOLT11 invoice description (max 639 bytes). */
             invoice_description?: string | null;
+            /**
+             * @description Optional promo code. Its rate replaces the base fee for this swap
+             *     (rejected with 400 if unknown, expired, used up, or the swap is too large).
+             */
+            promo_code?: string | null;
             /** @description Optional referral code for fee exemption */
             referral_code?: string | null;
             /**
@@ -3545,6 +3607,11 @@ export interface components {
             hash_lock: string;
             /** @description Shown in the payer's wallet; the server default applies when omitted. */
             invoice_description?: string | null;
+            /**
+             * @description Optional promo code. Its rate replaces the base fee for this swap
+             *     (rejected with 400 if unknown, expired, used up, or the swap is too large).
+             */
+            promo_code?: string | null;
             referral_code?: string | null;
             /**
              * Format: int64
@@ -3691,6 +3758,11 @@ export interface components {
              *     hold invoice.
              */
             invoice_description?: string | null;
+            /**
+             * @description Optional promo code. Its rate replaces the base fee for this swap
+             *     (rejected with 400 if unknown, expired, used up, or the swap is too large).
+             */
+            promo_code?: string | null;
             /** @description Optional referral code for tracking. */
             referral_code?: string | null;
             /**
@@ -3911,6 +3983,27 @@ export interface components {
              */
             timelock: number;
         };
+        PromoCodeResponse: {
+            code: string;
+            /** Format: date-time */
+            expires_at: string;
+            /**
+             * Format: double
+             * @description Base fee for a swap using this code, as a decimal fraction (e.g.
+             *     `0.001` = 0.1%). Replaces the pair's `fee_percentage`.
+             */
+            fee_rate: number;
+            /**
+             * Format: int64
+             * @description Largest swap the code applies to, in sats (BTC leg).
+             */
+            max_amount_sats: number;
+            /**
+             * Format: int64
+             * @description Swaps that can still use the code.
+             */
+            remaining_uses: number;
+        };
         QuoteResponse: {
             /**
              * Format: int64
@@ -4054,6 +4147,11 @@ export interface components {
              *     key's `default_extra_fee_bps` applies.
              */
             extra_fees?: number | null;
+            /**
+             * @description Optional promo code. Its rate replaces the base fee for this swap
+             *     (rejected with 400 if unknown, expired, used up, or the swap is too large).
+             */
+            promo_code?: string | null;
             /**
              * @description Referral code. When omitted/unknown/revoked the response is a zero
              *     extra fee (the base fee applies unchanged).
@@ -5425,6 +5523,38 @@ export interface operations {
             };
         };
     };
+    get_promo_code: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Promo code */
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The promo code can be used */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromoCodeResponse"];
+                };
+            };
+            /** @description Unknown, revoked, expired or used-up promo code */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     get_quote: {
         parameters: {
             query: {
@@ -5474,6 +5604,11 @@ export interface operations {
                  *     Rejected with 400 if it exceeds the per-key cap.
                  */
                 extra_fees?: number | null;
+                /**
+                 * @description Optional promo code. Its rate replaces the base fee for this swap
+                 *     (rejected with 400 if unknown, expired, used up, or the swap is too large).
+                 */
+                promo_code?: string | null;
             };
             header?: never;
             path?: never;
@@ -5561,6 +5696,11 @@ export interface operations {
                  *     (0..=max_extra_fee_bps configured on the matching developer key).
                  */
                 extra_fees?: number | null;
+                /**
+                 * @description Optional promo code. Its rate replaces the base fee for this swap
+                 *     (rejected with 400 if unknown, expired, used up, or the swap is too large).
+                 */
+                promo_code?: string | null;
             };
             header?: never;
             path?: never;
@@ -5611,6 +5751,11 @@ export interface operations {
                  *     key's `default_extra_fee_bps` applies.
                  */
                 extra_fees?: number | null;
+                /**
+                 * @description Optional promo code. Its rate replaces the base fee for this swap
+                 *     (rejected with 400 if unknown, expired, used up, or the swap is too large).
+                 */
+                promo_code?: string | null;
             };
             header?: never;
             path?: never;
@@ -5627,7 +5772,7 @@ export interface operations {
                     "application/json": components["schemas"]["ReferralFeeResponse"];
                 };
             };
-            /** @description extra_fees exceeds the referral key's cap */
+            /** @description extra_fees exceeds the referral key's cap, or the promo code is invalid */
             400: {
                 headers: {
                     [name: string]: unknown;

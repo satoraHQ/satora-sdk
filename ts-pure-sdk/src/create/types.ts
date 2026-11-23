@@ -93,6 +93,12 @@ export interface BtcToEvmSwapOptions {
   referralCode?: string;
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
+  /**
+   * Optional promo code. Its rate replaces the base fee for this swap;
+   * pass it identically on the quote and the create. Rejected (400) when
+   * unknown, expired, used up, or the swap is larger than it allows.
+   */
+  promoCode?: string;
 }
 
 /** Options for creating a Bitcoin (on-chain) to EVM swap via the generic endpoint */
@@ -111,6 +117,12 @@ export interface BitcoinToEvmSwapOptions {
   referralCode?: string;
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
+  /**
+   * Optional promo code. Its rate replaces the base fee for this swap;
+   * pass it identically on the quote and the create. Rejected (400) when
+   * unknown, expired, used up, or the swap is larger than it allows.
+   */
+  promoCode?: string;
   /** Whether the server should execute the DEX swap on behalf of the user (gasless claim). Defaults to true. */
   gasless?: boolean;
   /** Optional: when set, USDC is bridged via CCTP to the destination chain after the DEX swap. */
@@ -141,6 +153,12 @@ export interface LightningToEvmSwapOptions {
   referralCode?: string;
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
+  /**
+   * Optional promo code. Its rate replaces the base fee for this swap;
+   * pass it identically on the quote and the create. Rejected (400) when
+   * unknown, expired, used up, or the swap is larger than it allows.
+   */
+  promoCode?: string;
   /** Whether the server should execute the DEX swap on behalf of the user (gasless claim). Defaults to true. */
   gasless?: boolean;
   /** Optional: when set, the DEX output is bridged to the destination chain after the claim. */
@@ -173,6 +191,12 @@ export interface BitcoinToArkadeSwapOptions {
   referralCode?: string;
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
+  /**
+   * Optional promo code. Its rate replaces the base fee for this swap;
+   * pass it identically on the quote and the create. Rejected (400) when
+   * unknown, expired, used up, or the swap is larger than it allows.
+   */
+  promoCode?: string;
 }
 
 /** Result of creating a Bitcoin (on-chain) to Arkade swap */
@@ -199,6 +223,12 @@ export interface EvmToArkadeSwapOptions {
   referralCode?: string;
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
+  /**
+   * Optional promo code. Its rate replaces the base fee for this swap;
+   * pass it identically on the quote and the create. Rejected (400) when
+   * unknown, expired, used up, or the swap is larger than it allows.
+   */
+  promoCode?: string;
 }
 
 /** Result of creating an EVM to Arkade swap */
@@ -227,6 +257,12 @@ export interface EvmToArkadeSwapGenericOptions {
   referralCode?: string;
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
+  /**
+   * Optional promo code. Its rate replaces the base fee for this swap;
+   * pass it identically on the quote and the create. Rejected (400) when
+   * unknown, expired, used up, or the swap is larger than it allows.
+   */
+  promoCode?: string;
   /** Use gasless relay. When true, userAddress is auto-derived from the SDK EVM key. */
   gasless?: boolean;
   /** Optional: when set, source USDC originates on another CCTP chain and hops to Arbitrum via CCTPv2. */
@@ -259,6 +295,12 @@ export interface EvmToBitcoinSwapOptions {
   referralCode?: string;
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
+  /**
+   * Optional promo code. Its rate replaces the base fee for this swap;
+   * pass it identically on the quote and the create. Rejected (400) when
+   * unknown, expired, used up, or the swap is larger than it allows.
+   */
+  promoCode?: string;
   /** Use gasless relay. When true, userAddress is auto-derived from the SDK EVM key. */
   gasless?: boolean;
   /** Optional: when set, source USDC originates on another CCTP chain and hops to Arbitrum via CCTPv2. */
@@ -292,6 +334,12 @@ export interface ArkadeToEvmSwapOptions {
   referralCode?: string;
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
+  /**
+   * Optional promo code. Its rate replaces the base fee for this swap;
+   * pass it identically on the quote and the create. Rejected (400) when
+   * unknown, expired, used up, or the swap is larger than it allows.
+   */
+  promoCode?: string;
   /** Whether the server should execute the DEX swap on behalf of the user (gasless claim). Defaults to true. */
   gasless?: boolean;
   /** Optional: when set, USDC is bridged via CCTP to the destination chain after the DEX swap. */
@@ -349,6 +397,12 @@ export interface CreateSwapOptions {
   referralCode?: string;
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
+  /**
+   * Optional promo code. Its rate replaces the base fee for this swap;
+   * pass it identically on the quote and the create. Rejected (400) when
+   * unknown, expired, used up, or the swap is larger than it allows.
+   */
+  promoCode?: string;
   /** Whether to use gasless relay for EVM funding (no wallet needed). When true, the SDK-derived EVM address is used as the depositor. */
   gasless?: boolean;
   /** Optional: when set, USDC is bridged via CCTP to the destination chain after the DEX swap. */
@@ -385,6 +439,12 @@ export type LightningToArkadeSwapOptions = {
   referralCode?: string;
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
+  /**
+   * Optional promo code. Its rate replaces the base fee for this swap;
+   * pass it identically on the quote and the create. Rejected (400) when
+   * unknown, expired, used up, or the swap is larger than it allows.
+   */
+  promoCode?: string;
   /**
    * Optional description shown in the payer's wallet when they open the Lightning
    * invoice. When omitted, the server uses a default. An empty string is honored
@@ -429,6 +489,12 @@ export type ArkadeToLightningSwapOptions = {
   referralCode?: string;
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
+  /**
+   * Optional promo code. Its rate replaces the base fee for this swap;
+   * pass it identically on the quote and the create. Rejected (400) when
+   * unknown, expired, used up, or the swap is larger than it allows.
+   */
+  promoCode?: string;
 } & (
   | {
       /**
@@ -494,6 +560,12 @@ export type EvmToLightningSwapOptions = {
   referralCode?: string;
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
+  /**
+   * Optional promo code. Its rate replaces the base fee for this swap;
+   * pass it identically on the quote and the create. Rejected (400) when
+   * unknown, expired, used up, or the swap is larger than it allows.
+   */
+  promoCode?: string;
   /** Use gasless relay. When true, userAddress is auto-derived from the SDK EVM key. */
   gasless?: boolean;
   /** Optional: when set, source USDC originates on another CCTP chain and hops to Arbitrum via CCTPv2. */

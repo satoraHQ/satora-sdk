@@ -116,6 +116,7 @@ export async function createArkadeToLightningSwap(
     arkade_htlc_script_version: ARKADE_HTLC_SCRIPT_VERSION_STRICT,
     referral_code: options.referralCode ?? ctx.referralCode,
     extra_fees: options.extraFees,
+    promo_code: options.promoCode,
   };
 
   const { data, error } = await ctx.apiClient.POST("/swap/arkade/lightning", {
