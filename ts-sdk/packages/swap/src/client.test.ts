@@ -374,6 +374,31 @@ describe("Client tracking", () => {
     await vi.waitFor(() => expect(m.evm.registered.size).toBe(1));
   });
 
+  it("tracks a native Spark to EVM swap created after startTracking", async () => {
+    const m = managers();
+    const swaps: StoredSwap[] = [];
+    const legacy = Object.create(LegacyClient.prototype) as LegacyClient;
+    Object.assign(legacy, {
+      listAllSwaps: async () => swaps,
+      createSparkToEvmSwap: async () => {
+        swaps.push({
+          ...lightningEvmSwap,
+          response: { ...lightningEvmSwap.response, direction: "spark_to_evm" },
+        } as StoredSwap);
+        return { response: { id: "swap-3" } };
+      },
+    });
+    const client = new Client(legacy, withManagers(m.map));
+    await client.startTracking();
+
+    await client.createSparkToEvmSwap(
+      {} as Parameters<Client["createSparkToEvmSwap"]>[0],
+    );
+
+    // The client pays over Lightning, so only the server's EVM leg is on chain.
+    await vi.waitFor(() => expect(m.evm.registered.size).toBe(1));
+  });
+
   it("re-verifies a swap against the chain once fundSwap resolves", async () => {
     const m = managers();
     const reconcile = vi.fn(async () => {});

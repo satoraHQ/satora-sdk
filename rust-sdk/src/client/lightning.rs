@@ -82,6 +82,35 @@ pub(super) fn check_new_lightning_swap(
     own_hash: &[u8; 32],
 ) -> Result<()> {
     match response {
+        GetSwapResponse::SparkToEvm(r) => {
+            if hash_lock_bytes(&r.hash_lock)? != *own_hash {
+                return Err(Error::InvalidSwap(
+                    "native Spark hash does not match the client's secret".into(),
+                ));
+            }
+            let decoded = bitcoin::bech32::primitives::decode::CheckedHrpstring::new::<
+                bitcoin::bech32::Bech32m,
+            >(&r.funding.address)
+            .map_err(|e| Error::InvalidSwap(format!("invalid Spark address: {e}")))?;
+            let expected = match r.network.as_str() {
+                "bitcoin" => "spark",
+                "regtest" => "sparkrt",
+                _ => return Err(Error::InvalidSwap("unsupported Spark network".into())),
+            };
+            if decoded.hrp().as_str() != expected
+                || r.funding.expiry_duration_secs == 0
+                || r.source_amount
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|n| *n > 0)
+                    .is_none()
+            {
+                return Err(Error::InvalidSwap(
+                    "invalid native Spark funding terms".into(),
+                ));
+            }
+            Ok(())
+        }
         GetSwapResponse::LightningToArkade(_) | GetSwapResponse::LightningToEvm(_) => {
             check_lightning_swap(response, own_hash)
         }
@@ -163,6 +192,9 @@ impl Client {
                 return Ok(());
             };
             return match fresh {
+                GetSwapResponse::SparkToEvm(_) => {
+                    check_new_lightning_swap(fresh, &self.own_hash_lock(index)?)
+                }
                 GetSwapResponse::LightningToArkade(_) | GetSwapResponse::LightningToEvm(_) => {
                     check_lightning_swap(fresh, &self.own_hash_lock(index)?)
                 }
@@ -173,6 +205,22 @@ impl Client {
             return Err(Error::InvalidSwap(
                 "server swap details differ from the stored swap".into(),
             ));
+        }
+        if let (GetSwapResponse::SparkToEvm(old), GetSwapResponse::SparkToEvm(new)) =
+            (&stored.response, fresh)
+        {
+            if old.funding.address != new.funding.address
+                || old.funding.expiry_duration_secs != new.funding.expiry_duration_secs
+                || old.source_amount != new.source_amount
+                || old.network != new.network
+                || old.client_evm_address != new.client_evm_address
+                || old.target_evm_address != new.target_evm_address
+            {
+                return Err(Error::InvalidSwap(
+                    "native Spark funding terms changed".into(),
+                ));
+            }
+            return check_new_lightning_swap(fresh, &self.own_hash_lock(stored.key_index)?);
         }
         let hash = match &stored.response {
             GetSwapResponse::LightningToArkade(_) | GetSwapResponse::LightningToEvm(_) => {

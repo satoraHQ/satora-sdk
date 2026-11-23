@@ -67,6 +67,7 @@ const TBTC_ARBITRUM = "0x6c84a8f1c29108F47a79964b5Fe888D4f4D0dE40";
  */
 export const Asset = {
   // Bitcoin
+  BTC_SPARK: { chain: "Spark", tokenId: "btc" } as Asset,
   BTC_LIGHTNING: { chain: "Lightning", tokenId: "btc" } as Asset,
   BTC_ARKADE: { chain: "Arkade", tokenId: "btc" } as Asset,
   BTC_ONCHAIN: { chain: "Bitcoin", tokenId: "btc" } as Asset,
@@ -192,7 +193,12 @@ export function isBtcOnchain(token: { chain: string }): boolean {
 
 /** Returns true if the token is any form of Bitcoin (Lightning, Arkade, or on-chain). */
 export function isBtc(token: { chain: string }): boolean {
-  return isLightning(token) || isArkade(token) || isBtcOnchain(token);
+  return (
+    isSpark(token) ||
+    isLightning(token) ||
+    isArkade(token) ||
+    isBtcOnchain(token)
+  );
 }
 
 /**
@@ -371,6 +377,7 @@ export function toChain(str: string): Chain {
   // Rootstock testnet keeps its own id: a testnet daemon's chain "31" must
   // not collapse into mainnet's "30".
   if (c === "31") return "31";
+  if (c === "spark") return "Spark";
   if (c === "lightning") return "Lightning";
   if (c === "arkade") return "Arkade";
   if (c === "bitcoin") return "Bitcoin";
@@ -485,4 +492,9 @@ export function getUsdt0BridgeTokens(): BridgeTokenInfo[] {
   }
 
   return tokens;
+}
+
+/** Bitcoin on native Spark. */
+export function isSpark(token: { chain: string }): boolean {
+  return token.chain.toLowerCase() === "spark";
 }

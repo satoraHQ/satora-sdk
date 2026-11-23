@@ -367,6 +367,8 @@ export function swapToTracked(stored: StoredSwap): TrackedSwap | undefined {
     // claim completes the swap; a hold invoice that never settles auto-unwinds.
 
     // Client pays the invoice, then claims the server's EVM HTLC.
+    // Native Spark has the same EVM claim leg; the Spark wallet manages its HTLC.
+    case "spark_to_evm":
     case "lightning_to_evm":
       return {
         swapId: r.id,

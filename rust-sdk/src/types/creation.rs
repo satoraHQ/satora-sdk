@@ -64,6 +64,11 @@ pub enum SwapCreation {
         amount: QuoteAmount,
         target_address: String,
     },
+    SparkToEvm {
+        target: EvmAsset,
+        amount: QuoteAmount,
+        target_address: String,
+    },
     EvmToBitcoin {
         source: EvmAsset,
         amount: QuoteAmount,

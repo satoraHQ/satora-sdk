@@ -207,6 +207,9 @@ export type {
   RehashEvmParams,
   RehashEvmSignature,
   RetrySwapWithInvoiceResult,
+  SparkToEvmSwapOptions,
+  SparkToEvmSwapResponse,
+  SparkToEvmSwapResult,
   SupportAgentInfo,
   UsdcBridgeParams,
 } from "./client.js";
@@ -399,6 +402,7 @@ export {
   isSolanaToken,
   isSonicToken,
   isSourceEvmChain,
+  isSpark,
   isTronToken,
   type TokenInput,
   toChain,

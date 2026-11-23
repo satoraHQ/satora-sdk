@@ -202,6 +202,59 @@ pub struct LightningToEvmSwapResponse {
     pub wbtc_address: String,
 }
 
+/// Native Spark funding instructions. Send an HTLC, never an ordinary transfer.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SparkFunding {
+    pub address: String,
+    pub expiry_duration_secs: u64,
+    #[serde(default)]
+    pub payment_id: Option<String>,
+}
+
+/// Native Spark BTC to EVM response.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SparkToEvmSwapResponse {
+    pub funding: SparkFunding,
+    #[serde(default)]
+    pub evm_htlc_kind: EvmHtlcKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge_target_chain: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge_target_token_address: Option<String>,
+    /// The destination transaction that minted a bridged payout the server
+    /// delivered itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge_target_txid: Option<String>,
+    pub chain: String,
+    pub client_evm_address: String,
+    pub created_at: String,
+    pub evm_chain_id: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evm_claim_txid: Option<String>,
+    pub evm_coordinator_address: String,
+    pub evm_expected_sats: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evm_fund_txid: Option<String>,
+    pub evm_htlc_address: String,
+    pub evm_htlc_version: i64,
+    pub evm_refund_locktime: i64,
+    pub fee_sats: i64,
+    pub hash_lock: String,
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub funding_expires_at: Option<i64>,
+    pub network: String,
+    pub server_evm_address: String,
+    pub source_amount: String,
+    pub source_token: TokenInfo,
+    pub status: SwapStatus,
+    pub target_amount: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_evm_address: Option<String>,
+    pub target_token: TokenInfo,
+    pub wbtc_address: String,
+}
+
 /// `EvmToBitcoinSwapResponse` in `openapi.json`.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EvmToBitcoinSwapResponse {

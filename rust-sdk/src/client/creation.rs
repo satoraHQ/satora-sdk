@@ -95,6 +95,24 @@ fn check_deposit_address(response: &GetSwapResponse, sent: &str) -> Result<()> {
     Ok(())
 }
 
+/// Native source funding must not be exposed for a claim address other than
+/// the one submitted, including an explicit external-wallet override.
+fn check_spark_claim_address(returned: &str, sent: &str) -> Result<()> {
+    let parse = |address: &str| -> Result<[u8; 20]> {
+        evm_address(address)?;
+        let mut bytes = [0; 20];
+        hex::decode_to_slice(&address[2..], &mut bytes)
+            .map_err(|e| Error::InvalidSwap(format!("invalid EVM claim address: {e}")))?;
+        Ok(bytes)
+    };
+    if parse(returned)? != parse(sent)? {
+        return Err(Error::InvalidSwap(format!(
+            "the server returned claim address {returned}, not the {sent} this client sent"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(all(feature = "native-rails", not(target_family = "wasm")))]
 fn arkade_address(address: &str) -> Result<()> {
     let decoded = ark_rs::core::ArkAddress::decode(address)
@@ -152,7 +170,10 @@ impl Client {
     ) -> Result<Swap> {
         use SwapCreation::*;
         #[cfg(not(all(feature = "native-rails", not(target_family = "wasm"))))]
-        if !matches!(&request, LightningToEvm { .. } | EvmToLightning { .. }) {
+        if !matches!(
+            &request,
+            LightningToEvm { .. } | SparkToEvm { .. } | EvmToLightning { .. }
+        ) {
             return Err(Error::InvalidSwap(
                 "this build supports Lightning/EVM swaps".into(),
             ));
@@ -213,6 +234,11 @@ impl Client {
                 target,
                 amount,
                 target_address,
+            }
+            | SparkToEvm {
+                target,
+                amount,
+                target_address,
             } => {
                 asset_fields(&mut body, target)?;
                 amount_fields(&mut body, amount, false)?;
@@ -242,6 +268,7 @@ impl Client {
                         body["arkade_htlc_script_version"] = json!(1);
                         "arkade/evm"
                     }
+                    SparkToEvm { .. } => "spark/evm",
                     _ => "lightning/evm",
                 };
                 (route, false, true, false)
@@ -389,6 +416,7 @@ impl Client {
                     _ => {}
                 }
                 let mut deposit_address = None;
+                let mut claiming_address = None;
                 if evm_source || evm_target {
                     let address = match &options.evm_address {
                         Some(a) => a.clone(),
@@ -399,6 +427,9 @@ impl Client {
                     } else {
                         "claiming_address"
                     }] = json!(address);
+                    if evm_target {
+                        claiming_address = Some(address.clone());
+                    }
                     deposit_address = evm_source.then_some(address);
                 }
                 let response = self
@@ -424,7 +455,28 @@ impl Client {
                         response.id()
                     )));
                 }
+                if let GetSwapResponse::SparkToEvm(native) = &response {
+                    let sent = claiming_address.as_deref().ok_or_else(|| {
+                        Error::InvalidSwap(
+                            "native Spark swap has no submitted claim address".into(),
+                        )
+                    })?;
+                    check_spark_claim_address(&native.client_evm_address, sent)?;
+                }
                 check_new_lightning_swap(&response, &params.hash_lock)?;
+                if let (
+                    SparkToEvm {
+                        amount: QuoteAmount::Source(sats),
+                        ..
+                    },
+                    GetSwapResponse::SparkToEvm(native),
+                ) = (&request, &response)
+                    && native.source_amount.parse::<u64>().ok() != Some(*sats as u64)
+                {
+                    return Err(Error::InvalidSwap(
+                        "native Spark source amount differs from the requested amount".into(),
+                    ));
+                }
                 if let Some(supplied) = &supplied_invoice {
                     let returned = match &response {
                         GetSwapResponse::ArkadeToLightning(r) => &r.client_lightning_invoice,

@@ -111,6 +111,7 @@ impl Client {
             GetSwapResponse::BitcoinToEvm(r) => Some(&r.client_evm_address),
             GetSwapResponse::ArkadeToEvm(r) => Some(&r.client_evm_address),
             GetSwapResponse::LightningToEvm(r) => Some(&r.client_evm_address),
+            GetSwapResponse::SparkToEvm(r) => Some(&r.client_evm_address),
             _ => None,
         };
         let evm_key_source = address

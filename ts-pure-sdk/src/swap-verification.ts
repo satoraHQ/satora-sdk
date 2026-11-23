@@ -4,7 +4,7 @@
  */
 
 import { ripemd160 } from "@noble/hashes/legacy.js";
-import { hex } from "@scure/base";
+import { bech32m, hex } from "@scure/base";
 import type {
   ArkadeToEvmSwapResponse,
   ArkadeToLightningSwapResponse,
@@ -12,6 +12,7 @@ import type {
   BitcoinToLightningSwapResponse,
   BtcToArkadeSwapResponse,
   GetSwapResponse,
+  SparkToEvmSwapResponse,
 } from "./api/client.js";
 import { getNetworkHrp, getNetworkName } from "./arkade-network.js";
 import { invoiceAmountMsat, invoicePaymentHash } from "./bolt11.js";
@@ -496,6 +497,9 @@ export function unboundTerms(
 ): Error | undefined {
   try {
     switch (fresh.direction) {
+      case "spark_to_evm":
+        assertSparkFunding(fresh, bytesToHex(swapParams.preimageHash));
+        break;
       case "lightning_to_arkade":
       case "lightning_to_evm":
       case "lightning_to_bitcoin":
@@ -594,6 +598,7 @@ const PAYOUT_FIELD: Record<string, string> = {
   arkade_to_evm: "target_evm_address",
   bitcoin_to_evm: "target_evm_address",
   lightning_to_evm: "target_evm_address",
+  spark_to_evm: "target_evm_address",
   evm_to_bitcoin: "target_btc_address",
   lightning_to_bitcoin: "target_btc_address",
   btc_to_arkade: "target_arkade_address",
@@ -694,6 +699,21 @@ export function withStoredTerms(
     if (field in before) kept[field] = before[field];
     else if (condemned.includes(field)) delete kept[field];
   }
+  if (stored.response.direction === "spark_to_evm") {
+    const original = stored.response;
+    // Nested Spark funding terms are not covered by the generic field lists.
+    // Restore all of them even when another changed field triggered refusal.
+    // Only the selected payment reference is mutable settlement progress.
+    kept.funding = {
+      ...original.funding,
+      payment_id:
+        fresh.direction === "spark_to_evm"
+          ? (fresh.funding?.payment_id ?? original.funding.payment_id)
+          : original.funding.payment_id,
+    };
+    kept.source_amount = original.source_amount;
+    kept.network = original.network;
+  }
   return kept as unknown as GetSwapResponse;
 }
 
@@ -739,6 +759,35 @@ export function swapTermsChange(
     compare(["direction", "bridge_target_chain"], (value) => value) ??
     compare(PAYOUT_FIELDS, addressKey);
   if (payout) return payout;
+  if (
+    stored.response.direction === "spark_to_evm" &&
+    fresh.direction === "spark_to_evm"
+  ) {
+    const old = stored.response;
+    if (old.funding.address !== fresh.funding.address)
+      return changed(
+        "funding.address",
+        old.funding.address,
+        fresh.funding.address,
+      );
+    if (old.funding.expiry_duration_secs !== fresh.funding.expiry_duration_secs)
+      return changed(
+        "funding.expiry_duration_secs",
+        String(old.funding.expiry_duration_secs),
+        String(fresh.funding.expiry_duration_secs),
+      );
+    if (old.source_amount !== fresh.source_amount)
+      return changed("source_amount", old.source_amount, fresh.source_amount);
+    if (old.network !== fresh.network)
+      return changed("network", old.network, fresh.network);
+    try {
+      assertSparkFunding(fresh, stored.preimageHash);
+    } catch (error) {
+      return error instanceof SwapVerificationError
+        ? error
+        : changed("funding", "valid native Spark terms", String(error));
+    }
+  }
   if (EVM_SOURCED.has(stored.response.direction)) return undefined;
 
   const difference =
@@ -763,4 +812,64 @@ export function swapTermsChange(
     if (received !== expected) return changed("hash_lock", expected, received);
   }
   return undefined;
+}
+
+/** Validate native funding terms before exposing them or restoring a swap. */
+export function assertSparkFunding(
+  data: SparkToEvmSwapResponse,
+  ownHash: string,
+): void {
+  const fail = (field: string, expected: string, received: string): never => {
+    throw new SwapVerificationError("Invalid native Spark funding terms", {
+      field,
+      expected,
+      received,
+      swapId: data.id,
+    });
+  };
+  if (normalizeHash(data.hash_lock) !== normalizeHash(ownHash)) {
+    fail("hash_lock", ownHash, data.hash_lock);
+  }
+  let prefix: string;
+  try {
+    prefix = bech32m.decode(
+      data.funding.address as `${string}1${string}`,
+      1023,
+    ).prefix;
+  } catch {
+    fail(
+      "funding.address",
+      "valid Spark bech32m address",
+      data.funding.address,
+    );
+    return;
+  }
+  const expectedPrefix =
+    data.network === "bitcoin"
+      ? "spark"
+      : data.network === "regtest"
+        ? "sparkrt"
+        : undefined;
+  if (!expectedPrefix || prefix !== expectedPrefix)
+    fail(
+      "funding.address",
+      expectedPrefix ?? "supported Spark network",
+      prefix,
+    );
+  if (
+    !Number.isSafeInteger(data.funding.expiry_duration_secs) ||
+    data.funding.expiry_duration_secs <= 0
+  ) {
+    fail(
+      "funding.expiry_duration_secs",
+      "positive safe integer",
+      String(data.funding.expiry_duration_secs),
+    );
+  }
+  if (
+    !/^[1-9][0-9]*$/.test(data.source_amount) ||
+    BigInt(data.source_amount) > 18446744073709551615n
+  ) {
+    fail("source_amount", "positive u64 sats", data.source_amount);
+  }
 }

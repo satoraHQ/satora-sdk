@@ -1026,3 +1026,13 @@ starts isolated Anvil nodes, deploys the repository contracts, and verifies clai
 Permit2 funding/refunds, restart recovery, tracker execution and reorgs. Swap API
 snapshots/quotes remain fixtures; full-daemon coverage uses the separate Rust
 process driver. See `scripts/e2e-rust/README.md` for setup and coverage boundaries.
+
+## Native Spark BTC to EVM
+
+Native Spark swaps use a direct BTC HTLC, not a Lightning invoice or a plain Spark transfer. The service must enable `lightning.native_spark_enabled` and the directed Spark pair. Hosted Spark operators must permit native HTLCs for the sender and receiver.
+
+Create the swap, then fund the returned Spark address with a native BTC HTLC using the exact source amount, payment hash, and expiry duration. Keep a stable send idempotency key across retries. The client retains the preimage until claiming the EVM leg. A plain transfer cannot fund this swap. SDK creation does not send funds from a Spark wallet automatically.
+
+The SDK validates the returned hash, Spark address/network, amount, and expiry before storing the swap. Recovery pins these terms; normal EVM tracking and claim APIs also handle `spark_to_evm`. Only Spark as the source is supported.
+
+Use `SwapCreation::SparkToEvm` (or a generic Spark source request). Read `SwapFunding::SparkHtlc` and `Swap.deposit_amount` for the funding instructions.

@@ -100,3 +100,6 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     headers,
   });
 }
+
+export type SparkToEvmSwapResponse =
+  components["schemas"]["SparkToEvmSwapResponse"];

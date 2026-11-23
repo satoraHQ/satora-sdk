@@ -612,6 +612,13 @@ export class Client {
   }
 
   /** Delegated to the legacy client (migration checkpoint). */
+  createSparkToEvmSwap(
+    ...args: Parameters<LegacyClient["createSparkToEvmSwap"]>
+  ): ReturnType<LegacyClient["createSparkToEvmSwap"]> {
+    return this.#trackAfterCreate(this.#legacy.createSparkToEvmSwap(...args));
+  }
+
+  /** Delegated to the legacy client (migration checkpoint). */
   createLightningToBitcoinSwap(
     ...args: Parameters<LegacyClient["createLightningToBitcoinSwap"]>
   ): ReturnType<LegacyClient["createLightningToBitcoinSwap"]> {

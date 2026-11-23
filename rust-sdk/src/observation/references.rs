@@ -236,7 +236,7 @@ impl Client {
                 client: Some(bitcoin(true)?),
                 server: None,
             },
-            LightningToEvm(_) => SwapContracts {
+            LightningToEvm(_) | SparkToEvm(_) => SwapContracts {
                 client: None,
                 server: Some(evm(false)?),
             },

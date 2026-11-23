@@ -2304,6 +2304,67 @@
         }
       }
     },
+    "/swap/spark/evm": {
+      "post": {
+        "tags": [
+          "Spark to EVM"
+        ],
+        "summary": "Create a native Spark swap. Pay the returned address with a BTC HTLC\nusing the response's hash, amount and expiry duration. An ordinary Spark\ntransfer cannot fund this swap. The client retains the preimage until its\nEVM claim; unused HTLCs return to the payer at their expiry.",
+        "operationId": "create_spark_evm_swap",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LightningToEvmSwapRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SparkToEvmSwapResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/swap/{id}": {
       "get": {
         "tags": [
@@ -4326,6 +4387,7 @@
         "enum": [
           "Arkade",
           "Lightning",
+          "Spark",
           "Bitcoin",
           "137",
           "1",
@@ -6479,6 +6541,27 @@
           {
             "allOf": [
               {
+                "$ref": "#/components/schemas/SparkToEvmSwapResponse"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "direction"
+                ],
+                "properties": {
+                  "direction": {
+                    "type": "string",
+                    "enum": [
+                      "spark_to_evm"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "allOf": [
+              {
                 "$ref": "#/components/schemas/BitcoinToEvmSwapResponse"
               },
               {
@@ -8211,6 +8294,200 @@
           "commitment_txid": {
             "type": "string",
             "description": "Commitment transaction ID from the batch settlement."
+          }
+        }
+      },
+      "SparkFunding": {
+        "type": "object",
+        "description": "Immutable native Spark instructions and the selected transfer, once observed.",
+        "required": [
+          "address",
+          "expiry_duration_secs"
+        ],
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "expiry_duration_secs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "payment_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "SparkToEvmSwapResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "status",
+          "fee_sats",
+          "hash_lock",
+          "funding",
+          "network",
+          "created_at",
+          "chain",
+          "evm_chain_id",
+          "client_evm_address",
+          "evm_htlc_address",
+          "evm_htlc_version",
+          "evm_htlc_kind",
+          "evm_coordinator_address",
+          "server_evm_address",
+          "evm_refund_locktime",
+          "wbtc_address",
+          "evm_expected_sats",
+          "source_token",
+          "target_token",
+          "target_amount",
+          "source_amount"
+        ],
+        "properties": {
+          "bridge_target_chain": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "CCTP bridge destination chain. When set, USDC is bridged cross-chain after the swap."
+          },
+          "bridge_target_token_address": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "USDC address on the bridge destination chain."
+          },
+          "bridge_target_txid": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Transaction that delivered the bridged payout on the destination\nchain, once the server has minted it there. Absent while the transfer\nis in flight, and for payouts Circle's Forwarding Service delivers\n(Circle's API reports that transaction)."
+          },
+          "chain": {
+            "type": "string",
+            "description": "EVM chain name (e.g. \"Polygon\", \"Ethereum\", \"Arbitrum\")"
+          },
+          "client_evm_address": {
+            "type": "string",
+            "description": "EVM address that will sign the HTLC claim (SDK-derived for gasless claims)"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Timestamp of when the swap was created"
+          },
+          "evm_chain_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Numeric EVM chain ID (e.g. 137, 1, 42161)"
+          },
+          "evm_claim_txid": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "EVM HTLC claim transaction ID (user claim)"
+          },
+          "evm_coordinator_address": {
+            "type": "string",
+            "description": "HTLCCoordinator contract address (for redeemAndExecute)"
+          },
+          "evm_expected_sats": {
+            "type": "string",
+            "description": "Amount locked in the EVM HTLC, in token smallest units (WBTC sats,\nor 18-decimal units for tBTC — hence U256, not i64)"
+          },
+          "evm_fund_txid": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "EVM HTLC fund transaction ID"
+          },
+          "evm_htlc_address": {
+            "type": "string",
+            "description": "EVM HTLC contract address"
+          },
+          "evm_htlc_kind": {
+            "$ref": "#/components/schemas/EvmHtlcKind",
+            "description": "HTLC family of the lock: `erc20` (`HTLCErc20` + `HTLCCoordinator`) or\n`native` (`HTLCNative` + `HTLCNativeCoordinator`). Selects the EIP-712\ndomain name and the claim call a client uses."
+          },
+          "evm_htlc_version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "HTLCErc20 contract VERSION of the deployment this swap lives on —\nthe EIP-712 domain version string for redeem/refund signatures."
+          },
+          "evm_refund_locktime": {
+            "type": "integer",
+            "format": "int64",
+            "description": "EVM HTLC refund locktime (unix timestamp)"
+          },
+          "fee_sats": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Protocol fee + network fee in satoshis"
+          },
+          "funding": {
+            "$ref": "#/components/schemas/SparkFunding",
+            "description": "Native Spark transfer instructions. The payment is held until the\nuser's EVM claim reveals the preimage."
+          },
+          "funding_expires_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Unix timestamp after which the funding instructions expire"
+          },
+          "hash_lock": {
+            "type": "string",
+            "description": "Hash lock (32-byte hex, 0x-prefixed) — the native Spark HTLC's payment\nhash and the EVM HTLC's lock. The client holds the preimage."
+          },
+          "id": {
+            "type": "string"
+          },
+          "network": {
+            "type": "string",
+            "description": "Bitcoin network"
+          },
+          "server_evm_address": {
+            "type": "string",
+            "description": "Server's EVM address"
+          },
+          "source_amount": {
+            "type": "string",
+            "description": "Amount the user pays over Spark, in satoshis"
+          },
+          "source_token": {
+            "$ref": "#/components/schemas/TokenInfo",
+            "description": "Source token info"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SwapStatus"
+          },
+          "target_amount": {
+            "type": "string",
+            "description": "How much the user will receive in the target token's smallest unit"
+          },
+          "target_evm_address": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "EVM address where tokens are swept after the claim (user's final destination)"
+          },
+          "target_token": {
+            "$ref": "#/components/schemas/TokenInfo",
+            "description": "Target token info"
+          },
+          "wbtc_address": {
+            "type": "string",
+            "description": "WBTC token contract address on the target EVM chain (the token locked in the HTLC)"
           }
         }
       },

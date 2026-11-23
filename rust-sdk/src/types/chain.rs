@@ -18,6 +18,7 @@ use serde::Serialize;
 pub enum KnownChain {
     Arkade,
     Lightning,
+    Spark,
     Bitcoin,
     #[serde(rename = "137")]
     Polygon,
@@ -35,6 +36,7 @@ impl KnownChain {
         match self {
             Self::Arkade => "Arkade",
             Self::Lightning => "Lightning",
+            Self::Spark => "Spark",
             Self::Bitcoin => "Bitcoin",
             Self::Polygon => "137",
             Self::Ethereum => "1",
@@ -49,6 +51,7 @@ impl KnownChain {
         match s {
             "Arkade" => Some(Self::Arkade),
             "Lightning" => Some(Self::Lightning),
+            "Spark" => Some(Self::Spark),
             "Bitcoin" => Some(Self::Bitcoin),
             "137" => Some(Self::Polygon),
             "1" => Some(Self::Ethereum),
@@ -66,7 +69,7 @@ impl KnownChain {
             Self::Ethereum => Some(1),
             Self::Arbitrum => Some(42161),
             Self::Rootstock => Some(30),
-            Self::Bitcoin | Self::Lightning | Self::Arkade => None,
+            Self::Bitcoin | Self::Lightning | Self::Spark | Self::Arkade => None,
         }
     }
 
@@ -88,7 +91,7 @@ impl KnownChain {
             Self::Polygon => Some("https://polygon.drpc.org"),
             // HTTP only; the public node has no WebSocket endpoint.
             Self::Rootstock => Some("https://public-node.rsk.co"),
-            Self::Bitcoin | Self::Lightning | Self::Arkade => None,
+            Self::Bitcoin | Self::Lightning | Self::Spark | Self::Arkade => None,
         }
     }
 }

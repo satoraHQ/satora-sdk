@@ -402,6 +402,7 @@ pub enum GetSwapResponse {
     BitcoinToEvm(super::BitcoinToEvmSwapResponse),
     ArkadeToEvm(super::ArkadeToEvmSwapResponse),
     LightningToEvm(super::LightningToEvmSwapResponse),
+    SparkToEvm(super::SparkToEvmSwapResponse),
     EvmToBitcoin(super::EvmToBitcoinSwapResponse),
     EvmToLightning(super::EvmToLightningSwapResponse),
 
@@ -422,6 +423,7 @@ impl GetSwapResponse {
             Self::BitcoinToEvm(r) => &r.id,
             Self::ArkadeToEvm(r) => &r.id,
             Self::LightningToEvm(r) => &r.id,
+            Self::SparkToEvm(r) => &r.id,
             Self::EvmToBitcoin(r) => &r.id,
             Self::EvmToLightning(r) => &r.id,
             Self::BitcoinToLightning(r) => &r.id,
@@ -437,6 +439,7 @@ impl GetSwapResponse {
             Self::BitcoinToEvm(r) => &r.status,
             Self::ArkadeToEvm(r) => &r.status,
             Self::LightningToEvm(r) => &r.status,
+            Self::SparkToEvm(r) => &r.status,
             Self::EvmToBitcoin(r) => &r.status,
             Self::EvmToLightning(r) => &r.status,
 
@@ -455,6 +458,7 @@ pub enum SwapDirection {
     BitcoinToEvm,
     ArkadeToEvm,
     LightningToEvm,
+    SparkToEvm,
     EvmToBitcoin,
     EvmToLightning,
     EvmToArkade,

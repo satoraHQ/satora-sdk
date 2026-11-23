@@ -15,6 +15,7 @@
 export type Chain =
   | "Arkade"
   | "Lightning"
+  | "Spark"
   | "Bitcoin"
   | "Solana"
   | "Tron"
@@ -50,6 +51,7 @@ export type Chain =
 export type WireChain =
   | "Arkade"
   | "Lightning"
+  | "Spark"
   | "Bitcoin"
   | "1" // Ethereum
   | "137" // Polygon

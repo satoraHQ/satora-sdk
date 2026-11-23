@@ -315,7 +315,7 @@ impl EvmContext {
         if !is_source
             && !matches!(
                 response,
-                BitcoinToEvm(_) | ArkadeToEvm(_) | LightningToEvm(_)
+                BitcoinToEvm(_) | ArkadeToEvm(_) | LightningToEvm(_) | SparkToEvm(_)
             )
         {
             return Err(invalid("swap has no EVM side"));

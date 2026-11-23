@@ -824,6 +824,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/swap/spark/evm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a native Spark swap. Pay the returned address with a BTC HTLC
+         *     using the response's hash, amount and expiry duration. An ordinary Spark
+         *     transfer cannot fund this swap. The client retains the preimage until its
+         *     EVM claim; unused HTLCs return to the payer at their expiry.
+         */
+        post: operations["create_spark_evm_swap"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/swap/{id}": {
         parameters: {
             query?: never;
@@ -2066,7 +2088,7 @@ export interface components {
          * @description Supported blockchain networks. EVM chains serialize to their chain ID as a string (e.g. "137" for Polygon). Rootstock is "30" on a mainnet daemon and "31" on a testnet daemon.
          * @enum {string}
          */
-        Chain: "Arkade" | "Lightning" | "Bitcoin" | "137" | "1" | "42161" | "30" | "31";
+        Chain: "Arkade" | "Lightning" | "Spark" | "Bitcoin" | "137" | "1" | "42161" | "30" | "31";
         /**
          * @description Per-chain configuration. EVM chains only — Bitcoin / Lightning /
          *     Arkade don't have a meaningful chain-config shape.
@@ -3319,6 +3341,9 @@ export interface components {
         }) | (components["schemas"]["LightningToEvmSwapResponse"] & {
             /** @enum {string} */
             direction: "lightning_to_evm";
+        }) | (components["schemas"]["SparkToEvmSwapResponse"] & {
+            /** @enum {string} */
+            direction: "spark_to_evm";
         }) | (components["schemas"]["BitcoinToEvmSwapResponse"] & {
             /** @enum {string} */
             direction: "bitcoin_to_evm";
@@ -4279,6 +4304,108 @@ export interface components {
         SettleDelegateResponse: {
             /** @description Commitment transaction ID from the batch settlement. */
             commitment_txid: string;
+        };
+        /** @description Immutable native Spark instructions and the selected transfer, once observed. */
+        SparkFunding: {
+            address: string;
+            /** Format: int64 */
+            expiry_duration_secs: number;
+            payment_id?: string | null;
+        };
+        SparkToEvmSwapResponse: {
+            /** @description CCTP bridge destination chain. When set, USDC is bridged cross-chain after the swap. */
+            bridge_target_chain?: string | null;
+            /** @description USDC address on the bridge destination chain. */
+            bridge_target_token_address?: string | null;
+            /**
+             * @description Transaction that delivered the bridged payout on the destination
+             *     chain, once the server has minted it there. Absent while the transfer
+             *     is in flight, and for payouts Circle's Forwarding Service delivers
+             *     (Circle's API reports that transaction).
+             */
+            bridge_target_txid?: string | null;
+            /** @description EVM chain name (e.g. "Polygon", "Ethereum", "Arbitrum") */
+            chain: string;
+            /** @description EVM address that will sign the HTLC claim (SDK-derived for gasless claims) */
+            client_evm_address: string;
+            /**
+             * Format: date-time
+             * @description Timestamp of when the swap was created
+             */
+            created_at: string;
+            /**
+             * Format: int64
+             * @description Numeric EVM chain ID (e.g. 137, 1, 42161)
+             */
+            evm_chain_id: number;
+            /** @description EVM HTLC claim transaction ID (user claim) */
+            evm_claim_txid?: string | null;
+            /** @description HTLCCoordinator contract address (for redeemAndExecute) */
+            evm_coordinator_address: string;
+            /**
+             * @description Amount locked in the EVM HTLC, in token smallest units (WBTC sats,
+             *     or 18-decimal units for tBTC — hence U256, not i64)
+             */
+            evm_expected_sats: string;
+            /** @description EVM HTLC fund transaction ID */
+            evm_fund_txid?: string | null;
+            /** @description EVM HTLC contract address */
+            evm_htlc_address: string;
+            /**
+             * @description HTLC family of the lock: `erc20` (`HTLCErc20` + `HTLCCoordinator`) or
+             *     `native` (`HTLCNative` + `HTLCNativeCoordinator`). Selects the EIP-712
+             *     domain name and the claim call a client uses.
+             */
+            evm_htlc_kind: components["schemas"]["EvmHtlcKind"];
+            /**
+             * Format: int64
+             * @description HTLCErc20 contract VERSION of the deployment this swap lives on —
+             *     the EIP-712 domain version string for redeem/refund signatures.
+             */
+            evm_htlc_version: number;
+            /**
+             * Format: int64
+             * @description EVM HTLC refund locktime (unix timestamp)
+             */
+            evm_refund_locktime: number;
+            /**
+             * Format: int64
+             * @description Protocol fee + network fee in satoshis
+             */
+            fee_sats: number;
+            /**
+             * @description Native Spark transfer instructions. The payment is held until the
+             *     user's EVM claim reveals the preimage.
+             */
+            funding: components["schemas"]["SparkFunding"];
+            /**
+             * Format: int64
+             * @description Unix timestamp after which the funding instructions expire
+             */
+            funding_expires_at?: number | null;
+            /**
+             * @description Hash lock (32-byte hex, 0x-prefixed) — the native Spark HTLC's payment
+             *     hash and the EVM HTLC's lock. The client holds the preimage.
+             */
+            hash_lock: string;
+            id: string;
+            /** @description Bitcoin network */
+            network: string;
+            /** @description Server's EVM address */
+            server_evm_address: string;
+            /** @description Amount the user pays over Spark, in satoshis */
+            source_amount: string;
+            /** @description Source token info */
+            source_token: components["schemas"]["TokenInfo"];
+            status: components["schemas"]["SwapStatus"];
+            /** @description How much the user will receive in the target token's smallest unit */
+            target_amount: string;
+            /** @description EVM address where tokens are swept after the claim (user's final destination) */
+            target_evm_address?: string | null;
+            /** @description Target token info */
+            target_token: components["schemas"]["TokenInfo"];
+            /** @description WBTC token contract address on the target EVM chain (the token locked in the HTLC) */
+            wbtc_address: string;
         };
         /** @description Aggregated health of every external dependency. */
         StatusResponse: {
@@ -6279,6 +6406,53 @@ export interface operations {
             };
             /** @description Internal server error */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    create_spark_evm_swap: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LightningToEvmSwapRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SparkToEvmSwapResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

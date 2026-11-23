@@ -41,7 +41,7 @@ export function deriveSwapActions(input: SwapActionInput): SwapActions {
           waitingOn: "client_payment",
           recommended: true,
           automation: "auto",
-          reason: "Waiting for the Lightning payment to be locked in.",
+          reason: "Waiting for the source payment to be locked in.",
         };
         return { recommended: "wait", actions: [wait] };
       }
@@ -201,7 +201,7 @@ export function deriveSwapActions(input: SwapActionInput): SwapActions {
           recommended: true,
           automation: "auto",
           reason:
-            "The claim window passed — your Lightning payment will be refunded automatically.",
+            "The claim window passed — your source payment will be refunded automatically.",
         };
         return { recommended: "none", actions: [done] };
       }
@@ -333,7 +333,7 @@ export function deriveSwapActions(input: SwapActionInput): SwapActions {
           recommended: true,
           automation: "auto",
           reason:
-            "The swap did not complete — your Lightning payment will be refunded automatically.",
+            "The swap did not complete — your source payment will be refunded automatically.",
         };
         return { recommended: "none", actions: [done] };
       }

@@ -595,6 +595,11 @@ impl Client {
                         amount,
                         target_address,
                     },
+                    KnownChain::Spark => SwapCreation::SparkToEvm {
+                        target,
+                        amount,
+                        target_address,
+                    },
                     _ => return Err(Error::InvalidSwap("unsupported Bitcoin rail".into())),
                 }
             }
@@ -1662,9 +1667,14 @@ pub struct Swap {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SwapFunding {
-    /// `gasless = true` flow: the user sends tokens to `deposit_address`
-    /// from any wallet. The SDK relays the funds into the HTLC via a
-    /// Permit2-signed transaction so the user never pays gas.
+    /// Native conditional Spark BTC transfer. Use `Swap::deposit_amount` sats
+    /// and a persisted idempotency key. Never send an ordinary Spark transfer.
+    SparkHtlc {
+        address: String,
+        payment_hash: String,
+        expiry_duration_secs: u64,
+    },
+    /// User deposits EVM tokens for a gasless Permit2-funded HTLC.
     Gasless {
         /// EVM depositor address recorded by the server. New locally owned
         /// Rust swaps derive a separate key at `m/83696968'/121923'/{index}'/60'`,
@@ -1779,6 +1789,26 @@ impl From<GetSwapResponse> for Swap {
                 btc_refund_locktime: None,
                 evm_refund_locktime: Some(r.evm_refund_locktime),
                 invoice_expires_at: r.invoice_expires_at.filter(|&t| t > 0),
+            },
+            GetSwapResponse::SparkToEvm(r) => Self {
+                id: r.id,
+                status: r.status,
+                direction: SwapDirection::SparkToEvm,
+                funding: SwapFunding::SparkHtlc {
+                    address: r.funding.address,
+                    payment_hash: r.hash_lock,
+                    expiry_duration_secs: r.funding.expiry_duration_secs,
+                },
+                deposit_amount: r.source_amount,
+                deposit_token: r.source_token.token_id,
+                receive_address: r.target_evm_address.unwrap_or(r.client_evm_address),
+                receive_amount: r.target_amount,
+                receive_token: r.target_token.token_id,
+                created_at: r.created_at,
+                vhtlc_refund_locktime: None,
+                btc_refund_locktime: None,
+                evm_refund_locktime: Some(r.evm_refund_locktime),
+                invoice_expires_at: r.funding_expires_at.filter(|&t| t > 0),
             },
             GetSwapResponse::EvmToBitcoin(r) => Self {
                 id: r.id,

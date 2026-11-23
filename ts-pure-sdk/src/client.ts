@@ -74,6 +74,7 @@ import {
   createLightningToArkadeSwap,
   createLightningToBitcoinSwap,
   createLightningToEvmSwap,
+  createSparkToEvmSwap,
   type EvmToArkadeSwapGenericOptions,
   type EvmToArkadeSwapGenericResult,
   type EvmToBitcoinSwapOptions,
@@ -86,6 +87,8 @@ import {
   type LightningToBitcoinSwapResult,
   type LightningToEvmSwapOptions,
   type LightningToEvmSwapResult,
+  type SparkToEvmSwapOptions,
+  type SparkToEvmSwapResult,
 } from "./create/index.js";
 import { delegateClaim, delegateRefund } from "./delegate.js";
 import {
@@ -304,6 +307,9 @@ export type {
   LightningToEvmSwapOptions,
   LightningToEvmSwapResponse,
   LightningToEvmSwapResult,
+  SparkToEvmSwapOptions,
+  SparkToEvmSwapResponse,
+  SparkToEvmSwapResult,
   UsdcBridgeParams,
 } from "./create/index.js";
 
@@ -311,6 +317,7 @@ import { invoicePaymentHash } from "./bolt11.js";
 import type {
   BitcoinToEvmSwapResponse,
   LightningToEvmSwapResponse,
+  SparkToEvmSwapResponse,
 } from "./create/index.js";
 import type { CoordinatorCall } from "./evm/index.js";
 
@@ -3493,12 +3500,14 @@ export class Client {
     if (
       swap.direction === "arkade_to_evm" ||
       swap.direction === "bitcoin_to_evm" ||
-      swap.direction === "lightning_to_evm"
+      swap.direction === "lightning_to_evm" ||
+      swap.direction === "spark_to_evm"
     ) {
       const evmSwap = swap as (
         | ArkadeToEvmSwapResponse
         | BitcoinToEvmSwapResponse
         | LightningToEvmSwapResponse
+        | SparkToEvmSwapResponse
       ) & {
         direction: string;
       };
@@ -3624,7 +3633,8 @@ export class Client {
     if (
       swap.direction !== "arkade_to_evm" &&
       swap.direction !== "bitcoin_to_evm" &&
-      swap.direction !== "lightning_to_evm"
+      swap.direction !== "lightning_to_evm" &&
+      swap.direction !== "spark_to_evm"
     ) {
       throw new Error(
         `Expected an EVM-targeted swap (arkade_to_evm, bitcoin_to_evm or lightning_to_evm), got ${swap.direction}.`,
@@ -3880,7 +3890,8 @@ export class Client {
     return (
       (swap.direction === "arkade_to_evm" ||
         swap.direction === "bitcoin_to_evm" ||
-        swap.direction === "lightning_to_evm") &&
+        swap.direction === "lightning_to_evm" ||
+        swap.direction === "spark_to_evm") &&
       swap.evm_chain_id !== 30 &&
       swap.evm_chain_id !== 31
     );
@@ -7814,6 +7825,31 @@ export class Client {
       });
     }
 
+    // Spark → EVM
+    if (sourceAsset.chain === "Spark" && isEvmToken(targetChain)) {
+      if ((options.sourceAmount == null) === (options.targetAmount == null)) {
+        throw new Error(
+          "Provide exactly one of sourceAmount (sats on Spark) or targetAmount (token units to receive) for Spark → EVM swaps",
+        );
+      }
+      return this.createSparkToEvmSwap({
+        targetAddress: options.targetAddress,
+        tokenAddress,
+        evmChainId: Number(targetChain),
+        sourceAmount:
+          options.sourceAmount == null
+            ? undefined
+            : Number(options.sourceAmount),
+        targetAmount:
+          options.targetAmount == null
+            ? undefined
+            : BigInt(options.targetAmount),
+        referralCode: options.referralCode,
+        extraFees: options.extraFees,
+        bridgeParams,
+      });
+    }
+
     // Bitcoin (on-chain) → EVM
     if (isBtcOnchain(sourceAsset) && isEvmToken(targetChain)) {
       return this.createBitcoinToEvmSwap({
@@ -8167,6 +8203,15 @@ export class Client {
     options: LightningToEvmSwapOptions,
   ): Promise<LightningToEvmSwapResult> {
     return createLightningToEvmSwap(
+      options,
+      this.#getCreateContext(),
+      await this.#rifClaimAddress(options),
+    );
+  }
+  async createSparkToEvmSwap(
+    options: SparkToEvmSwapOptions,
+  ): Promise<SparkToEvmSwapResult> {
+    return createSparkToEvmSwap(
       options,
       this.#getCreateContext(),
       await this.#rifClaimAddress(options),

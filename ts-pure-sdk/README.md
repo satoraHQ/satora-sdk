@@ -332,3 +332,13 @@ When adding new functionality:
 1. **API methods**: Add convenience methods to `src/client.ts` that wrap the low-level API calls
 2. **New types**: If the backend adds new endpoints, regenerate the API types first
 3. **Exports**: Update `src/index.ts` to export any new public types or classes
+
+## Native Spark BTC to EVM
+
+Native Spark swaps use a direct BTC HTLC, not a Lightning invoice or a plain Spark transfer. The service must enable `lightning.native_spark_enabled` and the directed Spark pair. Hosted Spark operators must permit native HTLCs for the sender and receiver.
+
+Create the swap, then fund the returned Spark address with a native BTC HTLC using the exact source amount, payment hash, and expiry duration. Keep a stable send idempotency key across retries. The client retains the preimage until claiming the EVM leg. A plain transfer cannot fund this swap. SDK creation does not send funds from a Spark wallet automatically.
+
+The SDK validates the returned hash, Spark address/network, amount, and expiry before storing the swap. Recovery pins these terms; normal EVM tracking and claim APIs also handle `spark_to_evm`. Only Spark as the source is supported.
+
+Use `client.createSparkToEvmSwap(options)` or generic `createSwap` with `Asset.BTC_SPARK`. The response supplies `funding.address`, `funding.expiry_duration_secs`, `hash_lock`, and `source_amount`. These APIs are also re-exported by `@satora/swap`.

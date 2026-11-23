@@ -72,6 +72,8 @@ pub use responses::EvmHtlcKind;
 pub use responses::EvmToBitcoinSwapResponse;
 pub use responses::EvmToLightningSwapResponse;
 pub use responses::LightningToEvmSwapResponse;
+pub use responses::SparkFunding;
+pub use responses::SparkToEvmSwapResponse;
 mod recovery;
 pub use recovery::RecoveredSwap;
 pub use recovery::RecoveryResponse;

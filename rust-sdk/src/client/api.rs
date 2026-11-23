@@ -212,6 +212,7 @@ impl Client {
                 ),
                 GetSwapResponse::ArkadeToEvm(r) => (&r.hash_lock, hex::encode(params.hash_lock)),
                 GetSwapResponse::LightningToEvm(r) => (&r.hash_lock, hex::encode(params.hash_lock)),
+                GetSwapResponse::SparkToEvm(r) => (&r.hash_lock, hex::encode(params.hash_lock)),
                 GetSwapResponse::EvmToArkade(r) => (&r.hash_lock, hex::encode(params.hash_lock)),
                 GetSwapResponse::LightningToArkade(r) => {
                     (&r.hash_lock, hex::encode(params.hash_lock))

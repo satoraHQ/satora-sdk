@@ -676,6 +676,7 @@ fn evm_owner(response: &crate::types::GetSwapResponse) -> Option<Address> {
         BitcoinToEvm(r) => r.client_evm_address.parse().ok(),
         ArkadeToEvm(r) => r.client_evm_address.parse().ok(),
         LightningToEvm(r) => r.client_evm_address.parse().ok(),
+        SparkToEvm(r) => r.client_evm_address.parse().ok(),
         _ => None,
     }
 }

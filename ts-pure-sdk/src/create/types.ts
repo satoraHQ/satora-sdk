@@ -7,6 +7,7 @@ import type {
   ApiClient,
   EvmToBitcoinSwapResponse as ApiEvmToBitcoinSwapResponse,
   LightningToEvmSwapResponse as ApiLightningToEvmSwapResponse,
+  SparkToEvmSwapResponse as ApiSparkToEvmSwapResponse,
   ArkadeToEvmSwapResponse,
   ArkadeToLightningSwapResponse,
   BitcoinToLightningSwapResponse,
@@ -574,6 +575,7 @@ export type CreateSwapResult =
   | LightningToArkadeSwapResult
   | LightningToBitcoinSwapResult
   | LightningToEvmSwapResult
+  | SparkToEvmSwapResult
   | EvmToArkadeSwapGenericResult
   | EvmToBitcoinSwapResult
   | EvmToLightningSwapResult;
@@ -615,4 +617,15 @@ export interface CreateSwapContext {
       evmFundingTerms?: EvmFundingTerms;
     },
   ) => Promise<void>;
+}
+
+/** Native Spark BTC funding; invoice descriptions do not apply. */
+export type SparkToEvmSwapOptions = Omit<
+  LightningToEvmSwapOptions,
+  "invoiceDescription"
+>;
+export type SparkToEvmSwapResponse = ApiSparkToEvmSwapResponse;
+export interface SparkToEvmSwapResult {
+  response: SparkToEvmSwapResponse;
+  swapParams: SwapParams;
 }
