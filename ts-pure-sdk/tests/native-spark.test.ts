@@ -8,6 +8,7 @@ import {
   InMemorySwapStorage,
   InMemoryWalletStorage,
 } from "../src/storage/index.js";
+import { Asset } from "../src/tokens.js";
 
 const mnemonic =
   "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -19,6 +20,7 @@ const address = bech32m.encode(
 
 async function fixture(
   mutate: (data: Record<string, unknown>) => void = () => {},
+  promoCode?: string,
 ) {
   const client = await Client.builder().withMnemonic(mnemonic).build();
   const params = client.deriveSwapParamsAtIndex(7);
@@ -54,6 +56,7 @@ async function fixture(
         tokenAddress: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
         evmChainId: 42161,
         sourceAmount: 20000,
+        promoCode,
       },
       ctx,
     );
@@ -68,6 +71,27 @@ describe("native Spark swap creation", () => {
     expect(result.response.funding.address).toBe(address);
     expect(storeSwap.mock.calls[0][2].direction).toBe("spark_to_evm");
     expect(post.mock.calls[0][1].body).not.toHaveProperty("preimage");
+  });
+  it("sends the promo code", async () => {
+    const { create, post } = await fixture(undefined, "SPARK50");
+    await create();
+    expect(post.mock.calls[0][1].body.promo_code).toBe("SPARK50");
+  });
+  it("forwards promoCode from createSwap", async () => {
+    const client = await Client.builder().withMnemonic(mnemonic).build();
+    const create = vi
+      .spyOn(client, "createSparkToEvmSwap")
+      .mockResolvedValue({} as never);
+    await client.createSwap({
+      source: Asset.BTC_SPARK,
+      target: Asset.USDC_ARBITRUM,
+      sourceAmount: 20000,
+      targetAddress: "0x000000000000000000000000000000000000dEaD",
+      promoCode: "SPARK50",
+    });
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ promoCode: "SPARK50" }),
+    );
   });
   it.each([
     [

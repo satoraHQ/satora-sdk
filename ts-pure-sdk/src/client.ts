@@ -7896,6 +7896,7 @@ export class Client {
             : BigInt(options.targetAmount),
         referralCode: options.referralCode,
         extraFees: options.extraFees,
+        promoCode: options.promoCode,
         bridgeParams,
       });
     }
