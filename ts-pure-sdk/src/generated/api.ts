@@ -1346,8 +1346,8 @@ export interface components {
             /** @description Hash lock provided by the client (32-byte hex string with 0x prefix). */
             hash_lock: string;
             /**
-             * @description Optional promo code. Its rate replaces the base fee for this swap
-             *     (rejected with 400 if unknown, expired, used up, or the swap is too large).
+             * @description Optional promo code. Its rate replaces the base fee when cheaper and its cap
+             *     may lift the route maximum (400 if unknown, expired, used up, or too large).
              */
             promo_code?: string | null;
             /** @description Optional referral code for tracking. */
@@ -1466,8 +1466,8 @@ export interface components {
              */
             lnurl?: string | null;
             /**
-             * @description Optional promo code. Its rate replaces the base fee for this swap
-             *     (rejected with 400 if unknown, expired, used up, or the swap is too large).
+             * @description Optional promo code. Its rate replaces the base fee when cheaper and its cap
+             *     may lift the route maximum (400 if unknown, expired, used up, or too large).
              */
             promo_code?: string | null;
             /** @description Optional referral code for fee exemption */
@@ -1597,8 +1597,8 @@ export interface components {
              */
             hash_lock: string;
             /**
-             * @description Optional promo code. Its rate replaces the base fee for this swap
-             *     (rejected with 400 if unknown, expired, used up, or the swap is too large).
+             * @description Optional promo code. Its rate replaces the base fee when cheaper and its cap
+             *     may lift the route maximum (400 if unknown, expired, used up, or too large).
              */
             promo_code?: string | null;
             /** @description Optional referral code for fee exemption */
@@ -1686,8 +1686,8 @@ export interface components {
             /** @description Hash lock provided by the client (32-byte hex string with 0x prefix). */
             hash_lock: string;
             /**
-             * @description Optional promo code. Its rate replaces the base fee for this swap
-             *     (rejected with 400 if unknown, expired, used up, or the swap is too large).
+             * @description Optional promo code. Its rate replaces the base fee when cheaper and its cap
+             *     may lift the route maximum (400 if unknown, expired, used up, or too large).
              */
             promo_code?: string | null;
             /** @description Optional referral code for tracking. */
@@ -1841,8 +1841,8 @@ export interface components {
              */
             lnurl?: string | null;
             /**
-             * @description Optional promo code. Its rate replaces the base fee for this swap
-             *     (rejected with 400 if unknown, expired, used up, or the swap is too large).
+             * @description Optional promo code. Its rate replaces the base fee when cheaper and its cap
+             *     may lift the route maximum (400 if unknown, expired, used up, or too large).
              */
             promo_code?: string | null;
             /** @description Optional referral code for fee exemption */
@@ -2842,8 +2842,8 @@ export interface components {
             /** @description Hash lock (0x-prefixed 32-byte hex). Client generates secret, computes SHA256(secret). */
             hash_lock: string;
             /**
-             * @description Optional promo code. Its rate replaces the base fee for this swap
-             *     (rejected with 400 if unknown, expired, used up, or the swap is too large).
+             * @description Optional promo code. Its rate replaces the base fee when cheaper and its cap
+             *     may lift the route maximum (400 if unknown, expired, used up, or too large).
              */
             promo_code?: string | null;
             /** @description User's Arkade VHTLC claim key (receiver). */
@@ -3019,8 +3019,8 @@ export interface components {
             /** @description Hash lock (0x-prefixed 32-byte hex). Client generates secret, computes SHA256(secret). */
             hash_lock: string;
             /**
-             * @description Optional promo code. Its rate replaces the base fee for this swap
-             *     (rejected with 400 if unknown, expired, used up, or the swap is too large).
+             * @description Optional promo code. Its rate replaces the base fee when cheaper and its cap
+             *     may lift the route maximum (400 if unknown, expired, used up, or too large).
              */
             promo_code?: string | null;
             /** @description Optional referral code for tracking. */
@@ -3215,8 +3215,8 @@ export interface components {
              */
             lnurl?: string | null;
             /**
-             * @description Optional promo code. Its rate replaces the base fee for this swap
-             *     (rejected with 400 if unknown, expired, used up, or the swap is too large).
+             * @description Optional promo code. Its rate replaces the base fee when cheaper and its cap
+             *     may lift the route maximum (400 if unknown, expired, used up, or too large).
              */
             promo_code?: string | null;
             /** @description Optional referral code for fee exemption. */
@@ -3500,8 +3500,8 @@ export interface components {
             /** @description Optional BOLT11 invoice description (max 639 bytes). */
             invoice_description?: string | null;
             /**
-             * @description Optional promo code. Its rate replaces the base fee for this swap
-             *     (rejected with 400 if unknown, expired, used up, or the swap is too large).
+             * @description Optional promo code. Its rate replaces the base fee when cheaper and its cap
+             *     may lift the route maximum (400 if unknown, expired, used up, or too large).
              */
             promo_code?: string | null;
             /** @description Optional referral code for fee exemption */
@@ -3608,8 +3608,8 @@ export interface components {
             /** @description Shown in the payer's wallet; the server default applies when omitted. */
             invoice_description?: string | null;
             /**
-             * @description Optional promo code. Its rate replaces the base fee for this swap
-             *     (rejected with 400 if unknown, expired, used up, or the swap is too large).
+             * @description Optional promo code. Its rate replaces the base fee when cheaper and its cap
+             *     may lift the route maximum (400 if unknown, expired, used up, or too large).
              */
             promo_code?: string | null;
             referral_code?: string | null;
@@ -3759,8 +3759,8 @@ export interface components {
              */
             invoice_description?: string | null;
             /**
-             * @description Optional promo code. Its rate replaces the base fee for this swap
-             *     (rejected with 400 if unknown, expired, used up, or the swap is too large).
+             * @description Optional promo code. Its rate replaces the base fee when cheaper and its cap
+             *     may lift the route maximum (400 if unknown, expired, used up, or too large).
              */
             promo_code?: string | null;
             /** @description Optional referral code for tracking. */
@@ -4148,8 +4148,8 @@ export interface components {
              */
             extra_fees?: number | null;
             /**
-             * @description Optional promo code. Its rate replaces the base fee for this swap
-             *     (rejected with 400 if unknown, expired, used up, or the swap is too large).
+             * @description Optional promo code. Its rate replaces the base fee when cheaper and its cap
+             *     may lift the route maximum (400 if unknown, expired, used up, or too large).
              */
             promo_code?: string | null;
             /**
@@ -4180,6 +4180,14 @@ export interface components {
              *     converts once so the client never handles bps.
              */
             extra_fee_rate: number;
+            /**
+             * Format: double
+             * @description Promo rate as a decimal fraction, when `promo_code` is set. The
+             *     swap's base fee is the **lower** of it and the base fee above
+             *     (`base_fee_rate`, else the pair's `fee_percentage`); `extra_fee_rate`
+             *     is added on top.
+             */
+            promo_fee_rate?: number | null;
             /**
              * @description Human-readable partner label for the referral code, when registered.
              *     Informational (attribution / display) only.
@@ -5553,6 +5561,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Too many lookups from this client */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
         };
     };
     get_quote: {
@@ -5605,8 +5622,8 @@ export interface operations {
                  */
                 extra_fees?: number | null;
                 /**
-                 * @description Optional promo code. Its rate replaces the base fee for this swap
-                 *     (rejected with 400 if unknown, expired, used up, or the swap is too large).
+                 * @description Optional promo code. Its rate replaces the base fee when cheaper and its cap
+                 *     may lift the route maximum (400 if unknown, expired, used up, or too large).
                  */
                 promo_code?: string | null;
             };
@@ -5697,8 +5714,8 @@ export interface operations {
                  */
                 extra_fees?: number | null;
                 /**
-                 * @description Optional promo code. Its rate replaces the base fee for this swap
-                 *     (rejected with 400 if unknown, expired, used up, or the swap is too large).
+                 * @description Optional promo code. Its rate replaces the base fee when cheaper and its cap
+                 *     may lift the route maximum (400 if unknown, expired, used up, or too large).
                  */
                 promo_code?: string | null;
             };
@@ -5752,8 +5769,8 @@ export interface operations {
                  */
                 extra_fees?: number | null;
                 /**
-                 * @description Optional promo code. Its rate replaces the base fee for this swap
-                 *     (rejected with 400 if unknown, expired, used up, or the swap is too large).
+                 * @description Optional promo code. Its rate replaces the base fee when cheaper and its cap
+                 *     may lift the route maximum (400 if unknown, expired, used up, or too large).
                  */
                 promo_code?: string | null;
             };

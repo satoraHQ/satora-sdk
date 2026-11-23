@@ -94,9 +94,10 @@ export interface BtcToEvmSwapOptions {
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
   /**
-   * Optional promo code. Its rate replaces the base fee for this swap;
-   * pass it identically on the quote and the create. Rejected (400) when
-   * unknown, expired, used up, or the swap is larger than it allows.
+   * Optional promo code. Its rate replaces the base fee when cheaper, and
+   * its cap may lift the route maximum. Pass it identically on the quote
+   * and the create. Rejected (400) when unknown, expired, used up, or the
+   * swap is larger than it allows.
    */
   promoCode?: string;
 }
@@ -118,9 +119,10 @@ export interface BitcoinToEvmSwapOptions {
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
   /**
-   * Optional promo code. Its rate replaces the base fee for this swap;
-   * pass it identically on the quote and the create. Rejected (400) when
-   * unknown, expired, used up, or the swap is larger than it allows.
+   * Optional promo code. Its rate replaces the base fee when cheaper, and
+   * its cap may lift the route maximum. Pass it identically on the quote
+   * and the create. Rejected (400) when unknown, expired, used up, or the
+   * swap is larger than it allows.
    */
   promoCode?: string;
   /** Whether the server should execute the DEX swap on behalf of the user (gasless claim). Defaults to true. */
@@ -154,9 +156,10 @@ export interface LightningToEvmSwapOptions {
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
   /**
-   * Optional promo code. Its rate replaces the base fee for this swap;
-   * pass it identically on the quote and the create. Rejected (400) when
-   * unknown, expired, used up, or the swap is larger than it allows.
+   * Optional promo code. Its rate replaces the base fee when cheaper, and
+   * its cap may lift the route maximum. Pass it identically on the quote
+   * and the create. Rejected (400) when unknown, expired, used up, or the
+   * swap is larger than it allows.
    */
   promoCode?: string;
   /** Whether the server should execute the DEX swap on behalf of the user (gasless claim). Defaults to true. */
@@ -192,9 +195,10 @@ export interface BitcoinToArkadeSwapOptions {
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
   /**
-   * Optional promo code. Its rate replaces the base fee for this swap;
-   * pass it identically on the quote and the create. Rejected (400) when
-   * unknown, expired, used up, or the swap is larger than it allows.
+   * Optional promo code. Its rate replaces the base fee when cheaper, and
+   * its cap may lift the route maximum. Pass it identically on the quote
+   * and the create. Rejected (400) when unknown, expired, used up, or the
+   * swap is larger than it allows.
    */
   promoCode?: string;
 }
@@ -224,9 +228,10 @@ export interface EvmToArkadeSwapOptions {
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
   /**
-   * Optional promo code. Its rate replaces the base fee for this swap;
-   * pass it identically on the quote and the create. Rejected (400) when
-   * unknown, expired, used up, or the swap is larger than it allows.
+   * Optional promo code. Its rate replaces the base fee when cheaper, and
+   * its cap may lift the route maximum. Pass it identically on the quote
+   * and the create. Rejected (400) when unknown, expired, used up, or the
+   * swap is larger than it allows.
    */
   promoCode?: string;
 }
@@ -258,9 +263,10 @@ export interface EvmToArkadeSwapGenericOptions {
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
   /**
-   * Optional promo code. Its rate replaces the base fee for this swap;
-   * pass it identically on the quote and the create. Rejected (400) when
-   * unknown, expired, used up, or the swap is larger than it allows.
+   * Optional promo code. Its rate replaces the base fee when cheaper, and
+   * its cap may lift the route maximum. Pass it identically on the quote
+   * and the create. Rejected (400) when unknown, expired, used up, or the
+   * swap is larger than it allows.
    */
   promoCode?: string;
   /** Use gasless relay. When true, userAddress is auto-derived from the SDK EVM key. */
@@ -296,9 +302,10 @@ export interface EvmToBitcoinSwapOptions {
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
   /**
-   * Optional promo code. Its rate replaces the base fee for this swap;
-   * pass it identically on the quote and the create. Rejected (400) when
-   * unknown, expired, used up, or the swap is larger than it allows.
+   * Optional promo code. Its rate replaces the base fee when cheaper, and
+   * its cap may lift the route maximum. Pass it identically on the quote
+   * and the create. Rejected (400) when unknown, expired, used up, or the
+   * swap is larger than it allows.
    */
   promoCode?: string;
   /** Use gasless relay. When true, userAddress is auto-derived from the SDK EVM key. */
@@ -335,9 +342,10 @@ export interface ArkadeToEvmSwapOptions {
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
   /**
-   * Optional promo code. Its rate replaces the base fee for this swap;
-   * pass it identically on the quote and the create. Rejected (400) when
-   * unknown, expired, used up, or the swap is larger than it allows.
+   * Optional promo code. Its rate replaces the base fee when cheaper, and
+   * its cap may lift the route maximum. Pass it identically on the quote
+   * and the create. Rejected (400) when unknown, expired, used up, or the
+   * swap is larger than it allows.
    */
   promoCode?: string;
   /** Whether the server should execute the DEX swap on behalf of the user (gasless claim). Defaults to true. */
@@ -398,9 +406,10 @@ export interface CreateSwapOptions {
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
   /**
-   * Optional promo code. Its rate replaces the base fee for this swap;
-   * pass it identically on the quote and the create. Rejected (400) when
-   * unknown, expired, used up, or the swap is larger than it allows.
+   * Optional promo code. Its rate replaces the base fee when cheaper, and
+   * its cap may lift the route maximum. Pass it identically on the quote
+   * and the create. Rejected (400) when unknown, expired, used up, or the
+   * swap is larger than it allows.
    */
   promoCode?: string;
   /** Whether to use gasless relay for EVM funding (no wallet needed). When true, the SDK-derived EVM address is used as the depositor. */
@@ -440,9 +449,10 @@ export type LightningToArkadeSwapOptions = {
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
   /**
-   * Optional promo code. Its rate replaces the base fee for this swap;
-   * pass it identically on the quote and the create. Rejected (400) when
-   * unknown, expired, used up, or the swap is larger than it allows.
+   * Optional promo code. Its rate replaces the base fee when cheaper, and
+   * its cap may lift the route maximum. Pass it identically on the quote
+   * and the create. Rejected (400) when unknown, expired, used up, or the
+   * swap is larger than it allows.
    */
   promoCode?: string;
   /**
@@ -490,9 +500,10 @@ export type ArkadeToLightningSwapOptions = {
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
   /**
-   * Optional promo code. Its rate replaces the base fee for this swap;
-   * pass it identically on the quote and the create. Rejected (400) when
-   * unknown, expired, used up, or the swap is larger than it allows.
+   * Optional promo code. Its rate replaces the base fee when cheaper, and
+   * its cap may lift the route maximum. Pass it identically on the quote
+   * and the create. Rejected (400) when unknown, expired, used up, or the
+   * swap is larger than it allows.
    */
   promoCode?: string;
 } & (
@@ -561,9 +572,10 @@ export type EvmToLightningSwapOptions = {
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
   /**
-   * Optional promo code. Its rate replaces the base fee for this swap;
-   * pass it identically on the quote and the create. Rejected (400) when
-   * unknown, expired, used up, or the swap is larger than it allows.
+   * Optional promo code. Its rate replaces the base fee when cheaper, and
+   * its cap may lift the route maximum. Pass it identically on the quote
+   * and the create. Rejected (400) when unknown, expired, used up, or the
+   * swap is larger than it allows.
    */
   promoCode?: string;
   /** Use gasless relay. When true, userAddress is auto-derived from the SDK EVM key. */

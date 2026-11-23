@@ -261,6 +261,43 @@ describe("composeQuote — direct BTC↔pegged pivot (no DEX)", () => {
     expect(q.protocol_fee).toBe(300); // floor(100_000 × (0.002 + 0.001))
     expect(q.protocol_fee_rate).toBeCloseTo(0.003, 12);
   });
+
+  it("a promo applies only when cheaper than the base fee", async () => {
+    const pairs: Partial<ComposeQuoteDeps> = {
+      swapPairs: {
+        pairs: [
+          {
+            source: "Bitcoin",
+            target: "42161",
+            min_sats: 1000,
+            max_sats: 100_000_000,
+            fee_percentage: 0.005,
+            network_fee_sats: 0,
+          },
+        ],
+      },
+      referralExtraFeeRate: 0.001,
+    };
+    const params = {
+      sourceChain: "Bitcoin",
+      sourceToken: "btc",
+      targetChain: "42161",
+      targetToken: ARB_TBTC,
+      sourceAmount: 100_000,
+    } as const;
+
+    const cheaper = await composeQuote(
+      params,
+      deps({ ...pairs, referralPromoFeeRate: 0 }),
+    );
+    expect(cheaper.protocol_fee).toBe(100); // floor(100_000 × (0 + 0.001))
+
+    const pricier = await composeQuote(
+      params,
+      deps({ ...pairs, referralPromoFeeRate: 0.01 }),
+    );
+    expect(pricier.protocol_fee).toBe(600); // floor(100_000 × (0.005 + 0.001))
+  });
 });
 
 describe("composeQuote — bridge route-selection", () => {

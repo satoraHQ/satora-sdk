@@ -329,9 +329,10 @@ export interface ComposeQuoteParams {
   /** Per-swap extra-fee surcharge (bps), capped per referral key. */
   extraFees?: number;
   /**
-   * Optional promo code. Its rate replaces the base fee for this swap;
-   * pass it identically on the quote and the create. Rejected (400) when
-   * unknown, expired, used up, or the swap is larger than it allows.
+   * Optional promo code. Its rate replaces the base fee when cheaper, and
+   * its cap may lift the route maximum. Pass it identically on the quote
+   * and the create. Rejected (400) when unknown, expired, used up, or the
+   * swap is larger than it allows.
    */
   promoCode?: string;
   /**
@@ -366,6 +367,13 @@ export interface ComposeQuoteDeps {
    * added. Omitted for keys without a partner rate.
    */
   referralBaseFeeRate?: number;
+
+  /**
+   * Promo rate (decimal fraction) from `/referral-fee`. The base fee is the
+   * lower of it and `referralBaseFeeRate ?? fee_percentage`, mirroring the
+   * server's `with_promo`.
+   */
+  referralPromoFeeRate?: number;
 
   /**
    * DEX-leg quote primitive — `Client.getDexQuote` once bound to the
@@ -516,8 +524,7 @@ async function composeBtcToEvm(
   // the server's `effective_fee_pct = base + org_extra`, where a partner's
   // negotiated base replaces the per-pair fee.
   const effectiveFeePct =
-    (deps.referralBaseFeeRate ?? pair.fee_percentage) +
-    (deps.referralExtraFeeRate ?? 0);
+    baseFeePct(deps, pair.fee_percentage) + (deps.referralExtraFeeRate ?? 0);
   const FEE_SCALE = 10n ** 18n;
   const feePctScaled = BigInt(Math.round(effectiveFeePct * Number(FEE_SCALE)));
   const protocolFee = Number((btcSats * feePctScaled) / FEE_SCALE);
@@ -793,8 +800,7 @@ async function composeEvmToBtc(
   // point trick as composeBtcToEvm; effective rate = base + referral delta,
   // with a partner's negotiated base replacing the per-pair fee.
   const effectiveFeePct =
-    (deps.referralBaseFeeRate ?? pair.fee_percentage) +
-    (deps.referralExtraFeeRate ?? 0);
+    baseFeePct(deps, pair.fee_percentage) + (deps.referralExtraFeeRate ?? 0);
   const FEE_SCALE = 10n ** 18n;
   const feePctScaled = BigInt(Math.round(effectiveFeePct * Number(FEE_SCALE)));
   const protocolFee = Number((btcSats * feePctScaled) / FEE_SCALE);
@@ -951,4 +957,18 @@ function calculateExchangeRate(
   let frac = fracPart.toString().padStart(PRECISION, "0");
   frac = frac.replace(/0+$/, "");
   return frac.length === 0 ? intPart.toString() : `${intPart}.${frac}`;
+}
+
+/**
+ * The swap's base fee: a partner's negotiated rate replaces the pair fee, and
+ * a promo applies only when it is cheaper (the server's `with_promo`).
+ */
+function baseFeePct(
+  deps: Pick<ComposeQuoteDeps, "referralBaseFeeRate" | "referralPromoFeeRate">,
+  pairFeePct: number,
+): number {
+  const base = deps.referralBaseFeeRate ?? pairFeePct;
+  return deps.referralPromoFeeRate != null
+    ? Math.min(base, deps.referralPromoFeeRate)
+    : base;
 }

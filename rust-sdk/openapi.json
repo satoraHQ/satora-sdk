@@ -1031,6 +1031,16 @@
                 }
               }
             }
+          },
+          "429": {
+            "description": "Too many lookups from this client",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -1166,7 +1176,7 @@
           {
             "name": "promo_code",
             "in": "query",
-            "description": "Optional promo code. Its rate replaces the base fee for this swap\n(rejected with 400 if unknown, expired, used up, or the swap is too large).",
+            "description": "Optional promo code. Its rate replaces the base fee when cheaper and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large).",
             "required": false,
             "schema": {
               "type": [
@@ -1341,7 +1351,7 @@
           {
             "name": "promo_code",
             "in": "query",
-            "description": "Optional promo code. Its rate replaces the base fee for this swap\n(rejected with 400 if unknown, expired, used up, or the swap is too large).",
+            "description": "Optional promo code. Its rate replaces the base fee when cheaper and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large).",
             "required": false,
             "schema": {
               "type": [
@@ -1422,7 +1432,7 @@
           {
             "name": "promo_code",
             "in": "query",
-            "description": "Optional promo code. Its rate replaces the base fee for this swap\n(rejected with 400 if unknown, expired, used up, or the swap is too large).",
+            "description": "Optional promo code. Its rate replaces the base fee when cheaper and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large).",
             "required": false,
             "schema": {
               "type": [
@@ -3128,7 +3138,7 @@
               "string",
               "null"
             ],
-            "description": "Optional promo code. Its rate replaces the base fee for this swap\n(rejected with 400 if unknown, expired, used up, or the swap is too large)."
+            "description": "Optional promo code. Its rate replaces the base fee when cheaper and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
           },
           "referral_code": {
             "type": [
@@ -3397,7 +3407,7 @@
               "string",
               "null"
             ],
-            "description": "Optional promo code. Its rate replaces the base fee for this swap\n(rejected with 400 if unknown, expired, used up, or the swap is too large)."
+            "description": "Optional promo code. Its rate replaces the base fee when cheaper and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
           },
           "referral_code": {
             "type": [
@@ -3614,7 +3624,7 @@
               "string",
               "null"
             ],
-            "description": "Optional promo code. Its rate replaces the base fee for this swap\n(rejected with 400 if unknown, expired, used up, or the swap is too large)."
+            "description": "Optional promo code. Its rate replaces the base fee when cheaper and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
           },
           "referral_code": {
             "type": [
@@ -3727,7 +3737,7 @@
               "string",
               "null"
             ],
-            "description": "Optional promo code. Its rate replaces the base fee for this swap\n(rejected with 400 if unknown, expired, used up, or the swap is too large)."
+            "description": "Optional promo code. Its rate replaces the base fee when cheaper and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
           },
           "referral_code": {
             "type": [
@@ -4001,7 +4011,7 @@
               "string",
               "null"
             ],
-            "description": "Optional promo code. Its rate replaces the base fee for this swap\n(rejected with 400 if unknown, expired, used up, or the swap is too large)."
+            "description": "Optional promo code. Its rate replaces the base fee when cheaper and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
           },
           "referral_code": {
             "type": [
@@ -5598,7 +5608,7 @@
               "string",
               "null"
             ],
-            "description": "Optional promo code. Its rate replaces the base fee for this swap\n(rejected with 400 if unknown, expired, used up, or the swap is too large)."
+            "description": "Optional promo code. Its rate replaces the base fee when cheaper and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
           },
           "receiver_pk": {
             "type": "string",
@@ -5923,7 +5933,7 @@
               "string",
               "null"
             ],
-            "description": "Optional promo code. Its rate replaces the base fee for this swap\n(rejected with 400 if unknown, expired, used up, or the swap is too large)."
+            "description": "Optional promo code. Its rate replaces the base fee when cheaper and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
           },
           "referral_code": {
             "type": [
@@ -6254,7 +6264,7 @@
               "string",
               "null"
             ],
-            "description": "Optional promo code. Its rate replaces the base fee for this swap\n(rejected with 400 if unknown, expired, used up, or the swap is too large)."
+            "description": "Optional promo code. Its rate replaces the base fee when cheaper and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
           },
           "referral_code": {
             "type": [
@@ -6952,7 +6962,7 @@
               "string",
               "null"
             ],
-            "description": "Optional promo code. Its rate replaces the base fee for this swap\n(rejected with 400 if unknown, expired, used up, or the swap is too large)."
+            "description": "Optional promo code. Its rate replaces the base fee when cheaper and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
           },
           "referral_code": {
             "type": [
@@ -7171,7 +7181,7 @@
               "string",
               "null"
             ],
-            "description": "Optional promo code. Its rate replaces the base fee for this swap\n(rejected with 400 if unknown, expired, used up, or the swap is too large)."
+            "description": "Optional promo code. Its rate replaces the base fee when cheaper and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
           },
           "referral_code": {
             "type": [
@@ -7423,7 +7433,7 @@
               "string",
               "null"
             ],
-            "description": "Optional promo code. Its rate replaces the base fee for this swap\n(rejected with 400 if unknown, expired, used up, or the swap is too large)."
+            "description": "Optional promo code. Its rate replaces the base fee when cheaper and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
           },
           "referral_code": {
             "type": [
@@ -8046,7 +8056,7 @@
               "string",
               "null"
             ],
-            "description": "Optional promo code. Its rate replaces the base fee for this swap\n(rejected with 400 if unknown, expired, used up, or the swap is too large)."
+            "description": "Optional promo code. Its rate replaces the base fee when cheaper and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
           },
           "ref": {
             "type": [
@@ -8075,6 +8085,14 @@
             "type": "number",
             "format": "double",
             "description": "Extra fee as a **decimal fraction** (e.g. `0.005` = 0.5% = 50 bps), to be\n**added on top of** the per-pair `fee_percentage` from `/swap-pairs`\n(also a fraction) — so a client composes `fee_percentage + extra_fee_rate`\nwith no conversion. `0` when there's no/unknown referral and no\n`extra_fees`.\n\nNote the asymmetry: the *input* (`extra_fees`, the key's\n`max_extra_fee_bps`) is in **basis points** (the key-config convention);\nthis *output* is a fraction (the composition convention). The endpoint\nconverts once so the client never handles bps."
+          },
+          "promo_fee_rate": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Promo rate as a decimal fraction, when `promo_code` is set. The\nswap's base fee is the **lower** of it and the base fee above\n(`base_fee_rate`, else the pair's `fee_percentage`); `extra_fee_rate`\nis added on top."
           },
           "referral_label": {
             "type": [

@@ -1291,9 +1291,10 @@ export interface GetQuoteParams {
    */
   extraFees?: number;
   /**
-   * Optional promo code. Its rate replaces the base fee for this swap;
-   * pass it identically on the quote and the create. Rejected (400) when
-   * unknown, expired, used up, or the swap is larger than it allows.
+   * Optional promo code. Its rate replaces the base fee when cheaper, and
+   * its cap may lift the route maximum. Pass it identically on the quote
+   * and the create. Rejected (400) when unknown, expired, used up, or the
+   * swap is larger than it allows.
    */
   promoCode?: string;
   /**
@@ -1378,9 +1379,10 @@ export interface GetLightningSendQuoteParams {
    */
   extraFees?: number;
   /**
-   * Optional promo code. Its rate replaces the base fee for this swap;
-   * pass it identically on the quote and the create. Rejected (400) when
-   * unknown, expired, used up, or the swap is larger than it allows.
+   * Optional promo code. Its rate replaces the base fee when cheaper, and
+   * its cap may lift the route maximum. Pass it identically on the quote
+   * and the create. Rejected (400) when unknown, expired, used up, or the
+   * swap is larger than it allows.
    */
   promoCode?: string;
 }
@@ -2562,9 +2564,10 @@ export class Client {
     referralCode?: string;
     extraFees?: number;
     /**
-     * Optional promo code. Its rate replaces the base fee for this swap;
-     * pass it identically on the quote and the create. Rejected (400) when
-     * unknown, expired, used up, or the swap is larger than it allows.
+     * Optional promo code. Its rate replaces the base fee when cheaper, and
+     * its cap may lift the route maximum. Pass it identically on the quote
+     * and the create. Rejected (400) when unknown, expired, used up, or the
+     * swap is larger than it allows.
      */
     promoCode?: string;
   }): Promise<ReferralFeeResponse> {
@@ -2680,20 +2683,23 @@ export class Client {
     // Only fetch the referral delta when a referral / extra-fee is in play —
     // otherwise it's a guaranteed-zero round-trip. It's session-static per
     // (code, extraFees), so cache it like the other primitives.
+    // A promo code is fetched fresh every time: it can be used up or revoked
+    // at any moment, and a cached rate would quote a fee create won't charge.
+    const fetchReferralFee = () =>
+      this.getReferralFee({
+        referralCode: params.referralCode,
+        extraFees: params.extraFees,
+        promoCode: params.promoCode,
+      });
     const referralFee =
-      params.referralCode != null ||
-      params.extraFees != null ||
       params.promoCode != null
-        ? this.#composeStatic(
-            `referral-fee|${params.referralCode ?? ""}|${params.extraFees ?? ""}|${params.promoCode ?? ""}`,
-            () =>
-              this.getReferralFee({
-                referralCode: params.referralCode,
-                extraFees: params.extraFees,
-                promoCode: params.promoCode,
-              }),
-          )
-        : Promise.resolve(undefined);
+        ? fetchReferralFee()
+        : params.referralCode != null || params.extraFees != null
+          ? this.#composeStatic(
+              `referral-fee|${params.referralCode ?? ""}|${params.extraFees ?? ""}`,
+              fetchReferralFee,
+            )
+          : Promise.resolve(undefined);
     // `/swap-pairs` and `/chain-config` are static at the session timescale —
     // cache them so keystroke-driven recomputes don't re-fetch. `/network-fees`
     // tracks live gas, so it's always fetched fresh.
@@ -2709,6 +2715,7 @@ export class Client {
       chainConfig,
       referralExtraFeeRate: referral?.extra_fee_rate,
       referralBaseFeeRate: referral?.base_fee_rate,
+      referralPromoFeeRate: referral?.promo_fee_rate,
       getDexQuote: (p) => this.getDexQuote(p),
     });
   }
