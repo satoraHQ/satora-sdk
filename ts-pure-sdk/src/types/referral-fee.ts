@@ -1,3 +1,5 @@
+import type { AppliedPromo } from "./promo-code.js";
+
 /**
  * `ReferralFeeResponse` — the referral / extra-fee delta for a referral code.
  *
@@ -22,11 +24,11 @@ export interface ReferralFeeResponse {
    */
   base_fee_rate?: number;
   /**
-   * Promo rate as a decimal fraction, when a `promoCode` was passed. The
-   * base fee is the **lower** of it and `base_fee_rate ?? fee_percentage`;
-   * `extra_fee_rate` is still added on top.
+   * The promo, when a `promoCode` was passed. The base fee is the **lower**
+   * of its `fee_rate` and `base_fee_rate ?? fee_percentage`; `extra_fee_rate`
+   * is still added on top.
    */
-  promo_fee_rate?: number;
+  promo?: AppliedPromo;
   /** Partner label for the referral code, when registered. Informational. */
   referral_label?: string;
 }
@@ -34,7 +36,7 @@ export interface ReferralFeeResponse {
 export interface WireReferralFeeResponse {
   extra_fee_rate: number;
   base_fee_rate?: number | null;
-  promo_fee_rate?: number | null;
+  promo?: AppliedPromo | null;
   referral_label?: string | null;
 }
 
@@ -44,7 +46,7 @@ export function fromWireReferralFeeResponse(
   return {
     extra_fee_rate: wire.extra_fee_rate,
     base_fee_rate: wire.base_fee_rate ?? undefined,
-    promo_fee_rate: wire.promo_fee_rate ?? undefined,
+    promo: wire.promo ?? undefined,
     referral_label: wire.referral_label ?? undefined,
   };
 }

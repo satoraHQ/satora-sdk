@@ -1,16 +1,15 @@
 /**
- * What a promo code gives, from `GET /promo-codes/{code}`. Use it to show the
- * discount and keep the swap under `max_amount_sats` before quoting; pass the
- * code as `promoCode` on the quote and the create to apply it.
+ * The promo code a quote was priced with, on `QuoteResponse.promo` and
+ * `ReferralFeeResponse.promo`. The quote's `protocol_fee_rate` and
+ * `max_amount` already include it.
  */
-export interface PromoCodeResponse {
+export interface AppliedPromo {
   code: string;
-  /** Base fee with the code, as a decimal fraction (`0.001` = 0.1%). Replaces the pair's fee. */
+  /**
+   * The promo's base fee as a decimal fraction (`0.001` = 0.1%). The swap's
+   * base fee is the lower of it and the route's; any extra fee is added on top.
+   */
   fee_rate: number;
-  /** Largest swap the code applies to, in sats (BTC leg). */
+  /** Largest swap the code applies to, in sats. Lifts the route maximum when higher. */
   max_amount_sats: number;
-  /** Swaps that can still use the code. */
-  remaining_uses: number;
-  /** RFC 3339 expiry. */
-  expires_at: string;
 }

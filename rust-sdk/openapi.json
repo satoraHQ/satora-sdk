@@ -993,58 +993,6 @@
         }
       }
     },
-    "/promo-codes/{code}": {
-      "get": {
-        "tags": [
-          "swap-pairs"
-        ],
-        "summary": "Look up a promo code.",
-        "operationId": "get_promo_code",
-        "parameters": [
-          {
-            "name": "code",
-            "in": "path",
-            "description": "Promo code",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "The promo code can be used",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PromoCodeResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Unknown, revoked, expired or used-up promo code",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "Too many lookups from this client",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/quote": {
       "get": {
         "tags": [
@@ -3052,6 +3000,30 @@
       },
       "AmountU256": {
         "type": "string"
+      },
+      "AppliedPromo": {
+        "type": "object",
+        "description": "A promo code applied to a swap, as returned by `/quote` and\n`/referral-fee` so the frontend can show what it gives.",
+        "required": [
+          "code",
+          "fee_rate",
+          "max_amount_sats"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "fee_rate": {
+            "type": "number",
+            "format": "double",
+            "description": "The promo's base fee as a decimal fraction (e.g. `0.001` = 0.1%). The\nswap's base fee is the lower of it and the route's base fee; any extra\nfee is added on top."
+          },
+          "max_amount_sats": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Largest swap the code applies to, in sats, as the route's limit check\nmeasures it. Lifts the route maximum when higher."
+          }
+        }
       },
       "ArkadeToEvmSwapRequest": {
         "type": "object",
@@ -6888,6 +6860,17 @@
             "description": "Provider-quoted Lightning send fee, charged as the network fee,\nin satoshis (plus, for a fixed-lock invoice quote, the lock's\nsurplus over invoice + fees).",
             "minimum": 0
           },
+          "promo": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AppliedPromo",
+                "description": "The promo code this quote was priced with, when `promo_code` was set.\n`protocol_fee_rate` and `max_amount_sats` already include it."
+              }
+            ]
+          },
           "protocol_fee_rate": {
             "type": "number",
             "format": "double",
@@ -7803,40 +7786,6 @@
           }
         }
       },
-      "PromoCodeResponse": {
-        "type": "object",
-        "required": [
-          "code",
-          "fee_rate",
-          "max_amount_sats",
-          "remaining_uses",
-          "expires_at"
-        ],
-        "properties": {
-          "code": {
-            "type": "string"
-          },
-          "expires_at": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "fee_rate": {
-            "type": "number",
-            "format": "double",
-            "description": "Base fee for a swap using this code, as a decimal fraction (e.g.\n`0.001` = 0.1%). Replaces the pair's `fee_percentage`."
-          },
-          "max_amount_sats": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Largest swap the code applies to, in sats (BTC leg)."
-          },
-          "remaining_uses": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Swaps that can still use the code."
-          }
-        }
-      },
       "QuoteResponse": {
         "type": "object",
         "required": [
@@ -7897,6 +7846,17 @@
             "format": "int64",
             "description": "Network fee estimate (in satoshis) — covers server-paid gas for HTLC\ncreate/claim + BTC mining fee when applicable.",
             "minimum": 0
+          },
+          "promo": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AppliedPromo",
+                "description": "The promo code this quote was priced with, when `promo_code` was set.\n`protocol_fee_rate` and `max_amount` already include it."
+              }
+            ]
           },
           "protocol_fee": {
             "type": "integer",
@@ -8086,13 +8046,16 @@
             "format": "double",
             "description": "Extra fee as a **decimal fraction** (e.g. `0.005` = 0.5% = 50 bps), to be\n**added on top of** the per-pair `fee_percentage` from `/swap-pairs`\n(also a fraction) — so a client composes `fee_percentage + extra_fee_rate`\nwith no conversion. `0` when there's no/unknown referral and no\n`extra_fees`.\n\nNote the asymmetry: the *input* (`extra_fees`, the key's\n`max_extra_fee_bps`) is in **basis points** (the key-config convention);\nthis *output* is a fraction (the composition convention). The endpoint\nconverts once so the client never handles bps."
           },
-          "promo_fee_rate": {
-            "type": [
-              "number",
-              "null"
-            ],
-            "format": "double",
-            "description": "Promo rate as a decimal fraction, when `promo_code` is set. The\nswap's base fee is the **lower** of it and the base fee above\n(`base_fee_rate`, else the pair's `fee_percentage`); `extra_fee_rate`\nis added on top."
+          "promo": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AppliedPromo",
+                "description": "The promo, when `promo_code` is set. The swap's base fee is the\n**lower** of its `fee_rate` and the base fee above (`base_fee_rate`,\nelse the pair's `fee_percentage`); `extra_fee_rate` is added on top."
+              }
+            ]
           },
           "referral_label": {
             "type": [

@@ -410,6 +410,7 @@ export {
 } from "./tokens.js";
 // Hand-written SDK types (decoupled from OpenAPI codegen).
 export type {
+  AppliedPromo,
   Chain,
   ChainConfigEntry,
   ChainConfigResponse,
@@ -418,7 +419,6 @@ export type {
   NetworkFee,
   NetworkFeePairEntry,
   NetworkFeesResponse,
-  PromoCodeResponse,
   QuoteResponse,
   SwapPairInfo,
   SwapPairsResponse,

@@ -241,6 +241,7 @@ import {
   toChainName,
 } from "./tokens.js";
 import {
+  type AppliedPromo,
   type Chain,
   type ChainConfigResponse,
   type DexQuoteAmount,
@@ -252,7 +253,6 @@ import {
   fromWireReferralFeeResponse,
   fromWireSwapPairsResponse,
   type NetworkFeesResponse,
-  type PromoCodeResponse,
   type QuoteResponse,
   type ReferralFeeResponse,
   type SwapPairsResponse,
@@ -1423,6 +1423,11 @@ export interface LightningSendQuote {
    * already sats.
    */
   exchangeRate: string;
+  /**
+   * The promo code this quote was priced with, when `promoCode` was passed.
+   * `protocolFeeRate` and `maxAmountSats` already include it.
+   */
+  promo?: AppliedPromo;
 }
 
 /**
@@ -2587,24 +2592,6 @@ export class Client {
   }
 
   /**
-   * Look up a promo code: its fee rate, the largest swap it applies to, uses
-   * left and expiry. Throws with the server's reason when the code is
-   * unknown, revoked, expired or used up.
-   */
-  async getPromoCode(code: string): Promise<PromoCodeResponse> {
-    const { data, error } = await this.#apiClient.GET("/promo-codes/{code}", {
-      params: { path: { code } },
-    });
-    if (error || !data) {
-      const reason =
-        (error as { error?: string } | undefined)?.error ??
-        JSON.stringify(error);
-      throw new Error(`Invalid promo code: ${reason}`);
-    }
-    return data as PromoCodeResponse;
-  }
-
-  /**
    * Per-pair network-fee estimates in sats at current gas/mining prices.
    *
    * One of three primitives a client combines to compose an end-to-end
@@ -2715,7 +2702,7 @@ export class Client {
       chainConfig,
       referralExtraFeeRate: referral?.extra_fee_rate,
       referralBaseFeeRate: referral?.base_fee_rate,
-      referralPromoFeeRate: referral?.promo_fee_rate,
+      referralPromo: referral?.promo,
       getDexQuote: (p) => this.getDexQuote(p),
     });
   }
@@ -2898,6 +2885,7 @@ export class Client {
       minAmountSats: data.min_amount_sats,
       maxAmountSats: data.max_amount_sats,
       exchangeRate: data.exchange_rate,
+      promo: data.promo ?? undefined,
     };
   }
 
@@ -2966,6 +2954,7 @@ export class Client {
       target_amount: targetAmountOut,
       net_source_amount: q.sourceAmount,
       net_target_amount: String(q.targetAmountSats),
+      promo: q.promo,
     };
   }
 

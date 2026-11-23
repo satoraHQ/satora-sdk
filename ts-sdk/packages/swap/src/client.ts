@@ -344,13 +344,6 @@ export class Client {
   }
 
   /** Delegated to the legacy client (migration checkpoint). */
-  getPromoCode(
-    ...args: Parameters<LegacyClient["getPromoCode"]>
-  ): ReturnType<LegacyClient["getPromoCode"]> {
-    return this.#legacy.getPromoCode(...args);
-  }
-
-  /** Delegated to the legacy client (migration checkpoint). */
   getNetworkFees(
     ...args: Parameters<LegacyClient["getNetworkFees"]>
   ): ReturnType<LegacyClient["getNetworkFees"]> {

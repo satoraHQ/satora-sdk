@@ -1,3 +1,5 @@
+import type { AppliedPromo } from "./promo-code.js";
+
 /**
  * `QuoteResponse` — end-to-end pricing for a swap between BTC and an
  * EVM/Arkade/Lightning target.
@@ -57,6 +59,11 @@ export interface QuoteResponse {
    * request, or for inbound CCTP swaps.
    */
   bridge_fee?: number | null;
+  /**
+   * The promo code this quote was priced with, when `promoCode` was passed.
+   * `protocol_fee_rate` and `max_amount` already include it.
+   */
+  promo?: AppliedPromo;
 }
 
 /**
@@ -76,6 +83,7 @@ export interface WireQuoteResponse {
   net_source_amount: string;
   net_target_amount: string;
   bridge_fee?: number | null;
+  promo?: AppliedPromo | null;
 }
 
 /**
@@ -99,5 +107,6 @@ export function fromWireQuoteResponse(wire: WireQuoteResponse): QuoteResponse {
     net_source_amount: wire.net_source_amount,
     net_target_amount: wire.net_target_amount,
     bridge_fee: wire.bridge_fee ?? undefined,
+    promo: wire.promo ?? undefined,
   };
 }

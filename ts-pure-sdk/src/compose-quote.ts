@@ -28,6 +28,7 @@
 
 import { isCctpRoutedUsdcTarget } from "./tokens.js";
 import type {
+  AppliedPromo,
   Chain,
   ChainConfigResponse,
   DexQuoteResponse,
@@ -369,11 +370,11 @@ export interface ComposeQuoteDeps {
   referralBaseFeeRate?: number;
 
   /**
-   * Promo rate (decimal fraction) from `/referral-fee`. The base fee is the
-   * lower of it and `referralBaseFeeRate ?? fee_percentage`, mirroring the
-   * server's `with_promo`.
+   * Promo from `/referral-fee`. The base fee is the lower of its `fee_rate`
+   * and `referralBaseFeeRate ?? fee_percentage`, and its `max_amount_sats`
+   * lifts the pair maximum, mirroring the server's `with_promo`.
    */
-  referralPromoFeeRate?: number;
+  referralPromo?: AppliedPromo;
 
   /**
    * DEX-leg quote primitive — `Client.getDexQuote` once bound to the
@@ -575,7 +576,7 @@ async function composeBtcToEvm(
     protocol_fee: protocolFee,
     protocol_fee_rate: effectiveFeePct,
     min_amount: pair.min_sats,
-    max_amount: pair.max_sats,
+    max_amount: maxSats(deps, pair.max_sats),
     source_amount: btcSats.toString(),
     // Source-pinned: `evmSmallest` is the delivered (fee-netted) DEX output, so
     // gross it back up by the bridge fee — `target_amount` is the gross output
@@ -591,6 +592,7 @@ async function composeBtcToEvm(
     net_source_amount: netSource.toString(),
     net_target_amount: netTarget.toString(),
     bridge_fee: bridgeFee > 0n ? Number(bridgeFee) : undefined,
+    promo: deps.referralPromo,
   };
 }
 
@@ -831,7 +833,7 @@ async function composeEvmToBtc(
     protocol_fee: protocolFee,
     protocol_fee_rate: effectiveFeePct,
     min_amount: pair.min_sats,
-    max_amount: pair.max_sats,
+    max_amount: maxSats(deps, pair.max_sats),
     // EVM→BTC: the EVM source is the bridged side. The dex-quote already
     // reports `evmSmallest` as the gross the user supplies (the inbound fee was
     // folded onto it), so `source_amount` needs no adjustment — just surface
@@ -841,6 +843,7 @@ async function composeEvmToBtc(
     net_source_amount: netSource.toString(),
     net_target_amount: netTarget.toString(),
     bridge_fee: bridgeFee > 0n ? Number(bridgeFee) : undefined,
+    promo: deps.referralPromo,
   };
 }
 
@@ -964,11 +967,21 @@ function calculateExchangeRate(
  * a promo applies only when it is cheaper (the server's `with_promo`).
  */
 function baseFeePct(
-  deps: Pick<ComposeQuoteDeps, "referralBaseFeeRate" | "referralPromoFeeRate">,
+  deps: Pick<ComposeQuoteDeps, "referralBaseFeeRate" | "referralPromo">,
   pairFeePct: number,
 ): number {
   const base = deps.referralBaseFeeRate ?? pairFeePct;
-  return deps.referralPromoFeeRate != null
-    ? Math.min(base, deps.referralPromoFeeRate)
+  return deps.referralPromo
+    ? Math.min(base, deps.referralPromo.fee_rate)
     : base;
+}
+
+/** The pair maximum, lifted to the promo's cap when that is higher. */
+function maxSats(
+  deps: Pick<ComposeQuoteDeps, "referralPromo">,
+  pairMaxSats: number,
+): number {
+  return deps.referralPromo
+    ? Math.max(pairMaxSats, deps.referralPromo.max_amount_sats)
+    : pairMaxSats;
 }

@@ -286,17 +286,61 @@ describe("composeQuote — direct BTC↔pegged pivot (no DEX)", () => {
       sourceAmount: 100_000,
     } as const;
 
+    const free = { code: "FREE", fee_rate: 0, max_amount_sats: 1_000_000 };
     const cheaper = await composeQuote(
       params,
-      deps({ ...pairs, referralPromoFeeRate: 0 }),
+      deps({ ...pairs, referralPromo: free }),
     );
     expect(cheaper.protocol_fee).toBe(100); // floor(100_000 × (0 + 0.001))
+    expect(cheaper.promo).toEqual(free);
 
+    const pricey = { code: "PRICEY", fee_rate: 0.01, max_amount_sats: 1 };
     const pricier = await composeQuote(
       params,
-      deps({ ...pairs, referralPromoFeeRate: 0.01 }),
+      deps({ ...pairs, referralPromo: pricey }),
     );
     expect(pricier.protocol_fee).toBe(600); // floor(100_000 × (0.005 + 0.001))
+  });
+
+  it("a promo lifts but never lowers the pair maximum", async () => {
+    const pairs: Partial<ComposeQuoteDeps> = {
+      swapPairs: {
+        pairs: [
+          {
+            source: "Bitcoin",
+            target: "42161",
+            min_sats: 1000,
+            max_sats: 20_000_000,
+            fee_percentage: 0.005,
+            network_fee_sats: 0,
+          },
+        ],
+      },
+    };
+    const params = {
+      sourceChain: "Bitcoin",
+      sourceToken: "btc",
+      targetChain: "42161",
+      targetToken: ARB_TBTC,
+      sourceAmount: 100_000,
+    } as const;
+    const promo = (max_amount_sats: number) => ({
+      code: "BIG",
+      fee_rate: 0,
+      max_amount_sats,
+    });
+
+    const lifted = await composeQuote(
+      params,
+      deps({ ...pairs, referralPromo: promo(25_000_000) }),
+    );
+    expect(lifted.max_amount).toBe(25_000_000);
+
+    const kept = await composeQuote(
+      params,
+      deps({ ...pairs, referralPromo: promo(1_000_000) }),
+    );
+    expect(kept.max_amount).toBe(20_000_000);
   });
 });
 

@@ -402,23 +402,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/promo-codes/{code}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Look up a promo code. */
-        get: operations["get_promo_code"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/quote": {
         parameters: {
             query?: never;
@@ -1281,6 +1264,26 @@ export interface components {
             entry_point: string;
         };
         AmountU256: string;
+        /**
+         * @description A promo code applied to a swap, as returned by `/quote` and
+         *     `/referral-fee` so the frontend can show what it gives.
+         */
+        AppliedPromo: {
+            code: string;
+            /**
+             * Format: double
+             * @description The promo's base fee as a decimal fraction (e.g. `0.001` = 0.1%). The
+             *     swap's base fee is the lower of it and the route's base fee; any extra
+             *     fee is added on top.
+             */
+            fee_rate: number;
+            /**
+             * Format: int64
+             * @description Largest swap the code applies to, in sats, as the route's limit check
+             *     measures it. Lifts the route maximum when higher.
+             */
+            max_amount_sats: number;
+        };
         /**
          * @description Chain-agnostic request for Arkade-to-EVM swaps.
          *
@@ -3447,6 +3450,7 @@ export interface components {
              *     surplus over invoice + fees).
              */
             network_fee_sats: number;
+            promo?: null | components["schemas"]["AppliedPromo"];
             /**
              * Format: double
              * @description Protocol fee rate (as decimal, e.g. 0.003 = 0.30%).
@@ -3983,27 +3987,6 @@ export interface components {
              */
             timelock: number;
         };
-        PromoCodeResponse: {
-            code: string;
-            /** Format: date-time */
-            expires_at: string;
-            /**
-             * Format: double
-             * @description Base fee for a swap using this code, as a decimal fraction (e.g.
-             *     `0.001` = 0.1%). Replaces the pair's `fee_percentage`.
-             */
-            fee_rate: number;
-            /**
-             * Format: int64
-             * @description Largest swap the code applies to, in sats (BTC leg).
-             */
-            max_amount_sats: number;
-            /**
-             * Format: int64
-             * @description Swaps that can still use the code.
-             */
-            remaining_uses: number;
-        };
         QuoteResponse: {
             /**
              * Format: int64
@@ -4048,6 +4031,7 @@ export interface components {
              *     create/claim + BTC mining fee when applicable.
              */
             network_fee: number;
+            promo?: null | components["schemas"]["AppliedPromo"];
             /**
              * Format: int64
              * @description Protocol fee (in satoshis)
@@ -4180,14 +4164,7 @@ export interface components {
              *     converts once so the client never handles bps.
              */
             extra_fee_rate: number;
-            /**
-             * Format: double
-             * @description Promo rate as a decimal fraction, when `promo_code` is set. The
-             *     swap's base fee is the **lower** of it and the base fee above
-             *     (`base_fee_rate`, else the pair's `fee_percentage`); `extra_fee_rate`
-             *     is added on top.
-             */
-            promo_fee_rate?: number | null;
+            promo?: null | components["schemas"]["AppliedPromo"];
             /**
              * @description Human-readable partner label for the referral code, when registered.
              *     Informational (attribution / display) only.
@@ -5527,47 +5504,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["NetworkFeesResponse"];
-                };
-            };
-        };
-    };
-    get_promo_code: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Promo code */
-                code: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description The promo code can be used */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PromoCodeResponse"];
-                };
-            };
-            /** @description Unknown, revoked, expired or used-up promo code */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Too many lookups from this client */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };

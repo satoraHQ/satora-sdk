@@ -33,7 +33,7 @@ export {
   type NetworkFeesResponse,
   type WireNetworkFeesResponse,
 } from "./network-fees.js";
-export type { PromoCodeResponse } from "./promo-code.js";
+export type { AppliedPromo } from "./promo-code.js";
 export {
   fromWireQuoteResponse,
   type QuoteResponse,
