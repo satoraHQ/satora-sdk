@@ -1,5 +1,16 @@
 # @satora/swap
 
+## 1.12.0
+
+### Minor Changes
+
+- d7f221d: Support native Spark BTC to EVM swaps, including creation, validated HTLC funding terms, persisted recovery, tracking, and EVM claims.
+- 4e3099d: Add promo codes: `promoCode` on quotes and `createSwap`; quotes priced with a code carry it as `promo`.
+
+### Patch Changes
+
+- b03d120: Target backend 0.3.30 in the x-satora-server-version header.
+
 ## 1.11.1
 
 ### Patch Changes
