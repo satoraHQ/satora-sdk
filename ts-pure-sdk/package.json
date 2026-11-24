@@ -85,7 +85,7 @@
     "tsup": "^8.5.1",
     "typescript": "^5.7.0",
     "viem": "2.52.2",
-    "vitest": "^3.0.0"
+    "vitest": "^4.1.11"
   },
   "keywords": [
     "lendaswap",
