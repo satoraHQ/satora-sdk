@@ -93,9 +93,8 @@ pub struct GaslessOpts {
     /// for the swap's deposit chain. Override with a private provider
     /// (Alchemy / Infura / a self-hosted node) for production volume.
     pub node_rpc_url: Option<Url>,
-    /// Paymaster context (e.g. `{"policyId":"<uuid>"}` for Alchemy Gas
-    /// Manager). Ignored when the backend returns no paymaster.
-    /// `None` => `Value::Null`.
+    /// Paymaster context. Ignored when the backend returns no paymaster.
+    /// `None` uses the policy the backend publishes, as `{"policyId":"<uuid>"}`.
     pub paymaster_context: Option<Value>,
     /// Skip `eth_estimateUserOperationGas` with these limits — see
     /// [`GasOverrides`] for when this matters.

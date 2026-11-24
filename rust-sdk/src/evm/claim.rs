@@ -220,8 +220,24 @@ impl Client {
         calls: Vec<crate::types::DexCall>,
         max_native_fee: U256,
     ) -> Result<EvmReceipt> {
+        self.claim_evm_with_native_fee_if(id, wallet, options, calls, max_native_fee, &|| Ok(()))
+            .await
+    }
+
+    /// [`Self::claim_evm_with_native_fee`], refused unless `precondition` passes
+    /// under the claim lock, before anything is checked or sent.
+    pub(crate) async fn claim_evm_with_native_fee_if(
+        &self,
+        id: &str,
+        wallet: &dyn EvmWallet,
+        options: EvmClaimOptions,
+        calls: Vec<crate::types::DexCall>,
+        max_native_fee: U256,
+        precondition: &(dyn Fn() -> Result<()> + Sync),
+    ) -> Result<EvmReceipt> {
         crate::runtime::timeout(options.timeout, async {
             let _execution = self.evm_execution.lock().await;
+            precondition()?;
             let (material, tx) = self
                 .prepare_evm_claim(id, wallet, &options, calls, max_native_fee)
                 .await?;
@@ -446,8 +462,34 @@ impl Client {
         config: &crate::aa::UserOpConfig,
         max_native_fee: U256,
     ) -> Result<crate::aa::orchestrate::FundSwapReceipt> {
+        self.claim_evm_userop_with_native_fee_if(
+            id,
+            wallet,
+            options,
+            calls,
+            config,
+            max_native_fee,
+            &|| Ok(()),
+        )
+        .await
+    }
+
+    /// [`Self::claim_evm_userop_with_native_fee`], refused unless `precondition`
+    /// passes under the claim lock, before anything is checked or sent.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn claim_evm_userop_with_native_fee_if(
+        &self,
+        id: &str,
+        wallet: &dyn EvmWallet,
+        options: EvmClaimOptions,
+        calls: Vec<crate::types::DexCall>,
+        config: &crate::aa::UserOpConfig,
+        max_native_fee: U256,
+        precondition: &(dyn Fn() -> Result<()> + Sync),
+    ) -> Result<crate::aa::orchestrate::FundSwapReceipt> {
         crate::runtime::timeout(options.timeout, async {
             let _execution = self.evm_execution.lock().await;
+            precondition()?;
             let stored = self
                 .get_stored_swap(id)?
                 .ok_or_else(|| invalid("swap record missing"))?;

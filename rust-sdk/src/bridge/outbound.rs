@@ -326,10 +326,17 @@ impl Client {
                 let (bridge_calls,budget)=request.bridge.calls(wallet,&options).await?;
                 if request.dex_calls.iter().any(|call|call.value!="0") {return Err(invalid("DEX native value must be zero; only bridge fees are approved"));}
                 let mut calls=request.dex_calls; calls.extend(bridge_calls);
+                // A concurrent call may have pinned its own route since this one did. Checked
+                // under the lock that reserves the claim, so a resume rebuilds the route that
+                // was signed.
+                let pinned=||match self.bridge_operation(id,"outbound_claim")? {
+                    Some(route) if route.intent==intent => Ok(()),
+                    _ => Err(invalid("a concurrent claim replaced the outbound route; retry")),
+                };
                 match mode {
-                    BridgeSubmission::Wallet=>self.claim_evm_with_native_fee(id,wallet,options.clone(),calls,budget).await?,
+                    BridgeSubmission::Wallet=>self.claim_evm_with_native_fee_if(id,wallet,options.clone(),calls,budget,&pinned).await?,
                     BridgeSubmission::UserOperation(config)=>{
-                        let receipt=self.claim_evm_userop_with_native_fee(id,wallet,options.clone(),calls,config,budget).await?;
+                        let receipt=self.claim_evm_userop_with_native_fee_if(id,wallet,options.clone(),calls,config,budget,&pinned).await?;
                         let hash=receipt.transaction_hash.ok_or_else(||invalid("outbound claim UserOperation pending"))?;
                         wallet.wait_for_receipt(hash).await?
                     }
@@ -337,7 +344,6 @@ impl Client {
             };
             self.verify_evm_claim_receipt(id,wallet,&options,&receipt).await?;
             let result=request.bridge.verify(&receipt,options.coordinator)?;
-            // The verified receipt proves this call's route, whichever pin a concurrent call left.
             self.save_bridge_operation(id,"outbound_claim",BridgeOperation {intent,transaction_hash:Some(receipt.transaction_hash.to_string()),user_operation_hash:None,complete:true})?;
             Ok(result)
         }).await.map_err(|_|crate::Error::Timeout("outbound bridge claim deadline exceeded; inspect persisted claim".into()))?

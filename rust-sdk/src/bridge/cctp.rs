@@ -345,10 +345,15 @@ impl CctpMessage {
     }
 }
 
+/// One entry of Circle's `GET /v2/messages`. Until the attestation is ready,
+/// `message` is `"0x"` and `attestation` is `"PENDING"` or `null`, both read
+/// as not complete.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CctpAttestation {
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub message: String,
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub attestation: String,
     pub status: String,
     pub event_nonce: Option<String>,
@@ -358,6 +363,12 @@ pub struct CctpAttestation {
     #[serde(default)]
     pub destination_mint_tx_hash: Option<String>,
 }
+fn null_as_empty<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<String, D::Error> {
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 impl CctpAttestation {
     pub fn receive_calldata(&self, burn: &CctpBurn) -> Result<Bytes> {
         let message: Bytes = self

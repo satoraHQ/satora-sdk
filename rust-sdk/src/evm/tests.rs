@@ -1909,6 +1909,89 @@ async fn outbound_cctp_claim_approves_the_whole_balance_and_accepts_a_burn_above
     );
 }
 
+/// Two claims with different quotes queue on the claim lock, so the second pins
+/// its route after the first pinned and before the first reserves. The first is
+/// refused before it signs, and the journal names the route that was signed.
+#[tokio::test]
+async fn a_claim_whose_route_a_concurrent_claim_replaced_is_refused_before_it_signs() {
+    use crate::bridge::BridgeSubmission;
+    use crate::bridge::OutboundBridge;
+    use crate::bridge::OutboundClaim;
+    use crate::bridge::cctp;
+    let (client, mut wallet, store) = arbitrum_claim();
+    let route = |max_fee: u64| {
+        let mut burn = crate::bridge::tests::burn();
+        burn.source_chain_id = 42161;
+        burn.source_domain = 3;
+        burn.destination_domain = 6;
+        burn.burn_token = cctp::CctpChain::for_chain(42161).unwrap().usdc;
+        burn.sender = cctp::ARBITRUM_ADAPTER;
+        burn.max_fee = U256::from(max_fee);
+        burn
+    };
+    let (quoted, requoted) = (route(50_000), route(70_000));
+    wallet.extra_logs.push(event_log(
+        cctp::MessageSent {
+            message: crate::bridge::tests::message(&requoted).into(),
+        },
+        requoted.source_transmitter,
+    ));
+    let mut options = claim_options(&wallet);
+    options.sweep_token = quoted.burn_token;
+    options.min_amount_out = U256::ZERO;
+    let claim = |burn: cctp::CctpBurn| {
+        client.claim_evm_to_bridge(
+            "test",
+            &wallet,
+            options.clone(),
+            OutboundClaim {
+                dex_calls: vec![outbound_dex_call()],
+                bridge: OutboundBridge::Cctp {
+                    burn,
+                    minimum_amount: U256::from(8_900_000),
+                },
+            },
+            BridgeSubmission::Wallet,
+        )
+    };
+    let held = client.evm_execution.lock().await;
+    let mut first = std::pin::pin!(claim(quoted));
+    let mut second = std::pin::pin!(claim(requoted));
+    std::future::poll_fn(|cx| {
+        assert!(first.as_mut().poll(cx).is_pending());
+        assert!(second.as_mut().poll(cx).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+    drop(held);
+    let (first, second) = tokio::join!(first, second);
+    let error = first.unwrap_err();
+    assert!(
+        error.to_string().contains("replaced the outbound route"),
+        "{error}"
+    );
+    second.unwrap();
+    let journal = store
+        .get_swap("test")
+        .unwrap()
+        .unwrap()
+        .metadata
+        .bridge_operations
+        .unwrap()["outbound_claim"]
+        .clone();
+    assert!(journal.complete);
+    let OutboundBridge::Cctp { burn, .. } =
+        serde_json::from_value(journal.intent["bridge"].clone()).unwrap()
+    else {
+        panic!("expected a CCTP route")
+    };
+    assert_eq!(burn.max_fee, U256::from(70_000));
+    assert_eq!(wallet.sent.lock().unwrap().len(), 1);
+    let (calls, _) = signed_calls(&wallet);
+    let bridge = cctp::bridgeBalanceCall::abi_decode(&calls[2].2).unwrap();
+    assert_eq!(bridge.maxFee, U256::from(70_000));
+}
+
 #[tokio::test]
 async fn outbound_usdt0_claim_approves_the_whole_balance_and_accepts_a_send_above_the_quote() {
     use crate::bridge::BridgeSubmission;
