@@ -11,6 +11,12 @@
 import type { BitcoinHtlcFacts } from "./bitcoin.js";
 import type { BitcoinChainReader } from "./bitcoin-manager.js";
 
+/**
+ * Most outputs a client's funding is counted from, as the server's on-chain
+ * HTLC watcher counts it.
+ */
+export const MAX_FUNDING_OUTPUTS = 2;
+
 /** The slice of esplora's tx JSON we read. */
 type EsploraTx = {
   vin: Array<{
@@ -73,38 +79,41 @@ export function htlcFactsFromEsploraTxs(
         spendWitness: spend.witness ?? [],
       };
   }
-  // Among all txs paying the address, the one paying the MOST is the funding
-  // candidate — matching the pure SDK's UTXO lookup. The address is public,
-  // so a stray dust payment must not be mistaken for the funding and observe
-  // the swap as underfunded/invalid.
-  const paidSats = (tx: EsploraTx): number =>
-    tx.vout
-      .filter((vout) => vout.scriptpubkey_address === address)
-      .reduce((sum, vout) => sum + (vout.value ?? 0), 0);
-  let funding: EsploraTx | undefined;
-  let fundedSats = 0;
-  for (const tx of txs) {
-    const paid = paidSats(tx);
-    if (paid > fundedSats) {
-      funding = tx;
-      fundedSats = paid;
-    }
-  }
-  if (funding) {
+  // The funding is counted from the outputs paying the address, the
+  // largest first and at most MAX_FUNDING_OUTPUTS of them, as the server's
+  // watcher counts it: a client that sent too little can top up with a
+  // second transaction. Largest first also keeps a stray dust payment (the
+  // address is public) from being mistaken for the funding and observing
+  // the swap as underfunded/invalid. The server may count fewer outputs (it
+  // leaves out a second one not worth its claim fee), but its own leg is
+  // verified independently before anything is claimed.
+  const outputs = txs
+    .flatMap((tx) =>
+      tx.vout
+        .filter((vout) => vout.scriptpubkey_address === address)
+        .map((vout) => ({ tx, sats: vout.value ?? 0 })),
+    )
+    .filter((output) => output.sats > 0)
+    .sort((a, b) => b.sats - a.sats)
+    .slice(0, MAX_FUNDING_OUTPUTS);
+  if (outputs.length > 0) {
     const minConf = opts?.minConfirmations ?? 0;
-    let deepEnough: boolean;
-    if (funding.status?.confirmed) {
-      deepEnough =
-        minConf <= 1 ||
-        (opts?.tipHeight !== undefined &&
-          funding.status.block_height !== undefined &&
-          opts.tipHeight - funding.status.block_height + 1 >= minConf);
-    } else {
-      deepEnough = minConf === 0;
-    }
+    const deepEnough = (tx: EsploraTx): boolean => {
+      if (tx.status?.confirmed) {
+        return (
+          minConf <= 1 ||
+          (opts?.tipHeight !== undefined &&
+            tx.status.block_height !== undefined &&
+            opts.tipHeight - tx.status.block_height + 1 >= minConf)
+        );
+      }
+      return minConf === 0;
+    };
     return {
-      funding: deepEnough ? "confirmed" : "mempool",
-      fundedSats,
+      funding: outputs.every((output) => deepEnough(output.tx))
+        ? "confirmed"
+        : "mempool",
+      fundedSats: outputs.reduce((sum, output) => sum + output.sats, 0),
     };
   }
   return { funding: "absent", fundedSats: 0 };

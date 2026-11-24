@@ -81,7 +81,7 @@ describe("htlcFactsFromEsploraTxs", () => {
     });
   });
 
-  it("picks the tx paying the most, not the first listed", () => {
+  it("counts the largest outputs, not the first listed", () => {
     // Esplora lists address txs newest-first, and the address is public —
     // a stray dust payment listed before the real funding must not observe
     // the swap as underfunded.
@@ -89,8 +89,42 @@ describe("htlcFactsFromEsploraTxs", () => {
       htlcFactsFromEsploraTxs([fundingTx(false, 330), fundingTx(true)], ADDR),
     ).toEqual({
       funding: "confirmed",
-      fundedSats: 5000,
+      fundedSats: 5330,
     });
+  });
+
+  it("sums a funding split over two transactions, as the server counts it", () => {
+    // A client that sent too little topped up: 60k + 40k for a 100k quote.
+    expect(
+      htlcFactsFromEsploraTxs(
+        [fundingTx(true, 40_000), fundingTx(true, 60_000)],
+        ADDR,
+        { minConfirmations: 1 },
+      ),
+    ).toEqual({ funding: "confirmed", fundedSats: 100_000 });
+  });
+
+  it("counts at most the two largest outputs", () => {
+    expect(
+      htlcFactsFromEsploraTxs(
+        [
+          fundingTx(true, 20_000),
+          fundingTx(true, 50_000),
+          fundingTx(true, 30_000),
+        ],
+        ADDR,
+      ).fundedSats,
+    ).toBe(80_000);
+  });
+
+  it("waits for a top-up still in the mempool to meet the depth policy", () => {
+    expect(
+      htlcFactsFromEsploraTxs(
+        [fundingTx(false, 40_000), fundingTx(true, 60_000)],
+        ADDR,
+        { minConfirmations: 1 },
+      ),
+    ).toEqual({ funding: "mempool", fundedSats: 100_000 });
   });
 
   it("returns the spend witness once the HTLC output is spent", () => {

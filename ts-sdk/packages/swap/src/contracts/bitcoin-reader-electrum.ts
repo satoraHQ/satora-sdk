@@ -24,6 +24,7 @@ import type { BitcoinHtlcFacts } from "./bitcoin.js";
 import type { BitcoinChainReader } from "./bitcoin-manager.js";
 import {
   type BitcoinReaderPolicy,
+  MAX_FUNDING_OUTPUTS,
   resolveMinConfirmations,
 } from "./bitcoin-reader-esplora.js";
 
@@ -144,24 +145,26 @@ export function electrumReader(
       return indices;
     };
 
-    // Among all txs paying the address, the one paying the MOST is the
-    // funding candidate — same rule as the pure SDK's UTXO lookup. The
-    // address is public, so a stray dust payment (whether it landed before
-    // or after the real funding) must not be mistaken for the funding and
-    // observe the swap as underfunded/invalid.
-    let funding: (typeof txs)[number] | undefined;
-    let fundedSats = 0;
-    for (const candidate of txs) {
-      let paid = 0;
-      for (const i of outputIndicesPaying(candidate.tx))
-        paid += Number(candidate.tx.getOutput(i).amount ?? 0n);
-      if (paid > fundedSats) {
-        funding = candidate;
-        fundedSats = paid;
-      }
-    }
-    if (!funding) return { funding: "absent", fundedSats: 0 };
-    const fundedVouts = outputIndicesPaying(funding.tx);
+    // The funding is counted from the outputs paying the address, the
+    // largest first and at most MAX_FUNDING_OUTPUTS of them, as the server's
+    // watcher counts it: a client that sent too little can top up with a
+    // second transaction. Largest first also keeps a stray dust payment (the
+    // address is public, so one can land before or after the real funding)
+    // from being mistaken for the funding and observing the swap as
+    // underfunded/invalid. The server's own leg is verified independently
+    // before anything is claimed.
+    const outputs = txs
+      .flatMap((candidate) =>
+        outputIndicesPaying(candidate.tx).map((vout) => ({
+          candidate,
+          vout,
+          sats: Number(candidate.tx.getOutput(vout).amount ?? 0n),
+        })),
+      )
+      .filter((output) => output.sats > 0)
+      .sort((a, b) => b.sats - a.sats)
+      .slice(0, MAX_FUNDING_OUTPUTS);
+    if (outputs.length === 0) return { funding: "absent", fundedSats: 0 };
 
     // A tx spending one of the funding outputs is the resolving spend; its
     // witness classifies claim vs refund.
@@ -170,9 +173,12 @@ export function electrumReader(
         const input = tx.getInput(i);
         if (
           input.txid &&
-          hex.encode(input.txid) === funding.entry.tx_hash &&
           input.index !== undefined &&
-          fundedVouts.includes(input.index)
+          outputs.some(
+            (output) =>
+              hex.encode(input.txid as Uint8Array) ===
+                output.candidate.entry.tx_hash && input.index === output.vout,
+          )
         ) {
           return {
             funding: "confirmed",
@@ -185,24 +191,25 @@ export function electrumReader(
       }
     }
 
-    // Same depth policy as the esplora reader: 0/1 read straight off the
-    // confirmed flag; deeper policies need the tip to compute depth.
-    const height = funding.entry.height;
-    const isConfirmed = height > 0;
+    // Same depth policy as the esplora reader, for every counted output:
+    // 0/1 read straight off the confirmed flag; deeper policies need the tip
+    // to compute depth.
+    const heights = outputs.map((output) => output.candidate.entry.height);
     let deepEnough: boolean;
-    if (isConfirmed) {
-      if (required <= 1) {
-        deepEnough = true;
-      } else {
-        const tip = await client.request<{ height: number }>(
-          "blockchain.headers.subscribe",
-          [],
-        );
-        deepEnough = tip.height - height + 1 >= required;
-      }
-    } else {
+    if (heights.some((height) => height <= 0)) {
       deepEnough = required === 0;
+    } else if (required <= 1) {
+      deepEnough = true;
+    } else {
+      const tip = await client.request<{ height: number }>(
+        "blockchain.headers.subscribe",
+        [],
+      );
+      deepEnough = heights.every(
+        (height) => tip.height - height + 1 >= required,
+      );
     }
+    const fundedSats = outputs.reduce((sum, output) => sum + output.sats, 0);
     return { funding: deepEnough ? "confirmed" : "mempool", fundedSats };
   }
 

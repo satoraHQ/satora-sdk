@@ -178,7 +178,7 @@ describe("electrumReader", () => {
     });
   });
 
-  it("picks the tx paying the most, not the first in history", async () => {
+  it("counts the largest outputs, not the first in history", async () => {
     const rpc = new FakeElectrum();
     // Dust lands in the history BEFORE the real funding — it must not be
     // mistaken for the funding and observe the swap as underfunded.
@@ -187,7 +187,53 @@ describe("electrumReader", () => {
     const reader = electrumReader(rpc);
     expect(await reader.getHtlcFacts(HTLC_ADDRESS)).toEqual({
       funding: "confirmed",
-      fundedSats: 5_000,
+      fundedSats: 5_330,
+    });
+  });
+
+  it("sums a funding split over two transactions, as the server counts it", async () => {
+    const rpc = new FakeElectrum();
+    // A client that sent too little topped up: 60k + 40k for a 100k quote.
+    rpc.addTx(makeFundingTx(60_000n), 899_990);
+    rpc.addTx(makeFundingTx(40_000n), 899_995);
+    const reader = electrumReader(rpc);
+    expect(await reader.getHtlcFacts(HTLC_ADDRESS, 1)).toEqual({
+      funding: "confirmed",
+      fundedSats: 100_000,
+    });
+  });
+
+  it("waits for a top-up still in the mempool to meet the depth policy", async () => {
+    const rpc = new FakeElectrum();
+    rpc.addTx(makeFundingTx(60_000n), 899_990);
+    rpc.addTx(makeFundingTx(40_000n), 0);
+    const reader = electrumReader(rpc);
+    expect(await reader.getHtlcFacts(HTLC_ADDRESS, 1)).toEqual({
+      funding: "mempool",
+      fundedSats: 100_000,
+    });
+  });
+
+  it("counts at most the two largest outputs", async () => {
+    const rpc = new FakeElectrum();
+    rpc.addTx(makeFundingTx(20_000n), 899_980);
+    rpc.addTx(makeFundingTx(50_000n), 899_985);
+    rpc.addTx(makeFundingTx(30_000n), 899_990);
+    const reader = electrumReader(rpc);
+    expect((await reader.getHtlcFacts(HTLC_ADDRESS)).fundedSats).toBe(80_000);
+  });
+
+  it("detects the spend of either output of a split funding", async () => {
+    const rpc = new FakeElectrum();
+    rpc.addTx(makeFundingTx(60_000n), 899_980);
+    const topUp = rpc.addTx(makeFundingTx(40_000n), 899_990);
+    const witness = ["aa".repeat(64), "07".repeat(32), "01"];
+    rpc.addTx(makeSpendTx(topUp, 0, witness), 0);
+    const reader = electrumReader(rpc);
+    expect(await reader.getHtlcFacts(HTLC_ADDRESS)).toEqual({
+      funding: "confirmed",
+      fundedSats: 0,
+      spendWitness: witness,
     });
   });
 
