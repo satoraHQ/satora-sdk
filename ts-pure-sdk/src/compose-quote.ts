@@ -330,7 +330,7 @@ export interface ComposeQuoteParams {
   /** Per-swap extra-fee surcharge (bps), capped per referral key. */
   extraFees?: number;
   /**
-   * Optional promo code. Its rate replaces the base fee when cheaper, and
+   * Optional promo code. Its rate replaces the base fee, and
    * its cap may lift the route maximum. Pass it identically on the quote
    * and the create. Rejected (400) when unknown, expired, used up, or the
    * swap is larger than it allows.
@@ -514,6 +514,7 @@ async function composeBtcToEvm(
   }
 
   const { btcSats, evmSmallest, evmDecimals } = pivot;
+  ensureWithinPromoCap(deps, btcSats);
   let { bridgeFee } = pivot;
   const networkFeeSats = baseNetworkFeeSats + pivot.bridgeNativeFeeSats;
 
@@ -797,6 +798,7 @@ async function composeEvmToBtc(
   }
 
   const { btcSats, evmSmallest, evmDecimals, bridgeFee } = pivot;
+  ensureWithinPromoCap(deps, btcSats);
 
   // Protocol fee in sats: floor(btc_sats × fee_percentage). Same fixed-
   // point trick as composeBtcToEvm; effective rate = base + referral delta,
@@ -963,17 +965,30 @@ function calculateExchangeRate(
 }
 
 /**
- * The swap's base fee: a partner's negotiated rate replaces the pair fee, and
- * a promo applies only when it is cheaper (the server's `with_promo`).
+ * The swap's base fee: a promo's rate wins, otherwise a partner's negotiated
+ * rate replaces the pair fee (the server's `with_promo`).
  */
 function baseFeePct(
   deps: Pick<ComposeQuoteDeps, "referralBaseFeeRate" | "referralPromo">,
   pairFeePct: number,
 ): number {
-  const base = deps.referralBaseFeeRate ?? pairFeePct;
-  return deps.referralPromo
-    ? Math.min(base, deps.referralPromo.fee_rate)
-    : base;
+  return deps.referralPromo?.fee_rate ?? deps.referralBaseFeeRate ?? pairFeePct;
+}
+
+/**
+ * Reject a promo quote above the code's cap with the server's message,
+ * measured on the swap's BTC side like the server's `/quote`.
+ */
+function ensureWithinPromoCap(
+  deps: Pick<ComposeQuoteDeps, "referralPromo">,
+  btcSats: bigint,
+): void {
+  const promo = deps.referralPromo;
+  if (promo && btcSats > BigInt(promo.max_amount_sats)) {
+    throw new Error(
+      `promo code only applies to swaps up to ${promo.max_amount_sats} sats`,
+    );
+  }
 }
 
 /** The pair maximum, lifted to the promo's cap when that is higher. */

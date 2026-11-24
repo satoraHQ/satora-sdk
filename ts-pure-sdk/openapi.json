@@ -1068,7 +1068,7 @@
           {
             "name": "promo_code",
             "in": "query",
-            "description": "Optional promo code. Its rate replaces the base fee when cheaper and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large).",
+            "description": "Optional promo code. Its rate replaces the base fee and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large).",
             "required": false,
             "schema": {
               "type": ["string", "null"]
@@ -1211,7 +1211,7 @@
           {
             "name": "promo_code",
             "in": "query",
-            "description": "Optional promo code. Its rate replaces the base fee when cheaper and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large).",
+            "description": "Optional promo code. Its rate replaces the base fee and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large).",
             "required": false,
             "schema": {
               "type": ["string", "null"]
@@ -1281,7 +1281,7 @@
           {
             "name": "promo_code",
             "in": "query",
-            "description": "Optional promo code. Its rate replaces the base fee when cheaper and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large).",
+            "description": "Optional promo code. Its rate replaces the base fee and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large).",
             "required": false,
             "schema": {
               "type": ["string", "null"]
@@ -2929,7 +2929,7 @@
           },
           "promo_code": {
             "type": ["string", "null"],
-            "description": "Optional promo code. Its rate replaces the base fee when cheaper and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
+            "description": "Optional promo code. Its rate replaces the base fee and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
           },
           "referral_code": {
             "type": ["string", "null"],
@@ -3152,7 +3152,7 @@
           },
           "promo_code": {
             "type": ["string", "null"],
-            "description": "Optional promo code. Its rate replaces the base fee when cheaper and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
+            "description": "Optional promo code. Its rate replaces the base fee and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
           },
           "referral_code": {
             "type": ["string", "null"],
@@ -3348,7 +3348,7 @@
           },
           "promo_code": {
             "type": ["string", "null"],
-            "description": "Optional promo code. Its rate replaces the base fee when cheaper and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
+            "description": "Optional promo code. Its rate replaces the base fee and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
           },
           "referral_code": {
             "type": ["string", "null"],
@@ -3440,7 +3440,7 @@
           },
           "promo_code": {
             "type": ["string", "null"],
-            "description": "Optional promo code. Its rate replaces the base fee when cheaper and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
+            "description": "Optional promo code. Its rate replaces the base fee and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
           },
           "referral_code": {
             "type": ["string", "null"],
@@ -3668,7 +3668,7 @@
           },
           "promo_code": {
             "type": ["string", "null"],
-            "description": "Optional promo code. Its rate replaces the base fee when cheaper and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
+            "description": "Optional promo code. Its rate replaces the base fee and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
           },
           "referral_code": {
             "type": ["string", "null"],
@@ -5055,7 +5055,7 @@
           },
           "promo_code": {
             "type": ["string", "null"],
-            "description": "Optional promo code. Its rate replaces the base fee when cheaper and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
+            "description": "Optional promo code. Its rate replaces the base fee and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
           },
           "receiver_pk": {
             "type": "string",
@@ -5335,7 +5335,7 @@
           },
           "promo_code": {
             "type": ["string", "null"],
-            "description": "Optional promo code. Its rate replaces the base fee when cheaper and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
+            "description": "Optional promo code. Its rate replaces the base fee and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
           },
           "referral_code": {
             "type": ["string", "null"],
@@ -5606,7 +5606,7 @@
           },
           "promo_code": {
             "type": ["string", "null"],
-            "description": "Optional promo code. Its rate replaces the base fee when cheaper and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
+            "description": "Optional promo code. Its rate replaces the base fee and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
           },
           "referral_code": {
             "type": ["string", "null"],
@@ -6220,7 +6220,7 @@
           },
           "promo_code": {
             "type": ["string", "null"],
-            "description": "Optional promo code. Its rate replaces the base fee when cheaper and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
+            "description": "Optional promo code. Its rate replaces the base fee and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
           },
           "referral_code": {
             "type": ["string", "null"],
@@ -6415,7 +6415,7 @@
           },
           "promo_code": {
             "type": ["string", "null"],
-            "description": "Optional promo code. Its rate replaces the base fee when cheaper and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
+            "description": "Optional promo code. Its rate replaces the base fee and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
           },
           "referral_code": {
             "type": ["string", "null"]
@@ -6628,7 +6628,7 @@
           },
           "promo_code": {
             "type": ["string", "null"],
-            "description": "Optional promo code. Its rate replaces the base fee when cheaper and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
+            "description": "Optional promo code. Its rate replaces the base fee and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
           },
           "referral_code": {
             "type": ["string", "null"],
@@ -7166,7 +7166,7 @@
           },
           "promo_code": {
             "type": ["string", "null"],
-            "description": "Optional promo code. Its rate replaces the base fee when cheaper and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
+            "description": "Optional promo code. Its rate replaces the base fee and its cap\nmay lift the route maximum (400 if unknown, expired, used up, or too large)."
           },
           "ref": {
             "type": ["string", "null"],

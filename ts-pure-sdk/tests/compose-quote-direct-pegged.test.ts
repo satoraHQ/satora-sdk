@@ -262,7 +262,7 @@ describe("composeQuote — direct BTC↔pegged pivot (no DEX)", () => {
     expect(q.protocol_fee_rate).toBeCloseTo(0.003, 12);
   });
 
-  it("a promo applies only when cheaper than the base fee", async () => {
+  it("a promo rate replaces the base fee, even when higher", async () => {
     const pairs: Partial<ComposeQuoteDeps> = {
       swapPairs: {
         pairs: [
@@ -294,12 +294,33 @@ describe("composeQuote — direct BTC↔pegged pivot (no DEX)", () => {
     expect(cheaper.protocol_fee).toBe(100); // floor(100_000 × (0 + 0.001))
     expect(cheaper.promo).toEqual(free);
 
-    const pricey = { code: "PRICEY", fee_rate: 0.01, max_amount_sats: 1 };
+    const pricey = {
+      code: "PRICEY",
+      fee_rate: 0.01,
+      max_amount_sats: 1_000_000,
+    };
     const pricier = await composeQuote(
       params,
       deps({ ...pairs, referralPromo: pricey }),
     );
-    expect(pricier.protocol_fee).toBe(600); // floor(100_000 × (0.005 + 0.001))
+    expect(pricier.protocol_fee).toBe(1100); // floor(100_000 × (0.01 + 0.001))
+    expect(pricier.promo).toEqual(pricey);
+  });
+
+  it("a promo quote above the code's cap is rejected", async () => {
+    const small = { code: "SMALL", fee_rate: 0, max_amount_sats: 50_000 };
+    await expect(
+      composeQuote(
+        {
+          sourceChain: "Bitcoin",
+          sourceToken: "btc",
+          targetChain: "42161",
+          targetToken: ARB_TBTC,
+          sourceAmount: 100_000,
+        },
+        deps({ referralPromo: small }),
+      ),
+    ).rejects.toThrow("promo code only applies to swaps up to 50000 sats");
   });
 
   it("a promo lifts but never lowers the pair maximum", async () => {

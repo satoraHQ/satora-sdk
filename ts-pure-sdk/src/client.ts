@@ -1291,7 +1291,7 @@ export interface GetQuoteParams {
    */
   extraFees?: number;
   /**
-   * Optional promo code. Its rate replaces the base fee when cheaper, and
+   * Optional promo code. Its rate replaces the base fee, and
    * its cap may lift the route maximum. Pass it identically on the quote
    * and the create. Rejected (400) when unknown, expired, used up, or the
    * swap is larger than it allows.
@@ -1379,7 +1379,7 @@ export interface GetLightningSendQuoteParams {
    */
   extraFees?: number;
   /**
-   * Optional promo code. Its rate replaces the base fee when cheaper, and
+   * Optional promo code. Its rate replaces the base fee, and
    * its cap may lift the route maximum. Pass it identically on the quote
    * and the create. Rejected (400) when unknown, expired, used up, or the
    * swap is larger than it allows.
@@ -2569,7 +2569,7 @@ export class Client {
     referralCode?: string;
     extraFees?: number;
     /**
-     * Optional promo code. Its rate replaces the base fee when cheaper, and
+     * Optional promo code. Its rate replaces the base fee, and
      * its cap may lift the route maximum. Pass it identically on the quote
      * and the create. Rejected (400) when unknown, expired, used up, or the
      * swap is larger than it allows.

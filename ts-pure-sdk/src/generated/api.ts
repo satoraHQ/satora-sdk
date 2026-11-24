@@ -1349,7 +1349,7 @@ export interface components {
             /** @description Hash lock provided by the client (32-byte hex string with 0x prefix). */
             hash_lock: string;
             /**
-             * @description Optional promo code. Its rate replaces the base fee when cheaper and its cap
+             * @description Optional promo code. Its rate replaces the base fee and its cap
              *     may lift the route maximum (400 if unknown, expired, used up, or too large).
              */
             promo_code?: string | null;
@@ -1469,7 +1469,7 @@ export interface components {
              */
             lnurl?: string | null;
             /**
-             * @description Optional promo code. Its rate replaces the base fee when cheaper and its cap
+             * @description Optional promo code. Its rate replaces the base fee and its cap
              *     may lift the route maximum (400 if unknown, expired, used up, or too large).
              */
             promo_code?: string | null;
@@ -1600,7 +1600,7 @@ export interface components {
              */
             hash_lock: string;
             /**
-             * @description Optional promo code. Its rate replaces the base fee when cheaper and its cap
+             * @description Optional promo code. Its rate replaces the base fee and its cap
              *     may lift the route maximum (400 if unknown, expired, used up, or too large).
              */
             promo_code?: string | null;
@@ -1689,7 +1689,7 @@ export interface components {
             /** @description Hash lock provided by the client (32-byte hex string with 0x prefix). */
             hash_lock: string;
             /**
-             * @description Optional promo code. Its rate replaces the base fee when cheaper and its cap
+             * @description Optional promo code. Its rate replaces the base fee and its cap
              *     may lift the route maximum (400 if unknown, expired, used up, or too large).
              */
             promo_code?: string | null;
@@ -1844,7 +1844,7 @@ export interface components {
              */
             lnurl?: string | null;
             /**
-             * @description Optional promo code. Its rate replaces the base fee when cheaper and its cap
+             * @description Optional promo code. Its rate replaces the base fee and its cap
              *     may lift the route maximum (400 if unknown, expired, used up, or too large).
              */
             promo_code?: string | null;
@@ -2845,7 +2845,7 @@ export interface components {
             /** @description Hash lock (0x-prefixed 32-byte hex). Client generates secret, computes SHA256(secret). */
             hash_lock: string;
             /**
-             * @description Optional promo code. Its rate replaces the base fee when cheaper and its cap
+             * @description Optional promo code. Its rate replaces the base fee and its cap
              *     may lift the route maximum (400 if unknown, expired, used up, or too large).
              */
             promo_code?: string | null;
@@ -3022,7 +3022,7 @@ export interface components {
             /** @description Hash lock (0x-prefixed 32-byte hex). Client generates secret, computes SHA256(secret). */
             hash_lock: string;
             /**
-             * @description Optional promo code. Its rate replaces the base fee when cheaper and its cap
+             * @description Optional promo code. Its rate replaces the base fee and its cap
              *     may lift the route maximum (400 if unknown, expired, used up, or too large).
              */
             promo_code?: string | null;
@@ -3218,7 +3218,7 @@ export interface components {
              */
             lnurl?: string | null;
             /**
-             * @description Optional promo code. Its rate replaces the base fee when cheaper and its cap
+             * @description Optional promo code. Its rate replaces the base fee and its cap
              *     may lift the route maximum (400 if unknown, expired, used up, or too large).
              */
             promo_code?: string | null;
@@ -3504,7 +3504,7 @@ export interface components {
             /** @description Optional BOLT11 invoice description (max 639 bytes). */
             invoice_description?: string | null;
             /**
-             * @description Optional promo code. Its rate replaces the base fee when cheaper and its cap
+             * @description Optional promo code. Its rate replaces the base fee and its cap
              *     may lift the route maximum (400 if unknown, expired, used up, or too large).
              */
             promo_code?: string | null;
@@ -3612,7 +3612,7 @@ export interface components {
             /** @description Shown in the payer's wallet; the server default applies when omitted. */
             invoice_description?: string | null;
             /**
-             * @description Optional promo code. Its rate replaces the base fee when cheaper and its cap
+             * @description Optional promo code. Its rate replaces the base fee and its cap
              *     may lift the route maximum (400 if unknown, expired, used up, or too large).
              */
             promo_code?: string | null;
@@ -3763,7 +3763,7 @@ export interface components {
              */
             invoice_description?: string | null;
             /**
-             * @description Optional promo code. Its rate replaces the base fee when cheaper and its cap
+             * @description Optional promo code. Its rate replaces the base fee and its cap
              *     may lift the route maximum (400 if unknown, expired, used up, or too large).
              */
             promo_code?: string | null;
@@ -4132,7 +4132,7 @@ export interface components {
              */
             extra_fees?: number | null;
             /**
-             * @description Optional promo code. Its rate replaces the base fee when cheaper and its cap
+             * @description Optional promo code. Its rate replaces the base fee and its cap
              *     may lift the route maximum (400 if unknown, expired, used up, or too large).
              */
             promo_code?: string | null;
@@ -5558,7 +5558,7 @@ export interface operations {
                  */
                 extra_fees?: number | null;
                 /**
-                 * @description Optional promo code. Its rate replaces the base fee when cheaper and its cap
+                 * @description Optional promo code. Its rate replaces the base fee and its cap
                  *     may lift the route maximum (400 if unknown, expired, used up, or too large).
                  */
                 promo_code?: string | null;
@@ -5650,7 +5650,7 @@ export interface operations {
                  */
                 extra_fees?: number | null;
                 /**
-                 * @description Optional promo code. Its rate replaces the base fee when cheaper and its cap
+                 * @description Optional promo code. Its rate replaces the base fee and its cap
                  *     may lift the route maximum (400 if unknown, expired, used up, or too large).
                  */
                 promo_code?: string | null;
@@ -5705,7 +5705,7 @@ export interface operations {
                  */
                 extra_fees?: number | null;
                 /**
-                 * @description Optional promo code. Its rate replaces the base fee when cheaper and its cap
+                 * @description Optional promo code. Its rate replaces the base fee and its cap
                  *     may lift the route maximum (400 if unknown, expired, used up, or too large).
                  */
                 promo_code?: string | null;

@@ -94,7 +94,7 @@ export interface BtcToEvmSwapOptions {
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
   /**
-   * Optional promo code. Its rate replaces the base fee when cheaper, and
+   * Optional promo code. Its rate replaces the base fee, and
    * its cap may lift the route maximum. Pass it identically on the quote
    * and the create. Rejected (400) when unknown, expired, used up, or the
    * swap is larger than it allows.
@@ -119,7 +119,7 @@ export interface BitcoinToEvmSwapOptions {
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
   /**
-   * Optional promo code. Its rate replaces the base fee when cheaper, and
+   * Optional promo code. Its rate replaces the base fee, and
    * its cap may lift the route maximum. Pass it identically on the quote
    * and the create. Rejected (400) when unknown, expired, used up, or the
    * swap is larger than it allows.
@@ -156,7 +156,7 @@ export interface LightningToEvmSwapOptions {
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
   /**
-   * Optional promo code. Its rate replaces the base fee when cheaper, and
+   * Optional promo code. Its rate replaces the base fee, and
    * its cap may lift the route maximum. Pass it identically on the quote
    * and the create. Rejected (400) when unknown, expired, used up, or the
    * swap is larger than it allows.
@@ -195,7 +195,7 @@ export interface BitcoinToArkadeSwapOptions {
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
   /**
-   * Optional promo code. Its rate replaces the base fee when cheaper, and
+   * Optional promo code. Its rate replaces the base fee, and
    * its cap may lift the route maximum. Pass it identically on the quote
    * and the create. Rejected (400) when unknown, expired, used up, or the
    * swap is larger than it allows.
@@ -228,7 +228,7 @@ export interface EvmToArkadeSwapOptions {
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
   /**
-   * Optional promo code. Its rate replaces the base fee when cheaper, and
+   * Optional promo code. Its rate replaces the base fee, and
    * its cap may lift the route maximum. Pass it identically on the quote
    * and the create. Rejected (400) when unknown, expired, used up, or the
    * swap is larger than it allows.
@@ -263,7 +263,7 @@ export interface EvmToArkadeSwapGenericOptions {
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
   /**
-   * Optional promo code. Its rate replaces the base fee when cheaper, and
+   * Optional promo code. Its rate replaces the base fee, and
    * its cap may lift the route maximum. Pass it identically on the quote
    * and the create. Rejected (400) when unknown, expired, used up, or the
    * swap is larger than it allows.
@@ -302,7 +302,7 @@ export interface EvmToBitcoinSwapOptions {
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
   /**
-   * Optional promo code. Its rate replaces the base fee when cheaper, and
+   * Optional promo code. Its rate replaces the base fee, and
    * its cap may lift the route maximum. Pass it identically on the quote
    * and the create. Rejected (400) when unknown, expired, used up, or the
    * swap is larger than it allows.
@@ -342,7 +342,7 @@ export interface ArkadeToEvmSwapOptions {
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
   /**
-   * Optional promo code. Its rate replaces the base fee when cheaper, and
+   * Optional promo code. Its rate replaces the base fee, and
    * its cap may lift the route maximum. Pass it identically on the quote
    * and the create. Rejected (400) when unknown, expired, used up, or the
    * swap is larger than it allows.
@@ -406,7 +406,7 @@ export interface CreateSwapOptions {
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
   /**
-   * Optional promo code. Its rate replaces the base fee when cheaper, and
+   * Optional promo code. Its rate replaces the base fee, and
    * its cap may lift the route maximum. Pass it identically on the quote
    * and the create. Rejected (400) when unknown, expired, used up, or the
    * swap is larger than it allows.
@@ -449,7 +449,7 @@ export type LightningToArkadeSwapOptions = {
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
   /**
-   * Optional promo code. Its rate replaces the base fee when cheaper, and
+   * Optional promo code. Its rate replaces the base fee, and
    * its cap may lift the route maximum. Pass it identically on the quote
    * and the create. Rejected (400) when unknown, expired, used up, or the
    * swap is larger than it allows.
@@ -500,7 +500,7 @@ export type ArkadeToLightningSwapOptions = {
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
   /**
-   * Optional promo code. Its rate replaces the base fee when cheaper, and
+   * Optional promo code. Its rate replaces the base fee, and
    * its cap may lift the route maximum. Pass it identically on the quote
    * and the create. Rejected (400) when unknown, expired, used up, or the
    * swap is larger than it allows.
@@ -572,7 +572,7 @@ export type EvmToLightningSwapOptions = {
   /** Optional per-swap fee surcharge in basis points (0..=max_extra_fee_bps configured on the matching developer key). */
   extraFees?: number;
   /**
-   * Optional promo code. Its rate replaces the base fee when cheaper, and
+   * Optional promo code. Its rate replaces the base fee, and
    * its cap may lift the route maximum. Pass it identically on the quote
    * and the create. Rejected (400) when unknown, expired, used up, or the
    * swap is larger than it allows.
