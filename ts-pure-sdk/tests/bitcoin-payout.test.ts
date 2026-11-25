@@ -140,44 +140,64 @@ describe("multi-recipient Bitcoin claim primitive", () => {
     expect(tx.outputsLength).toBe(2);
     expect(tx.getOutput(0).script).toEqual(tx.getOutput(1).script);
   });
-  it("rejects shortfalls and insufficient fee rates without changing commitments", () => {
+  it("rejects shortfalls and unusable fee rates without changing commitments", () => {
     for (const htlcAmount of [98000n, 98499n])
       expect(() =>
         buildOnchainClaimTransaction({ ...params, htlcAmount }),
       ).toThrow("cannot cover the committed recipients and fee");
-    for (const feeRateSatPerVb of [10, 0, -1, NaN, Infinity])
+    for (const feeRateSatPerVb of [0, -1, NaN, Infinity])
       expect(() =>
         buildOnchainClaimTransaction({ ...params, feeRateSatPerVb }),
-      ).toThrow("Committed fee does not meet the requested fee rate");
+      ).toThrow("Fee rate must be a positive number");
+    // 1,500 sats of surplus cannot pay 100 sat/vB.
+    expect(() =>
+      buildOnchainClaimTransaction({ ...params, feeRateSatPerVb: 100 }),
+    ).toThrow("Surplus cannot cover");
     expect(payout.recipients[0].amountSats).toBe("30000");
+    expect(payout.feeSats).toBe("500");
   });
-  it("accepts a committed fee that meets a fractional rate exactly", () => {
-    // 915 * 2.2 is 2013.0000000000002 in floating point.
+  it("raises the committed fee out of surplus to meet the fee rate", () => {
+    const committed = buildOnchainClaimTransaction(params);
     const result = buildOnchainClaimTransaction({
       ...params,
-      feeRateSatPerVb: 2.2,
-      bitcoinPayout: {
-        feeSats: "2013",
-        recipients: Array.from({ length: 26 }, () => ({
-          address,
-          amountSats: "1000",
-        })),
-      },
+      feeRateSatPerVb: 10,
     });
-    expect(result.vsize).toBe(915);
+    expect(result.vsize).toBe(committed.vsize);
+    expect(result.fee).toBe(BigInt(committed.vsize * 10));
+    const tx = decode(result);
+    const amounts = [0, 1].map((i) => tx.getOutput(i).amount ?? 0n);
+    expect(amounts[0]).toBeGreaterThanOrEqual(30000n);
+    expect(amounts[1]).toBeGreaterThanOrEqual(68000n);
+    expect(amounts[0] + amounts[1] + result.fee).toBe(100000n);
+    expect(result.txId).not.toBe(committed.txId);
+    expect(payout.feeSats).toBe("500");
+  });
+  it("refuses a fee rate that would exceed the payout fee cap", () => {
     expect(() =>
+      buildOnchainClaimTransaction({
+        ...params,
+        htlcAmount: 10_000_000n,
+        feeRateSatPerVb: 1000,
+      }),
+    ).toThrow("above the 100000-sat payout fee cap");
+  });
+  it("meets a fractional rate with the exact fee", () => {
+    // 915 * 2.2 is 2013.0000000000002 in floating point.
+    const at = (feeSats: string) =>
       buildOnchainClaimTransaction({
         ...params,
         feeRateSatPerVb: 2.2,
         bitcoinPayout: {
-          feeSats: "2012",
+          feeSats,
           recipients: Array.from({ length: 26 }, () => ({
             address,
             amountSats: "1000",
           })),
         },
-      }),
-    ).toThrow("Committed fee does not meet the requested fee rate");
+      });
+    expect(at("2013").vsize).toBe(915);
+    expect(at("2013").fee).toBe(2013n);
+    expect(at("2012").fee).toBe(2013n);
   });
   it("accepts 100 recipients and rejects 101 for the recipient limit", () => {
     const recipients = (length: number) =>
@@ -324,9 +344,9 @@ it("Client.claim preserves stored recipients after a response refresh", async ()
   expect(tx.outputsLength).toBe(2);
 });
 
-it("Client.claim rejects an underpriced payout claim without broadcasting", async () => {
+it("Client.claim rejects a payout claim the surplus cannot price without broadcasting", async () => {
   const { client, record, storage } = await payoutClaimClient();
-  // 500 committed sats cannot cover a two-output claim at 50 sat/vB.
+  // 1,500 sats of surplus cannot pay a two-output claim at 50 sat/vB.
   vi.spyOn(esplora, "fetchFeeRateEstimate").mockResolvedValue(50);
   const esploraBroadcast = vi
     .spyOn(esplora, "broadcastTransactionWithRetry")
@@ -336,12 +356,35 @@ it("Client.claim rejects an underpriced payout claim without broadcasting", asyn
     .mockResolvedValue("txid");
   const result = await client.claim(record.swapId);
   expect(result.success).toBe(false);
-  expect(result.message).toContain(
-    "Committed fee does not meet the requested fee rate",
-  );
+  expect(result.message).toContain("Surplus cannot cover");
   expect(result.txHash).toBeUndefined();
   expect(esploraBroadcast).not.toHaveBeenCalled();
   expect(electrumBroadcast).not.toHaveBeenCalled();
+  expect((await storage.get(record.swapId))?.bitcoinPayout).toEqual(payout);
+});
+
+it("Client.claim bumps a payout claim when called again at a higher rate", async () => {
+  const { client, record, storage } = await payoutClaimClient();
+  vi.spyOn(esplora, "fetchFeeRateEstimate").mockResolvedValue(3);
+  const broadcast = vi
+    .spyOn(esplora, "broadcastTransactionWithRetry")
+    .mockResolvedValue("txid");
+  expect((await client.claim(record.swapId)).success).toBe(true);
+  expect(
+    (await client.claim(record.swapId, { feeRateSatPerVb: 9 })).success,
+  ).toBe(true);
+  const [first, second] = broadcast.mock.calls.map((call) =>
+    btc.Transaction.fromRaw(hex.decode(call[1])),
+  );
+  const outputs = (tx: btc.Transaction) =>
+    [0, 1].map((i) => tx.getOutput(i).amount ?? 0n);
+  const fee = (tx: btc.Transaction) =>
+    100000n - outputs(tx).reduce((a, b) => a + b, 0n);
+  expect(fee(first)).toBe(BigInt(first.vsize * 3));
+  expect(fee(second)).toBe(BigInt(second.vsize * 9));
+  expect(second.getInput(0).txid).toEqual(first.getInput(0).txid);
+  expect(outputs(second)[0]).toBeGreaterThanOrEqual(30000n);
+  expect(outputs(second)[1]).toBeGreaterThanOrEqual(68000n);
   expect((await storage.get(record.swapId))?.bitcoinPayout).toEqual(payout);
 });
 
@@ -366,7 +409,7 @@ it.each([
   [
     "a zero fee rate",
     { feeRateSatPerVb: 0 },
-    "does not meet the requested fee rate",
+    "Fee rate must be a positive number",
   ],
 ])("Client.claim refuses %s on a payout swap without broadcasting", async (_, options, message) => {
   const { client, record, storage } = await payoutClaimClient();

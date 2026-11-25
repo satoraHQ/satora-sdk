@@ -1189,7 +1189,8 @@ export interface ClaimOptions {
   /**
    * Fee rate in sat/vB for on-chain Bitcoin claims (default: the explorer's
    * two-block estimate, at least 2). For a swap with stored payout recipients
-   * this is a minimum the committed fee must meet; it must be above zero.
+   * it must be above zero; the committed fee is raised out of surplus to meet
+   * it, up to the 100,000-sat payout fee cap.
    */
   feeRateSatPerVb?: number;
   /**
@@ -4971,10 +4972,11 @@ export class Client {
     }
 
     // The claim reveals the preimage and has to confirm before the server
-    // can refund, so it pays for a two-block confirmation. Recipient payouts
-    // keep their committed absolute fee and use this rate (or the caller's,
-    // which must be above zero) as a floor: an underpriced payout claim is
-    // rejected before broadcast, never reduced.
+    // can refund, so it pays for a two-block confirmation. A recipient payout
+    // treats its committed fee as a minimum and raises it out of surplus to
+    // meet this rate (or the caller's, which must be above zero), so calling
+    // claim again bumps the fee. It refuses before broadcast if the surplus or
+    // the payout fee cap cannot cover the rate; recipients are never reduced.
     const feeRateSatPerVb =
       options?.feeRateSatPerVb ??
       Math.max(2, (await fetchFeeRateEstimate(esploraUrls, 2)) ?? 0);

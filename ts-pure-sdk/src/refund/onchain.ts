@@ -16,7 +16,10 @@ import { ripemd160 } from "@noble/hashes/legacy.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { hex } from "@scure/base";
 import * as btc from "@scure/btc-signer";
-import { validateBitcoinPayout } from "../create/bitcoin-payout.js";
+import {
+  MAX_PAYOUT_FEE_SATS,
+  validateBitcoinPayout,
+} from "../create/bitcoin-payout.js";
 import type { BitcoinPayout } from "../storage/types.js";
 
 /** Bitcoin network type */
@@ -477,16 +480,33 @@ export function buildOnchainClaimTransaction(
     finalScriptWitness: [preimageBytes, sig, leafScript, encodedControlBlock],
   });
 
-  // Compare rates rather than ceil(vsize * rate): the float product can land
-  // a hair above an exact integer (915 * 2.2) and demand one sat too many.
-  // Fractional rates are fine; zero or below would broadcast an unpriced claim.
-  if (
-    validated &&
-    (!Number.isFinite(feeRateSatPerVb) ||
-      feeRateSatPerVb <= 0 ||
-      Number(fee) / tx.vsize < feeRateSatPerVb)
-  )
-    throw new Error("Committed fee does not meet the requested fee rate");
+  if (validated && payout) {
+    // Fractional rates are fine; zero or below would broadcast an unpriced claim.
+    if (!Number.isFinite(feeRateSatPerVb) || feeRateSatPerVb <= 0)
+      throw new Error("Fee rate must be a positive number of sat/vB");
+    // Compare rates rather than ceil(vsize * rate): the float product can land
+    // a hair above an exact integer (915 * 2.2) and demand one sat too many.
+    if (Number(fee) / tx.vsize < feeRateSatPerVb) {
+      // Raise the fee out of surplus only, so a retry at a higher rate is a
+      // fee bump. Output amounts do not change the size, so one rebuild at the
+      // smallest fee meeting the rate is enough. Recipients keep their
+      // committed amounts and the stored commitment is not changed.
+      let required = BigInt(Math.ceil(tx.vsize * feeRateSatPerVb));
+      if (Number(required - 1n) / tx.vsize >= feeRateSatPerVb) required -= 1n;
+      if (required > MAX_PAYOUT_FEE_SATS)
+        throw new Error(
+          `A ${feeRateSatPerVb} sat/vB claim needs ${required} sats, above the ${MAX_PAYOUT_FEE_SATS}-sat payout fee cap`,
+        );
+      if (htlcAmount - validated.total < required)
+        throw new Error(
+          `Surplus cannot cover the ${required}-sat fee for ${feeRateSatPerVb} sat/vB without reducing recipients`,
+        );
+      return buildOnchainClaimTransaction({
+        ...params,
+        bitcoinPayout: { ...payout, feeSats: required.toString() },
+      });
+    }
+  }
 
   // Extract the signed transaction
   const txHex = hex.encode(tx.extract());

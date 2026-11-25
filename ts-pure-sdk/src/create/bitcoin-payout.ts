@@ -2,6 +2,8 @@ import * as btc from "@scure/btc-signer";
 import type { BitcoinPayout } from "../storage/types.js";
 
 const MAX_MONEY = 2_100_000_000_000_000n;
+/** Upper bound for a payout claim fee, committed or raised to meet a fee rate. */
+export const MAX_PAYOUT_FEE_SATS = 100_000n;
 
 /** Validate exact recipient commitments before signing. Duplicate addresses stay separate. */
 export function validateBitcoinPayout(
@@ -24,7 +26,7 @@ export function validateBitcoinPayout(
     return amount;
   };
   const fee = sats(payout.feeSats);
-  if (fee < 1n || fee > 100_000n)
+  if (fee < 1n || fee > MAX_PAYOUT_FEE_SATS)
     throw new Error("Payout fee must be between 1 and 100,000 sats");
   let total = 0n;
   for (const recipient of payout.recipients) {
