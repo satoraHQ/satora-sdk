@@ -1253,7 +1253,7 @@ async fn discovery_endpoints_decode_the_current_schema() {
         (
             "/tokens",
             "TokenInfos",
-            json!({"btc_tokens":[],"evm_tokens":[]}),
+            json!({"bitcoin_network":"signet","btc_tokens":[],"evm_tokens":[]}),
         ),
         (
             "/swap-pairs",

@@ -9,6 +9,9 @@ use serde::Serialize;
 /// `TokenInfos` in `openapi.json`.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct TokenInfos {
+    /// Bitcoin payout network, absent on older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bitcoin_network: Option<String>,
     pub btc_tokens: Vec<TokenInfo>,
     pub evm_tokens: Vec<TokenInfo>,
 }

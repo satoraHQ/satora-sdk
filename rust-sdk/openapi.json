@@ -488,6 +488,68 @@
         }
       }
     },
+    "/api/swap/{id}/refund-evm-gasless": {
+      "post": {
+        "tags": [
+          "swap-evm-btc"
+        ],
+        "operationId": "refund_evm_gasless",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Swap ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Refund transaction broadcast; confirmed indicates whether a successful receipt was observed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefundEvmGaslessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unsupported, unfunded, not expired, or already in progress",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Unsafe swap state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Relay rate limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/swap/{id}/rehash-evm": {
       "post": {
         "tags": [
@@ -5900,6 +5962,15 @@
             "type": "string",
             "description": "Hash lock (0x-prefixed 32-byte hex). Client generates secret, computes SHA256(secret)."
           },
+          "minimum_payout_sats": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Minimum net Bitcoin payout, including the client claim fee. Requires amount_out.\nAt most 1% below amount_out; fees are added to this floor before DEX execution.",
+            "minimum": 0
+          },
           "promo_code": {
             "type": [
               "string",
@@ -8084,6 +8155,22 @@
           }
         }
       },
+      "RefundEvmGaslessResponse": {
+        "type": "object",
+        "required": [
+          "tx_hash",
+          "confirmed"
+        ],
+        "properties": {
+          "confirmed": {
+            "type": "boolean",
+            "description": "False means broadcast, confirmation not yet established."
+          },
+          "tx_hash": {
+            "type": "string"
+          }
+        }
+      },
       "RehashEvmParams": {
         "type": "object",
         "description": "The lock a rehash would move, and the terms it would move to.",
@@ -8933,10 +9020,14 @@
       "TokenInfos": {
         "type": "object",
         "required": [
+          "bitcoin_network",
           "btc_tokens",
           "evm_tokens"
         ],
         "properties": {
+          "bitcoin_network": {
+            "type": "string"
+          },
           "btc_tokens": {
             "type": "array",
             "items": {
