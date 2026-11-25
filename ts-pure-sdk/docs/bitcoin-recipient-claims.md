@@ -33,8 +33,12 @@ and backups; a replacement recalculates surplus from those commitments.
 
 `StoredSwap.bitcoinPayout` is local data: SQLite persists it, response refreshes
 retain it, and full JSON exports of the stored swap include it. `Client.claim`
-uses the stored commitments and their explicit fee. A caller-supplied fee rate
-is a minimum check, not authorization to rewrite recipients or the fee.
+uses the stored commitments and their explicit fee. The fee rate (the
+caller-supplied `feeRateSatPerVb`, otherwise the two-block estimate with a
+2 sat/vB floor) is a minimum check, not authorization to rewrite recipients or
+the fee. If the explicit fee is below that rate, the claim is rejected before
+anything is broadcast, so the preimage is never revealed by an underpriced
+claim.
 
 A complete recovery backup must contain the full stored swap, including its
 recipient commitments, keys/preimage, funding response and recovery target.

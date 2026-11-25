@@ -4956,13 +4956,13 @@ export class Client {
       };
     }
 
-    // Ordinary claims use the two-block estimate. Recipient payouts retain
-    // their explicitly committed absolute fee; callers can request a rate check.
+    // The claim reveals the preimage and has to confirm before the server
+    // can refund, so it pays for a two-block confirmation. Recipient payouts
+    // keep their committed absolute fee and use this rate as a floor: an
+    // underpriced payout claim is rejected before broadcast, never reduced.
     const feeRateSatPerVb =
       options?.feeRateSatPerVb ??
-      (storedSwap.bitcoinPayout
-        ? 0 // The caller committed an absolute fee; never silently reduce recipients.
-        : Math.max(2, (await fetchFeeRateEstimate(esploraUrls, 2)) ?? 0));
+      Math.max(2, (await fetchFeeRateEstimate(esploraUrls, 2)) ?? 0);
 
     try {
       const result = buildOnchainClaimTransaction({

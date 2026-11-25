@@ -3,6 +3,7 @@ import { hex } from "@scure/base";
 import * as btc from "@scure/btc-signer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Client } from "../src/client.js";
+import * as electrum from "../src/electrum-ws.js";
 import * as esplora from "../src/esplora.js";
 import { InMemorySwapStorage } from "../src/storage/index.js";
 
@@ -213,7 +214,7 @@ describe("multi-recipient Bitcoin claim primitive", () => {
   });
 });
 
-it("Client.claim preserves stored recipients after a response refresh", async () => {
+async function payoutClaimClient() {
   const storage = new InMemorySwapStorage();
   const client = await Client.builder()
     .withSwapStorage(storage)
@@ -244,6 +245,12 @@ it("Client.claim preserves stored recipients after a response refresh", async ()
   vi.spyOn(esplora, "fetchTransactionOutputs").mockResolvedValue({
     vout: [{ value: 100000 }],
   });
+  return { client, record, storage };
+}
+
+it("Client.claim preserves stored recipients after a response refresh", async () => {
+  const { client, record } = await payoutClaimClient();
+  vi.spyOn(esplora, "fetchFeeRateEstimate").mockResolvedValue(2);
   const broadcast = vi
     .spyOn(esplora, "broadcastTransactionWithRetry")
     .mockResolvedValue("txid");
@@ -252,4 +259,25 @@ it("Client.claim preserves stored recipients after a response refresh", async ()
   const tx = btc.Transaction.fromRaw(hex.decode(broadcast.mock.calls[0][1]));
   expect([0, 1].map((i) => tx.getOutput(i).amount)).toEqual([30750n, 68750n]);
   expect(tx.outputsLength).toBe(2);
+});
+
+it("Client.claim rejects an underpriced payout claim without broadcasting", async () => {
+  const { client, record, storage } = await payoutClaimClient();
+  // 500 committed sats cannot cover a two-output claim at 50 sat/vB.
+  vi.spyOn(esplora, "fetchFeeRateEstimate").mockResolvedValue(50);
+  const esploraBroadcast = vi
+    .spyOn(esplora, "broadcastTransactionWithRetry")
+    .mockResolvedValue("txid");
+  const electrumBroadcast = vi
+    .spyOn(electrum, "electrumBroadcastTransaction")
+    .mockResolvedValue("txid");
+  const result = await client.claim(record.swapId);
+  expect(result.success).toBe(false);
+  expect(result.message).toContain(
+    "Committed fee does not meet the requested fee rate",
+  );
+  expect(result.txHash).toBeUndefined();
+  expect(esploraBroadcast).not.toHaveBeenCalled();
+  expect(electrumBroadcast).not.toHaveBeenCalled();
+  expect((await storage.get(record.swapId))?.bitcoinPayout).toEqual(payout);
 });
