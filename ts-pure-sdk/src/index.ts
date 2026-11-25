@@ -221,9 +221,13 @@ export {
   RehashNotRecordedError,
   rehashAuthorizationMessage,
 } from "./client.js";
-export { allocateBitcoinPayout } from "./create/bitcoin-payout.js";
+export {
+  allocateBitcoinPayout,
+  validateBitcoinPayout,
+} from "./create/bitcoin-payout.js";
 export {
   type BitcoinPaymentRequest,
+  bitcoinNetworkOf,
   commitBitcoinPayment,
   minimumBitcoinPayout,
 } from "./create/payout-slippage.js";

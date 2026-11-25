@@ -3,4 +3,4 @@
 "@satora/swap": minor
 ---
 
-Add `allocateBitcoinPayout(payout, funded, fee?)`, which returns the recipient amounts a claim of the funded amount pays, using the same proportional surplus split as the claim. Persist `payRequestedAmounts`, optional Pay display metadata holding the nominal amounts asked for.
+Add `allocateBitcoinPayout(payout, funded, fee?)`, which returns the recipient amounts a claim of the funded amount pays, using the same proportional surplus split as the claim. Export `validateBitcoinPayout` and `bitcoinNetworkOf`, so integrations can apply the claim's payout rules before storing a payout. Persist `payRequestedAmounts`, optional Pay display metadata holding the nominal amounts asked for.
