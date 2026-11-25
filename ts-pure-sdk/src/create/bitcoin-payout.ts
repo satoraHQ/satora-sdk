@@ -49,3 +49,37 @@ export function validateBitcoinPayout(
   if (total + fee > MAX_MONEY) throw new Error("Payout exceeds Bitcoin supply");
   return { total, fee };
 }
+
+/**
+ * The recipient amounts a claim of `funded` sats pays: each commitment plus a
+ * share of the surplus in proportion to it, rounding leftovers one sat each in
+ * list order. `fee` defaults to the committed fee; a claim that raises its fee
+ * to meet a fee rate pays from the surplus, so pass the actual fee to match it.
+ * Throws if the funding cannot cover the commitments and fee.
+ */
+export function allocateBitcoinPayout(
+  payout: BitcoinPayout,
+  funded: bigint,
+  fee: bigint = BigInt(payout.feeSats),
+): BitcoinPayout {
+  const amounts = payout.recipients.map((r) => BigInt(r.amountSats));
+  const total = amounts.reduce((a, b) => a + b, 0n);
+  const remainder = funded - total - fee;
+  if (remainder < 0n)
+    throw new Error(
+      "Funded amount cannot cover the committed recipients and fee",
+    );
+  const shares = amounts.map((amount) => (remainder * amount) / total);
+  let leftover = remainder - shares.reduce((a, b) => a + b, 0n);
+  return {
+    feeSats: fee.toString(),
+    recipients: payout.recipients.map((recipient, index) => {
+      const extra = leftover > 0n ? 1n : 0n;
+      leftover -= extra;
+      return {
+        address: recipient.address,
+        amountSats: (amounts[index] + shares[index] + extra).toString(),
+      };
+    }),
+  };
+}

@@ -17,6 +17,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { hex } from "@scure/base";
 import * as btc from "@scure/btc-signer";
 import {
+  allocateBitcoinPayout,
   MAX_PAYOUT_FEE_SATS,
   validateBitcoinPayout,
 } from "../create/bitcoin-payout.js";
@@ -415,22 +416,14 @@ export function buildOnchainClaimTransaction(
   // Add output (destination)
   if (validated && payout) {
     // Surplus is split in proportion to the commitments, so every recipient
-    // gets the same relative share; rounding leftovers (fewer sats than
-    // recipients) go one sat each in list order.
-    const amounts = payout.recipients.map((r) => BigInt(r.amountSats));
-    const shares = amounts.map(
-      (amount) => (remainder * amount) / validated.total,
-    );
-    let leftover = remainder - shares.reduce((a, b) => a + b, 0n);
-    for (const [index, recipient] of payout.recipients.entries()) {
-      const extra = leftover > 0n ? 1n : 0n;
-      leftover -= extra;
+    // gets the same relative share.
+    for (const recipient of allocateBitcoinPayout(payout, htlcAmount, fee)
+      .recipients)
       tx.addOutputAddress(
         recipient.address,
-        amounts[index] + shares[index] + extra,
+        BigInt(recipient.amountSats),
         networkConfig,
       );
-    }
   } else {
     tx.addOutputAddress(destinationAddress, claimAmount, networkConfig);
   }

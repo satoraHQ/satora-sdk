@@ -186,6 +186,7 @@ describe("SqliteSwapStorage", () => {
         feeSats: "100",
       },
       payRecipientNames: ["Alice"],
+      payRequestedAmounts: ["10100"],
       payUsdRate: 75000,
       evmDepositorKeyIndex: 7,
       evmDepositorSecretKey: "01".repeat(32),
@@ -199,6 +200,7 @@ describe("SqliteSwapStorage", () => {
     expect(restored?.bitcoinClaimBroadcast).toBe("submitted-claim");
     expect(restored?.bitcoinPayout).toEqual(swap.bitcoinPayout);
     expect(restored?.payRecipientNames).toEqual(["Alice"]);
+    expect(restored?.payRequestedAmounts).toEqual(["10100"]);
     expect(restored?.payUsdRate).toBe(75000);
     expect(restored?.evmDepositorKeyIndex).toBe(7);
     expect(restored?.evmDepositorSecretKey).toBe(swap.evmDepositorSecretKey);

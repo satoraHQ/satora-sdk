@@ -76,6 +76,8 @@ export interface StoredSwap {
   bitcoinClaimBroadcast?: string;
   /** Optional Pay display metadata; never used to authorize payouts. */
   payRecipientNames?: string[];
+  /** Optional Pay display metadata: the nominal amounts requested, before the payout tolerance. Never used to authorize payouts. */
+  payRequestedAmounts?: string[];
   payUsdRate?: number;
   /** Original SDK depositor key retained across refund continuations. */
   evmDepositorKeyIndex?: number;

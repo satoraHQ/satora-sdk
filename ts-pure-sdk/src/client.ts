@@ -7692,6 +7692,7 @@ export class Client {
       targetAddress: targetAddress ?? existing?.targetAddress,
       bitcoinPayout: commitments?.bitcoinPayout ?? existing?.bitcoinPayout,
       payRecipientNames: existing?.payRecipientNames,
+      payRequestedAmounts: existing?.payRequestedAmounts,
       payUsdRate: existing?.payUsdRate,
       bitcoinClaimBroadcast: existing?.bitcoinClaimBroadcast,
       evmDepositorKeyIndex: existing?.evmDepositorKeyIndex,

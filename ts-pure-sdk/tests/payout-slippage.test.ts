@@ -2,6 +2,7 @@ import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { hex } from "@scure/base";
 import * as btc from "@scure/btc-signer";
 import { describe, expect, it } from "vitest";
+import { allocateBitcoinPayout } from "../src/create/bitcoin-payout.js";
 import {
   bitcoinNetworkOf,
   commitBitcoinPayment,
@@ -76,6 +77,18 @@ describe("payment commitments", () => {
       expect(x).toBeGreaterThanOrEqual(1041n);
       expect(y).toBeGreaterThanOrEqual(2032n);
     }
+  });
+  it("previews exactly the amounts the claim pays", () => {
+    const { payout } = commitBitcoinPayment(request, btc.TEST_NETWORK);
+    for (let funded = 3173n; funded <= 3240n; funded++) {
+      const tx = claim(funded, payout);
+      expect(
+        allocateBitcoinPayout(payout, funded).recipients.map((r) =>
+          BigInt(r.amountSats),
+        ),
+      ).toEqual([0, 1].map((i) => tx.getOutput(i).amount));
+    }
+    expect(() => allocateBitcoinPayout(payout, 3172n)).toThrow("cannot cover");
   });
   it("pays about the nominal amounts when funded at the nominal total", () => {
     const { payout } = commitBitcoinPayment(request, btc.TEST_NETWORK);
