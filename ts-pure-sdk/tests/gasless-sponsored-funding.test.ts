@@ -39,6 +39,7 @@ async function clientWith(
     chainId?: number;
     depositorOf?: (sdkAddress: string) => string | null;
     evmFundTxid?: string;
+    evmDepositorSecretKey?: string;
   } = {},
 ) {
   const { aa = true, chainId = 42161 } = options;
@@ -65,6 +66,7 @@ async function clientWith(
   await storage.store(
     storedSwap({
       evmFundTxid: options.evmFundTxid,
+      evmDepositorSecretKey: options.evmDepositorSecretKey,
       evmCoordinatorAddress: undefined,
       evmFundingTerms: fundingTerms({ chainId }),
       response,
@@ -144,6 +146,21 @@ describe("fundSwapGasless funds Arbitrum swaps as a sponsored UserOp", () => {
 
     expect(submit.mock.calls[0][0].signer.address.toLowerCase()).toBe(
       legacyDepositor.toLowerCase(),
+    );
+  });
+
+  it("funds a continuation from the depositor key it retained", async () => {
+    const retained = "07".repeat(32);
+    const { client } = await clientWith({
+      depositorOf: () => deriveEvmAddress(retained),
+      evmDepositorSecretKey: retained,
+    });
+    const submit = sponsorable(client);
+
+    await client.fundSwapGasless(SWAP_ID);
+
+    expect(submit.mock.calls[0][0].signer.address.toLowerCase()).toBe(
+      deriveEvmAddress(retained).toLowerCase(),
     );
   });
 

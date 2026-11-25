@@ -294,6 +294,10 @@ describe("Client.continueRefundedEvmSwap", () => {
       client.getEvmAddress().toLowerCase(),
     );
     expect(result.newSwapId).toBe(NEW_SWAP_ID);
+    // Funded by the wallet-level key: it is never copied into the record.
+    const next = await storage.get(NEW_SWAP_ID);
+    expect(next?.evmDepositorSecretKey).toBeUndefined();
+    expect(next?.evmDepositorKeyIndex).toBeUndefined();
   });
 
   it("retries a Bitcoin swap to a Lightning invoice", async () => {

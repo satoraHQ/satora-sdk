@@ -8647,29 +8647,48 @@ export class Client {
             throw new Error(
               "Cannot verify Bitcoin relay policy before funding. Configure a relay-policy explorer or minimumRelayFeeRateSatPerVb.",
             );
-          const built = buildOnchainClaimTransaction({
-            fundingTxId: "00".repeat(32),
-            fundingVout: 0,
-            htlcAmount: BigInt(options.targetAmount!),
-            hashLock: r.btc_hash_lock,
-            userClaimPubKey: bytesToHex(swapParams.publicKey).slice(2),
-            serverRefundPubKey: r.btc_server_refund_pk.replace(
-              /^(02|03)(?=[0-9a-fA-F]{64}$)/,
-              "",
-            ),
-            userSecretKey: bytesToHex(swapParams.secretKey),
-            preimage: bytesToHex(swapParams.preimage),
-            refundLocktime: r.btc_refund_locktime,
-            destinationAddress: options.targetAddress,
-            bitcoinPayout: options.bitcoinPayout,
-            feeRateSatPerVb: 0,
-            network,
-            btcHtlcScriptVersion: r.btc_htlc_script_version,
-          });
-          if (built.fee < BigInt(Math.ceil(relayFloor * built.vsize)))
-            throw new Error(
-              `Bitcoin payment fee is below the relay minimum of ${relayFloor} sat/vB. Increase it before funding.`,
+          // Simulate the worst case the server may fund: the committed floors
+          // plus the fee, with no surplus to raise the fee from. If the
+          // committed fee cannot meet the relay minimum then, a claim might
+          // never propagate, so refuse before anything is funded.
+          const committed = commitments?.bitcoinPayout;
+          if (!committed) throw new Error("Payment commitments are missing");
+          const minimum =
+            BigInt(committed.feeSats) +
+            committed.recipients.reduce(
+              (sum, recipient) => sum + BigInt(recipient.amountSats),
+              0n,
             );
+          try {
+            buildOnchainClaimTransaction({
+              fundingTxId: "00".repeat(32),
+              fundingVout: 0,
+              htlcAmount: minimum,
+              hashLock: r.btc_hash_lock,
+              userClaimPubKey: bytesToHex(swapParams.publicKey).slice(2),
+              serverRefundPubKey: r.btc_server_refund_pk.replace(
+                /^(02|03)(?=[0-9a-fA-F]{64}$)/,
+                "",
+              ),
+              userSecretKey: bytesToHex(swapParams.secretKey),
+              preimage: bytesToHex(swapParams.preimage),
+              refundLocktime: r.btc_refund_locktime,
+              destinationAddress: options.targetAddress,
+              bitcoinPayout: committed,
+              // The builder needs a positive rate; regtest has no relay floor.
+              feeRateSatPerVb: Math.max(relayFloor, Number.MIN_VALUE),
+              network,
+              btcHtlcScriptVersion: r.btc_htlc_script_version,
+            });
+          } catch (error) {
+            const message =
+              error instanceof Error ? error.message : String(error);
+            if (message.startsWith("Surplus cannot cover"))
+              throw new Error(
+                `Bitcoin payment fee is below the relay minimum of ${relayFloor} sat/vB. Increase it before funding.`,
+              );
+            throw error;
+          }
         }
         await context.storeSwap(
           id,
@@ -10332,7 +10351,13 @@ export class Client {
     const newSwapId = created.response.id;
     if (this.#swapStorage) {
       const next = await this.getStoredSwap(newSwapId);
-      if (next && original)
+      // Retain the funded account's key for this one swap. Never copy the
+      // wallet-level key into a record: it is always a candidate anyway, and
+      // it controls every legacy deposit, so it stays out of swap backups.
+      const sharedAddress = deriveEvmAddress(
+        this.#getEvmSigningKey(),
+      ).toLowerCase();
+      if (next && original && original.address.toLowerCase() !== sharedAddress)
         await this.#swapStorage.store({
           ...next,
           evmDepositorKeyIndex: original.keyIndex,
@@ -10794,7 +10819,7 @@ export class Client {
     if (!this.#swapStorage)
       throw new Error("Sponsored funding requires swap storage");
     if (stored.evmFundingUserOpHash) {
-      const key = this.#gaslessDepositorKey(swapId, stored, swap);
+      const key = await this.#gaslessDepositorKey(swapId, stored, swap);
       const { client } = await this.cctpInbound.createSmartAccountClient({
         signer: keyToKernelOwnerSigner(
           hexToBytes(key.replace(/^0x/, "")),
@@ -10855,7 +10880,9 @@ export class Client {
       } else if (receipt.status === "success" && receipt.logs !== undefined) {
         const sender =
           (expected.terms.htlcVersion ?? 0) >= 7
-            ? deriveEvmAddress(this.#gaslessDepositorKey(swapId, stored, swap))
+            ? deriveEvmAddress(
+                await this.#gaslessDepositorKey(swapId, stored, swap),
+              )
             : expected.terms.coordinator;
         const locks = findSwapCreated(receipt.logs, {
           htlcAddress: expected.terms.htlcAddress,
@@ -10882,7 +10909,7 @@ export class Client {
       }
     }
 
-    const key = this.#gaslessDepositorKey(swapId, stored, swap);
+    const key = await this.#gaslessDepositorKey(swapId, stored, swap);
     const owner = keyToKernelOwnerSigner(
       hexToBytes(key.replace(/^0x/, "")),
       AA_CHAIN_ID,
@@ -10931,24 +10958,34 @@ export class Client {
    * account, so a depositor this SDK does not control cannot be funded
    * here.
    */
-  #gaslessDepositorKey(
+  async #gaslessDepositorKey(
     swapId: string,
     stored: StoredSwap,
     swap: GetSwapResponse,
-  ): string {
+  ): Promise<string> {
+    // The pinned depositor wins over the server's answer; with neither, the
+    // swap predates per-swap deposits and uses the wallet-level key.
     const depositor = (
-      swap as { client_evm_address?: string | null }
-    ).client_evm_address?.toLowerCase();
-    const sharedKey = this.#getEvmSigningKey();
-    if (!depositor || depositor === deriveEvmAddress(sharedKey).toLowerCase()) {
-      return sharedKey;
+      stored.evmFundingTerms?.depositor ??
+      (swap as { client_evm_address?: string | null }).client_evm_address
+    )?.toLowerCase();
+    if (!depositor) return this.#getEvmSigningKey();
+    // Same resolver as funding, refunds and continuations, so a retained
+    // continuation key is found too; the result must still be this depositor.
+    let key: string | undefined;
+    try {
+      key = (await this.getSwapDepositorKey(swapId)).privateKey.replace(
+        /^0x/,
+        "",
+      );
+    } catch {
+      key = undefined;
     }
-    if (depositor === deriveEvmAddress(stored.secretKey).toLowerCase()) {
-      return stored.secretKey;
-    }
-    throw new Error(
-      `Cannot fund swap ${swapId} sponsored: its depositor ${depositor} is not an SDK-controlled account. Fund it from that wallet with fundSwap.`,
-    );
+    if (!key || deriveEvmAddress(key).toLowerCase() !== depositor)
+      throw new Error(
+        `Cannot fund swap ${swapId} sponsored: its depositor ${depositor} is not an SDK-controlled account. Fund it from that wallet with fundSwap.`,
+      );
+    return key;
   }
 
   /**

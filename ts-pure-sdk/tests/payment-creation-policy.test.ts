@@ -1,14 +1,14 @@
 import { secp256k1 } from "@noble/curves/secp256k1.js";
+import { ripemd160 } from "@noble/hashes/legacy.js";
+import { hex } from "@scure/base";
 import * as btc from "@scure/btc-signer";
 import { afterEach, expect, it, vi } from "vitest";
 import { Client } from "../src/client.js";
 import { InMemorySwapStorage } from "../src/storage/index.js";
 import { swapResponse } from "./evm-funding-fixture.js";
 
-vi.mock("../src/refund/onchain.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/refund/onchain.js")>()),
-  buildOnchainClaimTransaction: vi.fn(() => ({ fee: 100n, vsize: 200 })),
-}));
+// No mock of the claim builder: creation simulates a real claim before it
+// stores anything, so the server must echo a hash lock that matches.
 afterEach(() => vi.unstubAllGlobals());
 const address = btc.p2wpkh(
   secp256k1.getPublicKey(new Uint8Array(32).fill(2)),
@@ -30,6 +30,11 @@ async function setup(seconds = 120) {
           btc_refund_locktime: Math.floor(Date.now() / 1000) + seconds,
           client_evm_address: body.user_address,
           target_btc_address: body.target_address,
+          // HASH160(preimage) = RIPEMD160(SHA256(preimage)); hash_lock is the SHA256.
+          btc_hash_lock: hex.encode(
+            ripemd160(hex.decode(String(body.hash_lock).replace(/^0x/, ""))),
+          ),
+          btc_htlc_script_version: 1,
         });
       }
       return new Response("", { status: 404 });
@@ -97,5 +102,13 @@ it("rejects a target amount that is not the nominal total plus the fee", async (
     }),
   ).rejects.toThrow("Payment total must equal recipients plus the Bitcoin fee");
   expect(bodies).toHaveLength(0);
+  expect(await storage.getAll()).toHaveLength(0);
+});
+it("refuses a committed fee that cannot meet the relay minimum without surplus", async () => {
+  const { client, storage } = await setup();
+  // A one-output claim is over 100 vB, so 100 sats cannot pay 2 sat/vB.
+  await expect(
+    client.createSwap({ ...options, minimumRelayFeeRateSatPerVb: 2 }),
+  ).rejects.toThrow("below the relay minimum of 2 sat/vB");
   expect(await storage.getAll()).toHaveLength(0);
 });
