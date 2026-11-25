@@ -112,3 +112,12 @@ it("refuses a committed fee that cannot meet the relay minimum without surplus",
   ).rejects.toThrow("below the relay minimum of 2 sat/vB");
   expect(await storage.getAll()).toHaveLength(0);
 });
+it("checks the relay minimum against floors plus the fee, not nominal funding", async () => {
+  const { client, storage } = await setup();
+  // The claim is over 100 vB: floors (9,900) + fee (100) leave only 100 sats
+  // for it, short of 1 sat/vB, while nominal funding (10,100) leaves 200.
+  await expect(
+    client.createSwap({ ...options, minimumRelayFeeRateSatPerVb: 1 }),
+  ).rejects.toThrow("below the relay minimum of 1 sat/vB");
+  expect(await storage.getAll()).toHaveLength(0);
+});
