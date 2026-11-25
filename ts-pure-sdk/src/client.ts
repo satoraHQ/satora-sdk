@@ -1183,11 +1183,13 @@ export interface ClaimOptions {
   /**
    * Bitcoin destination address for on-chain claims (evm_to_bitcoin and
    * lightning_to_bitcoin); falls back to the address the swap was created with.
+   * Not allowed when the swap stores Bitcoin payout recipients: those are paid.
    */
   destinationAddress?: string;
   /**
    * Fee rate in sat/vB for on-chain Bitcoin claims (default: the explorer's
-   * two-block estimate, at least 2)
+   * two-block estimate, at least 2). For a swap with stored payout recipients
+   * this is a minimum the committed fee must meet; it must be above zero.
    */
   feeRateSatPerVb?: number;
   /**
@@ -4943,11 +4945,23 @@ export class Client {
       };
     }
 
-    // Prefer the explicit option, then the target this client sent at
-    // creation; never the fresh server copy fetched above.
+    // A stored payout pays its committed recipients; an explicit destination
+    // would be silently ignored, so it is refused rather than accepted.
+    const bitcoinPayout = storedSwap.bitcoinPayout;
+    if (bitcoinPayout !== undefined && options?.destinationAddress) {
+      return {
+        success: false,
+        message:
+          "This swap pays stored Bitcoin recipients; destinationAddress cannot override them.",
+      };
+    }
+    // Otherwise prefer the explicit option, then the target this client sent
+    // at creation; never the fresh server copy fetched above.
     const destinationAddress =
-      options?.destinationAddress ?? storedPayoutTarget(storedSwap);
-    if (!destinationAddress) {
+      bitcoinPayout !== undefined
+        ? ""
+        : (options?.destinationAddress ?? storedPayoutTarget(storedSwap));
+    if (bitcoinPayout === undefined && !destinationAddress) {
       return {
         success: false,
         message:
@@ -4958,15 +4972,16 @@ export class Client {
 
     // The claim reveals the preimage and has to confirm before the server
     // can refund, so it pays for a two-block confirmation. Recipient payouts
-    // keep their committed absolute fee and use this rate as a floor: an
-    // underpriced payout claim is rejected before broadcast, never reduced.
+    // keep their committed absolute fee and use this rate (or the caller's,
+    // which must be above zero) as a floor: an underpriced payout claim is
+    // rejected before broadcast, never reduced.
     const feeRateSatPerVb =
       options?.feeRateSatPerVb ??
       Math.max(2, (await fetchFeeRateEstimate(esploraUrls, 2)) ?? 0);
 
     try {
       const result = buildOnchainClaimTransaction({
-        bitcoinPayout: storedSwap.bitcoinPayout,
+        bitcoinPayout,
         fundingTxId: htlcOutput.txid,
         fundingVout: htlcOutput.vout,
         htlcAmount: htlcOutput.amount,
@@ -4976,7 +4991,8 @@ export class Client {
         userSecretKey: storedSwap.secretKey,
         preimage: storedSwap.preimage,
         refundLocktime: btcRefundLocktime,
-        destinationAddress,
+        // Unused when a payout is stored; checked above otherwise.
+        destinationAddress: destinationAddress ?? "",
         feeRateSatPerVb,
         network,
         btcHtlcScriptVersion,

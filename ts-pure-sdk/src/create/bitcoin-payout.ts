@@ -8,6 +8,8 @@ export function validateBitcoinPayout(
   payout: BitcoinPayout,
   network: typeof btc.NETWORK,
 ): { total: bigint; fee: bigint } {
+  if (typeof payout !== "object" || payout === null)
+    throw new Error("A Bitcoin payout must be an object");
   if (
     !Array.isArray(payout.recipients) ||
     payout.recipients.length < 1 ||
@@ -26,7 +28,14 @@ export function validateBitcoinPayout(
     throw new Error("Payout fee must be between 1 and 100,000 sats");
   let total = 0n;
   for (const recipient of payout.recipients) {
-    const decoded = btc.Address(network).decode(recipient.address);
+    let decoded: ReturnType<ReturnType<typeof btc.Address>["decode"]>;
+    try {
+      decoded = btc.Address(network).decode(recipient.address);
+    } catch {
+      throw new Error(
+        "Recipient address is not a valid address for this network",
+      );
+    }
     // A conservative standard-output dust floor. Never accept arbitrary scripts.
     if (!decoded || !["pkh", "sh", "wpkh", "wsh", "tr"].includes(decoded.type))
       throw new Error("Unsupported Bitcoin recipient address");

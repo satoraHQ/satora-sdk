@@ -224,7 +224,9 @@ export class SqliteSwapStorage implements SwapStorage {
         swap.bridgeRecipient ?? null,
         swap.bridgeRecipientWallet ?? null,
         swap.evmFundingUserOpHash ?? null,
-        swap.bitcoinPayout ? JSON.stringify(swap.bitcoinPayout) : null,
+        swap.bitcoinPayout !== undefined
+          ? JSON.stringify(swap.bitcoinPayout)
+          : null,
       );
   }
 

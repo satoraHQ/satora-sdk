@@ -358,10 +358,13 @@ export function buildOnchainClaimTransaction(
   );
 
   // Calculate fee
+  // Only an absent payout selects the single-destination claim; any other
+  // value (including null from a damaged backup) must pass validation.
   const payout = params.bitcoinPayout;
-  const validated = payout
-    ? validateBitcoinPayout(payout, getNetwork(network))
-    : undefined;
+  const validated =
+    payout !== undefined
+      ? validateBitcoinPayout(payout, getNetwork(network))
+      : undefined;
   const fee =
     validated?.fee ?? CLAIM_TX_VBYTES * BigInt(Math.ceil(feeRateSatPerVb));
   const remainder = validated ? htlcAmount - validated.total - fee : 0n;
@@ -403,11 +406,11 @@ export function buildOnchainClaimTransaction(
       amount: htlcAmount,
     },
     tapLeafScript: [hashlockLeaf],
-    sequence: payout ? 0xfffffffd : 0xffffffff,
+    sequence: validated ? 0xfffffffd : 0xffffffff,
   });
 
   // Add output (destination)
-  if (payout) {
+  if (validated && payout) {
     const count = BigInt(payout.recipients.length);
     const share = remainder / count;
     const leftover = remainder % count;
@@ -474,11 +477,14 @@ export function buildOnchainClaimTransaction(
     finalScriptWitness: [preimageBytes, sig, leafScript, encodedControlBlock],
   });
 
+  // Compare rates rather than ceil(vsize * rate): the float product can land
+  // a hair above an exact integer (915 * 2.2) and demand one sat too many.
+  // Fractional rates are fine; zero or below would broadcast an unpriced claim.
   if (
-    payout &&
+    validated &&
     (!Number.isFinite(feeRateSatPerVb) ||
-      feeRateSatPerVb < 0 ||
-      fee < BigInt(Math.ceil(tx.vsize * feeRateSatPerVb)))
+      feeRateSatPerVb <= 0 ||
+      Number(fee) / tx.vsize < feeRateSatPerVb)
   )
     throw new Error("Committed fee does not meet the requested fee rate");
 

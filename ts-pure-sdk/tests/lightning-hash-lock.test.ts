@@ -655,6 +655,23 @@ describe("a server refresh cannot replace a stored swap's terms", () => {
     expect(recovered?.preimageHash).toBe(stored.preimageHash);
     expect(warnings).toEqual([]);
   });
+
+  it("keeps stored Bitcoin payout recipients through a recovery rebuild", async () => {
+    const { stored } = await storedArkadeToLightning();
+    const bitcoinPayout = {
+      recipients: [{ address: "bcrt1qexample", amountSats: "1000" }],
+      feeSats: "500",
+    };
+    const { client, storage } = await clientWith({
+      recover: [{ ...refreshed({}), index: stored.keyIndex }],
+    });
+    await storage.store({ ...stored, bitcoinPayout });
+
+    await client.recoverSwaps();
+    const recovered = await storage.get(A2L.id);
+    expect(recovered?.response.status).toBe("clientfunded");
+    expect(recovered?.bitcoinPayout).toEqual(bitcoinPayout);
+  });
 });
 
 describe("recovery checks a swap it stores for the first time", () => {
