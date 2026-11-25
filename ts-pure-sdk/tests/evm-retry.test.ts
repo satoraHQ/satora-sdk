@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { deriveEvmAddress } from "../src/evm/signing.js";
 import type { EvmSigner } from "../src/evm/wallet.js";
-import { Client, InMemorySwapStorage } from "../src/index.js";
+import {
+  Client,
+  InMemorySwapStorage,
+  InMemoryWalletStorage,
+} from "../src/index.js";
 import {
   HASH_LOCK,
   SWAP_ID,
@@ -159,12 +163,33 @@ describe("Client.refundEvmSponsored", () => {
     expect(sendUserOperation).toHaveBeenCalledOnce();
   });
 
+  it("refunds a continuation using its retained original key index", async () => {
+    const { client, storage, response } = await clientWith();
+    const original = client.deriveSwapParamsAtIndex(7);
+    const depositor = deriveEvmAddress(original.secretKey);
+    await storage.store({
+      ...storedSwap({
+        response: {
+          ...response,
+          gasless: false,
+          client_evm_address: depositor,
+        } as typeof response,
+      }),
+      evmDepositorKeyIndex: 7,
+    });
+    const { createSmartAccountClient } = refundable(client);
+    await client.refundEvmSponsored(SWAP_ID);
+    expect(
+      createSmartAccountClient.mock.calls[0][0].signer.address.toLowerCase(),
+    ).toBe(depositor.toLowerCase());
+  });
+
   it("refuses a wallet-funded swap, whose wallet refunds itself", async () => {
     const { client } = await clientWith({ depositorOf: () => WALLET });
     const { sendUserOperation } = refundable(client);
 
     await expect(client.refundEvmSponsored(SWAP_ID)).rejects.toThrow(
-      /funded by 0x90f79bf6eb2c4f870365e785982e1f101e93b906, not this client's key; .*`refundEvmWithSigner`/,
+      /neither this client's key/,
     );
     expect(sendUserOperation).not.toHaveBeenCalled();
   });
@@ -257,7 +282,7 @@ describe("Client.continueRefundedEvmSwap", () => {
         tokenAddress: ARBITRUM_TBTC,
         evmChainId: 42161,
         sourceAmount: 200000000000000n,
-        gasless: true,
+        gasless: false,
       }),
     );
     const submitted = spies.submit.mock.calls[0][0];
@@ -318,6 +343,40 @@ describe("Client.continueRefundedEvmSwap", () => {
     expect(spies.submit.mock.calls[0][0].signer).toBe(keySigner);
   });
 
+  it("retains a per-swap key when its signer is explicitly supplied", async () => {
+    const { client, response, storage } = await clientWith();
+    const params = client.deriveSwapParamsAtIndex(7);
+    const depositor = deriveEvmAddress(params.secretKey);
+    const old = storedSwap({ response, evmDepositorKeyIndex: 7 });
+    old.evmFundingTerms = { ...old.evmFundingTerms!, depositor };
+    await storage.store(old);
+    continuable(client, response, storage);
+    const info = await client.getRefundedEvmSwapContinuation(SWAP_ID);
+    vi.mocked(client.getRefundedEvmSwapContinuation).mockResolvedValue({
+      ...info,
+      smartAccountAddress: depositor,
+    });
+    await client.continueRefundedEvmSwap(SWAP_ID, {
+      targetAddress: "bc1qexample",
+      signer: { address: depositor } as EvmSigner,
+    });
+    const next = (await storage.get(NEW_SWAP_ID))!;
+    expect(next.evmDepositorKeyIndex).toBe(7);
+    expect(next.evmDepositorSecretKey).toBeDefined();
+    // Creation normally pins the supplied userAddress; mirror that in the stub.
+    await storage.store({
+      ...next,
+      evmFundingTerms: { ...next.evmFundingTerms!, depositor },
+    });
+    expect(
+      (await client.getSwapDepositorKey(NEW_SWAP_ID)).address.toLowerCase(),
+    ).toBe(depositor.toLowerCase());
+    const rebuilt = await Client.builder().withSwapStorage(storage).build();
+    expect(
+      (await rebuilt.getSwapDepositorKey(NEW_SWAP_ID)).address.toLowerCase(),
+    ).toBe(depositor.toLowerCase());
+  });
+
   it("rejects another owner before creating a swap it could not fund", async () => {
     const { client, response, storage } = await clientWith();
     const spies = continuable(client, response, storage);
@@ -346,4 +405,53 @@ describe("Client.continueRefundedEvmSwap", () => {
     ).rejects.toThrow(/not a Lightning invoice/);
     expect(spies.submit).not.toHaveBeenCalled();
   });
+});
+
+it("rebuilds continuation ownership from refunded predecessors during seed recovery", async () => {
+  let responses: unknown[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () =>
+      Response.json({
+        swaps: responses,
+        highest_index: 1,
+        next_index: 2,
+        scanned_until: 1,
+        complete: true,
+      }),
+    ),
+  );
+  const storage = new InMemorySwapStorage();
+  const client = await Client.builder()
+    .withSwapStorage(storage)
+    .withSignerStorage(new InMemoryWalletStorage())
+    .build();
+  const original = client.deriveSwapParamsAtIndex(0);
+  const next = client.deriveSwapParamsAtIndex(1);
+  const depositor = deriveEvmAddress(original.secretKey);
+  const hex = (bytes: Uint8Array) =>
+    Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  responses = [
+    {
+      ...swapResponse({ clientEvmAddress: depositor, gasless: true }),
+      status: "clientrefunded",
+      index: 0,
+      evm_hash_lock: `0x${hex(original.preimageHash)}`,
+    },
+    {
+      ...swapResponse({ clientEvmAddress: depositor, gasless: false }),
+      id: NEW_SWAP_ID,
+      index: 1,
+      evm_hash_lock: `0x${hex(next.preimageHash)}`,
+    },
+  ];
+
+  try {
+    await client.recoverSwaps();
+    expect(
+      (await client.getSwapDepositorKey(NEW_SWAP_ID)).address.toLowerCase(),
+    ).toBe(depositor.toLowerCase());
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });

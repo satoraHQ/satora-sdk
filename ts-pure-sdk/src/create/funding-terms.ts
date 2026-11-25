@@ -1,4 +1,5 @@
 import type { EvmFundingTerms } from "../evm/funding-pins.js";
+import { assertAddressEchoed } from "../swap-verification.js";
 
 /**
  * The funding terms of an EVM-sourced swap, read from its creation
@@ -6,18 +7,23 @@ import type { EvmFundingTerms } from "../evm/funding-pins.js";
  * spender this client will sign for, and the HTLC, claimer, timelock,
  * tokens and input are what every later funding payload must match.
  */
-export function fundingTermsOf(data: {
-  evm_chain_id?: number | null;
-  evm_coordinator_address?: string | null;
-  evm_htlc_address?: string | null;
-  evm_htlc_kind?: string | null;
-  evm_htlc_version?: number | null;
-  server_evm_address?: string | null;
-  evm_refund_locktime?: number | null;
-  source_amount?: string | number | null;
-  source_token?: { token_id?: string | null } | null;
-  evm_htlc_token?: string | null;
-}): EvmFundingTerms | undefined {
+export function fundingTermsOf(
+  data: {
+    client_evm_address?: string | null;
+    evm_chain_id?: number | null;
+    evm_coordinator_address?: string | null;
+    evm_htlc_address?: string | null;
+    evm_htlc_kind?: string | null;
+    evm_htlc_version?: number | null;
+    server_evm_address?: string | null;
+    evm_refund_locktime?: number | null;
+    source_amount?: string | number | null;
+    source_token?: { token_id?: string | null } | null;
+    evm_htlc_token?: string | null;
+  },
+  depositor?: string,
+): EvmFundingTerms | undefined {
+  if (depositor) assertAddressEchoed(data, "client_evm_address", depositor);
   // A response without them records nothing: funding then fails closed.
   if (
     !data.evm_chain_id ||
@@ -32,6 +38,7 @@ export function fundingTermsOf(data: {
     return undefined;
   }
   return {
+    depositor: depositor?.toLowerCase(),
     chainId: data.evm_chain_id,
     coordinator: data.evm_coordinator_address.toLowerCase(),
     htlcAddress: data.evm_htlc_address.toLowerCase(),

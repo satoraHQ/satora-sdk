@@ -27,7 +27,7 @@ export type BitcoinNetwork = "mainnet" | "testnet" | "signet" | "regtest";
 
 /** Parameters needed to build a claim transaction for an on-chain Taproot HTLC */
 export interface OnchainClaimParams {
-  /** Committed recipient minimums. Surplus is split equally; shortfalls reject. */
+  /** Committed recipient minimums. Surplus is split in proportion to them; shortfalls reject. */
   bitcoinPayout?: BitcoinPayout;
 
   /** The funding transaction ID (hex, no 0x prefix) */
@@ -414,15 +414,20 @@ export function buildOnchainClaimTransaction(
 
   // Add output (destination)
   if (validated && payout) {
-    const count = BigInt(payout.recipients.length);
-    const share = remainder / count;
-    const leftover = remainder % count;
+    // Surplus is split in proportion to the commitments, so every recipient
+    // gets the same relative share; rounding leftovers (fewer sats than
+    // recipients) go one sat each in list order.
+    const amounts = payout.recipients.map((r) => BigInt(r.amountSats));
+    const shares = amounts.map(
+      (amount) => (remainder * amount) / validated.total,
+    );
+    let leftover = remainder - shares.reduce((a, b) => a + b, 0n);
     for (const [index, recipient] of payout.recipients.entries()) {
+      const extra = leftover > 0n ? 1n : 0n;
+      leftover -= extra;
       tx.addOutputAddress(
         recipient.address,
-        BigInt(recipient.amountSats) +
-          share +
-          (BigInt(index) < leftover ? 1n : 0n),
+        amounts[index] + shares[index] + extra,
         networkConfig,
       );
     }

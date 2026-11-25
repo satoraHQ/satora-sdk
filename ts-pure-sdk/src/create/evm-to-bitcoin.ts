@@ -5,10 +5,13 @@
  * via Taproot HTLC.
  */
 
+import { deriveEvmAddress } from "../evm/signing.js";
 import { bytesToHex } from "../signer/index.js";
+import type { BitcoinPayout } from "../storage/types.js";
 import { BTC_HTLC_SCRIPT_VERSION_STRICT } from "../strict-vhtlc.js";
 import { assertAddressEchoed } from "../swap-verification.js";
 import { fundingTermsOf } from "./funding-terms.js";
+import { bitcoinNetworkOf, commitBitcoinPayment } from "./payout-slippage.js";
 import { retryOnHashCollision } from "./retry.js";
 import type {
   CreateSwapContext,
@@ -49,6 +52,25 @@ export async function createEvmToBitcoinSwap(
   options: EvmToBitcoinSwapOptions,
   ctx: CreateSwapContext,
 ): Promise<EvmToBitcoinSwapResult> {
+  // A payment commits each recipient to its floor; the server must fund at
+  // least the floors plus the fee, and the claim shares any surplus out.
+  let payment: { payout: BitcoinPayout; minimumPayoutSats: bigint } | undefined;
+  if (options.bitcoinPayout !== undefined) {
+    if (options.sourceAmount !== undefined)
+      throw new Error("Payments require an exact target amount");
+    const committed = commitBitcoinPayment(
+      options.bitcoinPayout,
+      bitcoinNetworkOf(options.targetAddress),
+    );
+    if (
+      !Number.isSafeInteger(options.targetAmount) ||
+      committed.nominalSats !== BigInt(options.targetAmount as number)
+    )
+      throw new Error(
+        "Payment total must equal recipients plus the Bitcoin fee",
+      );
+    payment = committed;
+  }
   return retryOnHashCollision(ctx, async () => {
     const swapParams = await ctx.deriveSwapParams();
     const hashLock = `0x${bytesToHex(swapParams.preimageHash)}`;
@@ -56,7 +78,9 @@ export async function createEvmToBitcoinSwap(
     const claimPk = bytesToHex(swapParams.publicKey);
     const userId = bytesToHex(swapParams.userId);
 
-    const userAddress = options.gasless ? ctx.evmAddress : options.userAddress;
+    const userAddress = options.gasless
+      ? deriveEvmAddress(swapParams.secretKey)
+      : options.userAddress;
 
     const { data, error } = await ctx.apiClient.POST("/swap/evm/bitcoin", {
       body: {
@@ -70,6 +94,9 @@ export async function createEvmToBitcoinSwap(
         target_address: options.targetAddress,
         amount_in: options.sourceAmount
           ? options.sourceAmount.toString()
+          : undefined,
+        minimum_payout_sats: payment
+          ? Number(payment.minimumPayoutSats)
           : undefined,
         amount_out: options.targetAmount
           ? Number(options.targetAmount)
@@ -104,7 +131,10 @@ export async function createEvmToBitcoinSwap(
       },
       options.targetAddress,
       undefined,
-      { evmFundingTerms: fundingTermsOf(data) },
+      {
+        evmFundingTerms: fundingTermsOf(data, userAddress),
+        bitcoinPayout: payment?.payout,
+      },
     );
 
     return { response: data, swapParams };

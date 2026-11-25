@@ -72,6 +72,15 @@ export interface LightningPaymentHash {
 export interface StoredSwap {
   /** Locally committed recipient outputs, retained in full backups. */
   bitcoinPayout?: BitcoinPayout;
+  /** Last claim submitted to a broadcaster; its preimage may be public. */
+  bitcoinClaimBroadcast?: string;
+  /** Optional Pay display metadata; never used to authorize payouts. */
+  payRecipientNames?: string[];
+  payUsdRate?: number;
+  /** Original SDK depositor key retained across refund continuations. */
+  evmDepositorKeyIndex?: number;
+  /** Verified original depositor key; private like secretKey, independent of wallet root. */
+  evmDepositorSecretKey?: string;
 
   /** Schema version for migrations */
   version: number;
@@ -188,9 +197,9 @@ export interface StoredSwap {
   cctpBurnLastValidBlockHeight?: number;
 }
 
-/** Minimum recipient commitments; surplus is split equally in list order. This primitive does not create or fund a payment. */
+/** Minimum recipient commitments; surplus is split in proportion to them. */
 export interface BitcoinPayout {
   recipients: { address: string; amountSats: string }[];
-  /** Explicit miner fee; replacement fees may consume surplus but never recipient commitments. */
+  /** Minimum miner fee; claims raise it out of surplus to meet the fee rate, never out of recipient commitments. */
   feeSats: string;
 }

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { computeCoordinatorCallsHash } from "../src/evm/coordinator.js";
+import * as evmSigning from "../src/evm/signing.js";
 import { Client, InMemorySwapStorage } from "../src/index.js";
 import {
   COORDINATOR,
@@ -534,4 +535,88 @@ describe("the server's delegation hint is bound to the address it describes", ()
       /delegated to 0xabab.*cannot sign for/,
     );
   });
+});
+
+describe("Permit2 funding honors the pinned depositor", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  for (const method of [
+    "fundSwapGasless",
+    "getCoordinatorFundingCallDataPermit2",
+  ] as const) {
+    for (const gasless of [true, false, undefined]) {
+      it(`${method} uses the pinned key when refreshed gasless is ${gasless}`, async () => {
+        const record = storedSwap();
+        const depositor = evmSigning.deriveEvmAddress(record.secretKey);
+        record.evmFundingTerms = fundingTerms({ depositor });
+        record.response = swapResponse({
+          gasless: true,
+          clientEvmAddress: depositor,
+        });
+        const refreshed = { ...swapResponse(), gasless };
+        serverAnswering({
+          swap: refreshed,
+          permit2: permit2Params,
+          gasless: { tx_hash: FUND_TXID },
+        });
+        const storage = new InMemorySwapStorage();
+        await storage.store(record);
+        const client = await Client.builder()
+          .withSwapStorage(storage)
+          .withMnemonic(MNEMONIC)
+          .build();
+        expect(client.getEvmAddress().toLowerCase()).not.toBe(
+          depositor.toLowerCase(),
+        );
+        const sign = vi.spyOn(evmSigning, "signEvmDigest");
+
+        await (method === "fundSwapGasless"
+          ? client.fundSwapGasless(SWAP_ID)
+          : client.getCoordinatorFundingCallDataPermit2(SWAP_ID, 137));
+
+        expect(sign).toHaveBeenCalled();
+        for (const [key] of sign.mock.calls) {
+          expect(evmSigning.deriveEvmAddress(key).toLowerCase()).toBe(
+            depositor.toLowerCase(),
+          );
+        }
+      });
+    }
+
+    it(`${method} refuses an unavailable pinned key before signing or relaying`, async () => {
+      const fetchMock = serverAnswering({
+        swap: swapResponse(),
+        permit2: permit2Params,
+      });
+      const storage = new InMemorySwapStorage();
+      await storage.store(
+        storedSwap({
+          evmFundingTerms: fundingTerms({ depositor: SIGNER_ADDRESS }),
+        }),
+      );
+      const client = await Client.builder()
+        .withSwapStorage(storage)
+        .withMnemonic(MNEMONIC)
+        .build();
+      const sign = vi.spyOn(evmSigning, "signEvmDigest");
+
+      await expect(
+        method === "fundSwapGasless"
+          ? client.fundSwapGasless(SWAP_ID)
+          : client.getCoordinatorFundingCallDataPermit2(SWAP_ID, 137),
+      ).rejects.toThrow("recorded depositor");
+
+      expect(sign).not.toHaveBeenCalled();
+      expect(
+        fetchMock.mock.calls.some(([input]) =>
+          String(input instanceof Request ? input.url : input).includes(
+            "fund-gasless",
+          ),
+        ),
+      ).toBe(false);
+    });
+  }
 });

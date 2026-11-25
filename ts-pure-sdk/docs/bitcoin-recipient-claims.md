@@ -18,16 +18,17 @@ addresses, and requires at least 546 sats per recipient. The explicit fee is
 1–100,000 sats; fractional sat/vB rates are supported when checking the signed
 transaction's actual virtual size.
 
-For a 100,000-sat HTLC this example pays 30,750 and 68,750 sats. After the
-explicit fee and committed amounts, surplus is divided equally across recipient
-outputs. Any leftover sats go to recipients in list order (one extra sat each).
+For a 100,000-sat HTLC this example pays 30,460 and 69,040 sats. After the
+fee and committed amounts, surplus is divided across recipient outputs in
+proportion to their commitments, so everyone gets the same relative share.
+Rounding leftovers (fewer sats than recipients) go one sat each in list order.
 There is no separate recovery/change output, even for a one-sat surplus.
 Shortfalls reject rather than reducing the committed amounts.
 
 Claims with recipient commitments signal RBF. A higher fee, whether from a
 higher `feeSats` or raised to meet a fee rate, consumes previously distributed
 surplus. For example, a 1,000-sat fee pays
-30,500 and 68,500 sats. A 2,000-sat fee pays the original 30,000 and 68,000 sats;
+30,307 and 68,693 sats. A 2,000-sat fee pays the original 30,000 and 68,000 sats;
 a larger fee rejects. Replacement transactions must still satisfy the node's
 replacement and relay rules. The original commitments remain unchanged in storage
 and backups; a replacement recalculates surplus from those commitments.
@@ -56,3 +57,15 @@ This slice does not add recipient options to swap creation, new backend routes,
 or automatic payment funding. Funding amount guarantees, pre-funding capability
 checks and the Pay creation API are separate prerequisites before exposing Pay.
 Existing swap creation and single-destination claims are unchanged.
+
+## Creating a payment
+
+`createSwap` with `bitcoinPayout` (EVM to Bitcoin only) takes a
+`BitcoinPaymentRequest`: nominal recipient amounts, the claim fee, and
+`maxSlippageBps` (0–100, default 0). `targetAmount` must equal the nominal
+total plus the fee. The SDK commits each recipient to its floor, the nominal
+amount less the tolerance and never below 546 sats, and sends the floor total
+plus the fee as `minimum_payout_sats`: the least the server may fund the HTLC
+with. The server quotes the DEX with headroom, so a payment usually funds above
+its floors; the proportional surplus split then pays roughly the nominal
+amounts.

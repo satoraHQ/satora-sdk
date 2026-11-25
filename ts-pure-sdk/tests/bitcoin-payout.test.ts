@@ -42,7 +42,8 @@ const params = {
   ),
   userSecretKey: hex.encode(key),
   preimage: hex.encode(preimage),
-  refundLocktime: 1700000000,
+  // Far enough out that the payment claim window never refuses.
+  refundLocktime: 4_000_000_000,
   destinationAddress: address,
   feeRateSatPerVb: 1,
   network: "signet" as const,
@@ -52,11 +53,12 @@ const decode = (result: ReturnType<typeof buildOnchainClaimTransaction>) =>
   btc.Transaction.fromRaw(hex.decode(result.txHex));
 
 describe("multi-recipient Bitcoin claim primitive", () => {
-  it("preserves recipient order and splits surplus equally", () => {
+  it("preserves recipient order and splits surplus in proportion", () => {
     const result = buildOnchainClaimTransaction(params);
     const tx = decode(result);
     expect(tx.outputsLength).toBe(2);
-    expect([0, 1].map((i) => tx.getOutput(i).amount)).toEqual([30750n, 68750n]);
+    // 1,500 surplus: 459.18 and 1,040.81, the leftover sat to the first.
+    expect([0, 1].map((i) => tx.getOutput(i).amount)).toEqual([30460n, 69040n]);
     expect(tx.getOutput(0).script).toEqual(
       btc.p2wpkh(secp256k1.getPublicKey(key), btc.TEST_NETWORK).script,
     );
@@ -71,7 +73,8 @@ describe("multi-recipient Bitcoin claim primitive", () => {
         bitcoinPayout: { ...payout, feeSats: "1000" },
       }),
     );
-    expect([0, 1].map((i) => tx.getOutput(i).amount)).toEqual([30500n, 68500n]);
+    // 1,000 surplus: 306.12 and 693.87, the leftover sat to the first.
+    expect([0, 1].map((i) => tx.getOutput(i).amount)).toEqual([30307n, 68693n]);
   });
   it.each([
     1n,
@@ -83,8 +86,11 @@ describe("multi-recipient Bitcoin claim primitive", () => {
       buildOnchainClaimTransaction({ ...params, htlcAmount: 98500n + surplus }),
     );
     expect(tx.outputsLength).toBe(2);
-    expect(tx.getOutput(0).amount).toBe(30000n + surplus / 2n + (surplus % 2n));
-    expect(tx.getOutput(1).amount).toBe(68000n + surplus / 2n);
+    const shares = [30000n, 68000n].map((a) => (surplus * a) / 98000n);
+    const leftover = surplus - shares[0] - shares[1];
+    expect(leftover).toBeLessThan(2n);
+    expect(tx.getOutput(0).amount).toBe(30000n + shares[0] + leftover);
+    expect(tx.getOutput(1).amount).toBe(68000n + shares[1]);
     expect(tx.getOutput(0).amount! + tx.getOutput(1).amount! + 500n).toBe(
       98500n + surplus,
     );
@@ -328,6 +334,7 @@ async function payoutClaimClient(targetAddress: string | undefined = address) {
   vi.spyOn(esplora, "fetchTransactionOutputs").mockResolvedValue({
     vout: [{ value: 100000 }],
   });
+  vi.spyOn(esplora, "fetchMinimumRelayFeeRate").mockResolvedValue(1);
   return { client, record, storage };
 }
 
@@ -340,7 +347,7 @@ it("Client.claim preserves stored recipients after a response refresh", async ()
   const result = await client.claim(record.swapId);
   expect(result.success).toBe(true);
   const tx = btc.Transaction.fromRaw(hex.decode(broadcast.mock.calls[0][1]));
-  expect([0, 1].map((i) => tx.getOutput(i).amount)).toEqual([30750n, 68750n]);
+  expect([0, 1].map((i) => tx.getOutput(i).amount)).toEqual([30460n, 69040n]);
   expect(tx.outputsLength).toBe(2);
 });
 

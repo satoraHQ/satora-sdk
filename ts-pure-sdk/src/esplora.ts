@@ -347,3 +347,30 @@ export async function broadcastTransactionWithRetry(
   // Unreachable, but satisfies the type checker.
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
+
+/** Mempool-compatible explorers expose current relay policy separately from confirmation estimates. */
+export async function fetchMinimumRelayFeeRate(
+  esploraUrls: EsploraUrls,
+): Promise<number | undefined> {
+  try {
+    return await withFallback(esploraUrls, async (url) => {
+      const response = await fetchWithTimeout(
+        `${url}/v1/fees/recommended`,
+        LOOKUP_TIMEOUT_MS,
+      );
+      if (!response.ok) throw new Error("Relay policy unavailable");
+      const { minimumFee } = (await response.json()) as {
+        minimumFee?: unknown;
+      };
+      if (
+        typeof minimumFee !== "number" ||
+        !Number.isFinite(minimumFee) ||
+        minimumFee < 0
+      )
+        throw new Error("Invalid relay policy");
+      return minimumFee;
+    });
+  } catch {
+    return undefined;
+  }
+}

@@ -177,6 +177,33 @@ describe("SqliteSwapStorage", () => {
     expect(retrieved).toEqual(testSwap);
   });
 
+  it("preserves payment commitments and depositor identity across response updates", async () => {
+    const swap = {
+      ...createTestSwap("payment"),
+      bitcoinClaimBroadcast: "submitted-claim",
+      bitcoinPayout: {
+        recipients: [{ address: "recipient", amountSats: "10000" }],
+        feeSats: "100",
+      },
+      payRecipientNames: ["Alice"],
+      payUsdRate: 75000,
+      evmDepositorKeyIndex: 7,
+      evmDepositorSecretKey: "01".repeat(32),
+    };
+    await storage.store(swap);
+    await storage.update(swap.swapId, {
+      ...swap.response,
+      status: "serverfunded",
+    });
+    const restored = await storage.get(swap.swapId);
+    expect(restored?.bitcoinClaimBroadcast).toBe("submitted-claim");
+    expect(restored?.bitcoinPayout).toEqual(swap.bitcoinPayout);
+    expect(restored?.payRecipientNames).toEqual(["Alice"]);
+    expect(restored?.payUsdRate).toBe(75000);
+    expect(restored?.evmDepositorKeyIndex).toBe(7);
+    expect(restored?.evmDepositorSecretKey).toBe(swap.evmDepositorSecretKey);
+  });
+
   it("should update swap response", async () => {
     const testSwap = createTestSwap("swap-1");
     await storage.store(testSwap);

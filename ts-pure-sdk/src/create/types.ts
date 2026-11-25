@@ -285,6 +285,10 @@ export interface EvmToArkadeSwapGenericResult {
 
 /** Options for creating an EVM-to-Bitcoin (on-chain) swap via the generic endpoint */
 export interface EvmToBitcoinSwapOptions {
+  /** Operator-supplied relay floor for explorers without a relay-policy endpoint. */
+  minimumRelayFeeRateSatPerVb?: number;
+  /** Pay several Bitcoin recipients from this swap; amounts are nominal, see {@link BitcoinPaymentRequest}. */
+  bitcoinPayout?: import("./payout-slippage.js").BitcoinPaymentRequest;
   /** ERC-20 contract address of the source token on the EVM chain */
   tokenAddress: string;
   /** Numeric EVM chain ID: 1 (Ethereum), 137 (Polygon), 42161 (Arbitrum) */
@@ -388,6 +392,9 @@ export interface ArkadeToEvmSwapResult {
  * ```
  */
 export interface CreateSwapOptions {
+  minimumRelayFeeRateSatPerVb?: number;
+  /** Pay several Bitcoin recipients (EVM to Bitcoin only); amounts are nominal. */
+  bitcoinPayout?: import("./payout-slippage.js").BitcoinPaymentRequest;
   /** Source asset (preferred). Takes priority over `sourceAsset`. */
   source?: Asset;
   /** Target asset (preferred). Takes priority over `targetAsset`. */
@@ -675,7 +682,7 @@ export interface CreateSwapContext {
   baseUrl: string;
   /** Function to derive swap parameters (auto-increments key index) */
   deriveSwapParams: () => Promise<SwapParams>;
-  /** Deterministic EVM address derived from the SDK key, reused across all swaps for Permit2 efficiency. */
+  /** Legacy wallet-level EVM address; new gasless deposits use the derived swap key. */
   evmAddress: string;
   /** Jump the key index forward by `n` (used to skip past reused indices). */
   skipKeyIndices?: (n: number) => Promise<void>;
@@ -699,6 +706,7 @@ export interface CreateSwapContext {
     commitments?: {
       lightningPaymentHash?: LightningPaymentHash;
       evmFundingTerms?: EvmFundingTerms;
+      bitcoinPayout?: import("../storage/types.js").BitcoinPayout;
     },
   ) => Promise<void>;
 }

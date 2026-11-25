@@ -94,6 +94,27 @@ describe("SqliteSwapStorage schema migration", () => {
     reopened.close();
   });
 
+  it("migrates and reopens payment commitments and retained keys", async () => {
+    const path = oldDatabase([]);
+    paths.push(path);
+    const storage = new SqliteSwapStorage(path);
+    const payment = {
+      ...storedSwap(),
+      bitcoinPayout: {
+        recipients: [{ address: "recipient", amountSats: "10000" }],
+        feeSats: "100",
+      },
+      payRecipientNames: ["Alice"],
+      payUsdRate: 75000,
+      evmDepositorKeyIndex: 4,
+    };
+    await storage.store(payment);
+    storage.close();
+    const reopened = new SqliteSwapStorage(path);
+    expect(await reopened.get(SWAP_ID)).toEqual(payment);
+    reopened.close();
+  });
+
   it("persists a CCTP-inbound burn, added to a database created before it", async () => {
     // Created with the funding columns but before `cctp_burn_txid`.
     const path = oldDatabase(["evm_fund_txid", "evm_coordinator_address"]);

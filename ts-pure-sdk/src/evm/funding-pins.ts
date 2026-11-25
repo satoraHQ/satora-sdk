@@ -21,6 +21,8 @@ import { decodeUint256 } from "./wallet.js";
  * response and never updated from a later server answer.
  */
 export interface EvmFundingTerms {
+  /** Depositor requested locally and verified at creation; never refreshed. */
+  depositor?: string;
   chainId: number;
   /** The coordinator: the Permit2 spender. */
   coordinator: string;

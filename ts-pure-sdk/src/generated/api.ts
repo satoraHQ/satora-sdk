@@ -171,6 +171,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/swap/{id}/refund-evm-gasless": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["refund_evm_gasless"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/swap/{id}/rehash-evm": {
         parameters: {
             query?: never;
@@ -3022,6 +3038,12 @@ export interface components {
             /** @description Hash lock (0x-prefixed 32-byte hex). Client generates secret, computes SHA256(secret). */
             hash_lock: string;
             /**
+             * Format: int64
+             * @description Minimum net Bitcoin payout, including the client claim fee. Requires amount_out.
+             *     At most 1% below amount_out; fees are added to this floor before DEX execution.
+             */
+            minimum_payout_sats?: number | null;
+            /**
              * @description Optional promo code. Its rate replaces the base fee and its cap
              *     may lift the route maximum (400 if unknown, expired, used up, or too large).
              */
@@ -4182,6 +4204,11 @@ export interface components {
              */
             coordinator_address: string;
         };
+        RefundEvmGaslessResponse: {
+            /** @description False means broadcast, confirmation not yet established. */
+            confirmed: boolean;
+            tx_hash: string;
+        };
         /** @description The lock a rehash would move, and the terms it would move to. */
         RehashEvmParams: {
             /** @description Locked amount (decimal string) */
@@ -4666,6 +4693,7 @@ export interface components {
             token_id: components["schemas"]["TokenId"];
         };
         TokenInfos: {
+            bitcoin_network: string;
             btc_tokens: components["schemas"]["TokenInfo"][];
             evm_tokens: components["schemas"]["TokenInfo"][];
         };
@@ -5076,6 +5104,56 @@ export interface operations {
             };
             /** @description Internal error */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    refund_evm_gasless: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Swap ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Refund transaction broadcast; confirmed indicates whether a successful receipt was observed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RefundEvmGaslessResponse"];
+                };
+            };
+            /** @description Unsupported, unfunded, not expired, or already in progress */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unsafe swap state */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Relay rate limit */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

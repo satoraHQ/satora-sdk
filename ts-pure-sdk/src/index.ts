@@ -222,6 +222,11 @@ export {
   rehashAuthorizationMessage,
 } from "./client.js";
 export {
+  type BitcoinPaymentRequest,
+  commitBitcoinPayment,
+  minimumBitcoinPayout,
+} from "./create/payout-slippage.js";
+export {
   addressToScriptHash,
   type ElectrumNetwork,
   type ElectrumUnspent,

@@ -42,6 +42,7 @@ describe("createEvmToLightningSwap fixes the payment hash", () => {
       if (url.endsWith("/swap/evm/lightning")) {
         return Response.json({
           ...swapResponse({ direction: "evm_to_lightning" }),
+          client_evm_address: SIGNER_ADDRESS,
           ...answer,
         });
       }
@@ -260,6 +261,7 @@ describe("every funding path refuses a hash lock the client did not fix", () => 
   it("fundSwap (CCTP-inbound): refuses before anything is burned", async () => {
     const response = {
       ...swapResponse({ direction: "evm_to_lightning" }),
+      client_evm_address: SIGNER_ADDRESS,
       hash_lock: FOREIGN,
       evm_chain_id: 42161,
       bridge_source_chain: "optimism",

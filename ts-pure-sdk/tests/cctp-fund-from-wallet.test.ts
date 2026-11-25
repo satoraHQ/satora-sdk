@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { deriveEvmAddress } from "../src/evm/signing.js";
 import { fundingTerms } from "./evm-funding-fixture.js";
 
 // The chain-facing primitives of the CCTP-inbound flow. Mocked so the tests
@@ -331,6 +332,24 @@ describe("Client.fundSwap from a wallet on a CCTP-only chain", () => {
       expect.objectContaining({
         signer: wallet,
         smartAccountAddress: client.getEvmAddress(),
+      }),
+    );
+  });
+
+  it("settles and recovers a per-swap deposit with the same owner", async () => {
+    const perSwapAddress = deriveEvmAddress(storedSwap().secretKey);
+    const { client } = await clientWith(() => perSwapAddress);
+    await client.fundSwap(SWAP_ID, walletOnOptimism(), { maxFee: 100n });
+    const owner = submitCctpInboundUserOp.mock.calls[0][1].signer as EvmSigner;
+    expect(owner.address.toLowerCase()).toBe(perSwapAddress.toLowerCase());
+    expect(approveAndBurn).toHaveBeenCalledWith(
+      expect.objectContaining({ smartAccountAddress: perSwapAddress }),
+    );
+    await client.recoverCctpInboundSwap(SWAP_ID, WALLET);
+    expect(recoverCctpInbound).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        signer: expect.objectContaining({ address: perSwapAddress }),
       }),
     );
   });

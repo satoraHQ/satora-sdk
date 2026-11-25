@@ -1,3 +1,4 @@
+import { deriveEvmAddress } from "../evm/signing.js";
 /**
  * EVM to Lightning swap creation.
  *
@@ -67,7 +68,9 @@ export async function createEvmToLightningSwap(
 
   const swapParams = await ctx.deriveSwapParams();
   const userId = bytesToHex(swapParams.userId);
-  const userAddress = options.gasless ? ctx.evmAddress : options.userAddress;
+  const userAddress = options.gasless
+    ? deriveEvmAddress(swapParams.secretKey)
+    : options.userAddress;
 
   const { data, error } = await ctx.apiClient.POST("/swap/evm/lightning", {
     body: {
@@ -114,7 +117,10 @@ export async function createEvmToLightningSwap(
     },
     undefined,
     undefined,
-    { lightningPaymentHash, evmFundingTerms: fundingTermsOf(data) },
+    {
+      lightningPaymentHash,
+      evmFundingTerms: fundingTermsOf(data, userAddress),
+    },
   );
 
   return { response: data, swapParams };

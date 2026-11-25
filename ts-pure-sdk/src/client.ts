@@ -90,6 +90,7 @@ import {
   type SparkToEvmSwapOptions,
   type SparkToEvmSwapResult,
 } from "./create/index.js";
+import { assertPaymentClaimWindow } from "./create/payment-safety.js";
 import { delegateClaim, delegateRefund } from "./delegate.js";
 import {
   ElectrumWsClient,
@@ -102,6 +103,7 @@ import {
   broadcastTransactionWithRetry,
   type EsploraUrls,
   fetchFeeRateEstimate,
+  fetchMinimumRelayFeeRate,
   fetchTransactionOutputs,
   fetchWithTimeout,
   findOutputByAddress,
@@ -1193,6 +1195,8 @@ export interface ClaimOptions {
    * it, up to the 100,000-sat payout fee cap.
    */
   feeRateSatPerVb?: number;
+  /** Relay policy supplied by an operator when the explorer does not expose it. */
+  minimumRelayFeeRateSatPerVb?: number;
   /**
    * For EVM-to-Bitcoin claims: if the funding (HTLC) output has not been
    * indexed by the block explorer yet, keep polling for up to this many
@@ -1960,6 +1964,7 @@ export class Client {
   >();
   readonly #signerStorage?: WalletStorage;
   readonly #swapStorage?: SwapStorage;
+  #ephemeralKeyIndex = 0;
   #statusWatcher: SwapStatusWatcher | null = null;
   #cctpInbound: CctpInboundClient | null = null;
   #electrumWs: ElectrumWsClient | null = null;
@@ -2149,7 +2154,7 @@ export class Client {
    * @returns The derived swap parameters.
    */
   async deriveSwapParams(): Promise<SwapParams> {
-    let index = 0;
+    let index = this.#ephemeralKeyIndex++;
     if (this.#signerStorage) {
       index = await this.#signerStorage.incrementKeyIndex();
     }
@@ -2171,8 +2176,8 @@ export class Client {
   /**
    * Get the deterministic EVM address for this SDK key.
    *
-   * This address is reused across all gasless swaps, so a single
-   * Permit2 approval is sufficient for multiple swaps.
+   * Legacy wallet-level address. New gasless swaps use their own deposit
+   * address; read it from the swap response or getSwapDepositorKey(swapId).
    *
    * @returns Checksummed EVM address (0x-prefixed).
    */
@@ -2316,48 +2321,45 @@ export class Client {
     return this.#getEvmSigningKey();
   }
 
+  async #getFundingEvmSigningKey(
+    storedSwap: StoredSwap,
+    gasless: boolean | undefined,
+  ): Promise<string> {
+    const depositor = storedSwap.evmFundingTerms?.depositor;
+    if (depositor) {
+      const { privateKey } = await this.getSwapDepositorKey(storedSwap.swapId);
+      if (
+        deriveEvmAddress(privateKey).toLowerCase() !== depositor.toLowerCase()
+      ) {
+        throw new Error("Funding key does not match the pinned depositor.");
+      }
+      return privateKey;
+    }
+    return gasless
+      ? this.#getCollabRefundEvmSigningKey(storedSwap)
+      : this.#getEvmSigningKey();
+  }
+
   /**
    * Select the SDK-controlled EVM key that matches the swap's recorded depositor.
    *
-   * Current gasless EVM-sourced swaps use the deterministic wallet-level EVM key;
-   * older gasless swaps may have used the per-swap key. Non-gasless SDK-funded
+   * New gasless EVM-sourced swaps use their per-swap key; existing swaps
+   * may still use the deterministic wallet-level EVM key. Non-gasless SDK-funded
    * swaps still use the per-swap key even though client_evm_address may point at
    * the user's wallet rather than the later Permit2 depositor.
    */
-  #getCollabRefundEvmSigningKey(
+  async #getCollabRefundEvmSigningKey(
     storedSwap: StoredSwap,
-    walletMethod = "collabRefundEvmWithSigner",
-  ): string {
-    const swapKey = storedSwap.secretKey;
-    const response = storedSwap.response as {
-      client_evm_address?: string;
-      gasless?: boolean;
-    };
-
-    if (!response.gasless) {
-      return swapKey;
-    }
-
-    const deterministicKey = this.#getEvmSigningKey();
-    const deterministicAddress = deriveEvmAddress(deterministicKey);
-    const swapAddress = deriveEvmAddress(swapKey);
-    const clientAddress = response.client_evm_address?.toLowerCase();
-
+    _walletMethod = "collabRefundEvmWithSigner",
+  ): Promise<string> {
     if (
-      clientAddress === deterministicAddress.toLowerCase() ||
-      !clientAddress
-    ) {
-      return deterministicKey;
-    }
-    if (clientAddress === swapAddress.toLowerCase()) {
-      return swapKey;
-    }
-
-    throw new Error(
-      `Cannot sign for this swap with an SDK-controlled key: swap depositor is ${
-        response.client_evm_address ?? "unknown"
-      }, but SDK-controlled addresses are ${deterministicAddress} (current gasless key) and ${swapAddress} (legacy per-swap key). Use ${walletMethod} with the depositor wallet instead.`,
-    );
+      !storedSwap.evmFundingTerms?.depositor &&
+      !(storedSwap.response as { gasless?: boolean }).gasless &&
+      storedSwap.evmDepositorKeyIndex === undefined &&
+      !storedSwap.evmDepositorSecretKey
+    )
+      return storedSwap.secretKey;
+    return (await this.getSwapDepositorKey(storedSwap.swapId)).privateKey;
   }
 
   /**
@@ -3341,6 +3343,46 @@ export class Client {
       const stored = await this.getStoredSwap(response.id);
       if (stored) {
         storedSwaps.push(stored);
+      }
+    }
+
+    if (this.#swapStorage) {
+      const recovered = await this.#swapStorage.getAll();
+      for (const current of recovered) {
+        if (current.evmFundingTerms?.depositor || current.evmDepositorSecretKey)
+          continue;
+        const response = current.response as {
+          client_evm_address?: string;
+          gasless?: boolean;
+        };
+        if (response.gasless !== false || !response.client_evm_address)
+          continue;
+        const predecessor = recovered.find(
+          (candidate) =>
+            candidate.swapId !== current.swapId &&
+            ["clientrefunded", "clientrefundedserverrefunded"].includes(
+              candidate.response.status,
+            ) &&
+            candidate.keyIndex < current.keyIndex &&
+            deriveEvmAddress(
+              this.deriveSwapParamsAtIndex(candidate.keyIndex).secretKey,
+            ).toLowerCase() ===
+              deriveEvmAddress(candidate.secretKey).toLowerCase() &&
+            deriveEvmAddress(candidate.secretKey).toLowerCase() ===
+              response.client_evm_address!.toLowerCase(),
+        );
+        if (predecessor) {
+          const updated = {
+            ...current,
+            evmDepositorSecretKey: predecessor.secretKey,
+            evmDepositorKeyIndex: predecessor.keyIndex,
+          };
+          await this.#swapStorage.store(updated);
+          const index = storedSwaps.findIndex(
+            (swap) => swap.swapId === current.swapId,
+          );
+          if (index >= 0) storedSwaps[index] = updated;
+        }
       }
     }
 
@@ -4977,9 +5019,53 @@ export class Client {
     // meet this rate (or the caller's, which must be above zero), so calling
     // claim again bumps the fee. It refuses before broadcast if the surplus or
     // the payout fee cap cannot cover the rate; recipients are never reduced.
-    const feeRateSatPerVb =
+    let feeRateSatPerVb =
       options?.feeRateSatPerVb ??
       Math.max(2, (await fetchFeeRateEstimate(esploraUrls, 2)) ?? 0);
+
+    if (bitcoinPayout !== undefined) {
+      const requested = options?.feeRateSatPerVb;
+      if (
+        requested !== undefined &&
+        (!Number.isFinite(requested) || requested <= 0)
+      )
+        return {
+          success: false,
+          message:
+            "Failed to build claim transaction: Fee rate must be a positive number of sat/vB",
+        };
+      // A claim below the node's relay minimum never propagates but still
+      // reveals the preimage to whoever sees it, so the relay minimum is a
+      // floor for the rate the fee is raised to.
+      const relayFloor =
+        options?.minimumRelayFeeRateSatPerVb ??
+        (network === "regtest"
+          ? 0
+          : await fetchMinimumRelayFeeRate(esploraUrls));
+      if (
+        relayFloor === undefined ||
+        !Number.isFinite(relayFloor) ||
+        relayFloor < 0
+      )
+        return {
+          success: false,
+          message:
+            "Could not verify Bitcoin relay policy. Retry when the explorer is available or supply minimumRelayFeeRateSatPerVb.",
+        };
+      feeRateSatPerVb = Math.max(feeRateSatPerVb, relayFloor);
+      try {
+        assertPaymentClaimWindow(
+          network,
+          btcRefundLocktime,
+          !!storedSwap.bitcoinClaimBroadcast,
+        );
+      } catch (error) {
+        return {
+          success: false,
+          message: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
 
     try {
       const result = buildOnchainClaimTransaction({
@@ -5003,6 +5089,14 @@ export class Client {
       // Broadcast, retrying transient failures (e.g. the broadcast node has
       // not seen the funding tx yet).
       try {
+        if (bitcoinPayout !== undefined && this.#swapStorage) {
+          const latest = await this.#swapStorage.get(storedSwap.swapId);
+          await this.#swapStorage.store({
+            ...(latest ?? storedSwap),
+            // Once submitted, even a timeout can mean the preimage is public.
+            bitcoinClaimBroadcast: result.txId,
+          });
+        }
         await this.#broadcastBtcTx(
           esploraUrls,
           network,
@@ -5983,25 +6077,37 @@ export class Client {
    * browser wallet usually cannot. Otherwise the wallet itself is the owner.
    * `hint` is appended to the error when neither is.
    */
-  #depositorOwnerSigner(
+  async #depositorOwnerSigner(
     swapResponse: GetSwapResponse,
     walletSigner?: EvmSigner,
     hint?: string,
-  ): EvmSigner {
+  ): Promise<EvmSigner> {
+    const stored = await this.getStoredSwap(swapResponse.id);
     const depositor = (
-      swapResponse as { client_evm_address?: string }
-    ).client_evm_address?.toLowerCase();
-    if (depositor === this.getEvmAddress().toLowerCase()) {
-      return this.#keyOwnerSigner();
-    }
-    if (walletSigner && depositor === walletSigner.address.toLowerCase()) {
+      stored?.evmFundingTerms?.depositor ??
+      (swapResponse as { client_evm_address?: string }).client_evm_address
+    )?.toLowerCase();
+    if (walletSigner && depositor === walletSigner.address.toLowerCase())
       return walletSigner;
+    if (depositor === this.getEvmAddress().toLowerCase())
+      return keyToKernelOwnerSigner(
+        this.#signer.deriveEvmKey().secretKey,
+        42161,
+      );
+    try {
+      const { privateKey, address } = await this.getSwapDepositorKey(
+        swapResponse.id,
+      );
+      if (address.toLowerCase() === depositor)
+        return keyToKernelOwnerSigner(
+          hexToBytes(privateKey.replace(/^0x/, "")),
+          42161,
+        );
+    } catch {
+      // No matching local key; require the depositor wallet.
     }
     throw new Error(
-      `Swap ${swapResponse.id} was created for depositor ${depositor}, ` +
-        `which is neither this client's key nor the given wallet.${
-          hint ? ` ${hint}` : ""
-        }`,
+      `Swap ${swapResponse.id} was created for a depositor which is neither this client's key nor the given wallet; use refundEvmWithSigner.${hint ? ` ${hint}` : ""}`,
     );
   }
 
@@ -6676,7 +6782,7 @@ export class Client {
         "No secret key found for this swap. Cannot sign collab refund.",
       );
     }
-    const evmKey = this.#getCollabRefundEvmSigningKey(storedSwap);
+    const evmKey = await this.#getCollabRefundEvmSigningKey(storedSwap);
 
     const { digest, params } = await this.buildCollabRefundEvmTypedData(swapId);
     if (params.refundPath === "direct") {
@@ -7394,7 +7500,7 @@ export class Client {
         "No secret key found for this swap. Cannot authorize the rehash.",
       );
     }
-    const evmKey = this.#getCollabRefundEvmSigningKey(
+    const evmKey = await this.#getCollabRefundEvmSigningKey(
       storedSwap,
       "retrySwapWithInvoiceWithSigner",
     );
@@ -7562,6 +7668,7 @@ export class Client {
     commitments?: {
       lightningPaymentHash?: LightningPaymentHash;
       evmFundingTerms?: EvmFundingTerms;
+      bitcoinPayout?: StoredSwap["bitcoinPayout"];
     },
   ): Promise<void> {
     if (!this.#swapStorage) return;
@@ -7583,11 +7690,16 @@ export class Client {
       // The payout this client asked for; claims pay here, never to a
       // server answer. Recovery rebuilding the swap keeps it.
       targetAddress: targetAddress ?? existing?.targetAddress,
+      bitcoinPayout: commitments?.bitcoinPayout ?? existing?.bitcoinPayout,
+      payRecipientNames: existing?.payRecipientNames,
+      payUsdRate: existing?.payUsdRate,
+      bitcoinClaimBroadcast: existing?.bitcoinClaimBroadcast,
+      evmDepositorKeyIndex: existing?.evmDepositorKeyIndex,
+      evmDepositorSecretKey: existing?.evmDepositorSecretKey,
       bridgeRecipient: bridge?.recipient,
       bridgeRecipientWallet: bridge?.recipientWallet,
       evmFundTxid: existing?.evmFundTxid,
       evmFundingUserOpHash: existing?.evmFundingUserOpHash,
-      bitcoinPayout: existing?.bitcoinPayout,
       // Fixed at creation and never taken from a server answer: recovery
       // rebuilding the swap keeps it, and a fresh device has none.
       lightningPaymentHash:
@@ -7605,6 +7717,14 @@ export class Client {
     };
 
     await this.#swapStorage.store(storedSwap);
+    if (storedSwap.bitcoinPayout) {
+      const persisted = await this.#swapStorage.get(swapId);
+      if (
+        JSON.stringify(persisted?.bitcoinPayout) !==
+        JSON.stringify(storedSwap.bitcoinPayout)
+      )
+        throw new Error("Swap storage did not preserve the payment recipients");
+    }
   }
 
   /**
@@ -7656,6 +7776,14 @@ export class Client {
       "token_id" in tgt
         ? { chain: tgt.chain, token_id: tgt.token_id }
         : { chain: tgt.chain, token_id: tgt.tokenId };
+
+    if (
+      options.bitcoinPayout &&
+      (!this.#swapStorage || !isBtcOnchain(targetAsset))
+    )
+      throw new Error(
+        "Bitcoin payments require persistent storage and a Bitcoin onchain target",
+      );
 
     if (isTronToken(sourceAsset.chain))
       throw new Error("Tron is a payout-only destination");
@@ -7795,6 +7923,12 @@ export class Client {
       };
       sourceChain = "42161";
       sourceTokenId = USDC_ADDRESSES.Arbitrum;
+    }
+
+    if (options.bitcoinPayout && !isEvmSwapSource(sourceChain, sourceTokenId)) {
+      throw new Error(
+        "Bitcoin payments require an EVM or bridged USDC funding source",
+      );
     }
 
     // Arkade → EVM
@@ -8062,6 +8196,8 @@ export class Client {
         );
       }
       return this.createEvmToBitcoinSwap({
+        bitcoinPayout: options.bitcoinPayout,
+        minimumRelayFeeRateSatPerVb: options.minimumRelayFeeRateSatPerVb,
         tokenAddress: sourceTokenId,
         evmChainId: Number(sourceChain),
         userAddress: options.userAddress ?? "",
@@ -8480,7 +8616,72 @@ export class Client {
   async createEvmToBitcoinSwap(
     options: EvmToBitcoinSwapOptions,
   ): Promise<EvmToBitcoinSwapResult> {
-    return createEvmToBitcoinSwap(options, this.#getCreateContext());
+    if (options.bitcoinPayout && !this.#swapStorage)
+      throw new Error("Bitcoin payments require persistent storage");
+    const context = this.#getCreateContext();
+    const created = await createEvmToBitcoinSwap(options, {
+      ...context,
+      storeSwap: async (
+        id,
+        swapParams,
+        response,
+        target,
+        bridge,
+        commitments,
+      ) => {
+        if (options.bitcoinPayout) {
+          const r = response as unknown as EvmToBitcoinSwapResult["response"];
+          const network = (
+            r.network === "bitcoin" ? "mainnet" : r.network
+          ) as BitcoinNetwork;
+          assertPaymentClaimWindow(network, r.btc_refund_locktime);
+          const urls = this.#config.esploraUrl ?? DEFAULT_ESPLORA_URLS[network];
+          const relayFloor =
+            options.minimumRelayFeeRateSatPerVb ??
+            (network === "regtest" ? 0 : await fetchMinimumRelayFeeRate(urls));
+          if (
+            relayFloor === undefined ||
+            !Number.isFinite(relayFloor) ||
+            relayFloor < 0
+          )
+            throw new Error(
+              "Cannot verify Bitcoin relay policy before funding. Configure a relay-policy explorer or minimumRelayFeeRateSatPerVb.",
+            );
+          const built = buildOnchainClaimTransaction({
+            fundingTxId: "00".repeat(32),
+            fundingVout: 0,
+            htlcAmount: BigInt(options.targetAmount!),
+            hashLock: r.btc_hash_lock,
+            userClaimPubKey: bytesToHex(swapParams.publicKey).slice(2),
+            serverRefundPubKey: r.btc_server_refund_pk.replace(
+              /^(02|03)(?=[0-9a-fA-F]{64}$)/,
+              "",
+            ),
+            userSecretKey: bytesToHex(swapParams.secretKey),
+            preimage: bytesToHex(swapParams.preimage),
+            refundLocktime: r.btc_refund_locktime,
+            destinationAddress: options.targetAddress,
+            bitcoinPayout: options.bitcoinPayout,
+            feeRateSatPerVb: 0,
+            network,
+            btcHtlcScriptVersion: r.btc_htlc_script_version,
+          });
+          if (built.fee < BigInt(Math.ceil(relayFloor * built.vsize)))
+            throw new Error(
+              `Bitcoin payment fee is below the relay minimum of ${relayFloor} sat/vB. Increase it before funding.`,
+            );
+        }
+        await context.storeSwap(
+          id,
+          swapParams,
+          response,
+          target,
+          bridge,
+          commitments,
+        );
+      },
+    });
+    return created;
   }
 
   // =========================================================================
@@ -8593,7 +8794,10 @@ export class Client {
     // 4. Build the EIP-712 digest. The witness binds the lock's refund
     // address: the depositor from HTLCErc20 v7 / HTLCNative v2, the
     // coordinator before.
-    const evmKey = this.#getEvmSigningKey();
+    const evmKey = await this.#getFundingEvmSigningKey(
+      storedSwap,
+      (swap as { gasless?: boolean }).gasless,
+    );
     const depositorAddress = deriveEvmAddress(evmKey);
     const digest = buildPermit2FundingDigest({
       chainId,
@@ -8613,7 +8817,7 @@ export class Client {
       deadline,
     });
 
-    // 5. Sign with the EVM key (deterministic for new swaps, per-swap for legacy).
+    // 5. Sign with the key belonging to this deposit (including legacy shared accounts).
     // Kernel-delegated depositors get the ERC-1271 envelope, plain EOAs a
     // compact r || s || v signature.
     const delegated = await this.#isKernelDelegated(
@@ -9032,7 +9236,7 @@ export class Client {
         swapId,
         expected,
         signer,
-        ownerSigner: this.#depositorOwnerSigner(
+        ownerSigner: await this.#depositorOwnerSigner(
           swapResponse,
           signer,
           "Create the swap with `gasless: true` to settle through the SDK's key.",
@@ -9308,7 +9512,7 @@ export class Client {
         swapId,
         expected,
         signer,
-        ownerSigner: this.#depositorOwnerSigner(
+        ownerSigner: await this.#depositorOwnerSigner(
           swapResponse,
           undefined,
           "A swap funded from Solana must be created with `gasless: true`.",
@@ -9918,7 +10122,7 @@ export class Client {
       };
     }
 
-    const owner = signer ?? this.#keyOwnerSigner();
+    const owner = await this.#depositorOwnerSigner(oldSwap, signer);
     const { accountAddress } = await this.cctpInbound.createSmartAccountClient({
       signer: owner,
     });
@@ -10044,10 +10248,9 @@ export class Client {
    *   address, an Arkade address, or for Lightning a BOLT11 invoice (its amount
    *   must be covered by the refund), a Lightning address or an LNURL.
    * @param options.target - The payout type; defaults to the old swap's.
-   * @param options.signer - A signer for this client's key; defaults to one
-   *   derived from it. Any other owner is rejected: the new swap is created
-   *   gasless, which records this client's key as its depositor, and the
-   *   paymaster only sponsors funding from the depositor's account.
+   * @param options.signer - A signer for the refunded deposit account. Defaults
+   *   to its SDK key. The continuation explicitly reuses that funded account
+   *   instead of allocating a new deposit address.
    */
   async continueRefundedEvmSwap(
     oldSwapId: string,
@@ -10059,17 +10262,6 @@ export class Client {
       funding?: FundingPins;
     },
   ): Promise<ContinueRefundedEvmSwapResult> {
-    // Checked before anything is created: a swap whose depositor cannot fund
-    // it would be left behind unfunded.
-    if (
-      options.signer &&
-      options.signer.address.toLowerCase() !==
-        this.getEvmAddress().toLowerCase()
-    ) {
-      throw new Error(
-        `Cannot continue refunded swap ${oldSwapId} with signer ${options.signer.address}: a continuation is funded from this client's key (${this.getEvmAddress()}).`,
-      );
-    }
     const info = await this.getRefundedEvmSwapContinuation(
       oldSwapId,
       options.signer,
@@ -10078,6 +10270,23 @@ export class Client {
       throw new Error(info.reason ?? "Refunded swap cannot be continued.");
     }
 
+    if (
+      options.signer &&
+      options.signer.address.toLowerCase() !==
+        info.smartAccountAddress?.toLowerCase()
+    ) {
+      throw new Error(
+        "Continuation must be funded from this client's key or the recorded depositor",
+      );
+    }
+    // External wallets remain signer-dependent; SDK-owned signers retain
+    // their derivation index even when explicitly supplied by the caller.
+    const original = await this.getSwapDepositorKey(oldSwapId).catch(
+      (error) => {
+        if (!options.signer) throw error;
+        return undefined;
+      },
+    );
     const target =
       options.target ??
       ({
@@ -10090,7 +10299,7 @@ export class Client {
       tokenAddress: info.token.address,
       evmChainId: 42161,
       userAddress: info.smartAccountAddress ?? "",
-      gasless: true,
+      gasless: false,
     };
 
     let created: CreateSwapResult;
@@ -10121,6 +10330,15 @@ export class Client {
     // invoice pins the payout, and one the refund cannot cover must fail
     // rather than draw on unrelated balance in the account.
     const newSwapId = created.response.id;
+    if (this.#swapStorage) {
+      const next = await this.getStoredSwap(newSwapId);
+      if (next && original)
+        await this.#swapStorage.store({
+          ...next,
+          evmDepositorKeyIndex: original.keyIndex,
+          evmDepositorSecretKey: original.privateKey,
+        });
+    }
     const submitted = await this.cctpInbound.submitBalanceUserOp({
       swapId: newSwapId,
       // The new swap's own hash and terms, recorded when it was just
@@ -10132,7 +10350,7 @@ export class Client {
         ),
         pins: options.funding,
       },
-      signer: options.signer ?? this.#keyOwnerSigner(),
+      signer: await this.#depositorOwnerSigner(info.oldSwap, options.signer),
       expectedMaxSourceAmount: sourceAmount,
     });
     if (submitted.transactionHash) {
@@ -10185,29 +10403,7 @@ export class Client {
     }
     // Only the depositor's account is sponsored. A wallet-funded swap's
     // wallet is the depositor and sends the refund itself.
-    const { client_evm_address: depositor, gasless } = stored.response as {
-      client_evm_address?: string;
-      gasless?: boolean;
-    };
-    let owner: EvmSigner;
-    if (depositor?.toLowerCase() === this.getEvmAddress().toLowerCase()) {
-      owner = this.#keyOwnerSigner();
-    } else if (
-      gasless &&
-      depositor?.toLowerCase() ===
-        deriveEvmAddress(stored.secretKey).toLowerCase()
-    ) {
-      // A legacy gasless swap, funded from its per-swap key (as the
-      // collaborative refund's key selection also allows).
-      owner = keyToKernelOwnerSigner(
-        hexToBytes(stored.secretKey.replace(/^0x/, "")),
-        42161,
-      );
-    } else {
-      throw new Error(
-        `Swap ${swapId} was funded by ${depositor}, not this client's key; only gasless swaps can be refunded sponsored. Refund it with \`refundEvmWithSigner\` from that wallet.`,
-      );
-    }
+    const owner = await this.#depositorOwnerSigner(stored.response);
 
     const result = await this.refundSwap(swapId);
     if (!result.evmRefundData) {
@@ -10233,11 +10429,6 @@ export class Client {
     return this.#sponsoredUserOp(owner, (account) =>
       refundForAsOwnRefund(refund, account),
     );
-  }
-
-  /** This client's key as the Kernel owner on Arbitrum. */
-  #keyOwnerSigner(): EvmSigner {
-    return keyToKernelOwnerSigner(this.#signer.deriveEvmKey().secretKey, 42161);
   }
 
   /**
@@ -10446,7 +10637,10 @@ export class Client {
     // 4. Build and sign the Permit2 EIP-712 digest. The witness binds the
     // lock's refund address: the depositor from HTLCErc20 v7 / HTLCNative v2,
     // the coordinator before.
-    const evmKey = this.#getEvmSigningKey();
+    const evmKey = await this.#getFundingEvmSigningKey(
+      storedSwap,
+      (swap as { gasless?: boolean }).gasless,
+    );
     const depositorAddress = deriveEvmAddress(evmKey);
     const digest = buildPermit2FundingDigest({
       chainId,
@@ -10780,7 +10974,7 @@ export class Client {
    */
   async getSwapDepositorKey(
     swapId: string,
-  ): Promise<{ privateKey: string; address: string }> {
+  ): Promise<{ privateKey: string; address: string; keyIndex?: number }> {
     const storedSwap = await this.getStoredSwap(swapId);
     if (!storedSwap) {
       throw new Error(
@@ -10792,26 +10986,61 @@ export class Client {
       client_evm_address?: string;
       gasless?: boolean;
     };
-    const depositor = response.client_evm_address?.toLowerCase();
+    const depositor = (
+      storedSwap.evmFundingTerms?.depositor ?? response.client_evm_address
+    )?.toLowerCase();
     const sharedKey = this.#getEvmSigningKey();
-    const sharedAddress = deriveEvmAddress(sharedKey).toLowerCase();
-    const swapAddress = deriveEvmAddress(storedSwap.secretKey).toLowerCase();
-    // Recognize both historical SDK deposit accounts independently of the
-    // gasless flag. For older non-gasless records the advertised address may
-    // be the external wallet, while Permit2 funding used the shared SDK key;
-    // preserve that export's existing fallback rather than guessing a new key.
-    let evmKey = sharedKey;
-    if (depositor === swapAddress) {
-      evmKey = storedSwap.secretKey;
-    } else if (depositor && depositor !== sharedAddress && response.gasless) {
+    const indexedKey =
+      storedSwap.evmDepositorKeyIndex !== undefined
+        ? bytesToHex(
+            this.deriveSwapParamsAtIndex(storedSwap.evmDepositorKeyIndex)
+              .secretKey,
+          )
+        : undefined;
+    // This swap's key, an explicitly retained continuation key, or the shared
+    // wallet key. For older non-gasless records the advertised address may be
+    // the external wallet while Permit2 funding used the shared SDK key, so
+    // those keep falling back to it rather than guessing a new key.
+    const candidates = [
+      storedSwap.secretKey,
+      ...(storedSwap.evmDepositorSecretKey
+        ? [storedSwap.evmDepositorSecretKey]
+        : []),
+      ...(indexedKey ? [indexedKey] : []),
+      sharedKey,
+    ];
+    const matched = depositor
+      ? candidates.find(
+          (key) => deriveEvmAddress(key).toLowerCase() === depositor,
+        )
+      : undefined;
+    // A pinned or gasless depositor must be one of these keys; only an older
+    // non-gasless record's advertised wallet falls back to the shared key.
+    if (
+      depositor &&
+      !matched &&
+      (response.gasless || storedSwap.evmFundingTerms?.depositor)
+    )
       throw new Error(
-        `Cannot export a deposit key for swap ${swapId}: depositor ${response.client_evm_address} is not an SDK-controlled account. Use the depositor wallet.`,
+        `Cannot export a deposit key for swap ${swapId}: no SDK key for its recorded depositor ${depositor}, which is not an SDK-controlled account. Restore the original deposit account or use its wallet.`,
       );
-    }
+    const evmKey = matched ?? sharedKey;
     const privateKey = evmKey.startsWith("0x") ? evmKey : `0x${evmKey}`;
     const address = deriveEvmAddress(evmKey);
 
-    return { privateKey, address };
+    return {
+      privateKey,
+      address,
+      keyIndex:
+        deriveEvmAddress(storedSwap.secretKey).toLowerCase() ===
+        address.toLowerCase()
+          ? storedSwap.keyIndex
+          : indexedKey &&
+              deriveEvmAddress(indexedKey).toLowerCase() ===
+                address.toLowerCase()
+            ? storedSwap.evmDepositorKeyIndex
+            : undefined,
+    };
   }
 
   /**
@@ -10819,8 +11048,8 @@ export class Client {
    * deterministic EVM signing key for this wallet without requiring a
    * specific swap to be stored locally.
    *
-   * This returns only the shared `m/44'/60'/0'/0/0` account, not a
-   * per-swap deposit key. Intended for legacy standalone recovery tools
+   * Only for legacy wallet-level deposits (`m/44'/60'/0'/0/0`).
+   * Use getSwapDepositorKey for per-swap deposits. Intended for recovery tools
    * where the user supplies the burn details manually and a per-swap
    * record may no longer exist (e.g. fresh device, cleared site data).
    */
@@ -10879,7 +11108,7 @@ export class Client {
     return recoverCctpInbound(
       { aa: this.#config.aa },
       {
-        signer: this.#depositorOwnerSigner(
+        signer: await this.#depositorOwnerSigner(
           stored.response,
           options?.ownerSigner,
         ),
