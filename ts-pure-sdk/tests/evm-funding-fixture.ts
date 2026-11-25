@@ -1,4 +1,4 @@
-import { vi } from "vitest";
+import { type Mock, vi } from "vitest";
 import type { EvmFundingTerms } from "../src/evm/funding-pins.js";
 import { SWAP_CREATED_TOPIC } from "../src/evm/htlc.js";
 import type { EvmSigner, ReceiptLog } from "../src/evm/wallet.js";
@@ -247,53 +247,55 @@ export function serverAnswering(routes: {
   rehashSignature?: unknown;
   /** Answer to the funding hint; by default the server applies it. */
   evmFunding?: unknown;
-}): ReturnType<typeof vi.fn> {
-  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-    const url = input instanceof Request ? input.url : String(input);
-    const answer = (body: unknown, what: string) => {
-      if (body === undefined) throw new Error(`${what} must not be used`);
-      return Response.json(body, { status: 200 });
-    };
-    if (url.includes("rehash-evm/params")) {
-      return answer(routes.rehashParams, "the rehash params endpoint");
-    }
-    if (url.includes("rehash-evm")) {
-      return answer(routes.rehashSignature, "the rehash endpoint");
-    }
-    if (url.includes("collab-refund-evm/params")) {
-      return answer(routes.collabParams, "the collab refund params endpoint");
-    }
-    if (url.includes("collab-refund-evm/signature")) {
-      return answer(
-        routes.collabSignature,
-        "the collab refund signature endpoint",
-      );
-    }
-    if (url.includes("refund-and-swap-calldata")) {
-      return answer(routes.calldata, "the refund calldata endpoint");
-    }
-    if (url.includes("swap-and-lock-calldata-permit2")) {
-      return answer(routes.permit2, "the Permit2 params endpoint");
-    }
-    if (url.includes("fund-gasless")) {
-      return answer(routes.gasless, "the gasless relay");
-    }
-    if (url.endsWith("/evm-funding")) {
-      return Response.json(
-        routes.evmFunding ?? {
-          id: SWAP_ID,
-          status: "client_funding_seen",
-          dispatched: true,
-          message: "applied",
-        },
-        { status: 200 },
-      );
-    }
-    if (url.endsWith(`/swap/${SWAP_ID}`)) {
-      return answer(routes.swap, "GET /swap/{id}");
-    }
-    throw new Error(`unexpected request ${url}`);
-  });
+}): Mock<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>> {
+  const fetchMock = vi.fn(
+    async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      const answer = (body: unknown, what: string) => {
+        if (body === undefined) throw new Error(`${what} must not be used`);
+        return Response.json(body, { status: 200 });
+      };
+      if (url.includes("rehash-evm/params")) {
+        return answer(routes.rehashParams, "the rehash params endpoint");
+      }
+      if (url.includes("rehash-evm")) {
+        return answer(routes.rehashSignature, "the rehash endpoint");
+      }
+      if (url.includes("collab-refund-evm/params")) {
+        return answer(routes.collabParams, "the collab refund params endpoint");
+      }
+      if (url.includes("collab-refund-evm/signature")) {
+        return answer(
+          routes.collabSignature,
+          "the collab refund signature endpoint",
+        );
+      }
+      if (url.includes("refund-and-swap-calldata")) {
+        return answer(routes.calldata, "the refund calldata endpoint");
+      }
+      if (url.includes("swap-and-lock-calldata-permit2")) {
+        return answer(routes.permit2, "the Permit2 params endpoint");
+      }
+      if (url.includes("fund-gasless")) {
+        return answer(routes.gasless, "the gasless relay");
+      }
+      if (url.endsWith("/evm-funding")) {
+        return Response.json(
+          routes.evmFunding ?? {
+            id: SWAP_ID,
+            status: "client_funding_seen",
+            dispatched: true,
+            message: "applied",
+          },
+          { status: 200 },
+        );
+      }
+      if (url.endsWith(`/swap/${SWAP_ID}`)) {
+        return answer(routes.swap, "GET /swap/{id}");
+      }
+      throw new Error(`unexpected request ${url}`);
+    },
+  );
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
 }
