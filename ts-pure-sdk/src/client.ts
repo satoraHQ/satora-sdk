@@ -3355,14 +3355,21 @@ export class Client {
           client_evm_address?: string;
           gasless?: boolean;
         };
-        if (response.gasless !== false || !response.client_evm_address)
+        if (
+          !response.client_evm_address ||
+          deriveEvmAddress(current.secretKey).toLowerCase() ===
+            response.client_evm_address.toLowerCase()
+        )
           continue;
+        // A refund continuation reuses a refunded swap's account; a gasless
+        // retry reuses an expired one's (fundFromSwapId).
+        const reusable = response.gasless
+          ? ["expired", "clientrefunded", "clientrefundedserverrefunded"]
+          : ["clientrefunded", "clientrefundedserverrefunded"];
         const predecessor = recovered.find(
           (candidate) =>
             candidate.swapId !== current.swapId &&
-            ["clientrefunded", "clientrefundedserverrefunded"].includes(
-              candidate.response.status,
-            ) &&
+            reusable.includes(candidate.response.status) &&
             candidate.keyIndex < current.keyIndex &&
             deriveEvmAddress(
               this.deriveSwapParamsAtIndex(candidate.keyIndex).secretKey,
@@ -7669,6 +7676,8 @@ export class Client {
       lightningPaymentHash?: LightningPaymentHash;
       evmFundingTerms?: EvmFundingTerms;
       bitcoinPayout?: StoredSwap["bitcoinPayout"];
+      /** A depositor key other than the swap's own, as a retry reuses. */
+      evmDepositor?: { keyIndex?: number; secretKey: string };
     },
   ): Promise<void> {
     if (!this.#swapStorage) return;
@@ -7695,8 +7704,11 @@ export class Client {
       payRequestedAmounts: existing?.payRequestedAmounts,
       payUsdRate: existing?.payUsdRate,
       bitcoinClaimBroadcast: existing?.bitcoinClaimBroadcast,
-      evmDepositorKeyIndex: existing?.evmDepositorKeyIndex,
-      evmDepositorSecretKey: existing?.evmDepositorSecretKey,
+      evmDepositorKeyIndex:
+        commitments?.evmDepositor?.keyIndex ?? existing?.evmDepositorKeyIndex,
+      evmDepositorSecretKey:
+        commitments?.evmDepositor?.secretKey ?? existing?.evmDepositorSecretKey,
+      supersededBy: existing?.supersededBy,
       bridgeRecipient: bridge?.recipient,
       bridgeRecipientWallet: bridge?.recipientWallet,
       evmFundTxid: existing?.evmFundTxid,
@@ -7925,6 +7937,14 @@ export class Client {
       sourceChain = "42161";
       sourceTokenId = USDC_ADDRESSES.Arbitrum;
     }
+
+    if (
+      options.fundFromSwapId &&
+      !(
+        isEvmSwapSource(sourceChain, sourceTokenId) && isBtcOnchain(targetAsset)
+      )
+    )
+      throw new Error("fundFromSwapId is supported for EVM to Bitcoin only");
 
     if (options.bitcoinPayout && !isEvmSwapSource(sourceChain, sourceTokenId)) {
       throw new Error(
@@ -8198,6 +8218,7 @@ export class Client {
       }
       return this.createEvmToBitcoinSwap({
         bitcoinPayout: options.bitcoinPayout,
+        fundFromSwapId: options.fundFromSwapId,
         minimumRelayFeeRateSatPerVb: options.minimumRelayFeeRateSatPerVb,
         tokenAddress: sourceTokenId,
         evmChainId: Number(sourceChain),
@@ -8619,8 +8640,12 @@ export class Client {
   ): Promise<EvmToBitcoinSwapResult> {
     if (options.bitcoinPayout && !this.#swapStorage)
       throw new Error("Bitcoin payments require persistent storage");
+    const reused = options.fundFromSwapId
+      ? await this.#expiredDepositAccount(options.fundFromSwapId, options)
+      : undefined;
+    const createOptions = { ...options, gaslessDepositor: reused?.address };
     const context = this.#getCreateContext();
-    const created = await createEvmToBitcoinSwap(options, {
+    const created = await createEvmToBitcoinSwap(createOptions, {
       ...context,
       storeSwap: async (
         id,
@@ -8691,17 +8716,79 @@ export class Client {
             throw error;
           }
         }
-        await context.storeSwap(
-          id,
-          swapParams,
-          response,
-          target,
-          bridge,
-          commitments,
-        );
+        // A reused account's key is pinned in the same write as the swap, as
+        // a refund continuation does, so funding and refunds sign with it.
+        await context.storeSwap(id, swapParams, response, target, bridge, {
+          ...commitments,
+          evmDepositor: reused && {
+            keyIndex: reused.keyIndex,
+            secretKey: reused.privateKey,
+          },
+        });
+        // One retry per expired swap: a second would share the deposit.
+        if (reused && options.fundFromSwapId && this.#swapStorage) {
+          const old = await this.#swapStorage.get(options.fundFromSwapId);
+          if (old) await this.#swapStorage.store({ ...old, supersededBy: id });
+        }
       },
     });
     return created;
+  }
+
+  /**
+   * The deposit account of an expired, never-funded gasless swap, for
+   * {@link EvmToBitcoinSwapOptions.fundFromSwapId}. It must be this client's
+   * per-swap account on the same chain and token, and no lock may exist.
+   */
+  async #expiredDepositAccount(
+    swapId: string,
+    options: EvmToBitcoinSwapOptions,
+  ): Promise<{ address: string; privateKey: string; keyIndex?: number }> {
+    if (!options.gasless)
+      throw new Error("Only a gasless swap can reuse a deposit account");
+    if (!this.#swapStorage)
+      throw new Error("Reusing a deposit account requires persistent storage");
+    const local = await this.#swapStorage.get(swapId);
+    if (!local) throw new Error(`Swap ${swapId} is not stored by this client`);
+    if (local.supersededBy)
+      throw new Error(
+        `Swap ${swapId} was already retried as ${local.supersededBy}; continue that payment instead`,
+      );
+    // A funding this client sent may still land; its deposit is not idle.
+    if (local.evmFundingUserOpHash || local.evmFundTxid)
+      throw new Error(`Swap ${swapId} has a funding attempt on record`);
+    if (options.inboundBridgeParams)
+      throw new Error("A bridged swap cannot reuse a deposit account");
+    const old = await this.getSwap(swapId);
+    const terms = local.evmFundingTerms;
+    const source = (
+      old as { source_token?: { token_id?: string; chain?: string } }
+    ).source_token;
+    if (
+      !("gasless" in old) ||
+      !old.gasless ||
+      source?.token_id?.toLowerCase() !== options.tokenAddress.toLowerCase() ||
+      String(source?.chain) !== String(options.evmChainId) ||
+      (terms &&
+        (terms.sourceToken.toLowerCase() !==
+          options.tokenAddress.toLowerCase() ||
+          terms.chainId !== options.evmChainId))
+    )
+      throw new Error(
+        `Swap ${swapId} is not a gasless swap of the same token and chain`,
+      );
+    // Only an expired swap that nothing locked: its deposit is still idle.
+    if (
+      old.status !== "expired" ||
+      ("evm_fund_txid" in old && old.evm_fund_txid)
+    )
+      throw new Error(`Swap ${swapId} has not expired unfunded`);
+    const account = await this.getSwapDepositorKey(swapId);
+    if (account.keyIndex === undefined)
+      throw new Error(
+        `Swap ${swapId} was funded from a shared or external account`,
+      );
+    return account;
   }
 
   // =========================================================================
@@ -10910,6 +10997,11 @@ export class Client {
       }
     }
 
+    // An expired quote's deposit may now fund its retry; never lock it here.
+    if (swap.status === "expired" || stored.supersededBy)
+      throw new Error(
+        `Swap ${swapId} has expired${stored.supersededBy ? ` and was retried as ${stored.supersededBy}` : ""}; refusing to fund it`,
+      );
     const key = await this.#gaslessDepositorKey(swapId, stored, swap);
     const owner = keyToKernelOwnerSigner(
       hexToBytes(key.replace(/^0x/, "")),

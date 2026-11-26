@@ -49,7 +49,10 @@ import type {
  * ```
  */
 export async function createEvmToBitcoinSwap(
-  options: EvmToBitcoinSwapOptions,
+  options: EvmToBitcoinSwapOptions & {
+    /** Gasless deposit account to reuse instead of this swap's own key. */
+    gaslessDepositor?: string;
+  },
   ctx: CreateSwapContext,
 ): Promise<EvmToBitcoinSwapResult> {
   // A payment commits each recipient to its floor; the server must fund at
@@ -79,7 +82,7 @@ export async function createEvmToBitcoinSwap(
     const userId = bytesToHex(swapParams.userId);
 
     const userAddress = options.gasless
-      ? deriveEvmAddress(swapParams.secretKey)
+      ? (options.gaslessDepositor ?? deriveEvmAddress(swapParams.secretKey))
       : options.userAddress;
 
     const { data, error } = await ctx.apiClient.POST("/swap/evm/bitcoin", {

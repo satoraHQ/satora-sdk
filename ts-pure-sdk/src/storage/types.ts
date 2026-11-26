@@ -83,6 +83,11 @@ export interface StoredSwap {
   evmDepositorKeyIndex?: number;
   /** Verified original depositor key; private like secretKey, independent of wallet root. */
   evmDepositorSecretKey?: string;
+  /**
+   * The swap that retried this expired one from its deposit account
+   * (`fundFromSwapId`). Set once: a second retry would share the deposit.
+   */
+  supersededBy?: string;
 
   /** Schema version for migrations */
   version: number;

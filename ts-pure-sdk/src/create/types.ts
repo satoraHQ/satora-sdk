@@ -314,6 +314,12 @@ export interface EvmToBitcoinSwapOptions {
   promoCode?: string;
   /** Use gasless relay. When true, userAddress is auto-derived from the SDK EVM key. */
   gasless?: boolean;
+  /**
+   * Gasless only: fund from the deposit account of an earlier swap of this
+   * client whose quote expired before funding, instead of a new account, so
+   * a deposit already sent there funds this swap.
+   */
+  fundFromSwapId?: string;
   /** Optional: when set, source USDC originates on another CCTP chain and hops to Arbitrum via CCTPv2. */
   inboundBridgeParams?: UsdcInboundBridgeParams;
 }
@@ -421,6 +427,8 @@ export interface CreateSwapOptions {
   promoCode?: string;
   /** Whether to use gasless relay for EVM funding (no wallet needed). When true, the SDK-derived EVM address is used as the depositor. */
   gasless?: boolean;
+  /** EVM to Bitcoin, gasless only: see {@link EvmToBitcoinSwapOptions.fundFromSwapId}. */
+  fundFromSwapId?: string;
   /** Optional: when set, USDC is bridged via CCTP to the destination chain after the DEX swap. */
   bridgeParams?: UsdcBridgeParams;
   /**
@@ -707,6 +715,8 @@ export interface CreateSwapContext {
       lightningPaymentHash?: LightningPaymentHash;
       evmFundingTerms?: EvmFundingTerms;
       bitcoinPayout?: import("../storage/types.js").BitcoinPayout;
+      /** A depositor key other than the swap's own, as a retry reuses. */
+      evmDepositor?: { keyIndex?: number; secretKey: string };
     },
   ) => Promise<void>;
 }

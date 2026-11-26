@@ -173,6 +173,7 @@ export class SqliteSwapStorage implements SwapStorage {
       ["evm_depositor_key_index", "INTEGER"],
       ["bitcoin_claim_broadcast", "TEXT"],
       ["evm_depositor_secret_key", "TEXT"],
+      ["superseded_by", "TEXT"],
     ]) {
       if (this.#columns().includes(column)) continue;
       try {
@@ -203,8 +204,8 @@ export class SqliteSwapStorage implements SwapStorage {
     this.#db
       .prepare(
         `INSERT OR REPLACE INTO swaps
-         (swap_id, version, key_index, response, public_key, preimage, preimage_hash, secret_key, stored_at, updated_at, evm_fund_txid, evm_coordinator_address, cctp_burn_txid, cctp_burn_last_valid_block_height, evm_rehashes, lightning_payment_hash, evm_funding_terms, target_address, bridge_recipient, bridge_recipient_wallet, evm_funding_user_op_hash, bitcoin_payout, pay_recipient_names, pay_usd_rate, evm_depositor_key_index, bitcoin_claim_broadcast, evm_depositor_secret_key, pay_requested_amounts)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (swap_id, version, key_index, response, public_key, preimage, preimage_hash, secret_key, stored_at, updated_at, evm_fund_txid, evm_coordinator_address, cctp_burn_txid, cctp_burn_last_valid_block_height, evm_rehashes, lightning_payment_hash, evm_funding_terms, target_address, bridge_recipient, bridge_recipient_wallet, evm_funding_user_op_hash, bitcoin_payout, pay_recipient_names, pay_usd_rate, evm_depositor_key_index, bitcoin_claim_broadcast, evm_depositor_secret_key, pay_requested_amounts, superseded_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         swap.swapId,
@@ -241,6 +242,7 @@ export class SqliteSwapStorage implements SwapStorage {
         swap.payRequestedAmounts
           ? JSON.stringify(swap.payRequestedAmounts)
           : null,
+        swap.supersededBy ?? null,
       );
   }
 
@@ -317,6 +319,7 @@ export class SqliteSwapStorage implements SwapStorage {
       evmDepositorKeyIndex: row.evm_depositor_key_index ?? undefined,
       bitcoinClaimBroadcast: row.bitcoin_claim_broadcast ?? undefined,
       evmDepositorSecretKey: row.evm_depositor_secret_key ?? undefined,
+      supersededBy: row.superseded_by ?? undefined,
     };
   }
 
@@ -332,6 +335,7 @@ interface SqliteSwapRow {
   evm_depositor_key_index: number | null;
   bitcoin_claim_broadcast: string | null;
   evm_depositor_secret_key: string | null;
+  superseded_by: string | null;
   bitcoin_payout: string | null;
   pay_recipient_names: string | null;
   pay_requested_amounts: string | null;
