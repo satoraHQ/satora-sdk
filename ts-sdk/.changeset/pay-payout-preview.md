@@ -1,5 +1,4 @@
 ---
-"@lendasat/lendaswap-sdk-pure": minor
 "@satora/swap": minor
 ---
 
