@@ -1,5 +1,24 @@
 # @satora/swap
 
+## 1.13.0
+
+### Minor Changes
+
+- fbcc863: Add multi-recipient Bitcoin claim primitives and persist recipient commitments in swap storage. Claims preserve recipient order and committed minimums, distribute surplus in proportion to the commitments, and signal replaceability. The committed fee is a minimum: claims raise it out of surplus to meet the fee rate, so a retry at a higher rate bumps the fee, and refuse before broadcast if the surplus or the 100,000-sat fee cap cannot cover it. Recipients never drop below their committed amounts. Existing single-address claims remain unchanged.
+- c200134: Create EVM-to-Bitcoin payments to several recipients. `createSwap` takes a `bitcoinPayout` payment request with nominal amounts, the claim fee and an optional payout tolerance of up to 1%. The SDK commits each recipient to its floor (nominal less the tolerance, never below dust) and asks the server for a fee-inclusive minimum payout; the server reserves DEX headroom before funding. Claims split any surplus in proportion to the commitments, so a payment funded at its nominal total pays roughly the nominal amounts. Payment claims also refuse to reveal the preimage too close to the refund expiry, use the explorer's relay minimum as a floor for the fee rate, and record a submitted claim. Payment commitments, display metadata and depositor key references persist in SQLite, and depositor keys resolve consistently for funding, refunds and continuations.
+- 1f7c7a2: Add `allocateBitcoinPayout(payout, funded, fee?)`, which returns the recipient amounts a claim of the funded amount pays, using the same proportional surplus split as the claim. Export `validateBitcoinPayout` and `bitcoinNetworkOf`, so integrations can apply the claim's payout rules before storing a payout. Persist `payRequestedAmounts`, optional Pay display metadata holding the nominal amounts asked for.
+- c200134: Use per-swap deposit addresses for new gasless EVM swaps. Select matching keys for Permit2 funding, refunds, CCTP settlement and recovery while retaining legacy shared-address support. Read the deposit address from the swap response or getSwapDepositorKey(swapId); getEvmAddress and getEvmDepositorKey refer only to the legacy wallet-level account. Refund continuations explicitly reuse their existing funded account.
+
+### Patch Changes
+
+- 5adc73b: Target backend 0.3.31 in the x-satora-server-version header.
+- 30c242d: Count a Bitcoin HTLC funding split over two transactions, as the server does: the Bitcoin readers sum the two largest outputs paying the HTLC address instead of only the largest transaction, so a client that tops up a short payment is tracked as funded, not invalid, and claims once the server has funded.
+- e041883: Backend behaviour for fixed-lock Lightning sends (`lightningInvoice` with `sourceAmountSats`), no API shape change:
+
+  - When the lock falls a few sats short of what the invoice costs (the actual Lightning fee for that invoice came in above the `/quote` estimate), the backend may now accept the swap instead of returning a 400, depending on the route's configuration. The created swap then has a lower `fee_sats` (and, at most by the allowed loss, a lower `network_fee_sats`); `source_amount` still equals the requested lock and the invoice is paid in full.
+  - When it is still refused, the 400 now reads `... request a smaller invoice (at most N sats)` instead of `(about N sats)`. An invoice of at most N sats fits the same lock unless the provider's fee quote rises in between, so one retry is enough.
+  - A fixed lock smaller than the invoice amount itself is always refused.
+
 ## 1.12.0
 
 ### Minor Changes
